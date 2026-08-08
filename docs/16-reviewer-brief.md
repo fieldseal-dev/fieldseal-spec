@@ -61,8 +61,8 @@ AES-256-GCM + explicit commitment vs AES-256-CBC-HMAC-SHA-512 (natively committi
 - **What happens to objections:** each is recorded and either addressed with a spec change (issue → citation → breakage statement → vectors, per `CONTRIBUTING.md`) or documented as an accepted open risk. The gate is *addressed or documented* — you do not need to be agreed with for the gate to close honestly.
 - **Everything is public, no NDA.** Specification is proposed CC BY 4.0 (`GOVERNANCE.md`).
 - **Credit:** reviewers are named in the spec's acknowledgments with their permission; anonymous review is fine too.
-- **Compensation:** *[maintainer to state before sending: funded honorarium, or an explicitly unfunded open-source request — do not leave this ambiguous in the sent version.]*
-- **Timeline:** *[maintainer to state — the PRD's Phase 1 clock (~12 weeks of implementation) starts only after this gate closes, so review latency is the schedule.]*
+- **Compensation:** none — this is an unfunded open-source review request, stated plainly so you can decline on that basis alone. What we offer instead: public acknowledgment (§ above), a review scope deliberately compressed to hours by the question format, and a design that took your time seriously enough to pre-flag its own contested claims (§14) before asking for it.
+- **Timeline:** a **4-week window** from your acceptance. That covers the targeted read and written responses to the eight questions at a few hours per week; partial responses inside the window beat complete ones after it — an early answer to Q1 or Q7 alone unblocks more than a late answer to everything. The Phase 1 implementation clock (~12 weeks, PRD §8) starts only when this gate closes, so review latency is the project schedule.
 
 ## 5. One honest paragraph a reviewer should see before accepting
 
