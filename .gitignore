@@ -24,6 +24,9 @@ obj/
 # Logs
 *.log
 
+# Secrets
+.env
+.env.*
 
 # AI
-./claude
+.claude/settings.local.json
