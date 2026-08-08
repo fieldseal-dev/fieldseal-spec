@@ -365,7 +365,7 @@ Implementations SHOULD offer an optional MAC computed over all protected fields 
 
 ### 7.1 Purpose and hard limits (normative)
 
-A blind index supports **equality** and **membership (`IN`)** lookups only. It MUST NOT be used for ordering, ranges, prefix matching (except via the explicit derived-field mechanism of §7.7), substring matching, or full-text search.
+A blind index supports **equality** and **membership (`IN`)** lookups only. It MUST NOT be used for ordering, ranges, prefix matching (except via the explicit derived-field mechanism of §7.9), substring matching, or full-text search.
 
 ### 7.2 Construction (normative)
 

@@ -47,6 +47,15 @@ Three artifacts:
 | [`docs/04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) | Per-ORM interception points and hard limits, for whoever implements each adapter. |
 | [`docs/05-dissemination.md`](docs/05-dissemination.md) | Publication and standardization pathways. |
 | [`docs/06-verification-log.md`](docs/06-verification-log.md) | Independent re-verification of the 20 highest-risk factual claims, corrections applied, and what remains unverified. |
+| [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) | Phase 1 engineering plan: workstreams, milestones, decision gates, and the spec gaps that block code. |
+| [`docs/08-test-vector-spec.md`](docs/08-test-vector-spec.md) | Test-vector suite engineering spec: file formats, schemas, harness contract, cross-implementation protocol. |
+| [`docs/09-core-architecture.md`](docs/09-core-architecture.md) | Language-agnostic core library architecture every implementation follows. |
+| [`docs/10-core-python.md`](docs/10-core-python.md) / [`docs/11-core-typescript.md`](docs/11-core-typescript.md) | Per-language bindings for the Phase 1 cores. |
+| [`docs/12-adapter-django.md`](docs/12-adapter-django.md) / [`docs/13-adapter-prisma.md`](docs/13-adapter-prisma.md) | Phase 1 adapter designs, including the normative throw lists and coverage matrices. |
+| [`docs/14-conformance-ci.md`](docs/14-conformance-ci.md) | How conformance is claimed and proven; the N×N cross-implementation CI job. |
+| [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
+| [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
+| [`docs/issues/`](docs/issues/) | Ready-to-post issue drafts for the thirteen spec gaps (G1–G13) found during tech-spec authoring and review. |
 
 **Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct.**
 

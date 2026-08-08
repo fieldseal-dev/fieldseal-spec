@@ -55,6 +55,18 @@ docs/
   04-orm-adapter-notes.md per-ORM interception points and hard limits
   05-dissemination.md     publication/standardization pathways
   06-verification-log.md  independent verification of key claims
+  07-implementation-plan.md Phase 1 engineering plan, decision gates, spec-gap issue list
+  08-test-vector-spec.md  vector suite formats, schemas, harness contract, cross protocol
+  09-core-architecture.md language-agnostic core library architecture
+  10-core-python.md       Python core binding of the architecture
+  11-core-typescript.md   TypeScript core binding of the architecture
+  12-adapter-django.md    Django adapter design (throw lists, coverage matrix)
+  13-adapter-prisma.md    Prisma adapter design (throw lists, coverage matrix)
+  14-conformance-ci.md    conformance claims, report format, N×N cross-implementation CI
+  15-tooling.md           backfill tool and leakage-estimator design
+  adr/                    architecture decision records for Phase-1-blocking decisions
+                          (incl. Appendix A to ADR-0001: AWS-format expressibility mapping)
+  issues/                 ready-to-post spec-gap issue drafts G1–G13 (see docs/07 §5)
 examples/                 end-to-end demonstration applications (Phase 1+)
 CONTRIBUTING.md           how to contribute spec changes
 SECURITY.md               how to report security issues
