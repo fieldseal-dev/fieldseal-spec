@@ -56,6 +56,7 @@ Three artifacts:
 | [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
 | [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
 | [`docs/issues/`](docs/issues/) | Ready-to-post issue drafts for the thirteen spec gaps (G1–G13) found during tech-spec authoring and review. |
+| [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: reading path, the eight gating questions, ground rules. |
 
 **Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct.**
 

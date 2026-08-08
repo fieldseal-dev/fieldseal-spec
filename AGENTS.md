@@ -67,6 +67,7 @@ docs/
   adr/                    architecture decision records for Phase-1-blocking decisions
                           (incl. Appendix A to ADR-0001: AWS-format expressibility mapping)
   issues/                 ready-to-post spec-gap issue drafts G1–G13 (see docs/07 §5)
+  16-reviewer-brief.md    the Phase 0 cryptographic-review brief (reading path, gating questions)
 examples/                 end-to-end demonstration applications (Phase 1+)
 CONTRIBUTING.md           how to contribute spec changes
 SECURITY.md               how to report security issues
