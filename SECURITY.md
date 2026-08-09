@@ -10,7 +10,7 @@ An independent security review of the specification and at least one implementat
 
 Do not open a public issue for a suspected vulnerability in the specification or in any implementation.
 
-Report privately to: **[SECURITY CONTACT TO BE ADDED]**
+Report privately to: **security@fieldseal.dev**
 
 Include: the affected document section or implementation, the conditions required, and the impact. A proof of concept is welcome but not required — a clear description of a design flaw in the specification is at least as valuable as working exploit code.
 
