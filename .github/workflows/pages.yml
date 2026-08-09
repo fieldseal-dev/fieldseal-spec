@@ -52,13 +52,17 @@ jobs:
       - name: Sync docs/ into the site
         run: python www/scripts/sync-docs.py
 
+      # baseURL comes from www/hugo.toml (https://fieldseal.dev/), NOT from
+      # configure-pages. steps.pages.outputs.base_url reflects whatever Pages
+      # is configured with at build time -- before the custom domain is saved
+      # that is the project URL, which bakes /fieldseal-spec/ into every asset
+      # and link and silently breaks the site on the apex domain.
       - name: Build
         run: |
           hugo \
             --source www \
             --minify \
-            --gc \
-            --baseURL "${{ steps.pages.outputs.base_url }}/"
+            --gc
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
