@@ -61,6 +61,9 @@ These pipelines are the reference sequence every implementation follows. Steps m
 
 ```
 1. mode check: readonly → MODE_VIOLATION                   // §9, §10.3 (G6 resolved)
+1b. len(plaintext) > 2^31−1 → LENGTH_EXCEEDED              // §3.5 (G10 resolved); API boundary, like step 1.
+                                                           // Order against step 1 is unobservable: no vector
+                                                           // pairs the two (§3.5 has no vector at all, §12)
 2. validate ctx (purpose = "encrypt"; table/column UUIDs present, 16 B)
 3. suite = registry[config.write_suite]
 4. (dek, key_id) = key_provider.encryption_key(ctx)        // cache hit expected; MUST NOT do network I/O (§11.1)
@@ -115,6 +118,8 @@ Proposed check order — **this order is an engineering proposal that must be pi
 
 The step-7 ambiguity is real and worth stating plainly: under dual binding (§6.3), a wrong *context* produces a wrong *record key*, so context mismatch and key confusion are cryptographically indistinguishable at this layer. §9 wants `AAD_MISMATCH` distinguished from key problems because "usually a data-migration bug" needs different operator action than "partitioning-oracle attempt." Engineering proposal for the issue: report `COMMITMENT_INVALID`, and — as a **diagnostic, not a control path** — optionally re-derive with known-legitimate context variants (e.g. `row_id` omitted) to enrich the error message with "context mismatch suspected." Vectors then pin only the error code, not the diagnostics.
 
+The spec §3.5 length bound (G10) is deliberately *not* placed in this ordering. Its decrypt-side form reads the received byte count against the suite's fixed overhead, so it is available anywhere between step 2's structural parse and the step-6 allocation, needs neither key nor context, and cannot change which code any other step produces. Implementations apply it before allocating the plaintext buffer; G5 does not have to adjudicate it.
+
 Timing note: commitment verification and tag comparison MUST be constant-time compares. The candidate-key loop's early exit on commitment success is acceptable — commitment values are public envelope content, not secrets — but per-candidate work should be identical in structure.
 
 ### 3.3 `blind_index(plaintext, ctx) → bytes`
@@ -152,7 +157,7 @@ Resolves and caches key material for the given contexts before the value path ne
 
 - Header layout per spec §3.1; `suite_id` big-endian. Parse produces `EnvelopeHeader { fmt_ver, suite_id, key_id, msg_seed, nonce }` — exactly what `KeyProvider.decryption_keys` receives (spec §8).
 - Serialization is single-pass concatenation; total length = 51 + nonce_len + |ct| + tag_len + commit_len, all suite-determined.
-- **Plaintext length bounds:** the spec sets none. Engineering bound for v0: reject plaintexts > 2³¹−1 bytes at the API boundary (fields are cells, not blobs; AES-GCM's own limit is ~2³⁹−256 bits and is not the binding constraint). Flagged in G-list as a candidate spec clarification so all implementations reject at the same bound.
+- **Plaintext length bounds:** normative as of spec §3.5 (G10, issue #10, resolved 2026-08-09) — reject plaintexts > 2³¹−1 bytes at the API boundary with `LENGTH_EXCEEDED`, and reject on decrypt before allocating when an envelope implies more than the bound. The decrypt-side check reads the received byte count and the suite's fixed overhead only, so it needs no key or context and does not interact with the G5 ordering question. The bound is a ceiling, not a support guarantee: a runtime that fails below it with an allocation error is still conformant, but a 2³¹-byte input MUST produce `LENGTH_EXCEEDED` rather than the platform's error. **[VERIFY at implementation time: the actual buffer maxima for each Phase 1 language — Node `buffer.constants.MAX_LENGTH`, JVM array max, .NET array size limits — and document per core where the platform binds before the spec bound does.]**
 - The codec module is where fuzzing concentrates (per-language specs mandate a fuzz/property-test pass over `parse ∘ serialize` and over `is_ciphertext` on arbitrary bytes).
 
 ## 5. Byte-orientation and value semantics
@@ -182,7 +187,7 @@ Index configuration is **declared to the client at construction**, not passed pe
 
 ```
 IndexDeclaration {
-    table_uuid, column_uuid, index_id           // "exact" default; must match purpose grammar
+    table_uuid, column_uuid, index_id           // "exact" default; [a-z0-9-]{1,32} per spec §6.1 (G11)
     idf              : argon2id | hmac-sha512   // per §7.3 domain classes
     idf_params                                  // argon2id only; pending G2
     normalize        : normalizer id
@@ -197,6 +202,8 @@ Normalizers are a **closed, versioned set** shipped by every core identically (t
 - `identity` — bytes unchanged.
 - `nfc-casefold-v1` — Unicode NFC, then full case folding, then UTF-8 encode. For email-like text. **[Flag: "full case folding" must be pinned to a Unicode version and folding variant (C+F, no Turkish-i special case) before vectors freeze — cross-language Unicode-version drift silently breaks shared indexes. Candidate: pin to a fixed folding table vendored into each core rather than the platform's Unicode library.]**
 - `digits-only-v1` — strip ASCII non-digits (phone/SSN-like values).
+
+`index_id` is validated against the spec §6.1 `index-id` grammar at declaration time and rejected as a `ConfigurationError` if it fails — fail closed, before any derivation string is built. This is construction-time validation, so it has no §9 error code (docs/09 §9); the `context/` vector family pins the refusals (docs/08 §4.3).
 
 Custom normalizers are out: a deployment-defined normalizer is a portability break by definition. New normalizers go through the same process as suites (spec change + vectors).
 
@@ -233,7 +240,7 @@ KeyProvider:
 
 ## 9. Errors
 
-One root type per language (`FieldsealError`) with exactly the §9 taxonomy as subtypes/codes: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, `MODE_VIOLATION` (added to §9 by G6), plus a configuration-error code for construction-time failures that remains implementation-local — §9 does not define one, because construction never reaches the crypto path or the vectors. Messages carry: error code, suite_id, key_id (hex — it is public envelope content), context identifiers (table/column UUIDs — public by §6.5), and never plaintext, key material, or derived keys (§9). The vector-suite error strings map 1:1 to these codes; the mapping table lives in each per-language spec and is exercised by the `errors/` vectors.
+One root type per language (`FieldsealError`) with exactly the §9 taxonomy as subtypes/codes: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, `MODE_VIOLATION` (added to §9 by G6), `LENGTH_EXCEEDED` (added by G10; spec §3.5), plus a configuration-error code for construction-time failures that remains implementation-local — §9 does not define one, because construction never reaches the crypto path or the vectors. Messages carry: error code, suite_id, key_id (hex — it is public envelope content), context identifiers (table/column UUIDs — public by §6.5), and never plaintext, key material, or derived keys (§9). The vector-suite error strings map 1:1 to these codes; the mapping table lives in each per-language spec and is exercised by the `errors/` vectors.
 
 ## 10. Concurrency and process model
 
@@ -243,7 +250,9 @@ One root type per language (`FieldsealError`) with exactly the §9 taxonomy as s
 
 ## 11. What the core deliberately does not contain
 
-Restating spec §11.3 as a review checklist: no SQL, no ORM types, no row/column names (only opaque UUID surrogates), no HTTP, no KMS SDK in the required dependency set (optional provider extras only), no logging framework dependency (hooks only), no async in the five operations, no plaintext persistence of any kind, no telemetry with values in it.
+Restating spec §11.3 as a review checklist: no SQL, no ORM types, no row/column names (only opaque UUID surrogates), no HTTP, no KMS SDK in the required dependency set (optional provider extras only), no logging framework dependency (hooks only), no plaintext persistence of any kind, no telemetry with values in it.
+
+On async: the five operations are synchronous in every core, and that is not negotiable (spec §11.1). Spec §11.1 does now permit *additional* async companions (G9, issue #9), but a core that ships them owes byte-identical output, identical error codes, a suite run through both paths, and a sync implementation that is not merely a blocking wait on the async one. Whether to ship them at all is a per-language decision recorded in that core's tech spec, not a default.
 
 ## 12. Cross-language consistency table
 
