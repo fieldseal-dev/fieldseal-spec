@@ -104,6 +104,16 @@ This envelope is deliberately heavier than Tink's 5-byte prefix. The extra bytes
 
 `is_ciphertext(bytes)` MUST return true only if the input is at least the minimum envelope length for a registered suite, `fmt_ver` is a recognized version, and `suite_id` is a **registered** suite. Recognition MUST be independent of the decrypt allow-list (§4.3): the allow-list governs *authorization to decrypt* (`SUITE_NOT_ALLOWED`), not *recognition*. If recognition consulted the allow-list, ciphertext under a retired suite would be misclassified as unmigrated plaintext in `permissive` read mode — returning ciphertext bytes as application data and, worse, *re-encrypting them* on the next write (double encryption, unrecoverable without forensics). `is_ciphertext` MUST NOT attempt to decrypt, and implementations MUST NOT infer the suite by trial decryption.
 
+### 3.5 Plaintext length bound (normative)
+
+`encrypt()` MUST reject a plaintext longer than **2³¹−1 bytes** with `LENGTH_EXCEEDED` (§9), raised at the API boundary before any key acquisition or cryptographic processing. `decrypt()` MUST reject an envelope whose implied plaintext length exceeds the same bound, and MUST do so *before* allocating a buffer for the result. `rotate()` is subject to both bounds, being a decrypt followed by an encrypt (§11.1).
+
+The decrypt-side check depends only on the received byte count and the suite's fixed overhead, so it is computable immediately after the header is parsed and requires neither key material nor context. Its position relative to the other decrypt-path checks is therefore immaterial, and this clause deliberately does not constrain that ordering.
+
+*Justification.* The specification would otherwise place no bound at all, leaving each implementation to inherit its platform's accidental limits — a value one implementation encrypts is then one another cannot buffer, which is an interoperability failure this specification never sanctioned. Agreement on *rejection* is the same portability property as agreement on acceptance, and a bound chosen here is testable in the way a bound inherited from a runtime is not. AES-GCM's own plaintext ceiling (~2³⁹−256 bits, SP 800-38D §5.2.1.1) is far above anything a database cell should hold and is not the binding constraint. 2³¹−1 is the largest value representable in a signed 32-bit length, which is the lowest common denominator across the target languages; the bound is deliberately generous, because a field-level encryption specification whose length limit binds in legitimate use has the wrong limit.
+
+**The bound is a ceiling, not a guarantee of support.** A given runtime MAY fail below it — the JVM cannot reliably allocate a `byte[]` of exactly `Integer.MAX_VALUE`, and 32-bit builds fail far earlier. Failing below the bound with a platform allocation error is not a conformance failure; the testable conformance requirement is narrower and exact: a plaintext of 2³¹ bytes MUST be refused with `LENGTH_EXCEEDED` rather than with whatever the platform would have raised. Multi-gigabyte values in a database cell indicate a design error upstream, and implementations SHOULD document that.
+
 ---
 
 ## 4. Cipher suite registry
@@ -307,6 +317,19 @@ FieldContext {
 
 *Justification.* Binding to SQL names means a table or column rename renders every ciphertext undecryptable.
 
+`purpose` is constrained to the following grammar (ABNF, RFC 5234):
+
+```
+purpose   = "encrypt" / ("index:" index-id)
+index-id  = 1*32( %x61-7A / %x30-39 / "-" )   ; [a-z0-9-], 1–32 bytes, ASCII
+```
+
+An identifier outside this grammar MUST be refused as a configuration error when the index is declared (§7.8), not at call time — index declarations are construction-time input, and a derivation string that fails validation must never reach a key derivation. Because uppercase is unrepresentable rather than merely discouraged, case drift cannot occur: there is no `index:Exact` to disagree with `index:exact` about.
+
+*Justification.* `purpose` is a component of `canonical_context` (§6.2), which is both KDF `info` and part of the AAD, so every byte an identifier may contain is a byte the encoding's injectivity argument must cover. Restricting identifiers embedded in derivation strings to a minimal ASCII alphabet is ordinary practice and matches the fixed ASCII labels this specification already uses (`"fieldseal-index-v1"`, §7.2). The constraint narrows, and can never widen, what that argument has to consider. Two identifiers differing only in case or in Unicode representation would otherwise derive different keys for what an operator believes is one index — a failure that surfaces as an index silently matching nothing. 32 bytes of `[a-z0-9-]` is comfortably expressive for index naming (`exact`, `prefix3`, `email-domain`).
+
+**This does not settle the encoding's injectivity.** Whether `canonical_context` is injective over its whole field set — in particular the still-unspecified encoding of an absent `tenant_id` — is open, and is tracked separately as a specification issue against §6.2.
+
 ### 6.2 Canonical encoding (normative)
 
 ```
@@ -391,7 +414,7 @@ where:
 
 *Justification.* Either bit-order convention is cryptographically equivalent: the IDF output is uniform, so which `b` bits survive does not change the §7.4 leakage analysis. The convention is pinned solely so that independent implementations write byte-identical index values into a shared database — an interoperability decision of exactly the kind the vector suite exists to verify (§12). Leading-bits/MSB-first is chosen because the truncated value is then a byte-prefix of the untruncated output, which simplifies debugging, and because it matches the network-byte-order conventions used elsewhere in this specification (§3.1 big-endian `suite_id`, §6.2 `u64be`).
 
-The index key MUST be distinct per `(tenant, table, column, index)`. It MUST NOT be the field encryption key. Two indexes MUST NOT share a key. Distinctness per index is achieved by the index identifier carried in `purpose` (`index:exact` for the default equality index; a §7.9 prefix index declares its own identifier).
+The index key MUST be distinct per `(tenant, table, column, index)`. It MUST NOT be the field encryption key. Two indexes MUST NOT share a key. Distinctness per index is achieved by the index identifier carried in `purpose` (`index:exact` for the default equality index; a §7.9 prefix index declares its own identifier). The identifier MUST satisfy the `index-id` grammar of §6.1 (`[a-z0-9-]`, 1–32 bytes), validated when the index is declared.
 
 The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT be the tenant DEK or be derived from it (§5.2). Deriving index keys from data keys would make every data-key rotation silently invalidate every blind index — precisely the rotation-versus-searchability trap this design exists to escape.
 
@@ -469,8 +492,14 @@ Documentation MUST reproduce this table.
 | `LIKE '%x%'`, regex | **No** | Decrypt-and-search over a bounded candidate set. |
 | Full-text search | **No** | A separate search system with its own access controls, holding plaintext, explicitly risk-assessed. |
 | Aggregates (`SUM`, `AVG`) | **No** | Requires homomorphic encryption; out of scope. |
-| Unique constraints | On the index column only | Never on randomized ciphertext. |
+| Unique constraints | **No** — not on randomized ciphertext, and not on a blind index either (§7.4 mandates collisions) | Enforce uniqueness in application logic: index-filtered candidate fetch → decrypt → compare, inside a transaction. See the note below on the race. |
 | Foreign keys | **No** | Keep the join key plaintext, or the relational model degrades. |
+
+**On unique constraints.** A `UNIQUE` constraint over a blind index is not merely unhelpful, it is incorrect: §7.4 requires `2 ≤ P × 2^(−b)`, so every index value is expected to correspond to at least two distinct plaintexts *by construction* — that ambiguity is the privacy mechanism. A database-enforced uniqueness guarantee cannot sit on a value whose construction forbids injectivity; as the table fills toward `P`, such a constraint rejects legitimate, distinct values with probability approaching certainty.
+
+The application-level fallback MUST be documented with its race, not presented as equivalent. Between the candidate fetch and the insert, a concurrent transaction may commit the same value: under `READ COMMITTED` both transactions observe no match and both insert. Correctness requires either `SERIALIZABLE` isolation or an advisory lock taken on the index value for the duration — the latter is the cheaper option and leaks nothing further, since the index value is already stored in the clear. Without one of the two, uniqueness is best-effort and the deployment MUST say so.
+
+Database-enforced uniqueness over an encrypted column would require an index that is injective per key, which means a deterministic suite — that is the §13.6 discussion, and it should be settled there rather than smuggled in through this table.
 
 ### 7.11 Index column storage type (normative)
 
@@ -535,8 +564,11 @@ An implementation MUST distinguish at least these error types, and MUST NOT coll
 | `COMMITMENT_INVALID` | Key commitment check failed | Key confusion or a partitioning-oracle attempt |
 | `NOT_CIPHERTEXT` | Input is not a recognizable envelope | Unmigrated plaintext; see §10.3 |
 | `MODE_VIOLATION` | The operation is not permitted in the configured read mode | `encrypt()` or `rotate()` on a `readonly` client (§10.3) |
+| `LENGTH_EXCEEDED` | Plaintext exceeds the §3.5 bound, on encrypt or as implied by an envelope on decrypt | A blob stored in a field-level column; a corrupted or hostile length |
 
 `MODE_VIOLATION` is raised at the API boundary, before any cryptographic processing or key acquisition begins, and therefore sits outside the decrypt-path error ordering. Its message MUST name both the rejected operation and the active mode: a mode violation is a deployment-configuration error, and an implementation that reports only "operation not permitted" sends the operator looking in the wrong place. One code covers all present and future modes rather than one code per mode, so that adding a mode is not a breaking change to the error taxonomy.
+
+`LENGTH_EXCEEDED` is a distinct code rather than a reuse of `MODE_VIOLATION`, which is specifically about a configured mode forbidding an operation — a length rejection is neither mode-dependent nor configuration-dependent. On encrypt it is raised at the API boundary on the same terms as `MODE_VIOLATION`; on decrypt it is a function of the received byte count alone (§3.5).
 
 Error messages MUST NOT include plaintext, key material, or derived key values.
 
@@ -585,6 +617,8 @@ Requires sibling-field access in the value path.
 
 **This is why the core API is synchronous (§11.1).** An async-first core would be unimplementable in the majority of target ORMs.
 
+L4 covers asynchronous key acquisition and, where the core offers the optional companions of §11.1, asynchronous index derivation as well — the same reasoning extends from fetching a key to deriving an index, and Argon2id makes the latter the more expensive of the two. An L4 claim states which of the two the adapter actually uses.
+
 ### 10.1 Level matrix
 
 | ORM | L0 | L1 | L2 | L3 | L3-row | L4 |
@@ -604,7 +638,9 @@ Each adapter MUST publish a coverage matrix stating exactly which write, read, a
 Known cases requiring an explicit throw:
 
 - **GORM:** map-based `Updates(map[string]interface{}{...})` and single-column `Update("col", v)` bypass the serializer entirely and **write plaintext**. Verified in `callbacks/update.go`. The adapter MUST intercept or reject these.
-- **Prisma:** `where.field.in: [...]`, `contains:`, and `startsWith:` are not rewritten by the path-surgery approach; the value is *encrypted instead*, silently returning zero rows with no error. The adapter MUST reject these filter shapes over encrypted fields. `orderBy` on an encrypted field MUST throw rather than being silently dropped.
+- **Prisma:** `where.field.in: [...]`, `contains:`, and `startsWith:` are not rewritten by the path-surgery approach; the value is *encrypted instead*, silently returning zero rows with no error. `orderBy` on an encrypted field MUST throw rather than being silently dropped.
+  - An adapter MUST reject `in:` over an encrypted field **unless** it rewrites the predicate to the field's declared blind index as §7.10 membership (the N index values, `OR`'d or as a single `IN`), subject to §7.5 re-verification of the candidates. An adapter that cannot guarantee the rewrite — no declared index, or a filter path its interception surface does not reach — MUST reject rather than pass the shape through. The requirement this MUST encodes is *never silently mis-serve the query*, not *never serve it correctly*: the surveyed failure was implementations encrypting the filter operands, which §7.10 already lists as supported when done through the index.
+  - `contains:` and `startsWith:` remain unconditional rejections: §7.1 forbids substring and prefix matching over a blind index outright. The §7.9 prefix mechanism is not an exception to that — a declared prefix index is queried as its own index through an explicit index-typed predicate, and an adapter MUST NOT silently rewrite `startsWith:` onto one, because the rewrite is sound only when the operand length happens to equal the declared prefix length and produces silently wrong results whenever it does not.
 - **TypeORM:** the dirty-check (`SubjectChangedColumnsComputer`) runs the transform, and every registered suite is randomized, so every `save()` marks every encrypted column dirty and rewrites it with a fresh envelope. The adapter MUST document this spurious-rewrite behavior — it is correct, but it inflates UPDATE volume and WAL. Equality is available only through the explicit index-typed property (L2 (a), find-options); the adapter MUST NOT claim transparent L2 (b). A deterministic AEAD suite that would lift both constraints is deliberately not in the v0.1 registry — see §13.6.
 - **All ORMs:** raw SQL parameters are never encrypted by any ORM surveyed. Django and GORM decrypt raw *results*; nobody encrypts raw *parameters*. Adapters MUST document this.
 - **All ORMs:** application-level caches (Django's `django.core.cache`, Hibernate's second-level cache, EF Core second-level cache interceptors, `expire_on_commit=False` session identity maps) hold **plaintext**. Adapters MUST document which caches are affected and how to exclude encrypted fields. Hibernate's `UserType.disassemble()` is the correct place to keep ciphertext in the L2 cache; `AttributeConverter` gives no such control, which is a reason to prefer `UserType`.
@@ -641,9 +677,19 @@ is_ciphertext(value: bytes) -> bool                            [SYNC]
 rotate(ciphertext: bytes, ctx: FieldContext) -> bytes          [SYNC]
 ```
 
-These MUST be synchronous and MUST NOT perform network I/O.
+Every implementation MUST expose all five operations synchronously, and none of them may perform network I/O.
 
 *Justification.* See L4 in §10. Django field hooks, SQLAlchemy type processors, TypeORM transformers, Hibernate converters, Rails `ActiveModel::Type`, and Sequelize getters are all synchronous by signature. A blocking KMS call inside any of them holds a pooled database connection inside an open transaction — a 20 ms round-trip during a flush of 1,000 rows holds the connection for 20 seconds and exhausts the pool under load.
+
+**Asynchronous companions (OPTIONAL).** An implementation MAY additionally expose asynchronous companions to these operations. The sync forms remain mandatory and primary; a companion is additive surface, never a replacement. Where companions are offered:
+
+- They MUST produce byte-identical output to their synchronous counterparts for identical input, and MUST raise the same §9 error for the same condition. The existing vectors govern both paths; there is no separate vector family, and an implementation exposing companions MUST run the suite through both.
+- An implementation MUST NOT implement a synchronous operation by blocking on its own asynchronous companion where doing so changes error or timing semantics — in particular, it MUST NOT reintroduce network I/O into the value path by that route.
+- Only an adapter claiming L4 may depend on a companion. An adapter that requires one in order to function on a synchronous ORM is non-conformant, because the ORM cannot await it.
+
+This specification deliberately does not fix the names or signatures of the companions. The portability requirement is on the synchronous five, which every adapter in every language uses; a companion is consumed only by an L4 adapter written against one specific core in one language, so pinning its shape here would constrain a surface no cross-implementation test can observe, before any implementation has demonstrated what the shape should be.
+
+*Justification, and the cost of the sync-only reading.* `blind_index` over an Argon2id domain costs 10–100 ms per query term (§7.3), and that cost lands differently per runtime: on a threaded server it occupies one request, which is the documented and accepted price, but on a single-threaded event loop it stalls *every* concurrent request in the process. That is a materially different failure mode, and it falls hardest on exactly the async-first adapters that L4 exists to accommodate. Reading §11.1 as forbidding companions outright would leave those implementations no conformant way to stay responsive; permitting them under the constraints above costs nothing to implementations that decline. Whether the spec-minimum Argon2id parameters are viable at all in such a request path is an open engineering question, to be answered with a benchmark during implementation rather than assumed here — if the answer is no, this section is revisited as a substantive change rather than an ergonomic one.
 
 ### 11.2 Asynchronous prefetch
 
@@ -666,12 +712,14 @@ An implementation MUST pass the full vector suite to claim any conformance level
 - Every registered suite: encrypt/decrypt round trip with fixed key, derivation seed, nonce, and context
 - Key derivation: fixed tenant DEK + `key_id` + `msg_seed` + context → expected record key
 - Index-key derivation: fixed tenant index key + context → expected per-index key
-- Canonical context and AAD encoding: byte-exact output for representative contexts, including `row_id` present and absent
+- Canonical context and AAD encoding: byte-exact output for representative contexts, including `row_id` present and absent, and including index declarations whose identifier violates the §6.1 `index-id` grammar — refused at declaration time, which the vector pins as a refusal rather than as an error code, configuration validation being outside the §9 taxonomy
 - Blind index: fixed key + plaintext + normalization + truncation → expected index, for both Argon2id and HMAC IDFs — including at least three vectors whose truncation length is not a multiple of 8 (the §7.2 final-byte masking is observable only there) and one multiple-of-8 control
 - Blind index storage: for every blind-index vector, the exact bytes written to the database per §7.11, and the hexadecimal form where an implementation supports it — asserted as its own field, because a stored-form divergence produces no error, only an empty result set
 - Commitment values
 - Every error case in §9, including deliberately malformed envelopes — and for the §10.3 modes, `encrypt()` under `readonly` raising `MODE_VIOLATION` alongside the positive controls that bound it: `decrypt()` of a valid envelope, `blind_index()`, and non-envelope input, each under `readonly`
+- One exception to the preceding line: `LENGTH_EXCEEDED` (§3.5) is exempt from the literal-bytes rule, a 2-GiB vector file being an unreasonable thing to put in a repository. The bound is instead verified by an implementation-level test asserting the exact threshold, and the conformance report MUST state that it was verified this way rather than by a vector
 - **Cross-implementation:** ciphertext produced by implementation A decrypted by implementation B. CI MUST fail on divergence. *This is the only test that proves the specification's central claim.*
+- Where an implementation exposes the optional asynchronous companions of §11.1, the entire suite MUST additionally be run through them, asserting identical bytes and identical error codes
 
 ---
 

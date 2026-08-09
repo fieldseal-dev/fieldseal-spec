@@ -3,6 +3,8 @@
 **Labels:** §6.1 · §7.2 · spec-gap
 **Blocks:** `context/` negative vectors.
 
+**Status:** RESOLVED in spec 2026-08-09, adopted as proposed — docs/02 §6.1 carries the ABNF (`index-id = 1*32( %x61-7A / %x30-39 / "-" )`), rejection is a declaration-time configuration error, and §7.2 echoes the constraint at the point the identifier enters the derivation. **Partial close, deliberately:** this settles the *grammar* only. G4 (issue #4) still owns whether `canonical_context` is injective over its whole field set — the absent-`tenant_id` encoding above all — and §6.1 says so in as many words rather than letting the grammar's closure imply the encoding is settled. The reviewer brief's Q4 bundles this issue into that question; that bundling stands, with the grammar now a fixed input to it rather than an open variable. Marker sweep: docs/08 §4.3 (four negative declarations: uppercase, non-ASCII, empty, 33-byte), docs/09 §7, docs/02 §12. Close tracker issue [#11](https://github.com/fieldseal-dev/fieldseal-spec/issues/11) when this lands, noting the G4 carve-out in the closing comment.
+
 ## Gap
 
 §6.1 types `purpose` as `"encrypt" | "index:<index-id>"` but constrains `<index-id>` no further — charset, length, and case are open. Because `purpose` is a component of `canonical_context` (KDF info and AAD), unconstrained identifiers interact with G4's aliasing concern: an identifier containing bytes that resemble encoding structure widens the surface the injectivity argument must cover, and identifiers differing only by case or Unicode representation would silently derive different keys for what an operator believes is one index.

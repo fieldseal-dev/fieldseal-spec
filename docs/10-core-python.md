@@ -82,7 +82,7 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 
 - `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0x0002 must still derive the correct key for a 0x0001 envelope during mixed-suite reads and rotation).
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
-- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
+- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
 
 ## 5. Security-relevant implementation notes
 
@@ -102,4 +102,6 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 
 ## 7. Non-goals for the Python core
 
-No Django/SQLAlchemy awareness of any kind (that's `adapters/`); no CLI (the vector generator lives in `tools/vector-gen/`, importing `fieldseal.testing` deliberately); no async value-path variants; no PyPy claims until CI covers it.
+No Django/SQLAlchemy awareness of any kind (that's `adapters/`); no CLI (the vector generator lives in `tools/vector-gen/`, importing `fieldseal.testing` deliberately); no PyPy claims until CI covers it.
+
+No async value-path variants either — but as of G9 (issue #9) that is this core's choice rather than a prohibition: spec §11.1 permits optional async companions, and the Python core declines them because its target frameworks (Django, SQLAlchemy) are the ones that cannot await in the value path at all, so the companions would carry the dual-path vector obligation for no adapter that could use it. Revisit only if a Python adapter credibly claims L4.

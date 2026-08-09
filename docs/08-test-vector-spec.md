@@ -163,6 +163,8 @@ Byte-exact `canonical_context` and `AAD` outputs for representative contexts. Th
 
 Required cases: all fields present · `row_id` null (omitted entirely per §6.2) · `tenant_id` at boundary lengths (1 B, 16 B, 64 B) · `purpose` = `"encrypt"` and `"index:exact"` · a context whose fields contain bytes that would be misparsed under naive concatenation (e.g. a `tenant_id` ending in bytes that look like a `u64be` length prefix) — this is the anti-forgery case that justifies §6.2.
 
+**Grammar refusals (G11, issue #11, resolved 2026-08-09):** spec §6.1 now constrains `index-id` to `[a-z0-9-]{1,32}`, so this family also carries negative *declarations* — `index:Exact` (uppercase), `index:é` (non-ASCII), `index:` (empty), and a 33-byte identifier. These pin a refusal at index-declaration time, not an error code: configuration validation sits outside the §9 taxonomy, so the vector asserts that the declaration is rejected and deliberately does not name a code (each core maps it to its own `ConfigurationError`, docs/09 §9). They belong here rather than in `errors/` for that reason.
+
 **Blocked case:** `tenant_id` null vs zero-length — see gap G4 (§9). Do not author until the spec defines the encoding.
 
 ### 4.4 `blind-index/`
@@ -239,6 +241,7 @@ Required error coverage (each case = one or more vectors):
 | `encrypt()` called in `readonly` mode | `MODE_VIOLATION` | Spec §9 and §10.3, pinned by G6 (issue #6). `rotate()` under `readonly` is the same case and MUST also be covered |
 | Reads in `readonly` mode (valid envelope; non-envelope input) | Plaintext; pass-through | Spec §10.3, pinned by G6: `readonly` takes `permissive`'s non-envelope behavior. Both are positive controls bounding the row above — they prove the mode refuses *writes*, not reads |
 | `blind_index()` called in `readonly` mode | Success | Spec §10.3, pinned by G6: computing an index for a WHERE clause is not a write. Positive control — a regression here silently makes read-only clients unable to query |
+| Plaintext longer than 2³¹−1 bytes | `LENGTH_EXCEEDED` | **No vector.** Spec §3.5/§12 (G10, issue #10) exempt this case from the literal-bytes rule — a 2-GiB file is not a thing to put in git. Verified by an implementation-level test asserting the exact threshold, declared in the conformance report per docs/14 §4 |
 
 ### 4.7 `cross/` — the central claim
 
@@ -279,6 +282,8 @@ Each language core ships a conformance harness (in its own test framework) that 
 5. For `errors/`: assert the **exact** error code — a mapping table from vector error strings to the language's exception/error types is part of each core's tech spec (`docs/10-…`, `docs/11-…`).
 6. Report results in the machine-readable format defined in `docs/14-conformance-ci.md` §4, so the conformance report is assembled identically across languages.
 7. Skip nothing silently: a skipped vector (unsupported suite) appears in the report as `skipped` with a reason.
+8. Assert the spec §3.5 plaintext length bound out-of-band, since it has no vector (G10): a test MUST show that 2³¹ bytes is refused with `LENGTH_EXCEEDED`, and the harness MUST record the assertion in the report's `out_of_band` block (docs/14 §4). A harness that cannot allocate the input on its runtime records the reason there rather than passing silently — the point of the block is that an unverified bound is visible in the report instead of absent from it.
+9. Where the implementation exposes the optional asynchronous companions of spec §11.1 (G9), run the entire suite a second time through them and assert identical bytes and identical error codes. Both passes appear in `results`, the async pass suffixed `#async`, so a divergence names which path failed.
 
 ## 6. Determinism injection (testing affordance)
 

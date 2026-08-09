@@ -67,11 +67,17 @@ Every harness (core or adapter) emits `conformance-report.json`:
     { "id": "envelope/0001/basic-roundtrip", "status": "pass" },
     { "id": "envelope/0002/basic-roundtrip", "status": "skipped", "reason": "suite 0x0002 not implemented" }
   ],
+  "out_of_band": [
+    { "id": "spec/3.5/length-bound", "status": "pass", "method": "unit test asserting 2^31 refused with LENGTH_EXCEEDED" }
+  ],
+  "async_companions": false,
   "summary": { "pass": 412, "fail": 0, "skipped": 18 }
 }
 ```
 
-Rules: `fail > 0` ⇒ no level claimable ⇒ CI red. `claimed_levels` must be consistent with the vector families passed (L0 requires every family the implementation's suites reach; adapter levels additionally require the adapter's own integration matrix green — adapters attach a `coverage_matrix` block mirroring their README table so the claim and the docs cannot drift apart). `environment.crypto_backend` is recorded because FIPS conversations turn on it (PRD CL-9).
+`out_of_band` carries normative requirements that have no vector — currently just the spec §3.5 plaintext length bound, which is exempted from the vector rule because the input is 2 GiB (docs/08 §5 clause 8, spec §12). The block is required rather than optional: a bound verified by a test the report does not mention is indistinguishable from a bound nobody checked. `async_companions` states whether spec §11.1's optional async surface exists; when true, the suite has been run through both paths and `results` carries the `#async` entries (docs/08 §5 clause 9).
+
+Rules: `fail > 0` ⇒ no level claimable ⇒ CI red. An `out_of_band` entry that is not `pass` counts as a failure for level-claim purposes on the same terms. `claimed_levels` must be consistent with the vector families passed (L0 requires every family the implementation's suites reach; adapter levels additionally require the adapter's own integration matrix green — adapters attach a `coverage_matrix` block mirroring their README table so the claim and the docs cannot drift apart). `environment.crypto_backend` is recorded because FIPS conversations turn on it (PRD CL-9).
 
 Reports are uploaded as artifacts on every run; `conformance.yml` assembles the latest per-implementation reports into `bench/conformance-summary.md` (committed by CI on release tags only, so history is release-granular and the working tree stays quiet).
 

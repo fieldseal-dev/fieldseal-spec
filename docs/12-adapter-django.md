@@ -98,10 +98,10 @@ On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isn
 | ID | Level | Condition |
 |---|---|---|
 | fieldseal.E001 | Error | Index sibling declared before its encrypted field (order rule, §1.2) |
-| fieldseal.E002 | Error | `unique=True` on an encrypted column (unenforceable under a randomized suite, spec §7.10) — and **not** to be moved to the index column either: the §7.4 band mandates collisions, so a UNIQUE truncated index rejects legitimate distinct values (spec issue G12) |
+| fieldseal.E002 | Error | `unique=True` on an encrypted column (unenforceable under a randomized suite, spec §7.10) — and **not** to be moved to the index column either: the §7.4 band mandates collisions, so a UNIQUE truncated index rejects legitimate distinct values. Normative as of §7.10 (G12 resolved 2026-08-09); the check's error text points the user at §7.10's application-level fallback and its race |
 | fieldseal.E003 | Error | Blind index declared without `projected_population`, or population below the §7.6 gate without a logged override — this surfaces the core's construction-time gate (docs/09 §2) as a system check at startup; the core remains the enforcing layer |
 | fieldseal.E004 | Error | Missing `table_uuid`/`column_uuid` |
-| fieldseal.E005 | Error | Encrypted field **or its index sibling** named in a `UniqueConstraint` or composite index (uniqueness over ciphertext is meaningless; uniqueness over a truncated index is G12) |
+| fieldseal.E005 | Error | Encrypted field **or its index sibling** named in a `UniqueConstraint` or composite index (uniqueness over ciphertext is meaningless; uniqueness over a truncated index is forbidden by §7.10, G12 resolved) |
 | fieldseal.E006 | Error | A user-supplied `FIELDSEAL["CLIENT"]` whose index registry does not exactly match the model-declared indexes (§7) |
 | fieldseal.W001 | Warning | Encrypted field in `ModelAdmin.search_fields` (generates `icontains` → will raise at runtime; `docs/04` §1 gotcha) |
 | fieldseal.W002 | Warning | `db_index=True` on ciphertext column (pointless index bloat) |
