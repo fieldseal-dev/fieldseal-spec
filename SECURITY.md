@@ -10,7 +10,9 @@ An independent security review of the specification and at least one implementat
 
 Do not open a public issue for a suspected vulnerability in the specification or in any implementation.
 
-Report privately to: **[SECURITY CONTACT TO BE ADDED]**
+Report privately through **[GitHub's private vulnerability reporting](https://github.com/fieldseal-dev/fieldseal-spec/security/advisories/new)** — the "Report a vulnerability" button under this repository's Security tab. It requires a GitHub account and nothing else, the report is visible only to maintainers, and it gives us a private thread to work in.
+
+**There is deliberately no email address here yet.** `security@fieldseal.dev` is the intended long-term contact and appears in the project's planning notes, but no mailbox or forwarding alias exists behind it. Publishing an address that silently drops vulnerability reports is worse than publishing none: a reporter who is met with silence reasonably concludes the project does not care, and discloses publicly instead. This section will name an address once mail to it is confirmed to arrive.
 
 Include: the affected document section or implementation, the conditions required, and the impact. A proof of concept is welcome but not required — a clear description of a design flaw in the specification is at least as valuable as working exploit code.
 

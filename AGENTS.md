@@ -232,7 +232,7 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 - **Report security issues:** See `SECURITY.md`. Do not open public issues for suspected vulnerabilities.
 - **Contributing:** See `CONTRIBUTING.md`. Specification changes go through issues first.
-- **Governance and licensing:** See `GOVERNANCE.md` (specification CC BY 4.0 and code Apache 2.0 proposed; not yet finalized).
+- **Governance and licensing:** Licensing is settled — specification and docs CC BY 4.0, test vectors CC0 1.0, code Apache 2.0. The path-by-path mapping is `LICENSES.md`; the rationale is in `GOVERNANCE.md`, where everything *except* licensing remains proposed.
 
 **Normative references:** Spec §15 lists all NIST, RFC, and research citations. Informative references point to AWS structured encryption, Tink, Vault, Rails, CipherSweet, and key research papers (Naveed–Kamara–Wright, Grubbs et al., MongoDB QE analysis, etc.).
 

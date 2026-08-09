@@ -8,7 +8,7 @@
 
 1. **A conformance claim is a build artifact, not a README sentence.** Every claim traces to a machine-readable report produced by running the vectors in CI at a named vector-suite version.
 2. **Cross-implementation round trips run on every merge to the integration branch**, not just releases. The Phase 1 exit criterion (PRD §8: "a value written by Python is read by TypeScript, and vice versa, in CI") is a permanent gate once first met — regressions on it block merge.
-3. **Third-party implementations can run everything without this repo's CI.** The harness contract (docs/08 §5), report format (§4 below), and proposed-CC0 vectors (license not yet finalized — `GOVERNANCE.md`) are the entire interface; PRD metric M2 (an implementation not written by us passes) depends on nothing here being private.
+3. **Third-party implementations can run everything without this repo's CI.** The harness contract (docs/08 §5), report format (§4 below), and the CC0-licensed vectors (settled 2026-08-09 — `LICENSES.md`) are the entire interface; PRD metric M2 (an implementation not written by us passes) depends on nothing here being private.
 
 ## 2. Repository and workflow topology
 
