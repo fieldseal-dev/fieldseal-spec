@@ -1,0 +1,15 @@
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="{{ "/" | relURL }}">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>{{ site.Title }}</span>
+    </a>
+    <nav aria-label="Main">
+      <ul>
+        {{ range site.Menus.main }}
+          <li><a href="{{ .URL }}"{{ if $.IsMenuCurrent "main" . }} aria-current="page"{{ end }}>{{ .Name }}</a></li>
+        {{ end }}
+      </ul>
+    </nav>
+  </div>
+</header>
