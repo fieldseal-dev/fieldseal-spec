@@ -2,6 +2,7 @@
 
 **Labels:** §7.2 · §7.4 · spec-gap · blocks-vectors
 **Blocks:** both `blind-index/` vector files (every truncated expected value).
+**Status:** RESOLVED in spec 2026-08-08, adopted as proposed — docs/02 §7.2 (definition + justification), §7.4 (cross-reference), §12 (b mod 8 ≠ 0 vector obligation); marker sweep in docs/08 §4.4/§9, docs/09 §3.3, docs/10, docs/11. Close tracker issue [#3](https://github.com/fieldseal-dev/fieldseal-spec/issues/3) when this lands.
 
 ## Gap
 

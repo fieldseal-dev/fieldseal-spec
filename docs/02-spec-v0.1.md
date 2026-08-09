@@ -387,6 +387,10 @@ where:
 - `IDF` is the index derivation function, selected per §7.3.
 - `b` is the truncation length in bits, selected per §7.4.
 
+`truncate(raw, b)` is defined bit-exactly: keep the first `⌈b/8⌉` bytes of `raw`, then set the trailing `8·⌈b/8⌉ − b` bits of the final byte to zero. Bits are numbered MSB-first within each byte (the most significant bit is bit 0, mask `0x80`); equivalently, interpret `raw` as a bit string in network order, keep the first `b` bits, and zero-pad to the byte boundary. The output length is exactly `⌈b/8⌉` bytes. Example: `truncate(0xABCD…, 12 bits)` = `0xABC0`.
+
+*Justification.* Either bit-order convention is cryptographically equivalent: the IDF output is uniform, so which `b` bits survive does not change the §7.4 leakage analysis. The convention is pinned solely so that independent implementations write byte-identical index values into a shared database — an interoperability decision of exactly the kind the vector suite exists to verify (§12). Leading-bits/MSB-first is chosen because the truncated value is then a byte-prefix of the untruncated output, which simplifies debugging, and because it matches the network-byte-order conventions used elsewhere in this specification (§3.1 big-endian `suite_id`, §6.2 `u64be`).
+
 The index key MUST be distinct per `(tenant, table, column, index)`. It MUST NOT be the field encryption key. Two indexes MUST NOT share a key. Distinctness per index is achieved by the index identifier carried in `purpose` (`index:exact` for the default equality index; a §7.9 prefix index declares its own identifier).
 
 The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT be the tenant DEK or be derived from it (§5.2). Deriving index keys from data keys would make every data-key rotation silently invalidate every blind index — precisely the rotation-versus-searchability trap this design exists to escape.
@@ -414,7 +418,7 @@ Let `P` be the projected number of **distinct** values in the column (not the nu
 2 ≤ P × 2^(−b) < √P
 ```
 
-`b` MUST be rounded **down**. Both `b` and the projected `P` MUST be recorded in schema metadata.
+`b` MUST be rounded **down**. Both `b` and the projected `P` MUST be recorded in schema metadata. The bit-level semantics of `truncate(raw, b)` are defined in §7.2.
 
 *Justification and honest caveat.* This is the AWS beacon-length band. Worked example from AWS's documentation for `P` = 100,000: recommended range 8–15 bits. At 16 bits, 1.5 collisions per value, "66% likely same plaintext," retrieve ~15 records per 10 wanted. At 14 bits, 6.1 collisions, "33% likely same plaintext," retrieve ~30 per 10. "For every bit below 15, the performance cost and the security double."
 
@@ -640,7 +644,7 @@ An implementation MUST pass the full vector suite to claim any conformance level
 - Key derivation: fixed tenant DEK + `key_id` + `msg_seed` + context → expected record key
 - Index-key derivation: fixed tenant index key + context → expected per-index key
 - Canonical context and AAD encoding: byte-exact output for representative contexts, including `row_id` present and absent
-- Blind index: fixed key + plaintext + normalization + truncation → expected index, for both Argon2id and HMAC IDFs
+- Blind index: fixed key + plaintext + normalization + truncation → expected index, for both Argon2id and HMAC IDFs — including at least three vectors whose truncation length is not a multiple of 8 (the §7.2 final-byte masking is observable only there) and one multiple-of-8 control
 - Commitment values
 - Every error case in §9, including deliberately malformed envelopes
 - **Cross-implementation:** ciphertext produced by implementation A decrypted by implementation B. CI MUST fail on divergence. *This is the only test that proves the specification's central claim.*

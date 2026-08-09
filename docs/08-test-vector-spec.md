@@ -184,7 +184,7 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
 
 - `plaintext` is the post-normalization byte string and is the normative input; `plaintext_preimage` documents where it came from and lets an implementation that ships the named normalizer test it too. Normalizer identifiers (`nfc-casefold-v1`, …) are declared in `docs/09-core-architecture.md` §7; the vector suite only ever references declared identifiers.
 - Argon2id vectors carry full `idf_params`: `{"version": 19, "time_cost": …, "memory_kib": …, "parallelism": …, "output_len": 32, "salt": "…hex…"}`. Most Argon2id vectors use **reduced parameters** (small memory/time) so CI stays fast; at least one vector per file MUST use the spec-minimum production parameters (≥3 iterations / 32 MiB, spec §7.3) so the production configuration path is exercised.
-- **Blocked:** the exact Argon2id invocation (what is password vs salt vs secret, parallelism, output length) and the bit-level truncation rule are not defined by spec v0.1 — gaps G2 and G3 in §9. HMAC file structure can be authored now; expected values for both files wait on those issues.
+- **Blocked (G2 only):** the exact Argon2id invocation (what is password vs salt vs secret, parallelism, output length) is not defined by spec v0.1 — gap G2 in §9. The bit-level truncation rule is now pinned (spec §7.2, G3 resolved 2026-08-08: leading `⌈b/8⌉` bytes, trailing bits of the final byte zeroed, MSB-first), so `blind-index/hmac.json` is fully authorable including truncated expected values. Per spec §12, each file carries at least three `b mod 8 ≠ 0` vectors (e.g. b = 12, 21, 30) plus one multiple-of-8 control. Argon2id expected values wait on G2.
 
 ### 4.5 `commitment/`
 
@@ -308,7 +308,7 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 |---|---|---|
 | G1 | Key-commitment construction undefined (§4.6 mandates it; no formula) | `commitment/`, `envelope/` expected values, salamander error vector |
 | G2 | Argon2id IDF invocation incomplete: parallelism, output length, salt/secret strategy, version not specified (§7.3 gives only iterations/memory minima) | `blind-index/argon2id.json` |
-| G3 | `truncate(raw, b bits)` bit-level semantics undefined (which bits survive, final-byte masking, byte order) | both `blind-index/` files |
+| G3 | `truncate(raw, b bits)` bit-level semantics — **resolved 2026-08-08** (issue #3): spec §7.2 pins leading `⌈b/8⌉` bytes, MSB-first bit numbering, trailing bits of the final byte zeroed | `blind-index/hmac.json` unblocked; `argon2id.json` still waits on G2 |
 | G4 | `tenant_id = null` encoding in `canonical_context` unspecified (§6.2 defines omission only for `row_id`); null vs zero-length ambiguity | `context/`, any envelope vector with absent tenant |
 | G5 | Error classification/precedence undefined: the order of format → policy → key → commitment → AEAD checks, and how a context mismatch (which manifests as a wrong derived key under dual binding) maps onto `AAD_MISMATCH` vs `COMMITMENT_INVALID` | most of `errors/crypto.json` |
 | G6 | No error code for mode violations (`encrypt()` in `readonly` mode); `readonly`'s non-envelope read behavior undefined | `errors/policy.json` — the mode-violation case and the `readonly` read cases |

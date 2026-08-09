@@ -41,7 +41,7 @@ core/typescript/src/
   aead/gcm.ts
   aead/xchacha.ts    lazy-imported so @noble/ciphers stays optional
   commitment.ts      pending G1
-  blindindex.ts      pending G2/G3 for argon2id; hmac path complete
+  blindindex.ts      pending G2 for argon2id; hmac path complete (truncate pinned, spec §7.2)
   keyprovider.ts
   cache.ts
   config.ts

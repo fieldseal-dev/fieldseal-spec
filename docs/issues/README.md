@@ -22,4 +22,10 @@ These are the specification gaps found while writing the Phase 1 tech-spec suite
 | G12 | [#12](https://github.com/fieldseal-dev/fieldseal-spec/issues/12) | [`G12-unique-constraint-contradiction.md`](G12-unique-constraint-contradiction.md) | §7.10, §7.4 | adapter DDL guidance | No |
 | G13 | [#13](https://github.com/fieldseal-dev/fieldseal-spec/issues/13) | [`G13-prisma-in-rewrite-vs-reject.md`](G13-prisma-in-rewrite-vs-reject.md) | §10.2, §7.10 | Prisma conformance wording | No |
 
+## Closure log
+
+| # | Resolved | Resolution |
+|---|---|---|
+| G3 | 2026-08-08 | Adopted as proposed: spec §7.2 pins `truncate` bit-exactly (leading `⌈b/8⌉` bytes, MSB-first bit numbering, trailing bits of the final byte zeroed); §7.4 cross-references it; §12 requires `b mod 8 ≠ 0` vectors. Unblocks `blind-index/hmac.json` fully; `argon2id.json` still waits on G2. Tracker [#3](https://github.com/fieldseal-dev/fieldseal-spec/issues/3) to close on push. |
+
 When an issue closes, sweep the tech-spec suite for the corresponding `G<n>` markers (`grep -rn "G<n>" docs/07* docs/08* docs/09* docs/1[0-5]* docs/adr docs/issues`) and update every dependent section — that sweep is part of closing, per `docs/07-implementation-plan.md` §6. Namespace caveat: `docs/00-research-memo.md` uses G1–G6 for *market* gaps (and `docs/06-verification-log.md` cites them) — a bare repo-wide grep collides with that older namespace; the sweep scope above avoids it.

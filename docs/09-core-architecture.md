@@ -132,7 +132,7 @@ Timing note: commitment verification and tag comparison MUST be constant-time co
                     info=canonical_context(ctx with row_id=null), len=32)     // §7.2
 6. normalized = normalizer[declaration.normalize](plaintext)
 7. raw = IDF(index_key, normalized)          // Argon2id or HMAC-SHA-512 per declaration [G2]
-8. return truncate(raw, declaration.b)       // [G3]
+8. return truncate(raw, declaration.b)       // §7.2: leading ⌈b/8⌉ bytes, trailing bits of final byte zeroed, MSB-first
 ```
 
 ### 3.4 `is_ciphertext(bytes) → bool`

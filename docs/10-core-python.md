@@ -46,7 +46,7 @@ src/fieldseal/
   aead/gcm.py        suite 0x0001 backend
   aead/xchacha.py    suite 0x0002 backend (import guarded by the extra)
   commitment.py      pending spec gap G1 — module exists with NotImplementedError + issue link
-  blindindex.py      IDFs, truncate, normalizers (argon2 parts pending G2/G3)
+  blindindex.py      IDFs, truncate, normalizers (argon2 parts pending G2; truncate pinned, spec §7.2)
   keyprovider.py     KeyProvider protocol, StaticKeyProvider, DerivedKeyProvider, EnvelopeKeyProvider
   cache.py           DekCache
   config.py          FieldsealConfig, IndexDeclaration, construction-time validation

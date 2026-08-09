@@ -69,7 +69,7 @@ Sequencing within the ~12-week PRD window is deliberately not calendarized per-w
 
 ## 5. Spec gaps found while writing the tech-spec suite
 
-Each becomes a spec issue (label: the section it touches, per `CLAUDE.md`); **full ready-to-post drafts live in [`docs/issues/`](../docs/issues/README.md)**. "Proposed direction" is a starting point for the issue, **not** a decision — several need a cryptographer's sign-off (noted). Consolidates docs/08 §9 (G1–G8), G9–G11 found in the core/adapter specs, and G12–G13 found in the suite's consistency review.
+Each becomes a spec issue (label: the section it touches, per `CLAUDE.md`); **full ready-to-post drafts live in [`docs/issues/`](../docs/issues/README.md)**. "Proposed direction" is a starting point for the issue, **not** a decision — several need a cryptographer's sign-off (noted). Consolidates docs/08 §9 (G1–G8), G9–G11 found in the core/adapter specs, and G12–G13 found in the suite's consistency review. The table is the as-found record; closure status lives in the §7 decision log and `docs/issues/README.md`.
 
 | # | Section | Gap | Proposed direction | Needs crypto review |
 |---|---|---|---|---|
@@ -105,6 +105,7 @@ Append-only, verification-log style (`docs/06`): every M2 divergence, every G-is
 
 - **2026-08-08** — Suite-wide consistency review (two independent read-through passes) applied 26 corrections across docs/08–15; the substantive ones: decrypt-side `suite_id` sourcing pinned to the parsed header (docs/09 §3.2 step 4 — a write-suite-sourced context breaks mixed-suite reads and rotation); example blind-index declarations corrected to the §7.4 band (16 → 15 bits at P = 100,000); adapter-owned core-client construction (the index registry cannot reach construction-time validation any other way); the determinism-injection arming gate (`FIELDSEAL_TEST_MODE`); and two newly found spec-internal contradictions filed as G12 (§7.10 unique-constraint row vs §7.4 collision mandate) and G13 (§10.2 Prisma `in:` reject vs §7.10 membership support).
 - **2026-08-08** — `docs/02` §7.1 cross-reference corrected: the prefix-index mechanism is §7.9, not §7.7 (pure pointer typo; prose-clarification bar per `CONTRIBUTING.md`).
+- **2026-08-08** — **G3 resolved (issue #3)**, by engineering judgment per its no-crypto-review flag: `truncate(raw, b)` pinned normatively in spec §7.2 — keep the leading `⌈b/8⌉` bytes, zero the trailing `8·⌈b/8⌉−b` bits of the final byte, bits numbered MSB-first (byte-prefix property; matches §3.1/§6.2 network byte order). §7.4 cross-references the definition; §12 adds the `b mod 8 ≠ 0` vector obligation (≥3 non-aligned lengths + one aligned control per blind-index file). Marker sweep completed: docs/08 §4.4/§9, docs/09 §3.3 pipeline, docs/10/11 module maps, issue draft + README. Consequence: `blind-index/hmac.json` is now fully authorable; Argon2id expected values still wait on G2.
 - **2026-08-08** — ADR-0001's expressibility-mapping task delivered as first-pass evidence (`docs/adr/0001-appendix-a-expressibility-mapping.md`); headline findings: §6.3 dual-layer binding not expressible in the AWS format; per-cell embedding costs 1.4×–2.4× the fresh envelope. ADR remains OPEN pending reviewer input and the appendix's own §8 verification items.
 
 ## 8. What Phase 1 deliberately does not build

@@ -30,3 +30,6 @@ obj/
 
 # AI
 .claude/settings.local.json
+
+# Internal scratch docs (not persisted to repo)
+internal/
