@@ -1,0 +1,12 @@
+{{ define "main" }}
+<div class="wrap prose">
+  <h1>Page not found</h1>
+  <p>
+    That URL does not exist on this site. If you followed a link from a paper or
+    another project, the document may have moved -- released specification
+    versions live under <code>/docs/</code> and are not renamed after release, so
+    a broken link is worth reporting.
+  </p>
+  <p><a href="{{ "/" | relURL }}">Back to the start</a></p>
+</div>
+{{ end }}

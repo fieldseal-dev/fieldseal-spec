@@ -1,0 +1,43 @@
+baseURL = "https://fieldseal.dev/"
+locale = "en-us"
+title = "Fieldseal"
+enableRobotsTXT = true
+enableGitInfo = true
+
+# No taxonomies on a spec site.
+disableKinds = ["taxonomy", "term", "rss"]
+
+[params]
+  description = "A portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer."
+  # Shown in the site-wide banner. Delete the line to remove the banner.
+  status = "Pre-alpha design work. The specification is a working draft, has not been independently reviewed, and is not ready for production use."
+  repo = "https://github.com/fieldseal-dev/fieldseal-spec"
+  securityEmail = "security@fieldseal.dev"
+
+[markup]
+  [markup.goldmark.renderer]
+    # Required: the docs contain inline HTML (details/summary, tables).
+    unsafe = true
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 3
+    ordered = false
+  [markup.highlight]
+    # Class-based so light/dark can both be styled from static/css/chroma.css.
+    noClasses = false
+    lineNos = false
+    tabWidth = 2
+
+[menus]
+  [[menus.main]]
+    name = "Documents"
+    pageRef = "/docs"
+    weight = 10
+  [[menus.main]]
+    name = "Specification"
+    pageRef = "/docs/spec-v0.1"
+    weight = 20
+  [[menus.main]]
+    name = "GitHub"
+    url = "https://github.com/fieldseal-dev/fieldseal-spec"
+    weight = 30

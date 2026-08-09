@@ -1,0 +1,36 @@
+{{ define "main" }}
+<div class="wrap doc-layout">
+  <aside class="sidebar" aria-label="Documents">
+    <nav>
+      <p class="sidebar-title">Documents</p>
+      <ul>
+        {{ range (where site.RegularPages "Section" "docs").ByWeight }}
+          <li><a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+        {{ end }}
+      </ul>
+    </nav>
+    {{ with .TableOfContents }}
+      <nav class="toc" aria-label="On this page">
+        <p class="sidebar-title">On this page</p>
+        {{ . }}
+      </nav>
+    {{ end }}
+  </aside>
+
+  <article class="prose">
+    <h1>{{ .Title }}</h1>
+    {{ .Content }}
+    <hr>
+    <p class="muted source-link">
+      {{ with .Params.sourceFile }}
+        {{ with site.Params.repo }}
+          <a href="{{ . }}/blob/main/{{ $.Params.sourceFile }}">View source: <code>{{ $.Params.sourceFile }}</code></a>
+        {{ else }}
+          Source: <code>{{ . }}</code>
+        {{ end }}
+      {{ end }}
+      {{ with .Lastmod }} &middot; last changed {{ .Format "2 January 2006" }}{{ end }}
+    </p>
+  </article>
+</div>
+{{ end }}

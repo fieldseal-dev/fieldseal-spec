@@ -1,0 +1,24 @@
+# Line endings
+#
+# Repository content is LF, and working trees stay LF on every platform.
+# `eol=lf` overrides a contributor's `core.autocrlf=true` (the Windows
+# default), which would otherwise check files out as CRLF and strip them
+# back to LF on commit.
+#
+# This matters beyond tidiness: the cross-implementation test vectors in
+# vectors/ are the project's interoperability contract, and several are
+# hashed or compared byte-for-byte. A CRLF round-trip on a vector file
+# changes its bytes and would fail a conformance run for reasons that have
+# nothing to do with the implementation under test.
+* text=auto eol=lf
+
+# Files that must never be transformed. Phase 1 adds compiled artifacts
+# and docs may gain diagrams; declaring these up front avoids corruption
+# if `text=auto` ever guesses wrong.
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.pdf  binary
+*.zip  binary
+*.jar  binary
+*.der  binary

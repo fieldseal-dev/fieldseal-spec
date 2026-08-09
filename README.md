@@ -4,7 +4,21 @@
 
 > **Status: pre-alpha design work.** The specification is a working draft. It has not been independently reviewed. Nothing here is ready for production use.
 >
-> **Naming (checked 2026-08-08).** `fieldseal` is free on npm and PyPI; the only trademark adjacency found is "Field Seal" farm toolboxes (unrelated class, no software presence). The bare GitHub org is squatted-but-empty — publish under `fieldseal-spec` (or a personal account) until an OpenSSF transfer re-homes it. Still to do before public release: claim the npm `@fieldseal` scope and PyPI name, check NuGet / Maven Central / crates.io, register a domain (`fieldseal.dev` or `.org`, also needed for a Maven groupId), and run USPTO TESS. Earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
+> **Naming and namespaces — status checked 2026-08-08.** The earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
+>
+> | Namespace | Status |
+> |---|---|
+> | GitHub org `fieldseal-dev` | **Ours.** Canonical home; holds this repository |
+> | npm `fieldseal` | **Claimed** — 0.0.0 placeholder |
+> | npm `@fieldseal/*` scope | **Claimed** — org created, `@fieldseal/core` 0.0.0 placeholder published |
+> | PyPI `fieldseal` | **Claimed** — 0.0.0 placeholder |
+> | PyPI `field-seal` | **Not yet claimed** — distribution built, upload pending. PEP 503 does *not* fold this into `fieldseal`; they are separate names |
+> | crates.io · NuGet · Maven Central | **Unclaimed and free.** Maven needs the domain first, for the `dev.fieldseal` groupId |
+> | `fieldseal.dev` · `.org` · `.io` | **Available, not yet registered** |
+> | `fieldseal.com` | **Held by someone else.** `.dev` is the canonical home; nothing here implies `.com` |
+> | GitHub org `fieldseal` (bare) | **Unobtainable.** Squatted but empty, and GitHub does not reclaim names for inactivity — a registered trademark is the only route, which is not worth pursuing for the org name alone |
+>
+> Trademark clearance is **not yet run**. The only adjacency found in casual search is "Field Seal" farm toolboxes — a different class with no software presence — which is not a substitute for a search of Class 9 and Class 42 in [TMSearch](https://tmsearch.uspto.gov) (the USPTO retired TESS; earlier drafts of this file named it). Results will be recorded in `NAMING.md` with the search date and classes.
 
 ---
 
@@ -47,6 +61,16 @@ Three artifacts:
 | [`docs/04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) | Per-ORM interception points and hard limits, for whoever implements each adapter. |
 | [`docs/05-dissemination.md`](docs/05-dissemination.md) | Publication and standardization pathways. |
 | [`docs/06-verification-log.md`](docs/06-verification-log.md) | Independent re-verification of the 20 highest-risk factual claims, corrections applied, and what remains unverified. |
+| [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) | Phase 1 engineering plan: workstreams, milestones, decision gates, and the spec gaps that block code. |
+| [`docs/08-test-vector-spec.md`](docs/08-test-vector-spec.md) | Test-vector suite engineering spec: file formats, schemas, harness contract, cross-implementation protocol. |
+| [`docs/09-core-architecture.md`](docs/09-core-architecture.md) | Language-agnostic core library architecture every implementation follows. |
+| [`docs/10-core-python.md`](docs/10-core-python.md) / [`docs/11-core-typescript.md`](docs/11-core-typescript.md) | Per-language bindings for the Phase 1 cores. |
+| [`docs/12-adapter-django.md`](docs/12-adapter-django.md) / [`docs/13-adapter-prisma.md`](docs/13-adapter-prisma.md) | Phase 1 adapter designs, including the normative throw lists and coverage matrices. |
+| [`docs/14-conformance-ci.md`](docs/14-conformance-ci.md) | How conformance is claimed and proven; the N×N cross-implementation CI job. |
+| [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
+| [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
+| [`docs/issues/`](docs/issues/) | Ready-to-post issue drafts for the thirteen spec gaps (G1–G13) found during tech-spec authoring and review. |
+| [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: reading path, the eight gating questions, ground rules. |
 
 **Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct.**
 

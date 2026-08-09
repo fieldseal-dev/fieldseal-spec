@@ -1,0 +1,18 @@
+{{ define "main" }}
+<div class="wrap">
+  <article class="prose">
+    <h1>{{ .Title }}</h1>
+    {{ .Content }}
+    <ul class="cards">
+      {{ range .Pages.ByWeight }}
+        <li>
+          <a href="{{ .RelPermalink }}">
+            <strong>{{ .Title }}</strong>
+            <span class="muted">{{ .Summary | plainify | truncate 160 }}</span>
+          </a>
+        </li>
+      {{ end }}
+    </ul>
+  </article>
+</div>
+{{ end }}

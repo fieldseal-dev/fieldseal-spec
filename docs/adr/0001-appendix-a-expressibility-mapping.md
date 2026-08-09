@@ -1,0 +1,104 @@
+# ADR-0001 Appendix A — Expressibility mapping: spec §3–§6 onto the AWS structured-encryption format
+
+**Date:** 2026-08-08 · **Status:** evidence for ADR-0001 (the "open analysis task" named in the ADR's option A), re-verified against pinned raw text (§8). This appendix answers decision criterion 1 factually; it does **not** close the ADR — criterion 2's reviewer opinion is still required.
+
+**Sources.** The AWS Database Encryption SDK specification, repository `aws/aws-database-encryption-sdk-dynamodb`, directory `specification/structured-encryption/` — all eight files (`header.md`, `footer.md`, `encrypt-structure.md`, `decrypt-structure.md`, `encrypt-path-structure.md`, `decrypt-path-structure.md`, `resolve-auth-actions.md`, `structures.md`), **pinned at commit `a82094c6ad32f64db21d6231e74231d55e61016c` (main as of 2026-08-08), raw text re-read 2026-08-08** (raw.githubusercontent.com, unsummarized). Quoted phrases below are verbatim from that pinned text. §8 records what the re-read confirmed, what it corrected, and the one residual gap (the MaterialProviders submodule was not retrieved).
+
+---
+
+## 1. The AWS format in one page
+
+Scope: the format is **record-scoped**. "The header is a special Terminal Data that exists on encrypted Structured Data in order to store metadata on its encryption" (`header.md`); the footer likewise "exists on encrypted Structured Data in order to store signatures over signed fields in that structured data" (`footer.md`). Each is one named field per record — "The Header Field name MUST be `aws_dbe_head`", "The Footer Field name MUST be `aws_dbe_foot`", each with TypeID `0xFFFF` (`encrypt-path-structure.md`). Nothing header-like exists per individual field.
+
+**Header** = partial header ‖ 32-byte header commitment. Partial header, in order: Format Version (1 B — "The Version MUST be `0x01` or `0x02`"), Format Flavor (1 B — "the second byte of the Algorithm Suite ID; with the first byte assumed to be 0x67"), Message ID (32 B — "a random 256-bit value", fresh from a CSPRNG "for each record encrypted"), Encrypt Legend (2-byte length + one byte per *signed* field — `0x65` encrypted-and-signed / `0x73` signed-only / `0x63` signed-and-in-context; "no entry if the attribute is not signed"), Encryption Context (2-byte pair count; key–value pairs each with 2-byte length prefixes, "sorted, by key, in ascending order according to the UTF-8 encoded binary value"), Encrypted Data Keys (1-byte count, which "MUST be greater than 0"; each EDK = provider ID, provider info, and wrapped key material, each with a 2-byte big-endian length prefix). The Header Commitment is "the first 32 bytes of an HmacSha384, with the serialized partial header as the message, and the Commit Key as the key"; the Commit Key HKDF uses the record's plaintext data key, "no salt", and info = `"AWS_DBE_COMMIT_KEY"` ‖ Message ID.
+
+**Per-field encryption.** `FieldRootKey = HKDF(ikm = plaintext data key, no salt, info = "AWS_DBE_DERIVE_KEY" ‖ MessageID)` — the raw text: the HKDF uses "a provided plaintext data key, no salt", and info = `"AWS_DBE_DERIVE_KEY"` (18 B) ‖ Message ID (32 B). Each field's key material is drawn deterministically from that root: `FieldKeyNonce(n)` = ASCII `"AwsDbeField"` ‖ `0x2C` ("44, the length of the eventual FieldKey") ‖ u32(n), 16 B total; the FieldKey "MUST be the first 44 bytes of the aes256ctr_stream of the `FieldRootKey` and the `FieldKeyNonce` of three times the given offset" — i.e., keystream at `FieldKeyNonce(3·offset)` — with "The `Cipherkey` MUST be the first 32 bytes of the `FieldKey`" and "The `Nonce` MUST be the remaining 12 bytes of the `FieldKey`". `offset` is the field's zero-based position among the ENCRYPT_AND_SIGN fields' canonical paths sorted ascending. Per-field AAD: "The AAD is the canonical path for this Terminal Data" (canonical path = UTF-8 table name ‖ depth ‖ path-segment encodings, numbers as 8-byte big-endian). Encrypted terminal layout: Terminal Type Id `0xFFFF`, then value = original 2-byte TypeID ‖ AES-GCM output (ciphertext ‖ tag). **No per-field nonce, key reference, version, algorithm identifier, or commitment is stored in the field bytes.**
+
+**Footer** (a special terminal on the record): Recipient Tags ("48 bytes per Encrypted Data Key in the header") and a signature of "0 or 96" bytes — ECDSA-P384 per the suite name, present iff the flavor is `0x01`; both computed over "the SHA384 of the canonical form of the record". The canonical record is: the full serialized header, then an 8-byte-length-prefixed serialization of "the Encryption Context from the Encryption Materials" (the *materials* context — not merely the header-stored subset; this matters in §6), then every signed field in lexicographic canonical-path order with 8-byte lengths, `ENCRYPTED`/`PLAINTEXT` literals, and TypeIDs.
+
+## 2. The structural finding first
+
+**F1 — record-scoped vs cell-scoped.** Fieldseal's unit of protection is a single database cell whose bytes are fully self-describing (§3.1) and self-detectable (§3.4). In the AWS format, everything that makes ciphertext self-describing — version, suite, key reference, message ID, commitment — lives in the *record* header attribute, and field bytes alone are unrecognizable and undecryptable. Profiling the AWS format for Fieldseal's cell-level model therefore forces the **one-Terminal-record embedding**: every cell carries a complete header *and* footer. All verdicts and arithmetic below assume that embedding, because nothing weaker satisfies §3.1/§3.4.
+
+## 3. Clause-level mapping
+
+Verdicts: **E** = expressible via a profile's fixed choices · **Ed** = expressible with profile discipline (we control the inputs the AWS spec leaves to the caller) · **D** = requires deviating from the AWS format or rewording Fieldseal normative text · **X** = not expressible without restructuring.
+
+| Spec clause | Requirement | AWS construct | Verdict | Notes |
+|---|---|---|---|---|
+| §3.1 `fmt_ver` | 1-byte envelope version | Format Version (1 B) | **E** | Semantics differ (AWS `0x02` signals context-included fields) but a profile pins one value |
+| §3.1 `suite_id` | 2-byte frozen-suite ID | Format Flavor (1 B, second byte of suite ID) | **Ed** | Profile maps each Fieldseal suite to one (Version, Flavor) pair; the ID space is AWS's, not ours — see criterion 4 |
+| §3.1 `key_id` | 16-byte **opaque identifier**; key material lives with the provider | Encrypted Data Keys — length-prefixed provider ID/info **plus wrapped key material inline** | **D** | Semantic mismatch: EDKs carry envelope-encrypted keys; Fieldseal §5 deliberately stores only an identifier (DEKs cached per tenant, wrapped blobs in a key table). A profile must either carry a wrapped DEK per cell (bloat + contradicts §5.2 granularity) or define a provider whose EDK "ciphertext" is empty and whose provider-info is the key_id — a reinterpretation, not a subset |
+| §3.1 `msg_seed` | 32-byte per-write CSPRNG seed feeding key derivation | Message ID (32 B) + `AWS_DBE_DERIVE_KEY` HKDF | **E** | Direct precedent — §3.1 already cites it. Derivation formula differs (next rows) |
+| §3.1 `nonce` | Stored per-envelope, fresh CSPRNG | Not stored; deterministic from FieldRootKey keystream at offset-derived FieldKeyNonce | **D** | See §4.4 row |
+| §3.1 `tag` | ≥16 B AEAD tag | AES-GCM tag in encrypted terminal | **E** | |
+| §3.1 `commitment` | 32 B key commitment | Header Commitment (32 B, HMAC-SHA384 truncation) | **E** | Adoptable construction — feeds gap G1 regardless of this ADR (finding F7) |
+| §3.2 header auth | Key-selection fields "MUST be included in the AEAD's additional authenticated data" | Per-field AAD is **canonical path only**; header fields are protected by the header commitment and footer tags/signature instead | **D** | The protection *exists* but not where §3.2 mandates it. Profiling requires rewording §3.2 to an equivalent-protection form — a normative weakening a reviewer must bless (finding F3) |
+| §3.3 storage | Binary column MUST; base64 MAY with documented overhead | Bytes are bytes | **E** | Overhead table changes — §6 below |
+| §3.4 `is_ciphertext` | Cell bytes alone recognizable; no trial decryption | Field bytes carry only `0xFFFF` + TypeID | **X** without F1's embedding; **E** with it | The one-Terminal-record embedding is load-bearing for §3.4 |
+| §4.1 one frozen suite | No per-algorithm fields, no caller-settable alg | Algorithm suite fixed per record; no negotiation | **E** | Aligned philosophy |
+| §4.2 registry | Fieldseal-defined suite table | AWS-defined suite/flavor space | **D** | Registry sovereignty: a profile pins AWS suite IDs at a pinned spec version; AWS "evolving their format unilaterally" is ADR criterion 4, and "tracks AWS main is not a spec" |
+| §4.3 allow-list | Decrypt-side configured allow-list | Implementation policy, format-neutral | **E** | |
+| §4.4 nonce policy | "the nonce MUST be freshly generated from a CSPRNG… MUST NOT be derived" | Per-field nonces are **deterministic** (offset-derived from the keystream) | **D** | Letter violated, spirit preserved: FieldRootKey is fresh per record write (fresh Message ID), so key+nonce pairs never repeat — the same *structural* argument §4.4 itself makes for per-write keys. Profiling requires §4.4 to be reworded around key+nonce-pair freshness (finding F4); reviewer sign-off required |
+| §4.5 tag ≥128 bits | | AES-GCM full tag | **E** | |
+| §4.6 commitment mandatory | | Header Commitment always present | **E** | |
+| §5.1–§5.2 hierarchy, tenant DEK boundary | KEK → tenant DEK (+ sibling index key) | CMM/keyring model; hierarchical keyring approximates tenant DEK + cache | **Ed** | Conceptual fit; index-key siblings are out of the structured-encryption format entirely (searchable encryption is a separate AWS component with HMAC-SHA384 beacons only — no memory-hard option, so §7 stays Fieldseal-defined under every ADR outcome) |
+| §5.3 record-key derivation | `HKDF(ikm=dek, salt=key_id‖msg_seed, info=canonical_context)` | `HKDF(ikm=data key, **no salt**, info="AWS_DBE_DERIVE_KEY"‖MessageID)` — context **not** in the KDF | **X** as a profile | Adopting AWS's derivation removes context from the KDF; keeping Fieldseal's is not the AWS format. This is one half of the §6.3 failure (F2) |
+| §5.4 no key-update chaining | | Fresh derivation per record; no chaining | **E** | |
+| §6.1 UUID surrogates | Bind to immutable surrogates, never SQL names | Canonical path is built from table/attribute **names** | **Ed** | We control the inputs in our adapters — feed UUIDs where AWS feeds names. Discipline, not format |
+| §6.2 canonical encoding | u64be length-prefixed field encoding | AWS's own canonicalization (2-byte lengths in the header, 8-byte big-endian numbers in canonical paths/fields, UTF-8-sorted context pairs) | **D** | Profiling replaces §6.2 wholesale with AWS canonicalization — also length-delimited, so the injectivity goal survives, but G4's null-encoding question must then be re-answered inside *their* encoding |
+| §6.3 dual-layer binding | Context MUST be KDF info **and** AAD | Context is stored/signed (header + footer) but enters neither the field KDF nor (beyond canonical path) the field AAD | **X** | The clearest single expressibility failure (F2). A context mismatch in the AWS format is caught at header/footer verification, not as a wrong derived key — a different, weaker-at-the-cell failure mode than §6.3 mandates |
+| §6.4 `row_id` optional | | An encryption-context pair | **E** | |
+| §6.5 AAD contains nothing secret | | Identical rule — AWS's own CloudTrail warning is §6.5's citation | **E** | |
+| §6.6 record-level MAC (RECOMMENDED) | Detect whole-record tampering incl. field deletion | The footer **is** this, verbatim — §6.6 already cites it | **E** | The strongest pro-profile argument in the mapping |
+
+## 4. Findings
+
+- **F1** — Record-vs-cell scope forces a full header+footer per cell (one-Terminal-record embedding); without it §3.1/§3.4 are unsatisfiable.
+- **F2** — §6.3 dual-layer context binding is **not expressible**: the AWS field KDF takes no context and the field AAD is canonical path only. This is a normative MUST that profiling cannot satisfy without deviating from the AWS derivation.
+- **F3** — §3.2's "key-selection fields in the AEAD AAD" is satisfied only by an equivalent-protection argument (commitment + footer), i.e., a rewording of Fieldseal normative text.
+- **F4** — §4.4's fresh-CSPRNG-nonce letter is violated by AWS's deterministic offset nonces; the safety argument transposes to key+nonce-pair freshness, but that too is a rewording reviewers must bless.
+- **F5** — `key_id`-vs-EDK semantic mismatch: identifier-only vs wrapped-material-inline; a profile must reinterpret the EDK fields.
+- **F6** — The embedding's overhead exceeds the fresh envelope's at every configuration (§6 below).
+- **F7** — Independently adoptable constructions, whatever the decision: the header-commitment construction (→ issue G1), the Message-ID per-write derivation (already cited in §3.1), and the footer as §6.6's model. These transfer under option C without any format adoption.
+
+## 5. What §7 (blind indexes) adds — out of the §3–§6 task's scope, noted for completeness
+
+AWS searchable encryption (beacons) is HMAC-SHA384-truncation only; §7.3's Argon2id requirement for enumerable domains has no AWS counterpart. Every ADR outcome leaves §7 Fieldseal-defined; the beacon-length band is already §7.4's cited source.
+
+## 6. Overhead arithmetic (decision criterion 3) — verified against the pinned raw text (§8)
+
+One-Terminal-record embedding, unsigned flavor (no 96 B signature), single EDK modeled minimally as provider ID `"fs"` (2 B), provider info = 16-byte key_id, empty wrapped-key field:
+
+| Component | Bytes | Composition |
+|---|---|---|
+| Partial header, empty encryption context | 64 | 1 ver + 1 flavor + 32 MessageID + 3 legend (2-B len + `0x65`) + 2 context count + 25 EDK section (1 count + 24 per EDK: 2+2 provider ID, 2+16 provider info, 2+0 empty wrapped key) |
+| Header commitment | 32 | |
+| Footer | 48 | one recipient tag; no signature |
+| Encrypted terminal overhead | 20 | 2 (`0xFFFF`) + 2 (orig TypeID) + 16 (tag) |
+| **Total fixed, context out-of-band** | **164** | vs. Fieldseal's 111 (§3.3) |
+| Encryption-context pairs carrying §6 context in-format (tenant ≈21, table_uuid hex ≈38, column_uuid hex ≈38, purpose ≈12) | ≈ +109 | **≈ 273 total** |
+
+At the §3.3 benchmark (9-byte SSN): **173–282 bytes vs. 120** — roughly **1.4×–2.4×** the fresh envelope. Two modeling caveats, both of which push the AWS-side number up, not down: the 16-byte GCM tag length comes from the algorithm-suite definitions in the MaterialProviders submodule (not retrieved — §8), and the model packs header ‖ footer ‖ encrypted terminal into the cell bytes directly, dropping AWS's own `aws_dbe_head`/`aws_dbe_foot` field names and those two terminals' `0xFFFF` TypeIDs as database-serialization overhead.
+
+Note the structural asymmetry behind the range: Fieldseal *reconstructs* context at read time (stores none of it); the AWS format ordinarily *stores* the encryption context in the header — carrying §6's binding in-format that way costs the upper end of the range. The first pass claimed the lower end "leaves tenant/purpose binding with no in-format home at all"; the raw text corrects this. The footer's canonical record covers "the Encryption Context from the Encryption Materials" — the full materials context, not only the header-stored subset — the header MUST omit pairs on the required-encryption-context-keys list, and the decryptor MUST re-supply "any key-values pairs that were used during the original encryption … but not stored in the … header" (`decrypt-path-structure.md`). Binding without storage is therefore available at the lower-end byte cost, in exactly Fieldseal's reconstruct-at-read shape — but it is footer-level *record verification*, not the cell-level KDF/AAD binding §6.3 mandates, so F2 and the §6.3 verdict are unchanged.
+
+## 7. Reading against the ADR's decision criteria
+
+1. **Expressibility without weakening — fails for a strict profile.** F2 is a hard X; F3/F4 each require rewording a Fieldseal MUST; F5 requires reinterpreting AWS fields. A "profile" carrying that many deviations is option C wearing option A's name.
+2. **Novelty-surface reduction — partially available without profiling.** F7's constructions can be adopted piecemeal with case-by-case citations, which is exactly option C's definition.
+3. **Overhead honesty — worse under A**, 1.4×–2.4× at the benchmark (§6).
+4. **Unilateral-evolution risk — real**: Version/Flavor/suite space is AWS's; a profile needs a pinned-commit statement and a divergence policy.
+
+**Net:** this evidence, now verified against the pinned raw text (§8), supports option C (fresh envelope, AWS-aligned constructions) over option A, and sharpens option C into a concrete work list: adopt the commitment construction (G1), keep the Message-ID precedent citation (§3.1), and model §6.6 on the footer. The ADR remains OPEN: criterion 2's other half — a cryptographic reviewer's opinion on whether the *fresh envelope itself* carries acceptable novelty risk — is evidence this appendix cannot supply.
+
+## 8. Verification status
+
+The first pass's four open items were closed on 2026-08-08 against commit `a82094c6ad32f64db21d6231e74231d55e61016c`: all eight `specification/structured-encryption/` files were re-read as raw text (see Sources).
+
+1. **Quotes and byte counts — verified, with corrections.** Every §6 figure survived re-verification against the serialization tables in `header.md`, `footer.md`, and `encrypt-path-structure.md`; the 164 / ≈273 totals and the 1.4×–2.4× ratio stand unchanged. Corrections made in place: (a) two §1 "quotes" from the summarized retrieval (the header/footer per-record sentences and the header-commitment description) were paraphrases presented as quotations — replaced with verbatim raw text; (b) the Encrypt Legend has one byte per *signed* field, not per field ("no entry if the attribute is not signed"); (c) the FieldKeyNonce description was tightened to the raw formulation — the nonce structure takes a plain u32, and the keystream is taken at `FieldKeyNonce(3·offset)`; (d) the first pass said the footer "signs the stored copy" of the encryption context — it signs the *materials* context (see item 3 and the corrected §6 note).
+2. **Zero-length EDK ciphertext — the text does not constrain it.** `header.md` serializes each EDK's wrapped-key field as a 2-byte big-endian length followed by that many bytes, and constrains only the EDK *count* ("This value MUST be greater than 0"). No clause sets a minimum ciphertext length, so a zero-length field is representable and nothing in the eight files forbids it. Whether any CMM/keyring would emit or accept one is a MaterialProviders-submodule question (not retrieved). F5's reading stands: legal at the serialization layer, unaddressed at the materials layer — still a reinterpretation, not a documented pattern.
+3. **Version `0x02` — does not change the fixed arithmetic; it relocates context bytes.** `0x02` is mandatory exactly when some field is SIGN_AND_INCLUDE_IN_ENCRYPTION_CONTEXT (`header.md`); such fields remain plaintext in the record, their values enter the encryption context under `aws-crypto-attr.`-prefixed keys plus an `aws-crypto-legend` entry, and the header MUST omit pairs on the required-encryption-context-keys list (`encrypt-path-structure.md`). Context bytes move out of the header into plaintext fields (or decrypt-time reproduction) rather than growing it; §6's ≈+109 row models `0x01`-style stored pairs and is unaffected.
+4. **`decrypt-path-structure.md` / `resolve-auth-actions.md` — no contradictions.** Decrypt mirrors encryption exactly: "The Cipherkey and Nonce must be calculated as for encryption", "The AAD is the canonical path for this Terminal Data", and the encrypted terminal deserializes as 2-byte Terminal Type Id ‖ Encrypted Terminal Value, with the output TypeID "equal to the first two bytes of the input Terminal Data's value". `resolve-auth-actions.md` is metadata-only ("It makes no network calls and does no encryption nor decryption"; "The data members are returned unchanged and unexamined"). The one first-pass claim these files corrected is the §6 "no in-format home" sentence, fixed there.
+
+**Still open, flagged honestly:** the MaterialProviders submodule (`algorithm-suites.md`, keyring/CMM structures, the Required Encryption Context CMM) was not retrieved. The 16-byte GCM tag length, the DBE suites' HKDF-SHA-512 parameters, and EDK-content rules are taken from the suite enum names (e.g. `ALG_AES_256_GCM_HKDF_SHA512_COMMIT_KEY_SYMSIG_HMAC_SHA384`) and standard AES-GCM behavior, not from pinned submodule text. No §3–§7 verdict depends on those details.

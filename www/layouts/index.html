@@ -1,0 +1,28 @@
+{{ define "main" }}
+<div class="wrap">
+  <section class="hero">
+    <h1>{{ site.Title }}</h1>
+    <p class="lede">{{ site.Params.description }}</p>
+    <p class="cta">
+      <a class="button" href="{{ "docs/spec-v0.1/" | relURL }}">Read the specification</a>
+      <a class="button button-quiet" href="{{ "docs/" | relURL }}">All documents</a>
+    </p>
+  </section>
+  <div class="prose">
+    {{ .Content }}
+  </div>
+  <section class="doc-cards">
+    <h2>Documents</h2>
+    <ul class="cards">
+      {{ range (where site.RegularPages "Section" "docs").ByWeight }}
+        <li>
+          <a href="{{ .RelPermalink }}">
+            <strong>{{ .Title }}</strong>
+            <span class="muted">{{ .Summary | plainify | truncate 140 }}</span>
+          </a>
+        </li>
+      {{ end }}
+    </ul>
+  </section>
+</div>
+{{ end }}

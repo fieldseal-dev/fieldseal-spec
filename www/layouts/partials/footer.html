@@ -1,0 +1,14 @@
+<footer class="site-footer">
+  <div class="wrap">
+    <p>
+      {{ site.Title }} -- a working draft, not a finished standard.
+      {{ with site.Params.securityEmail }}
+        Security contact: <a href="mailto:{{ . }}">{{ . }}</a>.
+      {{ end }}
+    </p>
+    <p class="muted">
+      Specification text and documents are drafts and may change without notice.
+      {{ with site.Params.repo }}<a href="{{ . }}">Source on GitHub</a>.{{ end }}
+    </p>
+  </div>
+</footer>

@@ -1,0 +1,105 @@
+# Python Core Technical Specification
+
+**Date:** 2026-08-08 · **Status:** Draft 1 · **Purpose:** the Python binding of `docs/09-core-architecture.md`. First implementation built in Phase 1; it also hosts the vector generator (`docs/08-test-vector-spec.md` §7), which is why it comes first.
+
+**Library-fact caveat:** dependency capabilities below were assessed from documentation knowledge as of early 2026 and are marked **[VERIFY]** where they must be re-confirmed against the versions current at implementation time, per the project's citation-or-flag rule.
+
+---
+
+## 1. Package identity and toolchain
+
+| Item | Decision | Notes |
+|---|---|---|
+| Distribution name | `fieldseal` | PyPI name free per PRD naming note (checked 2026-08-08); claim before first push |
+| Import package | `fieldseal` | src layout: `core/python/src/fieldseal/` |
+| Python versions | ≥ 3.10 | Chosen for `match` statements and modern typing without excluding current LTS distros. **[VERIFY]** floor against pyca/cryptography's supported floor at implementation time; raise ours to theirs if higher |
+| Build backend | `hatchling` via `pyproject.toml` | Pure-Python wheel; no compiled code of our own, ever — primitives come from dependencies |
+| Type checking | mypy `--strict`; `py.typed` marker shipped | The API is small; strictness is cheap here |
+| Lint/format | ruff (lint + format) | One tool, deterministic in CI |
+| Tests | pytest + hypothesis | Hypothesis for codec round-trip and `is_ciphertext` property tests (docs/09 §4) |
+
+## 2. Dependencies
+
+| Purpose | Dependency | Status |
+|---|---|---|
+| AES-256-GCM, HKDF-SHA-512, HMAC, constant-time compare | `cryptography` (pyca) | Core required dependency. `AESGCM` accepts AAD and 12-byte nonces; `HKDF` with `hashes.SHA512()`; `constant_time.bytes_eq`. **[VERIFY]** exact minimum version at implementation |
+| Argon2id raw output | `argon2-cffi` | `argon2.low_level.hash_secret_raw(secret=…, salt=…, time_cost=…, memory_cost=…, parallelism=…, hash_len=32, type=Type.ID)` provides raw output with explicit salt — exactly the IDF shape §7.2 needs. **[VERIFY]** parameter names/behavior; blocked anyway on spec gap G2 for the invocation layout |
+| XChaCha20-Poly1305 (suite 0x0002) | `PyNaCl` (libsodium binding), optional extra `fieldseal[xchacha]` | pyca `cryptography` ships `ChaCha20Poly1305` but **not** XChaCha20-Poly1305 **[VERIFY — if pyca has added it, drop PyNaCl]**. PyNaCl's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto-normative libsodium construction (spec gap G7) |
+| KMS wrappers | `fieldseal[aws]` → `boto3`, `fieldseal[gcp]`, `fieldseal[azure]` optional extras | Never in the required set (docs/09 §11); each implements the `Wrapper` interface only |
+| CSPRNG | stdlib `secrets.token_bytes` | Kernel-backed, fork-safe; no dependency |
+
+Rule: the **required** dependency set is `cryptography` alone. Everything else is an extra. This is what keeps the core auditable and keeps FIPS conversations tractable (PRD CL-9: FIPS validation is a property of the build — a deployment swapping in a FIPS-validated OpenSSL underneath pyca is the intended path; document, don't promise).
+
+## 3. Module layout
+
+Mirrors docs/09 §1 exactly:
+
+```
+src/fieldseal/
+  __init__.py        exports: Fieldseal, FieldContext, errors, providers — and nothing from testing
+  api.py             Fieldseal client class
+  envelope.py        EnvelopeHeader, parse, serialize, is_ciphertext
+  registry.py        SUITES table (frozen dataclasses), allow-list checks
+  context.py         FieldContext (frozen dataclass), canonical_context(), aad()
+  kdf.py             record_key(), index_key()
+  aead/__init__.py   AeadBackend protocol
+  aead/gcm.py        suite 0x0001 backend
+  aead/xchacha.py    suite 0x0002 backend (import guarded by the extra)
+  commitment.py      pending spec gap G1 — module exists with NotImplementedError + issue link
+  blindindex.py      IDFs, truncate, normalizers (argon2 parts pending G2; truncate pinned, spec §7.2)
+  keyprovider.py     KeyProvider protocol, StaticKeyProvider, DerivedKeyProvider, EnvelopeKeyProvider
+  cache.py           DekCache
+  config.py          FieldsealConfig, IndexDeclaration, construction-time validation
+  errors.py          FieldsealError hierarchy
+  testing/__init__.py  encrypt_with_materials — separate subpackage, imported only by tests;
+                       inert unless armed: every function raises unless the environment variable
+                       FIELDSEAL_TEST_MODE=1 is set at import time (docs/08 §6 arming gate)
+py.typed
+```
+
+## 4. Public API shape
+
+```python
+from fieldseal import Fieldseal, FieldContext
+from fieldseal.keyprovider import EnvelopeKeyProvider
+
+fs = Fieldseal(
+    key_provider=provider,
+    allowed_suites={0x0001},
+    write_suite=0x0001,
+    read_mode="strict",
+    cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
+    indexes=[IndexDeclaration(...)],
+)
+
+ct: bytes  = fs.encrypt(b"...", ctx)
+pt: bytes  = fs.decrypt(ct, ctx)
+bx: bytes  = fs.blind_index(b"...", ctx)
+ok: bool   = fs.is_ciphertext(ct)
+ct2: bytes = fs.rotate(ct, ctx)
+await fs.warm([ctx, ...])          # the only coroutine on the client
+```
+
+- `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0x0002 must still derive the correct key for a 0x0001 envelope during mixed-suite reads and rotation).
+- All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
+- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
+
+## 5. Security-relevant implementation notes
+
+- **Zeroization honesty (docs/09 §8.3):** Python `bytes` are immutable and interned-copyable; true erasure is not achievable in CPython. The cache stores DEKs in `bytearray` and overwrites on eviction — this narrows, but does not close, the memory-exposure window, and intermediate `bytes` copies inside pyca calls are outside our control. The module docstring and user docs state this in exactly those terms; claiming more would violate the no-overclaim rule. `mlock` is not provided (docs/09 §8.3 deviation, documented).
+- **Constant-time compares:** all commitment/tag-adjacent comparisons via `cryptography.hazmat.primitives.constant_time.bytes_eq`; never `==` on secret-derived values.
+- **GIL and threading:** the client is thread-safe; the cache uses a single `threading.Lock` around metadata with the singleflight pattern for refresh (docs/09 §8.3). No `asyncio` primitives in the sync path.
+- **Fork-safety:** `secrets` is kernel-backed. Docs carry the prefork-server guidance from docs/09 §10 (construct the client after fork in gunicorn `post_fork`).
+- **Argon2id blocking cost:** 10–100 ms per term (spec §7.3) *holds the GIL* for most of that time in a CFFI call **[VERIFY: whether argon2-cffi releases the GIL during hashing — if it does, note it; if not, this is a stated product constraint for threaded Django deployments]**.
+
+## 6. Testing plan
+
+1. **Vector harness** (`tests/vectors/`): implements the full contract of docs/08 §5 — manifest hash check, schema validation (`jsonschema` dev-dependency), both-direction envelope runs, exact error-code mapping, machine-readable report emission (docs/14 §4). Vector path resolved from the repo root so `core/python` never copies vectors.
+2. **Unit tests** per module, including: codec truncation at every byte offset of a valid envelope (must never panic — always a typed error); allow-list vs registry decoupling (spec §3.4 double-encryption regression case, verification-log defect #6); cache max-age/max-uses/zeroize-on-evict; provider purpose-routing (index purpose must never return the DEK — spec §8).
+3. **Property tests** (hypothesis): `parse(serialize(h))` identity; `is_ciphertext` total on arbitrary bytes (never raises); `decrypt(encrypt(p, ctx), ctx) == p` for random valid inputs with the real CSPRNG path.
+4. **Cross-output producer**: a pytest-invocable script emitting the `cross/` file (docs/08 §4.7) from the production path.
+5. **Negative import test:** `import fieldseal` must not import `fieldseal.testing`; enforced by a test asserting `"fieldseal.testing" not in sys.modules` after a clean import. A second test asserts `encrypt_with_materials` raises when `FIELDSEAL_TEST_MODE` is unset (the docs/08 §6 arming gate). The module docstring carries the consequence verbatim: *"an implementation that accepts a caller-supplied nonce or seed outside of vector-test mode is non-conformant"* (`vectors/README.md`).
+
+## 7. Non-goals for the Python core
+
+No Django/SQLAlchemy awareness of any kind (that's `adapters/`); no CLI (the vector generator lives in `tools/vector-gen/`, importing `fieldseal.testing` deliberately); no async value-path variants; no PyPy claims until CI covers it.

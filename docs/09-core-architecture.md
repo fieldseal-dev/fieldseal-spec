@@ -1,0 +1,257 @@
+# Core Library Architecture Specification
+
+**Date:** 2026-08-08 · **Status:** Draft 1 · **Purpose:** the language-agnostic architecture every core implementation (`core/{python,typescript,java,dotnet,go}`) follows. Per-language bindings of this architecture are in `docs/10-core-python.md` and `docs/11-core-typescript.md` (Phase 1); Java/.NET/Go follow in Phase 2 with their own documents.
+
+**Authority:** `docs/02-spec-v0.1.md` is normative. Where this document goes beyond the spec it says so; where the spec is silent and the gap is cross-implementation-relevant, the gap is listed in `docs/07-implementation-plan.md` §5 as a spec issue rather than decided here. Envelope-level design is conditional on ADR-0001 (`docs/adr/0001-envelope-format-source.md`) — if the project profiles the AWS structured-encryption format instead of the v0.1 envelope, §4 and §5 of this document are rewritten.
+
+---
+
+## 1. Component decomposition
+
+Identical module boundaries in every language, so a reader of one core can navigate any other:
+
+```
+core/<lang>/
+  api          the five sync operations + warm()          (spec §11)
+  envelope     header struct, parse/serialize, is_ciphertext   (spec §3)
+  registry     frozen suite table + allow-list policy     (spec §4)
+  context      FieldContext, canonical_context, AAD       (spec §6)
+  kdf          record-key and index-key derivation        (spec §5.3, §7.2)
+  aead         per-suite AEAD backends over platform crypto
+  commitment   key-commitment compute/verify              (spec §4.6; construction pending G1)
+  blindindex   IDFs (Argon2id, HMAC-SHA-512), truncation, normalizers  (spec §7)
+  keyprovider  KeyProvider interface + Static/Derived/Envelope providers  (spec §8)
+  cache        DEK cache (max-age + max-uses + zeroization)  (spec §5.5)
+  config       client configuration: mode, allow-list, provider, cache policy, index declarations
+  errors       the §9 taxonomy as typed errors
+  testing      encrypt_with_materials + fixed entropy source  (docs/08 §6; never exported from the main module)
+```
+
+Dependency rule, enforced by review and (where the language allows) by package visibility: `api` → everything; `envelope`/`context`/`kdf`/`aead`/`commitment`/`blindindex` → `registry` + `errors` only; `keyprovider`/`cache` → `errors` only. No module imports `api`. `testing` imports the internals it injects into; nothing imports `testing`.
+
+## 2. The client object
+
+The spec's API (§11.1) is five functions plus `warm`, but they need configuration (mode, allow-list, provider). Every core therefore exposes a **client** — one constructed object holding configuration, with the five operations as methods:
+
+```
+Fieldseal(config) where config = {
+    key_provider     : KeyProvider           (required)
+    allowed_suites   : set<suite_id>         (required, non-empty — no implicit "all registered")
+    write_suite      : suite_id              (required; MUST be in allowed_suites)
+    read_mode        : strict | permissive | readonly    (default: strict)
+    cache            : { max_age, max_uses (≤ 2^32), capacity }   (required for EnvelopeKeyProvider)
+    index_registry   : declared blind-index configurations (§7 below)
+    on_warning       : hook (permissive-mode plaintext reads, StaticKeyProvider outside test)
+    metrics          : hook (counters: plaintext_reads, decrypt_errors by type, cache evictions)
+}
+```
+
+Design rules:
+
+- **Explicit allow-list.** `allowed_suites` has no default. Forcing the deployment to write `["0x0001"]` is the §4.3 retirement mechanism working as designed.
+- **The client is immutable after construction.** Mode changes, suite changes, and provider changes are new clients. This removes a class of concurrency bugs and makes "which config produced this ciphertext" answerable.
+- **Construction validates everything**: write suite in allow-list, cache thresholds within §5.5 bounds, every declared index passing the §7.6 cardinality gate or carrying an explicit logged override, StaticKeyProvider triggering the §8 warning outside test configuration.
+- Per-language surface (constructor idioms, builder patterns) is defined in the per-language specs; the semantics above are fixed.
+
+## 3. Operation pipelines
+
+These pipelines are the reference sequence every implementation follows. Steps map 1:1 onto spec clauses; reordering is permitted only where observable behavior (including error codes and timing notes) is unchanged.
+
+### 3.1 `encrypt(plaintext, ctx) → envelope`
+
+```
+1. mode check: readonly → MODE_VIOLATION                   // §9, §10.3 (G6 resolved)
+2. validate ctx (purpose = "encrypt"; table/column UUIDs present, 16 B)
+3. suite = registry[config.write_suite]
+4. (dek, key_id) = key_provider.encryption_key(ctx)        // cache hit expected; MUST NOT do network I/O (§11.1)
+5. msg_seed = CSPRNG(32)                                   // §3.1
+6. nonce    = CSPRNG(suite.nonce_len)                      // §4.4
+7. cc  = canonical_context(ctx)                            // §6.2
+8. record_key = HKDF(ikm=dek, salt=key_id ‖ msg_seed, info=cc, len=suite.key_len)   // §5.3
+9. commitment = commit(record_key …)                       // §4.6; construction pending G1
+10. aad = AAD(fmt_ver, key_id, msg_seed, cc)               // §6.2
+11. ct, tag = suite.aead.seal(record_key, nonce, plaintext, aad)
+12. return fmt_ver ‖ suite_id ‖ key_id ‖ msg_seed ‖ nonce ‖ ct ‖ tag ‖ commitment
+13. best-effort zeroize record_key
+```
+
+Steps 5–6 are the only entropy draws; `testing.encrypt_with_materials` replaces exactly these two steps and nothing else (docs/08 §6).
+
+### 3.2 `decrypt(envelope, ctx) → plaintext`
+
+Proposed check order — **this order is an engineering proposal that must be pinned normatively by the G5 spec issue before error vectors freeze**, because each step's failure maps to a §9 error code and implementations must agree:
+
+```
+1.  mode: all read modes may decrypt
+2.  structural parse:
+      len < min registered envelope length        → NOT_CIPHERTEXT (strict) / pass-through (permissive
+                                                    and readonly — §10.3 gives readonly permissive's
+                                                    non-envelope behavior, G6 resolved)
+      fmt_ver unrecognized                        → UNKNOWN_FORMAT_VERSION *
+      suite_id not registered                     → NOT_CIPHERTEXT (recognition, §3.4)
+      remaining length inconsistent with suite    → NOT_CIPHERTEXT
+3.  suite_id not in allowed_suites                → SUITE_NOT_ALLOWED   (after recognition — §3.4 decoupling)
+4.  ctx.suite_id ← header.suite_id                // NORMATIVE-INTENT NOTE: on decrypt, the context's
+                                                  // suite_id member comes from the parsed (and now
+                                                  // allow-listed) header — NEVER from config.write_suite.
+                                                  // A 0x0002-writing client must still derive the right
+                                                  // key for a 0x0001 envelope (§4.3/§5.6 mixed-suite
+                                                  // reads; §5.9 re-encryption sweeps; §3.5 rotate).
+                                                  // Tampering is caught: suite_id is bound in the KDF
+                                                  // info and AAD (§6.2). Pinned normatively by G5.
+5.  candidates = key_provider.decryption_keys(header)      // preference-ordered, all valid versions (§8)
+      empty                                       → KEY_UNAVAILABLE
+6.  for each candidate dek:
+      record_key = HKDF(dek, key_id ‖ msg_seed, canonical_context(ctx))
+      if commit_verify(record_key, commitment):   // constant-time compare
+          ok = aead.open(record_key, nonce, ct, tag, aad)
+          ok                                      → return plaintext (+ zeroize record_key)
+          fail                                    → TAG_INVALID       // key+context proven right by commitment;
+                                                                      // remaining causes: ct/tag corruption
+7.  no candidate's commitment verified            → COMMITMENT_INVALID-or-AAD_MISMATCH [G5]
+```
+
+\* Whether `UNKNOWN_FORMAT_VERSION` can be raised at all is subtle: a future `fmt_ver` may not keep `suite_id` at the same offset, so an unrecognized version is *structurally* indistinguishable from non-ciphertext. Proposal for the G5 issue: raise `UNKNOWN_FORMAT_VERSION` when the first byte is a **reserved-known-future** version value and the length is plausible; otherwise `NOT_CIPHERTEXT`. This matches §9's stated meaning ("data written by a newer implementation") while keeping §3.4 recognition sound.
+
+The step-7 ambiguity is real and worth stating plainly: under dual binding (§6.3), a wrong *context* produces a wrong *record key*, so context mismatch and key confusion are cryptographically indistinguishable at this layer. §9 wants `AAD_MISMATCH` distinguished from key problems because "usually a data-migration bug" needs different operator action than "partitioning-oracle attempt." Engineering proposal for the issue: report `COMMITMENT_INVALID`, and — as a **diagnostic, not a control path** — optionally re-derive with known-legitimate context variants (e.g. `row_id` omitted) to enrich the error message with "context mismatch suspected." Vectors then pin only the error code, not the diagnostics.
+
+Timing note: commitment verification and tag comparison MUST be constant-time compares. The candidate-key loop's early exit on commitment success is acceptable — commitment values are public envelope content, not secrets — but per-candidate work should be identical in structure.
+
+### 3.3 `blind_index(plaintext, ctx) → bytes`
+
+```
+1. mode: readonly MAY compute indexes (needed for queries) — readonly forbids *writes*, and an index
+   computed for a WHERE clause is not a write. Normative as of §10.3 (G6 resolved).
+2. declaration = config.index_registry[ctx.table_uuid, ctx.column_uuid, index_id from ctx.purpose]
+      missing → configuration error (fail closed; never fall back to a default IDF)
+3. cardinality gate already enforced at construction (§2); here only assert declaration exists
+4. (index_key_material, _) = key_provider.encryption_key(ctx)   // provider MUST return the tenant
+      index key, never the DEK, when purpose is "index:…" (§8 / spec §8)
+5. index_key = HKDF(ikm=index_key_material, salt="fieldseal-index-v1",
+                    info=canonical_context(ctx with row_id=null), len=32)     // §7.2
+6. normalized = normalizer[declaration.normalize](plaintext)
+7. raw = IDF(index_key, normalized)          // Argon2id or HMAC-SHA-512 per declaration [G2]
+8. return truncate(raw, declaration.b)       // §7.2: leading ⌈b/8⌉ bytes, trailing bits of final byte zeroed, MSB-first
+```
+
+The return value is the stored form: spec §7.11 makes those exact `⌈b/8⌉` bytes what goes in the column. The core returns bytes and MUST NOT encode them — the hexadecimal alternative §7.11 permits for text-only columns is applied by the adapter's storage layer, which is also where the binary-collation requirement is enforced through DDL. This keeps the bytes-in/bytes-out rule of §5 intact and keeps one representation decision out of five language cores.
+
+### 3.4 `is_ciphertext(bytes) → bool`
+
+Pure function of the registry (spec §3.4): length ≥ min registered envelope, recognized `fmt_ver`, **registered** suite (not allow-listed — recognition ≠ authorization). Never decrypts, never trial-decrypts. Operates on raw bytes only; base64-stored deployments decode at the adapter/storage layer before calling the core (the core is bytes-in/bytes-out everywhere — see §5).
+
+### 3.5 `rotate(envelope, ctx) → envelope`
+
+Mode check first: `rotate` produces ciphertext for storage, so `readonly` raises `MODE_VIOLATION` before any of the below runs (§10.3). Then `decrypt` (full §3.2 pipeline, including allow-list — a retired suite is *not* decryptable even for rotation; un-retiring it for a migration sweep is an explicit, temporary allow-list change, which is the §4.3 model working as intended) followed by `encrypt` under `config.write_suite` and the provider's active-for-write key version. Always produces a fresh envelope (fresh seed, fresh nonce) even when the input is already current — a deterministic "already current, skip" fast path would require comparing key versions, which callers (backfill tooling) can do themselves from the envelope header via the provider; the core stays simple.
+
+### 3.6 `warm(contexts)` (async where the language has async)
+
+Resolves and caches key material for the given contexts before the value path needs it. All KMS/network I/O lives here or in provider background refresh (§11.2). `warm` failures are reported but MUST NOT poison the cache; the value path either hits cache or fails `KEY_UNAVAILABLE` per the deployment's §8.1 degradation mode.
+
+## 4. Envelope codec
+
+- Header layout per spec §3.1; `suite_id` big-endian. Parse produces `EnvelopeHeader { fmt_ver, suite_id, key_id, msg_seed, nonce }` — exactly what `KeyProvider.decryption_keys` receives (spec §8).
+- Serialization is single-pass concatenation; total length = 51 + nonce_len + |ct| + tag_len + commit_len, all suite-determined.
+- **Plaintext length bounds:** the spec sets none. Engineering bound for v0: reject plaintexts > 2³¹−1 bytes at the API boundary (fields are cells, not blobs; AES-GCM's own limit is ~2³⁹−256 bits and is not the binding constraint). Flagged in G-list as a candidate spec clarification so all implementations reject at the same bound.
+- The codec module is where fuzzing concentrates (per-language specs mandate a fuzz/property-test pass over `parse ∘ serialize` and over `is_ciphertext` on arbitrary bytes).
+
+## 5. Byte-orientation and value semantics
+
+The core is **bytes-in, bytes-out** in every language (spec §11.1 signatures). Serialization of application types (strings, ints, JSON) to bytes is the adapter's job, because it is inherently ORM/type-system-specific — with one hard rule inherited from Rails' RCE lesson (`docs/04` §8): adapters MUST use non-code-executing serializations. Nothing in any core ever deserializes bytes into executable or reflective structures.
+
+Base64/text storage (spec §3.3) is likewise an adapter/storage concern: the core never emits or accepts base64.
+
+## 6. Registry
+
+A hard-coded, frozen table — not a plugin surface:
+
+| field | 0x0001 | 0x0002 |
+|---|---|---|
+| aead | AES-256-GCM | XChaCha20-Poly1305 [G7: normative definition source] |
+| key_len | 32 | 32 |
+| nonce_len | 12 | 24 |
+| tag_len | 16 | 16 |
+| commit_len | 32 | 32 |
+| kdf | HKDF-SHA-512 | HKDF-SHA-512 |
+
+There is deliberately **no registration API**: adding a suite is a code change in every core plus vectors plus a spec revision (spec §4.1's freeze, PRD SP-20's registry process). The table's shape leaves room for a future NIST accordion-mode suite (spec §13.3) without structural change: a suite with `commit_len = 0` (natively committing AEAD) is already representable.
+
+## 7. Blind-index declarations and normalizers
+
+Index configuration is **declared to the client at construction**, not passed per call (spec §7.8 immutability; §7.6 gate at declaration time):
+
+```
+IndexDeclaration {
+    table_uuid, column_uuid, index_id           // "exact" default; must match purpose grammar
+    idf              : argon2id | hmac-sha512   // per §7.3 domain classes
+    idf_params                                  // argon2id only; pending G2
+    normalize        : normalizer id
+    truncate_bits    : b                        // §7.4 band; both b and projected P recorded
+    projected_population : P                    // ≥ 16; recorded per SP-10
+    cardinality_override : { reason, approved_by, date } | absent   // §7.6 logged override
+}
+```
+
+Normalizers are a **closed, versioned set** shipped by every core identically (they affect stored index values, so they are portability surface):
+
+- `identity` — bytes unchanged.
+- `nfc-casefold-v1` — Unicode NFC, then full case folding, then UTF-8 encode. For email-like text. **[Flag: "full case folding" must be pinned to a Unicode version and folding variant (C+F, no Turkish-i special case) before vectors freeze — cross-language Unicode-version drift silently breaks shared indexes. Candidate: pin to a fixed folding table vendored into each core rather than the platform's Unicode library.]**
+- `digits-only-v1` — strip ASCII non-digits (phone/SSN-like values).
+
+Custom normalizers are out: a deployment-defined normalizer is a portability break by definition. New normalizers go through the same process as suites (spec change + vectors).
+
+## 8. Key providers and cache
+
+### 8.1 Interface (spec §8, made concrete)
+
+```
+KeyProvider:
+    encryption_key(ctx)  → (key_material, key_id[16])
+        // purpose "encrypt"  → tenant DEK (active-for-write version)
+        // purpose "index:*"  → tenant INDEX key (sibling, never the DEK) — spec §8
+    decryption_keys(header) → ordered list of key_material
+        // all currently-valid versions, active first (§5.6)
+    warm(contexts)       → async prefetch (§11.2)
+```
+
+`key_id` structure is provider-defined and opaque to the core (spec §3.1). `EnvelopeKeyProvider`'s recommended layout — documented, not normative: 4 B provider tag ‖ 8 B tenant-key handle ‖ 4 B version. Rationale: `decryption_keys` must resolve versions from the header alone.
+
+### 8.2 The three shipped providers
+
+- **StaticKeyProvider** — one key, warning outside test config (spec §8). Its warning fires through `on_warning`, not a log side effect, so embedders can escalate it to a hard failure.
+- **DerivedKeyProvider** — tenant DEK = HKDF(root_secret, salt=provider-defined, info=tenant scope); index key derived with a distinct info label so the sibling rule (§5.2) holds even in the derived provider. No network I/O by construction.
+- **EnvelopeKeyProvider** — KMS-wrapped DEKs; the production path. Unwrap happens **only** in `warm`/background refresh; `encryption_key`/`decryption_keys` are cache-only and MUST NOT block on network (spec §11.1). On cache miss the behavior is the deployment's §8.1 degradation mode: `fail-closed` → `KEY_UNAVAILABLE`; `serve-cached` is the same thing on the read path (that mode's meaning is *only* "what the cache can decrypt"). KMS SDK integration is per-language and pluggable behind a small `Wrapper` interface (`wrap(dek) / unwrap(blob)`), keeping cloud SDK dependencies optional.
+
+### 8.3 DEK cache (spec §5.5)
+
+- Keyed by (provider scope, tenant, key version, role: dek|index).
+- Eviction: max-age AND max-uses (≤ 2³²) AND capacity LRU. Use counting is per cached entry, incremented per `encryption_key` return.
+- **Zeroization on eviction is best-effort and honesty-documented per language** — GC languages cannot guarantee no copies (spec §5.5's own "honest limitation"). Each per-language spec states exactly what its zeroization does and does not achieve; no language doc may claim guaranteed erasure.
+- `mlock`/no-swap: SHOULD where the platform supports it (spec §5.5). Python and Node cannot do this meaningfully for GC-managed buffers; both per-language specs document the deviation instead of pretending.
+- Concurrency: single-flight on refresh (one KMS unwrap per key even under concurrent misses), lock-free or fine-grained-locked reads; the value path never blocks on another tenant's refresh.
+- Metrics: hits, misses, evictions by cause, age distribution — the §5.5 "TTL is a security parameter" stance needs observability to be auditable.
+
+## 9. Errors
+
+One root type per language (`FieldsealError`) with exactly the §9 taxonomy as subtypes/codes: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, `MODE_VIOLATION` (added to §9 by G6), plus a configuration-error code for construction-time failures that remains implementation-local — §9 does not define one, because construction never reaches the crypto path or the vectors. Messages carry: error code, suite_id, key_id (hex — it is public envelope content), context identifiers (table/column UUIDs — public by §6.5), and never plaintext, key material, or derived keys (§9). The vector-suite error strings map 1:1 to these codes; the mapping table lives in each per-language spec and is exercised by the `errors/` vectors.
+
+## 10. Concurrency and process model
+
+- The client is thread-safe after construction (immutable config + concurrent-safe cache). All five sync operations are re-entrant.
+- No global mutable state; multiple clients with different configs coexist in one process (needed for `readonly` analytics alongside `strict` serving, §10.3).
+- Fork-safety: CSPRNG must be fork-safe (per-language: Python `os.urandom`/`secrets` — kernel-backed, fork-safe; Node `crypto.randomBytes` — kernel-backed). Cache contents surviving a fork are DEK copies in the child — documented as part of the §5.5 memory-exposure honesty, with guidance to construct clients post-fork in prefork servers (gunicorn/uwsgi).
+
+## 11. What the core deliberately does not contain
+
+Restating spec §11.3 as a review checklist: no SQL, no ORM types, no row/column names (only opaque UUID surrogates), no HTTP, no KMS SDK in the required dependency set (optional provider extras only), no logging framework dependency (hooks only), no async in the five operations, no plaintext persistence of any kind, no telemetry with values in it.
+
+## 12. Cross-language consistency table
+
+| Concern | Rule |
+|---|---|
+| Public operation names | `encrypt`, `decrypt`, `blind_index`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
+| Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · future cores: idiomatic byte type |
+| FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
+| Error codes | identical strings to §9, exposed as a machine-readable `code` property |
+| Testing namespace | `fieldseal.testing` / `@fieldseal/core/testing` — same function name `encrypt_with_materials` |
+| Vector harness output | the shared report format of `docs/14-conformance-ci.md` §4 |
