@@ -12,7 +12,12 @@ disableKinds = ["taxonomy", "term", "rss"]
   # Shown in the site-wide banner. Delete the line to remove the banner.
   status = "Pre-alpha design work. The specification is a working draft, has not been independently reviewed, and is not ready for production use."
   repo = "https://github.com/fieldseal-dev/fieldseal-spec"
-  securityEmail = "security@fieldseal.dev"
+  # Where the footer sends vulnerability reports. This is a URL, not a mailto,
+  # deliberately: security@fieldseal.dev has no mailbox or forwarding alias
+  # behind it yet, and a published address that silently drops reports is worse
+  # than no address at all. Switch this back to a mailto only once mail to that
+  # address is confirmed to arrive.
+  securityUrl = "https://github.com/fieldseal-dev/fieldseal-spec/security/policy"
 
 [markup]
   [markup.goldmark.renderer]
