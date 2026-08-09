@@ -170,7 +170,7 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
 ```json
 {
   "id": "blind-index/hmac-sha512/email-15bit",
-  "spec_ref": "§7.2, §7.3, §7.4",
+  "spec_ref": "§7.2, §7.3, §7.4, §7.11",
   "idf": "hmac-sha512",
   "idf_params": {},
   "index_key": "…hex (32 B)…",
@@ -178,11 +178,16 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
   "plaintext": "…hex of the ALREADY-NORMALIZED value…",
   "plaintext_preimage": "USER@Example.COM",
   "truncate_bits": 15,
-  "expected": { "raw": "…hex (full IDF output)…", "index": "…hex (truncated)…" }
+  "expected": {
+    "raw": "…hex (full IDF output)…",
+    "index": "…hex (truncated)…",
+    "stored": { "binary": "…hex of the exact column bytes…", "hex": "…lowercase-hex column text…", "octets": 2 }
+  }
 }
 ```
 
 - `plaintext` is the post-normalization byte string and is the normative input; `plaintext_preimage` documents where it came from and lets an implementation that ships the named normalizer test it too. Normalizer identifiers (`nfc-casefold-v1`, …) are declared in `docs/09-core-architecture.md` §7; the vector suite only ever references declared identifiers.
+- `expected.stored` asserts the spec §7.11 storage contract (G8, issue #8). `stored.binary` MUST equal `expected.index` byte for byte and `stored.octets` MUST equal `⌈b/8⌉`; the redundancy is deliberate, because it converts an assumption every implementation would otherwise make silently into a test that fails when one of them pads, length-prefixes, or base64s the column. `stored.hex` is the lowercase text-column form for implementations supporting that alternative — a harness whose implementation is binary-only skips `stored.hex` and reports it skipped, but MUST assert `stored.binary` and `stored.octets`.
 - Argon2id vectors carry full `idf_params`: `{"version": 19, "time_cost": …, "memory_kib": …, "parallelism": …, "output_len": 32, "salt": "…hex…"}`. Most Argon2id vectors use **reduced parameters** (small memory/time) so CI stays fast; at least one vector per file MUST use the spec-minimum production parameters (≥3 iterations / 32 MiB, spec §7.3) so the production configuration path is exercised.
 - **Blocked (G2 only):** the exact Argon2id invocation (what is password vs salt vs secret, parallelism, output length) is not defined by spec v0.1 — gap G2 in §9. The bit-level truncation rule is now pinned (spec §7.2, G3 resolved 2026-08-08: leading `⌈b/8⌉` bytes, trailing bits of the final byte zeroed, MSB-first), so `blind-index/hmac.json` is fully authorable including truncated expected values. Per spec §12, each file carries at least three `b mod 8 ≠ 0` vectors (e.g. b = 12, 21, 30) plus one multiple-of-8 control. Argon2id expected values wait on G2.
 
@@ -231,8 +236,9 @@ Required error coverage (each case = one or more vectors):
 | Commitment bytes altered | `COMMITMENT_INVALID` | |
 | A ciphertext valid under two keys (invisible salamander) | `COMMITMENT_INVALID` | Requires a dedicated construction script during vector authoring, following Len–Grubbs–Ristenpart (USENIX '21); this is the vector that proves §4.6 does its job |
 | `msg_seed` altered | **[blocked by G5]** — self-authenticating per §3.2; whether it reports `COMMITMENT_INVALID` or `TAG_INVALID` depends on check order | |
-| `encrypt()` called in `readonly` mode | **[blocked by G6]** — no error code exists in §9 for mode violations | |
-| Reads in `readonly` mode (valid envelope; non-envelope input) | **[blocked by G6]** — §10.3 defines `readonly` only as "decrypts but never encrypts"; its non-envelope behavior is undefined (docs/09 §3.2 proposes pass-through, as `permissive`) | |
+| `encrypt()` called in `readonly` mode | `MODE_VIOLATION` | Spec §9 and §10.3, pinned by G6 (issue #6). `rotate()` under `readonly` is the same case and MUST also be covered |
+| Reads in `readonly` mode (valid envelope; non-envelope input) | Plaintext; pass-through | Spec §10.3, pinned by G6: `readonly` takes `permissive`'s non-envelope behavior. Both are positive controls bounding the row above — they prove the mode refuses *writes*, not reads |
+| `blind_index()` called in `readonly` mode | Success | Spec §10.3, pinned by G6: computing an index for a WHERE clause is not a write. Positive control — a regression here silently makes read-only clients unable to query |
 
 ### 4.7 `cross/` — the central claim
 
@@ -311,8 +317,8 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 | G3 | `truncate(raw, b bits)` bit-level semantics — **resolved 2026-08-08** (issue #3): spec §7.2 pins leading `⌈b/8⌉` bytes, MSB-first bit numbering, trailing bits of the final byte zeroed | `blind-index/hmac.json` unblocked; `argon2id.json` still waits on G2 |
 | G4 | `tenant_id = null` encoding in `canonical_context` unspecified (§6.2 defines omission only for `row_id`); null vs zero-length ambiguity | `context/`, any envelope vector with absent tenant |
 | G5 | Error classification/precedence undefined: the order of format → policy → key → commitment → AEAD checks, and how a context mismatch (which manifests as a wrong derived key under dual binding) maps onto `AAD_MISMATCH` vs `COMMITMENT_INVALID` | most of `errors/crypto.json` |
-| G6 | No error code for mode violations (`encrypt()` in `readonly` mode); `readonly`'s non-envelope read behavior undefined | `errors/policy.json` — the mode-violation case and the `readonly` read cases |
+| G6 | No error code for mode violations (`encrypt()` in `readonly` mode); `readonly`'s non-envelope read behavior undefined — **resolved 2026-08-09** (issue #6): spec §9 adds `MODE_VIOLATION`, §10.3 specifies both axes per mode (`readonly` = pass-through on non-envelope input, refuses `encrypt`/`rotate`, permits `blind_index`) | `errors/policy.json` fully unblocked |
 | G7 | Suite 0x0002's AEAD (XChaCha20-Poly1305) has no IETF RFC; the spec does not name a normative definition (libsodium's construction is the de-facto standard; draft-irtf-cfrg-xchacha expired) | `envelope/0002.json` confidence, though not its mechanics |
-| G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values | `blind-index/` storage assertions; adapter specs carry an interim recommendation (raw bytes, `ceil(b/8)` length) flagged as pending |
+| G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values — **resolved 2026-08-09** (issue #8): spec §7.11 makes raw `⌈b/8⌉` bytes in a binary column the MUST, lowercase hex without prefix the declared-per-column MAY, exact byte/string equality under a binary collation | `blind-index/` storage assertions unblocked; the adapter specs' interim recommendation is now normative |
 
-Nothing else in this document is blocked: file formats, schemas, harness contract, injection contract, cross protocol, and the `errors/format.json` + `errors/policy.json` families (except G6's one case) can be built immediately.
+Nothing else in this document is blocked: file formats, schemas, harness contract, injection contract, cross protocol, and the `errors/format.json` + `errors/policy.json` families can be built immediately — `errors/policy.json` in full, now that G6 has closed.

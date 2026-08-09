@@ -387,7 +387,7 @@ where:
 - `IDF` is the index derivation function, selected per §7.3.
 - `b` is the truncation length in bits, selected per §7.4.
 
-`truncate(raw, b)` is defined bit-exactly: keep the first `⌈b/8⌉` bytes of `raw`, then set the trailing `8·⌈b/8⌉ − b` bits of the final byte to zero. Bits are numbered MSB-first within each byte (the most significant bit is bit 0, mask `0x80`); equivalently, interpret `raw` as a bit string in network order, keep the first `b` bits, and zero-pad to the byte boundary. The output length is exactly `⌈b/8⌉` bytes. Example: `truncate(0xABCD…, 12 bits)` = `0xABC0`.
+`truncate(raw, b)` is defined bit-exactly: keep the first `⌈b/8⌉` bytes of `raw`, then set the trailing `8·⌈b/8⌉ − b` bits of the final byte to zero. Bits are numbered MSB-first within each byte (the most significant bit is bit 0, mask `0x80`); equivalently, interpret `raw` as a bit string in network order, keep the first `b` bits, and zero-pad to the byte boundary. The output length is exactly `⌈b/8⌉` bytes. Example: `truncate(0xABCD…, 12 bits)` = `0xABC0`. The representation in which that value is written to the database is defined in §7.11.
 
 *Justification.* Either bit-order convention is cryptographically equivalent: the IDF output is uniform, so which `b` bits survive does not change the §7.4 leakage analysis. The convention is pinned solely so that independent implementations write byte-identical index values into a shared database — an interoperability decision of exactly the kind the vector suite exists to verify (§12). Leading-bits/MSB-first is chosen because the truncated value is then a byte-prefix of the untruncated output, which simplifies debugging, and because it matches the network-byte-order conventions used elsewhere in this specification (§3.1 big-endian `suite_id`, §6.2 `u64be`).
 
@@ -446,7 +446,7 @@ Two blind indexes MUST NOT be created over correlated fields.
 
 ### 7.8 Immutability after first write (normative)
 
-Once any row has been written with a given blind index, its `IDF`, `normalize` function, truncation length `b`, and key-derivation context MUST NOT change. Changing any of them requires creating a new index column and performing a full backfill.
+Once any row has been written with a given blind index, its `IDF`, `normalize` function, truncation length `b`, key-derivation context, and stored representation (§7.11) MUST NOT change. Changing any of them requires creating a new index column and performing a full backfill.
 
 ### 7.9 Prefix indexes (OPTIONAL, gated)
 
@@ -471,6 +471,16 @@ Documentation MUST reproduce this table.
 | Aggregates (`SUM`, `AVG`) | **No** | Requires homomorphic encryption; out of scope. |
 | Unique constraints | On the index column only | Never on randomized ciphertext. |
 | Foreign keys | **No** | Keep the join key plaintext, or the relational model degrades. |
+
+### 7.11 Index column storage type (normative)
+
+The stored form of a blind index MUST be the raw truncated bytes produced by §7.2 — length exactly `⌈b/8⌉`, no length prefix, no padding, no encoding — written to a binary column type (`BYTEA`, `VARBINARY(⌈b/8⌉)`, `BLOB`).
+
+Implementations MAY support a lowercase hexadecimal alternative for text-only storage paths: exactly `2·⌈b/8⌉` characters, digits `0`–`9` and `a`–`f`, no `0x` prefix and no separators. Where it is supported, the representation MUST be declared per index column and is immutable after first write (§7.8).
+
+Index comparison MUST be exact byte equality, or for the hexadecimal alternative exact string equality. Implementations MUST create the index column with a binary or otherwise case- and accent-sensitive collation, and MUST NOT rely on the database's default collation.
+
+*Justification.* This is the §3.3 rule applied to the index column, and it exists for the same reason: two implementations sharing one database must write byte-identical values or equality matching silently fails. That failure mode is worse than an envelope divergence, because it produces no error — a Python-written index simply never matches a Node-issued `WHERE`, and the query returns zero rows as though the value were absent. No envelope vector detects it, which is why §12 requires the stored form to be asserted directly. The collation requirement is ordinary SQL behavior rather than a cryptographic claim: under a case-insensitive collation a hexadecimal column equates `AB` and `ab`, so the database would match two values the core treats as distinct, widening the §7.4 collision band by an amount the leakage analysis never accounted for. Raw bytes are the MUST rather than hex because hex doubles a column that sits in every index page and every `WHERE` clause on the table.
 
 ---
 
@@ -524,6 +534,9 @@ An implementation MUST distinguish at least these error types, and MUST NOT coll
 | `TAG_INVALID` | Authentication failed with correct context | Corruption or tampering |
 | `COMMITMENT_INVALID` | Key commitment check failed | Key confusion or a partitioning-oracle attempt |
 | `NOT_CIPHERTEXT` | Input is not a recognizable envelope | Unmigrated plaintext; see §10.3 |
+| `MODE_VIOLATION` | The operation is not permitted in the configured read mode | `encrypt()` or `rotate()` on a `readonly` client (§10.3) |
+
+`MODE_VIOLATION` is raised at the API boundary, before any cryptographic processing or key acquisition begins, and therefore sits outside the decrypt-path error ordering. Its message MUST name both the rejected operation and the active mode: a mode violation is a deployment-configuration error, and an implementation that reports only "operation not permitted" sends the operator looking in the wrong place. One code covers all present and future modes rather than one code per mode, so that adding a mode is not a breaking change to the error taxonomy.
 
 Error messages MUST NOT include plaintext, key material, or derived key values.
 
@@ -598,11 +611,21 @@ Known cases requiring an explicit throw:
 
 ### 10.3 Read modes (normative)
 
-| Mode | Behavior |
-|---|---|
-| `strict` | Non-envelope input raises `NOT_CIPHERTEXT`. The production steady state. |
-| `permissive` | Non-envelope input is returned as-is. Migration only. Implementations MUST warn when this mode is active and SHOULD emit a metric counting plaintext reads. |
-| `readonly` | Decrypts but never encrypts. For read-only replicas, analytics jobs, and rollback windows. |
+A mode fixes two independent behaviors: what a read does with non-envelope input, and whether operations that produce ciphertext for storage are permitted. Both are specified for every mode.
+
+| Mode | Non-envelope input on read | Ciphertext-producing operations | Intended use |
+|---|---|---|---|
+| `strict` | Raises `NOT_CIPHERTEXT` | Permitted | The production steady state |
+| `permissive` | Returned as-is | Permitted | Migration only |
+| `readonly` | Returned as-is | Raise `MODE_VIOLATION` | Read replicas, analytics jobs, rollback windows |
+
+In both `permissive` and `readonly`, implementations MUST warn when the mode is active and SHOULD emit a metric counting plaintext reads.
+
+The ciphertext-producing operations are `encrypt()` and `rotate()` (§11.1). `decrypt()`, `is_ciphertext()`, and `blind_index()` are permitted in every mode. `blind_index()` in particular MUST NOT be refused in `readonly`: an index value is required to *construct* a query, not to write one, and a mode that could not compute one would be unable to look anything up — which is the entire purpose of a read-only client.
+
+*Justification, with its cost stated.* `readonly` inherits `permissive`'s pass-through behavior rather than `strict`'s raise because the mode exists for migration and rollback windows, which are exactly the windows in which unmigrated plaintext is expected to be present; a `readonly` client that raised on it would fail precisely where it is meant to be deployed.
+
+The alternative considered was making the two axes independently configurable. Three named modes cover three of the four combinations the axes allow, and the omitted one — raise on non-envelope input *and* refuse writes — is a legitimate configuration, not an absurd one: a fully migrated production read replica would reasonably want both. This specification does not currently offer it. That is a real limitation and is recorded here rather than glossed, on the reasoning that a fourth mode is cheap to add later once a deployment demonstrates the need, whereas an orthogonal-knob configuration surface is not cheap to remove once implementations and vectors depend on it. A deployment that needs the combination should raise a specification issue rather than adding a local option, because read-mode behavior is observable in the shared error vectors and a private fourth mode would put two implementations quietly out of agreement.
 
 ---
 
@@ -645,8 +668,9 @@ An implementation MUST pass the full vector suite to claim any conformance level
 - Index-key derivation: fixed tenant index key + context → expected per-index key
 - Canonical context and AAD encoding: byte-exact output for representative contexts, including `row_id` present and absent
 - Blind index: fixed key + plaintext + normalization + truncation → expected index, for both Argon2id and HMAC IDFs — including at least three vectors whose truncation length is not a multiple of 8 (the §7.2 final-byte masking is observable only there) and one multiple-of-8 control
+- Blind index storage: for every blind-index vector, the exact bytes written to the database per §7.11, and the hexadecimal form where an implementation supports it — asserted as its own field, because a stored-form divergence produces no error, only an empty result set
 - Commitment values
-- Every error case in §9, including deliberately malformed envelopes
+- Every error case in §9, including deliberately malformed envelopes — and for the §10.3 modes, `encrypt()` under `readonly` raising `MODE_VIOLATION` alongside the positive controls that bound it: `decrypt()` of a valid envelope, `blind_index()`, and non-envelope input, each under `readonly`
 - **Cross-implementation:** ciphertext produced by implementation A decrypted by implementation B. CI MUST fail on divergence. *This is the only test that proves the specification's central claim.*
 
 ---

@@ -9,7 +9,7 @@
 
 ## Proposed direction (starting point, not a decision)
 
-- `encrypt()` MUST reject plaintext longer than **2³¹−1 bytes** with the G6-proposed error class (or a dedicated `LENGTH_EXCEEDED`; the issue picks one).
+- `encrypt()` MUST reject plaintext longer than **2³¹−1 bytes**. G6 has since closed and added `MODE_VIOLATION` to §9, but that code is specifically about the configured mode forbidding an operation, so it is the wrong home for a length rejection — this issue should pick a dedicated `LENGTH_EXCEEDED` rather than reuse it.
 - `decrypt()` MUST reject envelopes whose implied plaintext length exceeds the same bound *before* allocating.
 - Documentation note: this is a field-level encryption spec for database cells; multi-gigabyte values indicate a design error upstream. The bound is deliberately generous (2 GiB) to avoid ever being the binding constraint in legitimate use, while staying below every mainstream language's signed-32-bit buffer cliff. [VERIFY at implementation time: exact buffer maxima for the Phase 1 languages — e.g., Node's `buffer.constants.MAX_LENGTH`, JVM array max — and confirm 2³¹−1 is below all of them.]
 

@@ -2,6 +2,7 @@
 
 **Labels:** §7 · spec-gap · blocks-vectors
 **Blocks:** storage assertions in `blind-index/` vectors; adapter DDL in docs/12/13 (both carry an interim recommendation flagged as pending this issue).
+**Status:** RESOLVED in spec 2026-08-09, adopted as proposed — new docs/02 §7.11 (raw `⌈b/8⌉` bytes in a binary column as the MUST, declared-per-column lowercase hex as the MAY, exact byte/string equality under a binary collation), §7.2 and §7.8 cross-reference it, §12 gains the stored-form obligation; marker sweep in docs/08 §4.4/§9, docs/09 §3.3, docs/12, docs/13, docs/issues/G03. Numbered §7.11 rather than inserted mid-section because §7.9/§7.10 are referenced by G12, G13, docs/12 and docs/13 — renumbering would have broken live cross-references to settle a cosmetic ordering question. Close tracker issue [#8](https://github.com/fieldseal-dev/fieldseal-spec/issues/8) when this lands.
 
 ## Gap
 

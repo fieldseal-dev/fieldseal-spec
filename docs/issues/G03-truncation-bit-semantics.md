@@ -30,7 +30,7 @@ Every stored blind-index value with `b mod 8 ≠ 0`. Nothing exists yet; frozen 
 ## Vector obligations
 
 - `blind-index/` (both files): at least three vectors with `b mod 8 ≠ 0` (e.g., b = 12, 21, 30) pinning the surviving bits and final-byte mask, plus one `b mod 8 = 0` control.
-- The vector's expected value stores the full `ceil(b/8)`-byte truncated output (couples to G8's stored-representation decision).
+- The vector's expected value stores the full `ceil(b/8)`-byte truncated output. G8 has since closed and made that the stored column form too (spec §7.11), so `expected.index` and `expected.stored.binary` are the same bytes — asserted separately on purpose (docs/08 §4.4).
 
 ## Review flag
 
