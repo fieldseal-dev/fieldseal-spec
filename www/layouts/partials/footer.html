@@ -2,8 +2,8 @@
   <div class="wrap">
     <p>
       {{ site.Title }} -- a working draft, not a finished standard.
-      {{ with site.Params.securityEmail }}
-        Security contact: <a href="mailto:{{ . }}">{{ . }}</a>.
+      {{ with site.Params.securityUrl }}
+        Found a vulnerability? <a href="{{ . }}">Report it privately</a>.
       {{ end }}
     </p>
     <p class="muted">
