@@ -30,12 +30,15 @@ Incubating adds a contributor guide, documented governance, multi-party adoption
 - **Implementation changes** follow ordinary review.
 - **Breaking changes to the envelope format** are permitted before v1.0 and forbidden after, except via the suite-retirement mechanism (spec §4.3, §5.9).
 
-## Licensing (proposed, not final)
+## Licensing (settled 2026-08-09)
+
+This is the one section of this document that is no longer proposed. The license files are in the repository and the path-by-path mapping is [`LICENSES.md`](LICENSES.md).
 
 - **Specification and documentation:** CC BY 4.0 — so it can be quoted, profiled, and incorporated into other standards without friction. That is the point of writing a specification.
+- **Test vectors:** CC0 1.0. The open question recorded here — whether the vectors should be CC0 rather than CC BY — is closed in favor of CC0, as this document was leaning. The reasoning that decided it: PRD metric M2 is an implementation *we did not write* passing the vectors, so any obligation that gives an independent implementer a reason to hesitate before running the conformance suite works against the project's central claim. Attribution terms on a file of hex strings are exactly that. Note that CC0 waives copyright, not patents or trademarks — its own text says so, and `LICENSES.md` repeats it so the dedication is not read as broader than it is.
 - **Code:** Apache 2.0 — permissive, with an explicit patent grant, and compatible with OpenSSF and CNCF expectations.
 
-Open question: whether the test vectors should be CC0 rather than CC BY, to remove any attribution friction from a competing implementation running them. Leaning yes — the vectors' value comes from being run, not from being credited.
+Settling this was overdue rather than early: the repository went public on 2026-08-09 carrying no license at all, which meant all-rights-reserved by default, while `docs/16-reviewer-brief.md` was already telling prospective reviewers the specification was CC BY 4.0. A promise made to reviewers should be one the repository actually grants.
 
 ## What is deliberately not decided yet
 

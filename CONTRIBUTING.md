@@ -37,6 +37,12 @@ Two standing rules, and they are not negotiable:
 
 **Do not overclaim.** This project's positioning depends on being the document that says SOC 2 does not require this, that CIS says storage-layer encryption meets the minimum, and that the "60% of small businesses close after a breach" statistic is fabricated. A single unsupported claim costs more credibility than ten supported ones earn.
 
+## Licensing of contributions
+
+By contributing, you agree your contribution is licensed under whichever license governs the path you are touching, per [`LICENSES.md`](LICENSES.md): CC BY 4.0 for the specification and documentation, CC0 1.0 for the test vectors, Apache 2.0 for code. There is no CLA.
+
+If that mapping is wrong for something you want to contribute — a tool that embeds vector data, say — raise it in the issue before opening the PR rather than after.
+
 ## Code of conduct
 
 Be straightforward and assume good faith. Technical disagreement is welcome and expected; a spec that nobody argues with has not been read.
