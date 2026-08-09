@@ -82,7 +82,7 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 
 - `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0x0002 must still derive the correct key for a 0x0001 envelope during mixed-suite reads and rotation).
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
-- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (pending G6 naming), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
+- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
 
 ## 5. Security-relevant implementation notes
 

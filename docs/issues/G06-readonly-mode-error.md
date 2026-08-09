@@ -2,6 +2,7 @@
 
 **Labels:** §9 · §10.3 · spec-gap · blocks-vectors
 **Blocks:** one case in `errors/policy.json`.
+**Status:** RESOLVED in spec 2026-08-09, adopted as proposed (all three items) — docs/02 §9 adds `MODE_VIOLATION` with the API-boundary note, §10.3 rewritten onto two explicit axes with the pass-through choice justified and the orthogonal-knob alternative recorded as considered-and-rejected — including the honest note that the three named modes cover only three of the four combinations those axes allow, and that the omitted one is legitimate rather than absurd, §12 gains the mode vector obligations; marker sweep in docs/08 §4.6/§9, docs/09 §3.1/§3.2/§3.3/§3.5/§9, docs/10, docs/issues/G10. Close tracker issue [#6](https://github.com/fieldseal-dev/fieldseal-spec/issues/6) when this lands.
 
 ## Gap
 

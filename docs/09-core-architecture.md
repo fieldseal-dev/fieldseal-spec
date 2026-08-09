@@ -60,7 +60,7 @@ These pipelines are the reference sequence every implementation follows. Steps m
 ### 3.1 `encrypt(plaintext, ctx) → envelope`
 
 ```
-1. mode check: readonly → mode-violation error            [G6: code pending spec issue]
+1. mode check: readonly → MODE_VIOLATION                   // §9, §10.3 (G6 resolved)
 2. validate ctx (purpose = "encrypt"; table/column UUIDs present, 16 B)
 3. suite = registry[config.write_suite]
 4. (dek, key_id) = key_provider.encryption_key(ctx)        // cache hit expected; MUST NOT do network I/O (§11.1)
@@ -84,10 +84,9 @@ Proposed check order — **this order is an engineering proposal that must be pi
 ```
 1.  mode: all read modes may decrypt
 2.  structural parse:
-      len < min registered envelope length        → NOT_CIPHERTEXT (strict) / pass-through (permissive)
-                                                    / readonly: pending G6 (proposal: pass-through as
-                                                    permissive — readonly exists for migration/rollback
-                                                    windows where unmigrated plaintext is expected)
+      len < min registered envelope length        → NOT_CIPHERTEXT (strict) / pass-through (permissive
+                                                    and readonly — §10.3 gives readonly permissive's
+                                                    non-envelope behavior, G6 resolved)
       fmt_ver unrecognized                        → UNKNOWN_FORMAT_VERSION *
       suite_id not registered                     → NOT_CIPHERTEXT (recognition, §3.4)
       remaining length inconsistent with suite    → NOT_CIPHERTEXT
@@ -122,7 +121,7 @@ Timing note: commitment verification and tag comparison MUST be constant-time co
 
 ```
 1. mode: readonly MAY compute indexes (needed for queries) — readonly forbids *writes*, and an index
-   computed for a WHERE clause is not a write. Flag: worth one sentence in the spec (folded into G6 issue).
+   computed for a WHERE clause is not a write. Normative as of §10.3 (G6 resolved).
 2. declaration = config.index_registry[ctx.table_uuid, ctx.column_uuid, index_id from ctx.purpose]
       missing → configuration error (fail closed; never fall back to a default IDF)
 3. cardinality gate already enforced at construction (§2); here only assert declaration exists
@@ -135,13 +134,15 @@ Timing note: commitment verification and tag comparison MUST be constant-time co
 8. return truncate(raw, declaration.b)       // §7.2: leading ⌈b/8⌉ bytes, trailing bits of final byte zeroed, MSB-first
 ```
 
+The return value is the stored form: spec §7.11 makes those exact `⌈b/8⌉` bytes what goes in the column. The core returns bytes and MUST NOT encode them — the hexadecimal alternative §7.11 permits for text-only columns is applied by the adapter's storage layer, which is also where the binary-collation requirement is enforced through DDL. This keeps the bytes-in/bytes-out rule of §5 intact and keeps one representation decision out of five language cores.
+
 ### 3.4 `is_ciphertext(bytes) → bool`
 
 Pure function of the registry (spec §3.4): length ≥ min registered envelope, recognized `fmt_ver`, **registered** suite (not allow-listed — recognition ≠ authorization). Never decrypts, never trial-decrypts. Operates on raw bytes only; base64-stored deployments decode at the adapter/storage layer before calling the core (the core is bytes-in/bytes-out everywhere — see §5).
 
 ### 3.5 `rotate(envelope, ctx) → envelope`
 
-`decrypt` (full §3.2 pipeline, including allow-list — a retired suite is *not* decryptable even for rotation; un-retiring it for a migration sweep is an explicit, temporary allow-list change, which is the §4.3 model working as intended) followed by `encrypt` under `config.write_suite` and the provider's active-for-write key version. Always produces a fresh envelope (fresh seed, fresh nonce) even when the input is already current — a deterministic "already current, skip" fast path would require comparing key versions, which callers (backfill tooling) can do themselves from the envelope header via the provider; the core stays simple.
+Mode check first: `rotate` produces ciphertext for storage, so `readonly` raises `MODE_VIOLATION` before any of the below runs (§10.3). Then `decrypt` (full §3.2 pipeline, including allow-list — a retired suite is *not* decryptable even for rotation; un-retiring it for a migration sweep is an explicit, temporary allow-list change, which is the §4.3 model working as intended) followed by `encrypt` under `config.write_suite` and the provider's active-for-write key version. Always produces a fresh envelope (fresh seed, fresh nonce) even when the input is already current — a deterministic "already current, skip" fast path would require comparing key versions, which callers (backfill tooling) can do themselves from the envelope header via the provider; the core stays simple.
 
 ### 3.6 `warm(contexts)` (async where the language has async)
 
@@ -232,7 +233,7 @@ KeyProvider:
 
 ## 9. Errors
 
-One root type per language (`FieldsealError`) with exactly the §9 taxonomy as subtypes/codes: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, plus (pending G6) a mode-violation code and a configuration-error code for construction-time failures. Messages carry: error code, suite_id, key_id (hex — it is public envelope content), context identifiers (table/column UUIDs — public by §6.5), and never plaintext, key material, or derived keys (§9). The vector-suite error strings map 1:1 to these codes; the mapping table lives in each per-language spec and is exercised by the `errors/` vectors.
+One root type per language (`FieldsealError`) with exactly the §9 taxonomy as subtypes/codes: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, `MODE_VIOLATION` (added to §9 by G6), plus a configuration-error code for construction-time failures that remains implementation-local — §9 does not define one, because construction never reaches the crypto path or the vectors. Messages carry: error code, suite_id, key_id (hex — it is public envelope content), context identifiers (table/column UUIDs — public by §6.5), and never plaintext, key material, or derived keys (§9). The vector-suite error strings map 1:1 to these codes; the mapping table lives in each per-language spec and is exercised by the `errors/` vectors.
 
 ## 10. Concurrency and process model
 

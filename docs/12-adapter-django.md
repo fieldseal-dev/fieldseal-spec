@@ -46,7 +46,7 @@ The blind-index column is a real, explicit field (`Encrypted.index_column`), not
 1. **Declaration-order safety.** `SQLInsertCompiler.as_sql` iterates fields in declaration order, and the index field's `pre_save` must run after the encrypted field's (`docs/04` §1, verified). With an explicit column the order is visible in source; system check **E001** asserts it at startup rather than trusting convention.
 2. **Migration transparency.** `makemigrations` emits the column with no magic; the operator sees exactly what DDL runs.
 
-`Encrypted.index_column("email")` returns a `BinaryField`-backed field whose `pre_save` reads the *sibling plaintext* off the instance (available — `pre_save` receives `model_instance`, `docs/04` §1) and calls `core.blind_index`. Storage: raw bytes, length `ceil(b/8)` — **interim pending spec gap G8** (`docs/08` §9); the field notes the pending status in its docstring.
+`Encrypted.index_column("email")` returns a `BinaryField`-backed field whose `pre_save` reads the *sibling plaintext* off the instance (available — `pre_save` receives `model_instance`, `docs/04` §1) and calls `core.blind_index`. Storage: raw bytes, length `ceil(b/8)`, per spec §7.11 (G8 resolved) — normative now, not interim. The generated column is `BinaryField`, and the adapter's migration check MUST verify the column's collation is binary where the backend allows a text index column at all (§7.11); MySQL is the case that bites, since a `VARCHAR` index column under a `_ci` collation silently matches values the core treats as distinct.
 
 ## 2. Value path
 
