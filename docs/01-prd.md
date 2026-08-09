@@ -3,7 +3,7 @@
 **Fieldseal: a portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.**
 
 **Status:** Draft 1 · **Date:** 2026-08-08 · **Owner:** Manuel Rivera
-**Naming note:** `Fieldseal` was selected 2026-08-08 after collision vetting (npm and PyPI free; GitHub bare org squatted-but-empty → use `fieldseal-spec`; only trademark adjacency is farm toolboxes in an unrelated class). The earlier working name `OpenFLE` was dropped for one-letter confusability with OpenFHE, the prominent homomorphic-encryption library. Before public release: claim npm scope + PyPI name, check NuGet / Maven Central / crates.io, register a domain, run USPTO TESS.
+**Naming note:** `Fieldseal` was selected 2026-08-08 after collision vetting; the earlier working name `OpenFLE` was dropped for one-letter confusability with OpenFHE, the prominent homomorphic-encryption library. As of 2026-08-08 the npm (`fieldseal` and the `@fieldseal/*` scope) and PyPI (`fieldseal`) names are claimed with placeholders, the GitHub org is `fieldseal-dev`, and crates.io / NuGet / Maven Central remain free. Still outstanding before public release: the PyPI `field-seal` upload, domain registration (`fieldseal.dev`, also required for the `dev.fieldseal` Maven groupId), and a trademark search of Classes 9 and 42 in USPTO TMSearch — which replaced TESS, named in earlier drafts. The full status table lives in the [README](../README.md); the checklist behind it is `internal/naming-tasks.md`.
 
 ---
 
