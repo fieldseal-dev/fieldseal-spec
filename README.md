@@ -133,4 +133,12 @@ See [`SECURITY.md`](SECURITY.md). Do not open public issues for suspected vulner
 
 ## License
 
-Specification and documentation: CC BY 4.0 (proposed). Code: Apache 2.0 (proposed). Not yet finalized — see [`GOVERNANCE.md`](GOVERNANCE.md).
+Three licenses, mapped by path in [`LICENSES.md`](LICENSES.md):
+
+| What | License |
+|---|---|
+| Specification and documentation | [CC BY 4.0](LICENSE-SPEC) — quote it, profile it, fold it into another standard |
+| Test vectors | [CC0 1.0](LICENSE-VECTORS) — public domain, so running the conformance suite carries no obligations |
+| Code | [Apache 2.0](LICENSE) — permissive, with an explicit patent grant |
+
+The rationale is in [`GOVERNANCE.md`](GOVERNANCE.md).

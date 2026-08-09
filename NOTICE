@@ -1,0 +1,11 @@
+Fieldseal
+Copyright 2026 The Fieldseal Authors
+
+This product includes software developed by the Fieldseal project
+(https://fieldseal.dev/).
+
+Portions of this repository are not covered by the Apache License 2.0
+in the accompanying LICENSE file. See LICENSES.md for the mapping:
+the specification and documentation are licensed CC BY 4.0
+(LICENSE-SPEC), and the test vectors are dedicated to the public
+domain under CC0 1.0 (LICENSE-VECTORS).

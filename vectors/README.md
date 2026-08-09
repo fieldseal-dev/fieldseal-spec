@@ -56,4 +56,4 @@ Each must produce the specific error type from spec §9 — not a generic failur
 
 ## Licensing
 
-Proposed CC0, so that a competing or independent implementation can run these with zero attribution friction. Their value comes from being run, not from being credited. See [`../GOVERNANCE.md`](../GOVERNANCE.md).
+**CC0 1.0** ([`../LICENSE-VECTORS`](../LICENSE-VECTORS)), so that a competing or independent implementation can run these with zero attribution friction. Their value comes from being run, not from being credited. This file, being documentation about the vectors rather than a vector, is CC BY 4.0 like the rest of the docs — see [`../LICENSES.md`](../LICENSES.md).
