@@ -2,19 +2,24 @@
 
 **A portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.**
 
+**Read it on the web: [fieldseal.dev](https://fieldseal.dev)** — the specification and every design document below, rendered and cross-linked.
+
 > **Status: pre-alpha design work.** The specification is a working draft. It has not been independently reviewed. Nothing here is ready for production use.
 >
-> **Naming and namespaces — status checked 2026-08-08.** The earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
+> **Naming and namespaces — status checked 2026-08-10.** The earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
 >
 > | Namespace | Status |
 > |---|---|
 > | GitHub org `fieldseal-dev` | **Ours.** Canonical home; holds this repository |
+> | `fieldseal.dev` | **Ours.** Registered and live — this repository's `www/` published to GitHub Pages, HTTPS enforced |
 > | npm `fieldseal` | **Claimed** — 0.0.0 placeholder |
 > | npm `@fieldseal/*` scope | **Claimed** — org created, `@fieldseal/core` 0.0.0 placeholder published |
 > | PyPI `fieldseal` | **Claimed** — 0.0.0 placeholder |
 > | PyPI `field-seal` | **Not yet claimed** — distribution built, upload pending. PEP 503 does *not* fold this into `fieldseal`; they are separate names |
-> | crates.io · NuGet · Maven Central | **Unclaimed and free.** Maven needs the domain first, for the `dev.fieldseal` groupId |
-> | `fieldseal.dev` · `.org` · `.io` | **Available, not yet registered** |
+> | Maven Central `dev.fieldseal` | **Unclaimed.** The groupId needs the domain, which is now held, so this is claimable whenever Phase 1 needs it |
+> | crates.io · NuGet | **Unclaimed and free** |
+> | `fieldseal.org` | **Available** — no DNS delegation as of this check |
+> | `fieldseal.io` | **Gone.** Registered by someone else since the previous check and parked (serves HTTP 410). It was listed as available here on 2026-08-08; it is not |
 > | `fieldseal.com` | **Held by someone else.** `.dev` is the canonical home; nothing here implies `.com` |
 > | GitHub org `fieldseal` (bare) | **Unobtainable.** Squatted but empty, and GitHub does not reclaim names for inactivity — a registered trademark is the only route, which is not worth pursuing for the org name alone |
 >
@@ -69,8 +74,10 @@ Three artifacts:
 | [`docs/14-conformance-ci.md`](docs/14-conformance-ci.md) | How conformance is claimed and proven; the N×N cross-implementation CI job. |
 | [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
 | [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
-| [`docs/issues/`](docs/issues/) | Ready-to-post issue drafts for the thirteen spec gaps (G1–G13) found during tech-spec authoring and review. |
+| [`docs/issues/`](docs/issues/) | The thirteen spec gaps (G1–G13) found during tech-spec authoring and review, posted as [issues #1–#13](https://github.com/fieldseal-dev/fieldseal-spec/issues). Eight are now resolved in the draft; the five that remain — G1, G2, G4, G5, G7 — are exactly the five that cannot close without cryptographic review. Each file carries the issue body and, where closed, the resolution. |
 | [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: reading path, the eight gating questions, ground rules. |
+
+All of these are published at **[fieldseal.dev/docs](https://fieldseal.dev/docs/)** if you would rather read them in a browser. The site is built from `docs/` in this repository — there is exactly one copy of the specification text, so the published version cannot drift from the source.
 
 **Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct.**
 
@@ -89,7 +96,15 @@ tools/
 bench/                 published benchmarks and the migration cost model
 docs/                  design documents (above)
 examples/              end-to-end demonstration applications
+www/                   the fieldseal.dev site — Hugo, no theme, no JavaScript;
+                       docs/ is synced in at build time, never edited here
+internal/              namespace-placeholder packages (npm, PyPI), not a product
 ```
+
+Everything under `core/`, `adapters/`, `tools/`, `bench/`, `examples/`, and `vectors/` is a
+directory with a README describing what will land there in Phase 1. There is no code yet, by
+design — see [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for what
+unblocks it.
 
 ## Design commitments
 
@@ -125,7 +140,15 @@ Reproduced from the spec so nobody has to find them:
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Specification changes go through an issue before a PR. Cryptographic review is actively wanted, especially on the open questions in spec §13 and the contested claims in §14.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Specification changes go through an issue before a PR, and every normative change needs a citation and test vectors.
+
+**Cryptographic review is the gate on everything else.** Phase 0 does not exit — and no code gets written — until the specification has been reviewed by people who did not write it. [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) is the brief: the reading path, the eight gating questions, and the ground rules. The five open spec gaps ([#1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1), [#2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2), [#4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), [#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5), [#7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7)) are deliberately unresolved for the same reason.
+
+Also valuable, and not requiring a cryptographer:
+
+- **ORM internals.** Several claims in [`docs/04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) were reasoned from documentation rather than verified against source. Corrections from people who know Django, SQLAlchemy, Prisma, Hibernate, EF Core, GORM, or TypeORM internals are wanted.
+- **Compliance mapping.** [`docs/03-compliance-mapping.md`](docs/03-compliance-mapping.md) §8 lists what could not be verified.
+- **Anything you have built in-house.** If you have shipped field-level encryption and watched it break, that is the experience the design is missing.
 
 ## Security
 
