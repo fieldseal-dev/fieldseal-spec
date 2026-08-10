@@ -28,7 +28,7 @@ model Patient {
 
 - **Column type:** `Bytes` (→ `bytea`) is the default and recommendation (spec §3.3). `String` columns with base64 are supported for migration compatibility with `prisma-field-encryption` deployments, gated behind an explicit `storage: "base64"` annotation and the documented 33% overhead warning. This choice covers the *envelope* column only: the blind-index sibling is governed by spec §7.11, where `Bytes` of length exactly `⌈b/8⌉` is a MUST and base64 is not among the alternatives — an index column may be raw bytes or lowercase hex, nothing else, because its bytes are compared rather than round-tripped.
 - **DMMF availability:** Prisma 7's Rust-free client changed DMMF exposure (`docs/04` §3) — the extension constructor takes an explicit `dmmf` option, with auto-detection attempted first and a clear error telling the user to pass it when detection fails. **[VERIFY at implementation: the supported way to obtain DMMF in current Prisma 7.x.]**
-- The index sibling is a plain (non-unique) `@@index` column: `truncate_bits` must sit inside the §7.4 band (9–15 bits for P = 100,000), which **mandates collisions** — a `@unique` sibling would reject legitimate distinct emails (spec issue G12), and the index is a filter, never an answer (spec §7.5).
+- The index sibling is a plain (non-unique) `@@index` column: `truncate_bits` must sit inside the §7.4 band (9–15 bits for P = 100,000), which **mandates collisions** — a `@unique` sibling would reject legitimate distinct emails, which spec §7.10 now forbids outright (G12 resolved 2026-08-09), and the index is a filter, never an answer (spec §7.5).
 - Annotation parsing happens once at extension construction, producing a frozen per-model **field map**: `{ model → { encryptedFields, indexFields, tableUuid, contexts } }`. A malformed annotation is a construction-time error, never a runtime skip. The parsed declarations feed core-client construction (§2), where the §7.6 cardinality gate applies: a declared index whose `projected_population` is below 2¹⁰ fails construction unless the extension options carry the explicit, logged `cardinalityOverride` declaration spec §7.6 requires — the override lives in code reviewed by humans, never in a schema comment.
 
 ## 2. Extension architecture
@@ -75,7 +75,7 @@ Pipeline per operation:
 
 Write-tree coverage (each an explicit visitor case + test): `create.data`, `createMany.data[]`, `update.data`, `updateMany.data`, `upsert.create/update`, nested relation writes (`data.<rel>.create|createMany|update|upsert|connectOrCreate.create`), and `set`/`unset` forms on supported field types.
 
-Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`) recursively, `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, G12; the rewrite target is `findFirst` with equality + re-verify).
+Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`) recursively, `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, which §7.10 now states normatively per G12; the rewrite target is `findFirst` with equality + re-verify).
 
 ## 3. Read path
 
@@ -85,7 +85,7 @@ Read modes: core modes apply as-is; `permissive` fires the extension's `onPlaint
 
 ## 4. The mandatory throw list (spec §10.2 — normative for this adapter)
 
-Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten filter shapes get the *value encrypted instead*, silently returning zero rows. The rule: **nothing on this list may silently degrade, and nothing may be downgraded to a warning.** Two rows have an explicitly specified alternative to throwing — `in:`/`notIn:` upgrades to an index rewrite when an index is declared (see the note below the table and spec issue G13), and raw ops (whose SQL the extension cannot inspect) default to passthrough + warning hook with `strictRaw` opting into the throw. Every other row throws `FieldsealNotSupported` unconditionally, with the field name, the shape, and the honest fallback from spec §7.10.
+Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten filter shapes get the *value encrypted instead*, silently returning zero rows. The rule: **nothing on this list may silently degrade, and nothing may be downgraded to a warning.** Two rows have an explicitly specified alternative to throwing — `in:`/`notIn:` upgrades to an index rewrite when an index is declared, which spec §10.2 explicitly permits as of G13 (see the note below the table), and raw ops (whose SQL the extension cannot inspect) default to passthrough + warning hook with `strictRaw` opting into the throw. Every other row throws `FieldsealNotSupported` unconditionally, with the field name, the shape, and the honest fallback from spec §7.10.
 
 | Shape on an encrypted field | Why |
 |---|---|
@@ -98,10 +98,10 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | `aggregate` (`_min`/`_max`/`_sum`/`_avg`) on an encrypted field | Spec §7.10 |
 | `cursor` on an encrypted field | Pagination on ciphertext is incorrect (spec §7.5) |
 | Raw ops (`$queryRaw`, `$executeRaw`) when `strictRaw: true` | Parameters are never encrypted by any ORM (spec §10.2); default is passthrough + warning hook, strict deployments opt into throwing |
-| `findUnique` naming an encrypted or index field | Neither can be unique (G12); rewrite target is `findFirst` + re-verify |
+| `findUnique` naming an encrypted or index field | Neither can be unique (spec §7.10, G12); rewrite target is `findFirst` + re-verify |
 | `where.<encrypted>` with **no declared index** | Equality without an index cannot be served (randomized suite) — throw with "declare a blind index or filter after fetch" |
 
-`in:` with a declared index is rewritten to `emailBidx: { in: [bidx(v1), bidx(v2), …] }` — membership is exactly what spec §7.10 supports ("N indexes OR'd"), and it is the one shape the existing library breaks on that this adapter upgrades rather than merely rejects. **Honest conflict flag:** spec §10.2's Prisma bullet says `in:` MUST be rejected, unconditionally; §7.10 says membership is supported. This adapter follows §7.10 and files the contradiction as spec issue **G13** — §10.2's MUST was written against path-surgery implementations that mis-encrypt, a failure mode the schema-driven rewrite does not have. Until G13 closes, the coverage matrix flags this row as a documented deviation from §10.2's letter.
+`in:` with a declared index is rewritten to `emailBidx: { in: [bidx(v1), bidx(v2), …] }` — membership is exactly what spec §7.10 supports ("N indexes OR'd"), and it is the one shape the existing library breaks on that this adapter upgrades rather than merely rejects. **Conflict resolved (G13, issue #13, 2026-08-09):** §10.2's Prisma bullet now scopes its MUST — reject `in:` *unless* the adapter rewrites it to the declared blind index with §7.5 re-verification, and reject whenever the rewrite cannot be guaranteed (no declared index, or a filter path the interception surface does not reach). This adapter's rewrite is conformant to §10.2's letter as of that change, so the coverage matrix no longer carries it as a deviation. `contains:`/`startsWith:` stay unconditional rejections, and §10.2 now says explicitly that a §7.9 prefix index is queried through its own declared predicate rather than by rewriting `startsWith:` — do not add that rewrite here.
 
 ## 5. Tenant context and L4
 
@@ -113,7 +113,7 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | Path | Behavior |
 |---|---|
 | `create`, `createMany`, `update`, `updateMany`, `upsert`, nested writes | ✅ encrypts + index siblings |
-| `findMany/findFirst/count` with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (`in:` rewrite pending G13 — documented §10.2 deviation) |
+| `findMany/findFirst/count` with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (the `in:` rewrite is conformant to §10.2 as of G13; no deviation remains) |
 | Backfill (`tools/backfill`, docs/15) | ✅ per-row `update`/batched `updateMany` **through the extension** — traverses the §2 pipeline, asserted by a coverage test **[VERIFY at implementation: this is the proposed path; docs/04 §11 verified only the Django/SQLAlchemy backfill writes]** |
 | All §4 shapes | 🛑 throw |
 | `delete`/`deleteMany` by encrypted field | ✅ via index rewrite where declared; 🛑 otherwise |

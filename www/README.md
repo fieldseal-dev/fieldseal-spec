@@ -53,16 +53,21 @@ Regenerate only if you change the highlight style.
 `.github/workflows/pages.yml` builds on every push to `main` that touches
 `www/` or `docs/`, and publishes to GitHub Pages.
 
-Two things must be done once, in the repository settings:
+The site is live at <https://fieldseal.dev>. The two one-time repository
+settings it needed are done:
 
 1. **Settings -> Pages -> Source: GitHub Actions.**
-2. **Settings -> Pages -> Custom domain: `fieldseal.dev`**, then tick
-   **Enforce HTTPS** once the certificate has been issued (up to an hour).
+2. **Settings -> Pages -> Custom domain: `fieldseal.dev`**, with **Enforce
+   HTTPS** ticked — plain HTTP now redirects to HTTPS.
 
-And once at the account/organisation level: **verify the domain** (Settings ->
-Pages -> Add a domain) so that no other repository can publish to
-`fieldseal.dev`. This is what prevents a domain takeover if Pages is ever
-unlinked.
+One item may still be outstanding, at the account/organisation level: **verify
+the domain** (Settings -> Pages -> Add a domain) so that no other repository can
+publish to `fieldseal.dev`. This is what prevents a domain takeover if Pages is
+ever unlinked, and it is not observable from outside — check it in settings
+rather than assuming it from the site being up.
+
+Note that the workflow deploys from `main` only. Work merged to `dev` does not
+reach the site until `dev` merges to `main`.
 
 `static/CNAME` is committed as a belt-and-braces measure; the custom domain
 configured in repository settings is what actually takes effect.
