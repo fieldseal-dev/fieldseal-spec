@@ -44,7 +44,7 @@ vectors/
     canonical.json
   blind-index/
     hmac-sha512.json
-    argon2id.json
+    argon2id.json          HELD OUT of the suite — see §9; listed in MANIFEST.held_out
   commitment/
     ff01.json
     ff02.json
@@ -138,7 +138,9 @@ Input state is complete: no key provider, no cache, no modes — this family tes
 - Each envelope vector is exercised in **both directions**: encrypt(inputs) → `expected.envelope`, and decrypt(`expected.envelope`) → `plaintext`. The harness contract (§5) requires both.
 - `suite_id` sits at the vector's top level, outside the `context` object, deliberately: the context's `suite_id` member is filled by the **core**, never by the caller — from the write suite on encrypt and from the parsed header on decrypt (docs/09 §3.2 step 4). A vector that carried it inside `context` would imply the caller supplies it.
 
-Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-shaped value · a 1 KiB value · a value crossing an AEAD block boundary · `row_id` present · `row_id` absent · `tenant_id` present · multi-byte UTF-8 plaintext (as raw bytes — the core is bytes-in/bytes-out) · maximum-length `purpose` string.
+Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-shaped value · a 1 KiB value · a value crossing an AEAD block boundary · `row_id` present · `row_id` absent · `tenant_id` present · `tenant_id` absent · multi-byte UTF-8 plaintext (as raw bytes — the core is bytes-in/bytes-out).
+
+**Correction 2026-08-22 — "maximum-length `purpose` string" was removed from that list.** It is not expressible in this family: spec §5.3 constrains record-key derivation to `purpose = "encrypt"`, so an envelope vector cannot carry an index purpose at all. A generator that substituted an encrypt context to satisfy the requirement would emit a byte-identical duplicate of the basic round trip under a name claiming otherwise — which is worse than no coverage, because it reports as a passing case. The maximum-length `index-id` is covered where it is actually reachable, in `context/canonical.json`.
 
 ### 4.2 `kdf/` — key derivation
 
@@ -302,7 +304,11 @@ Contract, binding on all core tech specs:
 
 - Vectors are **generated, reviewed, then frozen** — never hand-computed. A generator tool (`tools/vector-gen/`, Python, because Phase 1 builds the Python core first) produces every file from a single source of inputs.
 - **Independent verification before freeze:** expected values MUST be confirmed by a second, independently-written computation before a vector file is tagged. Phase 1 provides this naturally: the TypeScript core is written against the frozen *inputs* and must reproduce the expected values without consulting the generator. Divergence at this step means either an implementation bug or a spec ambiguity — both are exactly what the suite exists to catch. The generator is not an oracle; agreement of two independent implementations is.
-- Where an external, already-published vector exists for a primitive (HKDF-SHA-512 — RFC 5869 test vectors are SHA-256 only, so only structural reuse; Argon2id — RFC 9106 §5.3 test vector; AES-256-GCM — NIST CAVP GCM vectors; XChaCha20-Poly1305 — no RFC vectors exist, the construction has no RFC; libsodium's test suite is the de-facto source, see gap G7), the generator's primitive layer MUST be checked against it first. **[Flag: the primitive-vector sources named here were not re-verified against current publications; confirm during vector authoring.]**
+- Where an external, already-published vector exists for a primitive, the generator's primitive layer MUST be checked against it first. **Status of each source, re-verified 2026-08-22 (this bullet previously carried a flag saying they had not been):**
+  - **HKDF-SHA-512** — RFC 5869's test vectors are SHA-256 and SHA-1 only, so only the structure is reusable, not the values. Unchanged from the original assessment.
+  - **AES-256-GCM** — NIST CAVP GCM vectors apply directly. **[VERIFY]** not yet wired into the generator's primitive layer.
+  - **XChaCha20-Poly1305** — no RFC vectors exist because the construction has no RFC (gap G7); libsodium's test suite is the de-facto source.
+  - **Argon2id** — ⚠️ **the plan named here does not work.** RFC 9106 §5.3's Argon2id test vector supplies a nonzero secret (`Secret[8]: 03 03 …`) and nonzero associated data (`Associated data[12]: 04 04 …`). Spec §7.3 forbids both `K` and `X`, and Python cannot supply `K` at all (gap G2's portability finding) — so this vector is **unreproducible on the Fieldseal stack** and cannot serve as the primitive check. A substitute known-answer source with empty `K`/`X` must be found before `blind-index/argon2id.json` is frozen; libsodium's `crypto_pwhash` test suite is the leading candidate, since libsodium is exactly the library that cannot supply `K` either. **Recorded as an open item, not a solved one.**
 - The Windows caveat: the repo pins LF via `.gitattributes` — the generator writes bytes, not platform-dependent text.
 
 ## 8. What is deliberately out of scope for the vector suite
@@ -326,4 +332,8 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 | G7 | Suite 0xFF02's AEAD (XChaCha20-Poly1305) has no IETF RFC; the spec does not name a normative definition (libsodium's construction is the de-facto standard; draft-irtf-cfrg-xchacha expired) | `envelope/ff02.json` confidence, though not its mechanics |
 | G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values — **resolved 2026-08-09** (issue #8): spec §7.11 makes raw `⌈b/8⌉` bytes in a binary column the MUST, lowercase hex without prefix the declared-per-column MAY, exact byte/string equality under a binary collation | `blind-index/` storage assertions unblocked; the adapter specs' interim recommendation is now normative |
 
-Nothing else in this document is blocked: file formats, schemas, harness contract, injection contract, cross protocol, and the `errors/format.json` + `errors/policy.json` families can be built immediately — `errors/policy.json` in full, now that G6 has closed.
+**Status 2026-08-22 — nothing in this document is blocked any longer, and one family is deliberately held out.** G3, G6 and G8 closed on their merits; G1, G2, G4, G5 and G7 are *provisionally adopted* under Gate 0a (PRD §8) and remain open on the tracker, which is enough for a generator to be written against them. `tools/vector-gen/` emits `context/`, `kdf/`, `commitment/`, `blind-index/` and `envelope/ff01.json`.
+
+**`blind-index/argon2id.json` is generated but NOT part of the pinned suite.** Its primitive has never been checked against an external known-answer source, and per §7 above the source this document named for that purpose cannot be used. Both reference implementations would otherwise inherit the same unverified assumption from one generator and agree with each other while being wrong — which is precisely the failure the two-implementation rule exists to prevent, so agreement here would be evidence of nothing. `MANIFEST.json` carries it under `held_out` rather than omitting it, with the reason and the unblocking condition; the file itself carries `"status": "held-out"`. A conformance run MUST iterate `files` only (`docs/14` §4).
+
+What a provisional adoption costs is regeneration, not redesign: if Gate 0b changes a construction, the affected family is regenerated and the provisional suite identifier retires (spec §4.8).

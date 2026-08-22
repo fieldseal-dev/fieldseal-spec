@@ -1,0 +1,194 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "core/**"
+      - "vectors/**"
+      - "tools/vector-gen/**"
+      - ".github/workflows/conformance.yml"
+  pull_request:
+    paths:
+      - "core/**"
+      - "vectors/**"
+      - "tools/vector-gen/**"
+      - ".github/workflows/conformance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin the toolchain. Bump deliberately, not automatically.
+  PYTHON_VERSION: "3.12"
+  # >= 24.7.0: the TypeScript core's Argon2id backend is node:crypto's
+  # argon2Sync, which first shipped there (core/typescript/README.md).
+  NODE_VERSION: "24"
+
+jobs:
+  typescript-core:
+    name: TypeScript core vs the pinned vector suite
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core/typescript
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: core/typescript/package-lock.json
+
+      - name: Install (lockfile-exact)
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run typecheck && npm run build
+
+      - name: Run the suite (vectors, gates, totality, primitives, providers)
+        run: npm test
+
+      # Same harness code as the vitest run, emitted in the docs/14 §4 shape.
+      # Exit status is non-zero on any failure or non-pass out-of-band entry.
+      - name: Emit the conformance report
+        run: npm run --silent vectors > ../../conformance-typescript.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-typescript
+          path: conformance-typescript.json
+
+  python-core:
+    name: Python core vs the pinned vector suite
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the core and its test extras
+        run: python -m pip install --disable-pip-version-check -e "./core/python[argon2,dev]"
+
+      - name: Run the suite
+        run: python -m pytest core/python/tests -q
+
+      - name: Emit the conformance report
+        run: python core/python/tests/run_vectors.py > conformance-python.json
+
+      # docs/14 §4: reports are uploaded as artifacts on every run.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-python
+          path: conformance-python.json
+
+  vectors-reproducible:
+    name: Vectors match a fresh generation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the generator
+        run: python -m pip install --disable-pip-version-check -e ./tools/vector-gen
+
+      # The generator is deterministic by construction -- no CSPRNG, no clock
+      # (docs/08 §7). So a regenerated suite that differs from the committed
+      # one means one of three things, all of which should fail the build: a
+      # vector was hand-edited, the generator changed without its output being
+      # regenerated, or a dependency changed a primitive underneath us.
+      - name: Regenerate and diff
+        run: |
+          python -m fieldseal_vectorgen --out vectors
+          if ! git diff --quiet -- vectors; then
+            echo "::error::Committed vectors differ from a fresh generation."
+            echo "Run: python -m fieldseal_vectorgen --out vectors"
+            git diff --stat -- vectors
+            git diff -- vectors/MANIFEST.json
+            exit 1
+          fi
+          echo "Committed vectors match a fresh generation."
+
+  suite-integrity:
+    name: Suite integrity invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # These are properties of the vector suite as published, independent of
+      # any implementation, so they run without installing one.
+      - name: Check manifest, hold-outs, and provisional labelling
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, sys
+
+          root = pathlib.Path("vectors")
+          m = json.loads((root / "MANIFEST.json").read_text("utf-8"))
+          fail = []
+
+          pinned = {f["path"] for f in m["files"]}
+          held = {h["path"] for h in m.get("held_out", [])}
+
+          # A file cannot be both vouched for and held out.
+          overlap = pinned & held
+          if overlap:
+              fail.append(f"listed as both pinned and held out: {sorted(overlap)}")
+
+          for entry in m["files"]:
+              p = root / entry["path"]
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != entry["sha256"]:
+                  fail.append(f"{entry['path']}: sha256 {got} != {entry['sha256']}")
+              doc = json.loads(p.read_text("utf-8"))
+              # The file's own status must agree with the manifest, because a
+              # harness may load either one first.
+              if doc.get("status") != "pinned":
+                  fail.append(f"{entry['path']}: in MANIFEST.files but status={doc.get('status')!r}")
+
+          for entry in m.get("held_out", []):
+              doc = json.loads((root / entry["path"]).read_text("utf-8"))
+              if doc.get("status") != "held-out":
+                  fail.append(f"{entry['path']}: held out but status={doc.get('status')!r}")
+              for field in ("reason", "unblocks_when"):
+                  if not entry.get(field):
+                      fail.append(f"{entry['path']}: held out without {field}")
+
+          # Spec §4.8: until Gate 0b closes, nothing may be published as a
+          # frozen format. This guards against the label being dropped by
+          # accident rather than by decision.
+          if not m.get("provisional"):
+              fail.append("MANIFEST.provisional is not true while suites are provisional")
+          if not m["vector_suite_version"].endswith("-provisional"):
+              fail.append(f"vector_suite_version {m['vector_suite_version']!r} lacks the -provisional suffix")
+
+          for entry in m["files"]:
+              doc = json.loads((root / entry["path"]).read_text("utf-8"))
+              for v in doc["vectors"]:
+                  sid = v.get("suite_id")
+                  if sid and not sid.upper().startswith("0XFF"):
+                      fail.append(f"{v['id']}: suite_id {sid} is outside the §4.8 provisional range")
+
+          if fail:
+              print("::error::suite integrity checks failed")
+              for f in fail:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print(f"OK: {len(pinned)} pinned, {len(held)} held out, all provisional.")
+          PY

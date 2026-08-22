@@ -360,16 +360,21 @@ An identifier outside this grammar MUST be refused as a configuration error when
 
 ### 6.2 Canonical encoding (normative)
 
-> **[PROVISIONAL — G4]** The encoding below is injective only once the absent-field cases are pinned, and they are not. `row_id` is "omitted entirely if null" (§6.4), while `tenant_id` has no stated null encoding at all — so an absent `tenant_id` and a present-but-zero-length `tenant_id` currently produce identical bytes. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). An implementation built under Gate 0a MUST adopt the presence-bitmap proposal in that issue; the field set it covers may change at Gate 0b.
+> **[PROVISIONAL — G4]** The presence-bitmap encoding below is adopted provisionally under Gate 0a — it is what makes this encoding injective across the absent-versus-zero-length cases, which the previous positional form was not. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). What stays open is whether the encoding is injective over the current *and* plausibly-extended field set; the bit assignment may change at Gate 0b.
 
 ```
 canonical_context(ctx) =
-    u64be(len(suite_id))   ‖ suite_id
-  ‖ u64be(len(table_uuid)) ‖ table_uuid
-  ‖ u64be(len(column_uuid))‖ column_uuid
-  ‖ u64be(len(tenant_id))  ‖ tenant_id
-  ‖ u64be(len(row_id))     ‖ row_id        // omitted entirely if null
-  ‖ u64be(len(purpose))    ‖ purpose
+    u8(presence)
+  ‖ u64be(len(suite_id))    ‖ suite_id
+  ‖ u64be(len(table_uuid))  ‖ table_uuid
+  ‖ u64be(len(column_uuid)) ‖ column_uuid
+  ‖ [ u64be(len(tenant_id)) ‖ tenant_id ]      // present iff presence & 0x01
+  ‖ [ u64be(len(row_id))    ‖ row_id    ]      // present iff presence & 0x02
+  ‖ u64be(len(purpose))     ‖ purpose
+
+presence : bit 0 (0x01) — tenant_id present
+           bit 1 (0x02) — row_id present
+           bits 2–7     — reserved, MUST be zero
 
 AAD(header, ctx) =
     u64be(len(fmt_ver))    ‖ fmt_ver
@@ -378,9 +383,13 @@ AAD(header, ctx) =
   ‖ canonical_context(ctx)
 ```
 
+An absent optional field contributes **nothing** to the encoding — not a length, not a value — and its presence bit is zero. A present field contributes its length prefix and its bytes even when that length is zero. `tenant_id = null` and `tenant_id = b""` therefore differ in the first byte, which is the case the positional form could not distinguish. Reserved bits MUST be written as zero; `canonical_context` is only ever produced and recomputed, never parsed, so this is a producer obligation with no decoder counterpart.
+
 `canonical_context` covers only `FieldContext` fields, and is therefore well-defined both for encryption (§5.3) and for index derivation (§7.2), which has no envelope. The envelope-bound fields — `fmt_ver`, `key_id`, `msg_seed` — enter only the AAD. Naive concatenation MUST NOT be used.
 
-*Justification.* Unlength-prefixed concatenation is forgeable across field boundaries. RFC 7518 §5.2 and Tink's AES-CTR-HMAC both use explicit bit-length encoding for exactly this reason.
+*Justification.* Unlength-prefixed concatenation is forgeable across field boundaries. RFC 7518 §5.2 and Tink's AES-CTR-HMAC both use explicit bit-length encoding for exactly this reason. The bitmap is added on top because length prefixes alone do not distinguish *absent* from *present-and-empty* when the field is optional: the previous form omitted `row_id` entirely if null while giving `tenant_id` no null rule at all, so two different contexts could encode identically — and since `canonical_context` is both the KDF `info` and part of the AAD (§6.3), such a collision would be a key-reuse bug and an authentication bug at once. Declaring presence before the fields also makes extension cheap: a new optional field takes the next free bit, and adding one cannot silently alias against any existing encoding.
+
+*Injectivity argument, stated so it can be attacked.* Fix the field set. The first byte determines exactly which optional fields appear and in what order; every field that appears is `u64be` length-prefixed with a fixed-width length; the mandatory fields are always present in a fixed order. Parsing is therefore unambiguous left to right, so distinct `FieldContext` values produce distinct byte strings. This is the claim Q4 asks a reviewer to confirm or break — including under future extension, where the argument holds only while new fields consume new bits rather than being appended positionally.
 
 ### 6.3 Dual-layer binding (normative)
 
@@ -452,7 +461,7 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 ### 7.3 Index derivation function selection (normative)
 
-> **[PROVISIONAL — G2]** The selection *rule* below is settled; its parameterization is not. The Argon2id invocation layout that realizes it — what serves as password, how the salt is derived, and where the index key enters (RFC 9106's secret parameter `K`) — is unsettled: see [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3). Blind-index vectors under Gate 0a are generated from the proposal in that issue and are expected to change if it does.
+> **[PROVISIONAL — G2]** The selection rule and the invocation below are adopted provisionally under Gate 0a. **Narrowed 2026-08-22:** routing the index key through Argon2's secret parameter `K` — the original proposal — is **ruled out on portability grounds**, which is an engineering finding the project could settle itself, not a cryptographic judgment (see the Argon2id invocation below and [gap G2](issues/G02-argon2id-parameters.md)). What remains open is cryptographic and stays with the reviewers: whether salt-only keying through a domain-separated HKDF step is sound for this deterministic, keyed use. See [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3).
 
 | Domain class | Required IDF | Examples |
 |---|---|---|
@@ -463,6 +472,32 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 **Honest cost, which MUST be documented:** Argon2id at 4 iterations / 32 MiB costs roughly 10–100 ms **per query term**. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
 
+**Argon2id invocation (normative).** Where §7.3 selects Argon2id, `IDF(index_key, normalize(plaintext))` is exactly:
+
+```
+salt = HKDF-SHA-512(ikm    = index_key,
+                    salt   = "",
+                    info   = "fieldseal-argon2-salt-v1",
+                    length = 16)
+
+raw  = Argon2id(password    = normalize(plaintext),
+                salt        = salt,
+                version     = 0x13,
+                t           = 3,          // iterations
+                m           = 32768,      // KiB, i.e. 32 MiB
+                p           = 1,          // parallelism
+                output_len  = 64)
+```
+
+The index key enters **only** through the salt. Argon2's optional secret parameter `K` (RFC 9106 §3.1) MUST NOT be used, and its associated-data parameter `X` MUST NOT be used. Deployments MAY raise `t` and `m`; raising either produces a different index and is therefore a new index under §7.8, not a reconfiguration of an existing one. `version`, `p`, `output_len`, and the salt derivation MUST NOT vary.
+
+*Justification, and an honest cost.* The obvious construction routes `index_key` through `K`, which is what this specification proposed until 2026-08-22. It is not implementable portably: libsodium's `crypto_pwhash` exposes no secret parameter at all, and Python's `argon2-cffi` exposes one only through an ultra-low-level call its own documentation warns against, while Node's `node-argon2` does expose it. A construction that one reference core can express and another cannot is this project's central claim failing, so `K` is excluded on portability grounds rather than on cryptographic ones. The evidence table is in [gap G2](issues/G02-argon2id-parameters.md).
+
+Two costs follow and are stated rather than hidden. First, keying now rests entirely on the salt, so the defense-in-depth argument for `K` — that the index stays keyed even if the salt derivation is misused — is gone. Second, the salt is fixed at 16 bytes because libsodium requires exactly that, so the keyed material at this step is 128 bits rather than the index key's 256. An adversary without `index_key` still faces a 128-bit barrier before the memory-hard function, which is not the binding constraint on this design, but it is a reduction and it is forced by portability.
+
+`p = 1` is likewise forced: libsodium exposes no parallelism parameter, so any other value is unreachable there. **[VERIFY]** libsodium's fixed internal value during Phase 1; if it is not 1, this line changes and every Argon2id vector regenerates.
+
+The construction that remains — a memory-hard function over the plaintext, keyed through a domain-separated salt derived from a per-index key — is the shape CipherSweet ships, which documents Argon2id "where the blind index key is the Argon2 salt." This specification adds the HKDF step so that the raw index key is never handed to Argon2 directly and so that the salt is domain-separated from every other use of that key.
 ### 7.4 Truncation length (normative)
 
 Let `P` be the projected number of **distinct** values in the column (not the number of rows). `P` MUST be ≥ 16.

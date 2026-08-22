@@ -1,0 +1,140 @@
+{
+  "schema": "fieldseal-vectors/context/v1",
+  "vector_suite_version": "0.1.0-provisional",
+  "group": "context",
+  "spec_version": "0.1-draft",
+  "status": "pinned",
+  "vectors": [
+    {
+      "id": "context/canonical/both-absent",
+      "description": "neither optional field present",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": null,
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "presence": 0,
+        "canonical_context": "000000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad20000000000000007656e6372797074",
+        "length": 74
+      }
+    },
+    {
+      "id": "context/canonical/tenant-present",
+      "description": "tenant_id present, row_id absent",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "presence": 1,
+        "canonical_context": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d303030310000000000000007656e6372797074",
+        "length": 93
+      }
+    },
+    {
+      "id": "context/canonical/both-present",
+      "description": "tenant_id and row_id both present",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": "726f772d3432",
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "presence": 3,
+        "canonical_context": "030000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d303030310000000000000006726f772d34320000000000000007656e6372797074",
+        "length": 107
+      }
+    },
+    {
+      "id": "context/canonical/row-only",
+      "description": "row_id present without tenant_id",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": null,
+        "row_id": "726f772d3432",
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "presence": 2,
+        "canonical_context": "020000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad20000000000000006726f772d34320000000000000007656e6372797074",
+        "length": 88
+      }
+    },
+    {
+      "id": "context/canonical/tenant-zero-length",
+      "description": "tenant_id present with zero length -- MUST differ from tenant-absent (gap G4)",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "presence": 1,
+        "canonical_context": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad200000000000000000000000000000007656e6372797074",
+        "length": 82
+      }
+    },
+    {
+      "id": "context/canonical/purpose-index",
+      "description": "purpose retargeted to an index (spec §7.2)",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "expected": {
+        "presence": 1,
+        "canonical_context": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d30303031000000000000000e696e6465783a656d61696c2d6571",
+        "length": 100
+      }
+    },
+    {
+      "id": "context/canonical/purpose-max-index-id",
+      "description": "index-id at the §6.1 grammar's 32-char maximum",
+      "spec_ref": "§6.1, §6.2",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expected": {
+        "presence": 1,
+        "canonical_context": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d303030310000000000000026696e6465783a6161616161616161616161616161616161616161616161616161616161616161",
+        "length": 124
+      }
+    },
+    {
+      "id": "context/canonical/absent-differs-from-zero-length",
+      "description": "absent tenant_id and zero-length tenant_id MUST NOT produce the same encoding (gap G4)",
+      "spec_ref": "§6.2",
+      "assertion": "distinct",
+      "expected": {
+        "tenant_absent": "000000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad20000000000000007656e6372797074",
+        "tenant_zero_length": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad200000000000000000000000000000007656e6372797074",
+        "must_be_equal": false
+      }
+    }
+  ],
+  "retired": []
+}

@@ -1,0 +1,49 @@
+{
+  "vector_suite_version": "0.1.0-provisional",
+  "spec_version": "0.1-draft",
+  "provisional": true,
+  "provisional_note": "Every suite identifier here is in the reserved 0xFF00-0xFFFF provisional range (spec §4.8). These vectors are built against constructions marked [PROVISIONAL] in the specification and adopted under Gate 0a; they are not a stable release and the expected values may change when Gate 0b closes.",
+  "files": [
+    {
+      "path": "blind-index/hmac-sha512.json",
+      "sha256": "5198f2521bed8c3f89132a68e6e48f8f7f6e1330381098299c0b28ca87952d2f",
+      "bytes": 3665
+    },
+    {
+      "path": "commitment/ff01.json",
+      "sha256": "13f4f385f478cdd03a1d74e3a1221b96eb9797d0c1c9e9052b7a79f8459fa81d",
+      "bytes": 1159
+    },
+    {
+      "path": "context/canonical.json",
+      "sha256": "3f3bab657cc1984189cd3917b827e405ec44055c3b3ef8d5464b5aef98eee3db",
+      "bytes": 5803
+    },
+    {
+      "path": "envelope/ff01.json",
+      "sha256": "298bfb4a58ff83d5849360297cf52dbe21a78699eb007cf20a22a146d2b67be9",
+      "bytes": 19060
+    },
+    {
+      "path": "kdf/index-key.json",
+      "sha256": "02a549ef2f6684b94d9e3ec7c0da16409335730f7c84931a5a0b0857b68df45d",
+      "bytes": 2500
+    },
+    {
+      "path": "kdf/record-key.json",
+      "sha256": "a7fed1a88dc0c5d815ab070b47878a4afbf5947c73a6ad38cddd6bcd406dca2a",
+      "bytes": 3956
+    }
+  ],
+  "held_out": [
+    {
+      "path": "blind-index/argon2id.json",
+      "sha256": "878ec1060138b595400a2e8cf2a78f24c5bb13ce1da538c14b90beec5241dc3b",
+      "bytes": 4834,
+      "reason": "The Argon2id primitive has never been checked against an external known-answer source. RFC 9106 §5.3's test vector -- the source docs/08 §7 named for this -- supplies a nonzero secret (K) and associated data (X), both forbidden by spec §7.3 and unsuppliable from Python, so it is unreproducible on this stack. Until a substitute known-answer source exists, both reference implementations would inherit the same unverified assumption from this generator and agree with each other while being wrong.",
+      "unblocks_when": "A known-answer source for Argon2id with empty K and X is identified and the generator's primitive layer is checked against it. libsodium's crypto_pwhash test suite is the leading candidate, since libsodium cannot supply K either.",
+      "tracking": "docs/08-test-vector-spec.md §7; gap G2"
+    }
+  ],
+  "held_out_note": "Generated, reviewable, and NOT part of the suite. A conformance run MUST iterate `files` only. An implementation may exercise a held-out family for its own development, but MUST NOT count it toward any conformance claim and MUST NOT report it as passed."
+}

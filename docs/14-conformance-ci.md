@@ -58,24 +58,32 @@ Every harness (core or adapter) emits `conformance-report.json`:
 {
   "schema": "fieldseal-conformance/v1",
   "implementation": { "name": "python-core", "version": "0.1.0", "commit": "…", "language": "python" },
-  "vector_suite_version": "0.1.0",
+  "vector_suite_version": "0.1.0-provisional",
   "spec_version": "0.1-draft",
   "claimed_levels": { "L0": true, "L1": false },
   "suites_supported": ["0xFF01"],
+  "provisional_suites": true,
   "environment": { "runtime": "CPython 3.12.x", "os": "ubuntu-24.04", "crypto_backend": "OpenSSL 3.x" },
   "results": [
     { "id": "envelope/ff01/basic-roundtrip", "status": "pass" },
     { "id": "envelope/ff02/basic-roundtrip", "status": "skipped", "reason": "suite 0xFF02 not implemented" }
   ],
+  "held_out": [
+    { "path": "blind-index/argon2id.json", "status": "not-run", "reason": "held out of the suite; primitive unverified against any external known-answer source" }
+  ],
   "out_of_band": [
     { "id": "spec/3.5/length-bound", "status": "pass", "method": "unit test asserting 2^31 refused with LENGTH_EXCEEDED" }
   ],
   "async_companions": false,
-  "summary": { "pass": 412, "fail": 0, "skipped": 18 }
+  "summary": { "pass": 412, "fail": 0, "skipped": 18, "held_out": 5 }
 }
 ```
 
-`out_of_band` carries normative requirements that have no vector — currently just the spec §3.5 plaintext length bound, which is exempted from the vector rule because the input is 2 GiB (docs/08 §5 clause 8, spec §12). The block is required rather than optional: a bound verified by a test the report does not mention is indistinguishable from a bound nobody checked. `async_companions` states whether spec §11.1's optional async surface exists; when true, the suite has been run through both paths and `results` carries the `#async` entries (docs/08 §5 clause 9).
+`out_of_band` carries normative requirements that have no vector — currently just the spec §3.5 plaintext length bound, whose 2-GiB input is not a repository artifact.
+
+`held_out` mirrors `MANIFEST.json`'s held-out list. A harness MUST iterate the manifest's `files` and MUST NOT iterate `held_out`; the block is reported so that a held-out family is *visibly* not run rather than silently absent. `status` is `not-run`, never `pass` or `skipped` — "skipped" already means "this implementation does not claim that suite," which is a different statement and one that a reader could mistake for a capability gap rather than a suite-integrity decision. An implementation MAY exercise a held-out family in its own development, and MUST NOT report the result here.
+
+`provisional_suites` is `true` whenever any identifier in `suites_supported` falls in spec §4.8's reserved `0xFF00`–`0xFFFF` range. It exists so that a report cannot be quoted as evidence of conformance to a frozen format when no format has been frozen (PRD §8, Gate 0b).
 
 Rules: `fail > 0` ⇒ no level claimable ⇒ CI red. An `out_of_band` entry that is not `pass` counts as a failure for level-claim purposes on the same terms. `claimed_levels` must be consistent with the vector families passed (L0 requires every family the implementation's suites reach; adapter levels additionally require the adapter's own integration matrix green — adapters attach a `coverage_matrix` block mirroring their README table so the claim and the docs cannot drift apart). `environment.crypto_backend` is recorded because FIPS conversations turn on it (PRD CL-9).
 
