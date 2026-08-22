@@ -3,6 +3,7 @@
   "vector_suite_version": "0.1.0-provisional",
   "group": "envelope",
   "spec_version": "0.1-draft",
+  "status": "pinned",
   "vectors": [
     {
       "id": "envelope/ff01/empty-plaintext",

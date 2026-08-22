@@ -44,7 +44,7 @@ vectors/
     canonical.json
   blind-index/
     hmac-sha512.json
-    argon2id.json
+    argon2id.json          HELD OUT of the suite — see §9; listed in MANIFEST.held_out
   commitment/
     ff01.json
     ff02.json
@@ -332,4 +332,8 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 | G7 | Suite 0xFF02's AEAD (XChaCha20-Poly1305) has no IETF RFC; the spec does not name a normative definition (libsodium's construction is the de-facto standard; draft-irtf-cfrg-xchacha expired) | `envelope/ff02.json` confidence, though not its mechanics |
 | G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values — **resolved 2026-08-09** (issue #8): spec §7.11 makes raw `⌈b/8⌉` bytes in a binary column the MUST, lowercase hex without prefix the declared-per-column MAY, exact byte/string equality under a binary collation | `blind-index/` storage assertions unblocked; the adapter specs' interim recommendation is now normative |
 
-**Status 2026-08-22 — nothing in this document is blocked any longer.** G3, G6 and G8 closed on their merits; G1, G2, G4, G5 and G7 are *provisionally adopted* under Gate 0a (PRD §8) and remain open on the tracker, which is enough for a generator to be written against them. `tools/vector-gen/` now emits `context/`, `kdf/`, `commitment/`, `blind-index/` and `envelope/ff01.json`. What a provisional adoption costs is regeneration, not redesign: if Gate 0b changes a construction, the affected family is regenerated and the provisional suite identifier retires (spec §4.8).
+**Status 2026-08-22 — nothing in this document is blocked any longer, and one family is deliberately held out.** G3, G6 and G8 closed on their merits; G1, G2, G4, G5 and G7 are *provisionally adopted* under Gate 0a (PRD §8) and remain open on the tracker, which is enough for a generator to be written against them. `tools/vector-gen/` emits `context/`, `kdf/`, `commitment/`, `blind-index/` and `envelope/ff01.json`.
+
+**`blind-index/argon2id.json` is generated but NOT part of the pinned suite.** Its primitive has never been checked against an external known-answer source, and per §7 above the source this document named for that purpose cannot be used. Both reference implementations would otherwise inherit the same unverified assumption from one generator and agree with each other while being wrong — which is precisely the failure the two-implementation rule exists to prevent, so agreement here would be evidence of nothing. `MANIFEST.json` carries it under `held_out` rather than omitting it, with the reason and the unblocking condition; the file itself carries `"status": "held-out"`. A conformance run MUST iterate `files` only (`docs/14` §4).
+
+What a provisional adoption costs is regeneration, not redesign: if Gate 0b changes a construction, the affected family is regenerated and the provisional suite identifier retires (spec §4.8).

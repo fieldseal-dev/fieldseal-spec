@@ -54,6 +54,26 @@ Include, at minimum: unknown `fmt_ver`; a `suite_id` not on the allow-list; a tr
 
 Each must produce the specific error type from spec §9 — not a generic failure. An implementation that collapses `AAD_MISMATCH` and `TAG_INVALID` into one error is non-conformant, because operators need to distinguish a data-migration bug from tampering.
 
+## Held-out families
+
+A family may be generated, reviewable, and deliberately **not part of the
+suite**. `MANIFEST.json` lists these under `held_out` rather than omitting them
+— a missing file reads as an oversight, a listed one with a reason reads as a
+decision — and each such file carries `"status": "held-out"` itself, so a
+harness that loads the file directly still sees it.
+
+A conformance run MUST iterate `MANIFEST.files` and MUST NOT iterate
+`held_out`. An implementation MAY exercise a held-out family in its own
+development and MUST NOT count it toward any conformance claim.
+
+Currently held out: **`blind-index/argon2id.json`**. The Argon2id primitive has
+never been checked against an external known-answer source, and the source
+`docs/08-test-vector-spec.md` §7 named for that — RFC 9106 §5.3's test vector —
+cannot serve, because it supplies a nonzero secret (`K`) and associated data
+(`X`), both forbidden by spec §7.3 and unsuppliable from Python. Without an
+external check, two implementations would inherit the same unverified
+assumption from one generator, agree with each other, and prove nothing.
+
 ## Licensing
 
 **CC0 1.0** ([`../LICENSE-VECTORS`](../LICENSE-VECTORS)), so that a competing or independent implementation can run these with zero attribution friction. Their value comes from being run, not from being credited. This file, being documentation about the vectors rather than a vector, is CC BY 4.0 like the rest of the docs — see [`../LICENSES.md`](../LICENSES.md).
