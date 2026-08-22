@@ -1,0 +1,23 @@
+[project]
+name = "fieldseal"
+version = "0.1.0.dev0"
+description = "Portable field-level encryption at rest -- reference Python core"
+requires-python = ">=3.10"
+dependencies = ["cryptography>=42"]
+
+[project.optional-dependencies]
+argon2 = ["argon2-cffi>=23"]
+dev = ["pytest>=8", "hypothesis>=6", "jsonschema>=4", "mypy>=1.8", "ruff>=0.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fieldseal"]
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

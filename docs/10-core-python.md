@@ -102,6 +102,10 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 
 ## 7. Non-goals for the Python core
 
-No Django/SQLAlchemy awareness of any kind (that's `adapters/`); no CLI (the vector generator lives in `tools/vector-gen/`, importing `fieldseal.testing` deliberately); no PyPy claims until CI covers it.
+No Django/SQLAlchemy awareness of any kind (that's `adapters/`); no CLI (the vector generator lives in `tools/vector-gen/`); no PyPy claims until CI covers it.
+
+**Divergence recorded 2026-08-22 — the generator does *not* import `fieldseal.testing`.** This section originally said it would, "deliberately". Building both showed that to be a mistake: if the generator produces expected values using this core's code, then this core passing those values is close to tautological, and M1 would certify nothing. `tools/vector-gen/` is therefore standalone, and takes a different route to the same primitives — it hand-rolls HKDF from `hmac` where this core uses pyca/cryptography's. The two agreeing on 37 vectors is a real cross-check; the same code agreeing with itself would not have been.
+
+The cost is honest: HKDF, `canonical_context` and the envelope layout each exist twice in this repository, and a spec change touches both. That is the price of M1 meaning anything before M2 lands, and M2 — an independently written TypeScript core reproducing these values from the specification alone (`docs/11` §6) — remains the real check. Revisit only if the duplication starts drifting rather than being caught.
 
 No async value-path variants either — but as of G9 (issue #9) that is this core's choice rather than a prohibition: spec §11.1 permits optional async companions, and the Python core declines them because its target frameworks (Django, SQLAlchemy) are the ones that cannot await in the value path at all, so the companions would carry the dual-path vector obligation for no adapter that could use it. Revisit only if a Python adapter credibly claims L4.
