@@ -360,16 +360,21 @@ An identifier outside this grammar MUST be refused as a configuration error when
 
 ### 6.2 Canonical encoding (normative)
 
-> **[PROVISIONAL — G4]** The encoding below is injective only once the absent-field cases are pinned, and they are not. `row_id` is "omitted entirely if null" (§6.4), while `tenant_id` has no stated null encoding at all — so an absent `tenant_id` and a present-but-zero-length `tenant_id` currently produce identical bytes. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). An implementation built under Gate 0a MUST adopt the presence-bitmap proposal in that issue; the field set it covers may change at Gate 0b.
+> **[PROVISIONAL — G4]** The presence-bitmap encoding below is adopted provisionally under Gate 0a — it is what makes this encoding injective across the absent-versus-zero-length cases, which the previous positional form was not. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). What stays open is whether the encoding is injective over the current *and* plausibly-extended field set; the bit assignment may change at Gate 0b.
 
 ```
 canonical_context(ctx) =
-    u64be(len(suite_id))   ‖ suite_id
-  ‖ u64be(len(table_uuid)) ‖ table_uuid
-  ‖ u64be(len(column_uuid))‖ column_uuid
-  ‖ u64be(len(tenant_id))  ‖ tenant_id
-  ‖ u64be(len(row_id))     ‖ row_id        // omitted entirely if null
-  ‖ u64be(len(purpose))    ‖ purpose
+    u8(presence)
+  ‖ u64be(len(suite_id))    ‖ suite_id
+  ‖ u64be(len(table_uuid))  ‖ table_uuid
+  ‖ u64be(len(column_uuid)) ‖ column_uuid
+  ‖ [ u64be(len(tenant_id)) ‖ tenant_id ]      // present iff presence & 0x01
+  ‖ [ u64be(len(row_id))    ‖ row_id    ]      // present iff presence & 0x02
+  ‖ u64be(len(purpose))     ‖ purpose
+
+presence : bit 0 (0x01) — tenant_id present
+           bit 1 (0x02) — row_id present
+           bits 2–7     — reserved, MUST be zero
 
 AAD(header, ctx) =
     u64be(len(fmt_ver))    ‖ fmt_ver
@@ -378,9 +383,13 @@ AAD(header, ctx) =
   ‖ canonical_context(ctx)
 ```
 
+An absent optional field contributes **nothing** to the encoding — not a length, not a value — and its presence bit is zero. A present field contributes its length prefix and its bytes even when that length is zero. `tenant_id = null` and `tenant_id = b""` therefore differ in the first byte, which is the case the positional form could not distinguish. Reserved bits MUST be written as zero; `canonical_context` is only ever produced and recomputed, never parsed, so this is a producer obligation with no decoder counterpart.
+
 `canonical_context` covers only `FieldContext` fields, and is therefore well-defined both for encryption (§5.3) and for index derivation (§7.2), which has no envelope. The envelope-bound fields — `fmt_ver`, `key_id`, `msg_seed` — enter only the AAD. Naive concatenation MUST NOT be used.
 
-*Justification.* Unlength-prefixed concatenation is forgeable across field boundaries. RFC 7518 §5.2 and Tink's AES-CTR-HMAC both use explicit bit-length encoding for exactly this reason.
+*Justification.* Unlength-prefixed concatenation is forgeable across field boundaries. RFC 7518 §5.2 and Tink's AES-CTR-HMAC both use explicit bit-length encoding for exactly this reason. The bitmap is added on top because length prefixes alone do not distinguish *absent* from *present-and-empty* when the field is optional: the previous form omitted `row_id` entirely if null while giving `tenant_id` no null rule at all, so two different contexts could encode identically — and since `canonical_context` is both the KDF `info` and part of the AAD (§6.3), such a collision would be a key-reuse bug and an authentication bug at once. Declaring presence before the fields also makes extension cheap: a new optional field takes the next free bit, and adding one cannot silently alias against any existing encoding.
+
+*Injectivity argument, stated so it can be attacked.* Fix the field set. The first byte determines exactly which optional fields appear and in what order; every field that appears is `u64be` length-prefixed with a fixed-width length; the mandatory fields are always present in a fixed order. Parsing is therefore unambiguous left to right, so distinct `FieldContext` values produce distinct byte strings. This is the claim Q4 asks a reviewer to confirm or break — including under future extension, where the argument holds only while new fields consume new bits rather than being appended positionally.
 
 ### 6.3 Dual-layer binding (normative)
 
