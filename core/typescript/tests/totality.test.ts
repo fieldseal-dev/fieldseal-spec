@@ -12,6 +12,10 @@ import { ERROR_CODES, FieldsealError } from "../src/errors.ts";
 import { SUITE_FF01, getSuite } from "../src/registry.ts";
 import { bytes, codeOf, CTX, DEK, KEY_ID, makeClient } from "./helpers.ts";
 
+/** A byte array whose length is uniform on 0..max (fast-check's default biases short). */
+const uniformBytes = (max: number) =>
+  fc.integer({ min: 0, max }).chain((n) => fc.uint8Array({ minLength: n, maxLength: n }));
+
 const SPEC_CODES = new Set<string>(ERROR_CODES);
 const PT = bytes("123456789");
 const c = makeClient();
@@ -266,8 +270,12 @@ describe("codec round trip (parse ∘ serialize)", () => {
     fc.assert(
       fc.property(
         fc.uint8Array({ minLength: 0, maxLength: 300 }),
-        fc.option(fc.uint8Array({ minLength: 0, maxLength: 40 }), { nil: null }),
-        fc.option(fc.uint8Array({ minLength: 0, maxLength: 40 }), { nil: null }),
+        // Past 1024 bytes of canonical_context on purpose: Node's built-in HKDF
+        // would refuse the `info` there (see src/kdf.ts). Lengths are drawn
+        // uniformly -- fast-check's default length bias would almost never
+        // reach that region.
+        fc.option(uniformBytes(1500), { nil: null }),
+        fc.option(uniformBytes(1500), { nil: null }),
         (pt, tenantId, rowId) => {
           const ctx = { ...CTX, tenantId, rowId };
           const env = c.encrypt(pt, ctx);
