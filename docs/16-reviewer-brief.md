@@ -77,7 +77,9 @@ Proposed: password = the normalized plaintext; salt = HKDF-derived from the inde
 
 The salt is deterministic, which inverts the usual advice — but determinism is the entire point of a blind index, and a per-value random salt would make equality lookup impossible. The question is whether *this* way of being deterministic is sound.
 
-**What closes it:** is the deterministic, key-derived salt sound in this keyed setting, and is `K` the right place for the index key? If the answer is "use `K` but derive the salt differently," that is the answer worth having.
+**A constraint discovered 2026-08-22, which may decide this before soundness does.** Argon2's `K` is not portable. libsodium's `crypto_pwhash` exposes no secret parameter at all; Python's `argon2-cffi` exposes it only through an ultra-low-level call its own documentation warns against; Node's `node-argon2` exposes it as `secret`. Since Python and TypeScript are the two Phase 1 cores and the project's whole claim is byte-identical output across them, a `K`-based construction is one the TypeScript core can express and the Python core cannot. Evidence and sources are in [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2). Note also that CipherSweet — the prior art this construction is modelled on — uses the index key *as the Argon2 salt*, which may be a considered choice or may be libsodium's API showing through.
+
+**What closes it:** is the deterministic, key-derived salt sound in this keyed setting, and is `K` the right place for the index key? Given the constraint above, the more useful form may be: among (a) `K = index_key`, (b) CipherSweet's salt-as-key, and (c) domain-separated concatenation into the password, which are cryptographically defensible — and does ruling out (a) on portability grounds cost anything real?
 
 <a id="q4"></a>
 ### Q4 — Is the canonical context encoding injective?
@@ -121,7 +123,9 @@ Under dual-layer binding (§6.3) a context mismatch and a key confusion are indi
 
 No RFC exists. `draft-irtf-cfrg-xchacha` expired. libsodium's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto standard. A specification that demands a citation for every normative claim cannot name a suite it cannot cite.
 
-**What closes it:** a position, not an analysis. Is a libsodium-defined suite acceptable here (the PASETO precedent), or is a one-suite registry the honest answer? This is the fastest question in the set and it is genuinely blocked on someone else's judgment.
+**The precedent is weaker than it first looks** (verified 2026-08-22). PASETO **v2.local** does specify XChaCha20-Poly1305 "using an AEAD interface such as the one provided in libsodium," citing no RFC or draft — a real instance of the choice. But **v4.local** moved to XChaCha20 with a separate BLAKE2b-MAC, so it is not a second instance; and PASETO's author is also the author of the expired `draft-irtf-cfrg-xchacha`, so what reads as independent corroboration is one party's judgment. The draft's status is pinned: revision **-03, expired 2023-05-02, datatracker state "Dead IRTF Document."**
+
+**What closes it:** a position, not an analysis. Is a libsodium-defined suite acceptable in a specification seeking independent review, or is a one-suite registry the honest answer? This is the fastest question in the set and it is genuinely blocked on someone else's judgment.
 
 <a id="q7"></a>
 ### Q7 — Is the fresh envelope's novelty risk acceptable?
@@ -179,7 +183,8 @@ Kept in the open so that "we could not find reviewers" is a claim with evidence 
 
 | Date | Venue or person | Question(s) put | Outcome |
 |---|---|---|---|
-| — | *(to be filled as outreach proceeds)* | — | — |
+| 2026-08-22 | IRTF CFRG list (`cfrg@irtf.org`) | [Q6](#q6) | **Sent.** Awaiting response |
+| 2026-08-22 | Paragon Initiative (`security@paragonie.com`), for Scott Arciszewski | [Q3](#q3), [Q6](#q6) | **Sent.** Awaiting response. Chosen because one person authored both the CipherSweet blind-index construction Q3 diverges from and the expired `draft-irtf-cfrg-xchacha` behind Q6 |
 
 Channels this brief is written to be usable in, roughly in order of expected yield:
 
