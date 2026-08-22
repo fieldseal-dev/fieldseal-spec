@@ -91,7 +91,9 @@ await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async met
 
 Mirrors the Python plan (docs/10 §6) with vitest: vector harness with schema validation and shared report format · both-direction envelope runs · exact error-code mapping · fuzz/property pass over the codec (`fast-check`) · cross-output producer script · a build-level test that `import "@fieldseal/core"` resolves no module under `testing/` · a runtime test that `encrypt_with_materials` throws when `FIELDSEAL_TEST_MODE` is unset.
 
-One addition specific to this core's Phase 1 role: the **independence rule**. Until the first vector freeze, the TypeScript implementer works from `docs/02-spec-v0.1.md` + `docs/08` + `docs/09` only — no reading the Python source. Divergences found this way are the review mechanism working (docs/08 §7); record each in `docs/06-verification-log.md` style in the implementation plan's decision log.
+One addition specific to this core's Phase 1 role: the **independence rule**. Until the first vector freeze, the TypeScript implementer works from `docs/02-spec-v0.1.md` + `docs/08` + `docs/09` + this document only — **no reading `core/python/**` or `tools/vector-gen/**`**. Divergences found this way are the review mechanism working (docs/08 §7); record each in `docs/06-verification-log.md` style in the implementation plan's decision log.
+
+The rule is now a protocol rather than a sentence: [`docs/17-m2-implementer-brief.md`](17-m2-implementer-brief.md) is the handoff to give the implementer, and it carries the prohibition, the reading path, the order-of-work rule that keeps a mismatch from being quietly tuned away, and the deliverables. Hand that over rather than paraphrasing this paragraph — the paraphrase is where the order-of-work rule gets dropped, and it is the part that does the work.
 
 ## 7. Non-goals
 
