@@ -190,3 +190,34 @@ def test_index_purpose_never_gets_the_dek():
     p = StaticKeyProvider(KEY_ID, DEK, INDEX_KEY)
     with pytest.raises(ConfigurationError):
         p.dek_for(CTX.for_index("email-eq").with_suite(0xFF01))
+
+
+# -- review findings, 2026-08-22 ----------------------------------------------
+
+def test_registered_but_unperformable_suite_is_refused_at_construction():
+    """Registered != performable. 0xFF02 is in the registry (spec §4.2) and has
+    no backend in this build. Before this was caught, the client constructed
+    happily and then raised a bare KeyError from inside encrypt -- and
+    is_ciphertext() returned True for such an envelope, so an adapter would
+    route it straight to decrypt to find out."""
+    with pytest.raises(ConfigurationError) as e:
+        Fieldseal(key_provider=StaticKeyProvider(KEY_ID, DEK, INDEX_KEY),
+                  allowed_suites={0xFF02}, write_suite=0xFF02)
+    assert "no backend" in str(e.value)
+
+
+def test_unperformable_suite_refused_even_when_only_readable():
+    """Allowing it for reads is no safer: without a backend the envelope cannot
+    be opened either."""
+    with pytest.raises(ConfigurationError):
+        Fieldseal(key_provider=StaticKeyProvider(KEY_ID, DEK, INDEX_KEY),
+                  allowed_suites={0xFF01, 0xFF02}, write_suite=0xFF01)
+
+
+def test_backend_lookup_never_raises_an_untyped_error():
+    """Defensive: the constructor should make this unreachable, but a KeyError
+    escaping the core would break the contract that every failure is typed."""
+    from fieldseal.api import _backend
+    from fieldseal.errors import SuiteNotAllowed
+    with pytest.raises(SuiteNotAllowed):
+        _backend(0x0001)

@@ -14,8 +14,8 @@ The reference Python implementation of the Fieldseal specification, built to
 
 | | |
 |---|---|
-| Vector suite | 37/37 pinned vectors pass; 1 family held out |
-| Gate and totality tests | 26 pass |
+| Vector suite | 36/36 pinned vectors pass; 1 family held out |
+| Gate and totality tests | 29 pass |
 | Suites | `0xFF01` (AES-256-GCM). `0xFF02` needs an XChaCha backend — blocked on gap G7 |
 | Milestone | **M1 met** for the families in the pinned suite. M2 (independent TypeScript reproduction) is what makes these values trustworthy |
 

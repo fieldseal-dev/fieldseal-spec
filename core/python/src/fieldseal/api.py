@@ -27,7 +27,25 @@ from .registry import SUITES, is_provisional
 
 PROVISIONAL_ENV = "FIELDSEAL_ALLOW_PROVISIONAL_SUITE"
 
+# Registered != performable. The registry (spec §4.2) is the format's list of
+# suites; this is the list this *build* can actually execute. Suite 0xFF02
+# needs an XChaCha20-Poly1305 backend that is not written -- gap G7 leaves it
+# without a citable normative definition -- so it is registered and absent
+# here on purpose.
 _BACKENDS = {0xFF01: GcmBackend()}
+
+
+def _backend(suite_id: int):
+    try:
+        return _BACKENDS[suite_id]
+    except KeyError:
+        # Defensive: the constructor refuses unperformable suites, so reaching
+        # this means the registry and _BACKENDS drifted apart. Raise the typed
+        # error anyway -- a KeyError escaping the core would break the contract
+        # that every failure is a FieldsealError.
+        raise SuiteNotAllowed(
+            f"suite {suite_id:#06x} is registered but this build has no "
+            "backend for it") from None
 
 
 class Fieldseal:
@@ -39,6 +57,15 @@ class Fieldseal:
         for sid in set(allowed_suites) | {write_suite}:
             if sid not in SUITES:
                 raise ConfigurationError(f"unregistered suite {sid:#06x}")
+            # Refused at construction rather than at the first call. A client
+            # that cannot perform a suite it claims to allow would otherwise
+            # pass is_ciphertext() on such an envelope and then fail inside
+            # decrypt, which is the worst place to discover it.
+            if sid not in _BACKENDS:
+                raise ConfigurationError(
+                    f"suite {sid:#06x} ({SUITES[sid].name}) is registered but "
+                    "this build has no backend for it; install the extra that "
+                    "provides it or remove it from allowed_suites")
         if read_mode not in {"strict", "permissive", "readonly"}:
             raise ConfigurationError(f"unknown read_mode {read_mode!r}")
 
@@ -99,7 +126,7 @@ class Fieldseal:
                   plaintext) -> bytes:
         rk = record_key(tenant_dek, key_id, msg_seed, bound, suite.key_len)
         a = aad(FMT_VER, key_id, msg_seed, bound)
-        ct, tag = _BACKENDS[suite.suite_id].seal(rk, nonce, plaintext, a)
+        ct, tag = _backend(suite.suite_id).seal(rk, nonce, plaintext, a)
         return (serialize_header(suite.suite_id, key_id, msg_seed)
                 + nonce + ct + tag + commitment(rk))
 
@@ -130,7 +157,7 @@ class Fieldseal:
                 "key commitment check failed: wrong key, wrong context, or a "
                 "partitioning-oracle attempt")
         a = aad(header.fmt_ver, header.key_id, header.msg_seed, bound)
-        return _BACKENDS[suite.suite_id].open(rk, nonce, ct, tag, a)
+        return _backend(suite.suite_id).open(rk, nonce, ct, tag, a)
 
     def blind_index(self, value: str | bytes, ctx: FieldContext, *,
                     index_id: str, b_bits: int, idf: str = "argon2id",
