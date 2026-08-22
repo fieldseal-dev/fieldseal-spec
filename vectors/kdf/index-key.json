@@ -1,0 +1,60 @@
+{
+  "schema": "fieldseal-vectors/kdf/v1",
+  "vector_suite_version": "0.1.0-provisional",
+  "group": "kdf",
+  "spec_version": "0.1-draft",
+  "vectors": [
+    {
+      "id": "kdf/index-key/email-eq",
+      "description": "index key for index-id 'email-eq'",
+      "spec_ref": "§5.2, §7.2",
+      "suite_id": "0xFF01",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "salt": "6669656c647365616c2d696e6465782d7631",
+        "info": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d30303031000000000000000e696e6465783a656d61696c2d6571",
+        "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e"
+      }
+    },
+    {
+      "id": "kdf/index-key/ssn-eq",
+      "description": "index key for index-id 'ssn-eq'",
+      "spec_ref": "§5.2, §7.2",
+      "suite_id": "0xFF01",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "expected": {
+        "salt": "6669656c647365616c2d696e6465782d7631",
+        "info": "010000000000000002ff0100000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d30303031000000000000000c696e6465783a73736e2d6571",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab"
+      }
+    },
+    {
+      "id": "kdf/index-key/distinct-per-index",
+      "description": "two index-ids under one tenant MUST derive different index keys (spec §7.2)",
+      "spec_ref": "§7.2",
+      "assertion": "distinct",
+      "expected": {
+        "key_a": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+        "key_b": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "must_be_equal": false
+      }
+    }
+  ],
+  "retired": []
+}

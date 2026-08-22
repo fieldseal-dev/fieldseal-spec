@@ -1,0 +1,32 @@
+{
+  "schema": "fieldseal-vectors/commitment/v1",
+  "vector_suite_version": "0.1.0-provisional",
+  "group": "commitment",
+  "spec_version": "0.1-draft",
+  "vectors": [
+    {
+      "id": "commitment/ff01/from-record-key",
+      "description": "key commitment derived from a record key",
+      "spec_ref": "§4.6, §3.1",
+      "suite_id": "0xFF01",
+      "record_key": "511c1f2a9f5ab2530e8cd50b2c3894b54890974c020e2f5890cd8bbab6322d34",
+      "expected": {
+        "info": "6669656c647365616c2d636f6d6d69742d7631",
+        "commitment": "0e48f452638c2e84f3bab0b2e375b4419301a96fde656e097f1f963dc4ef2c67",
+        "length": 32
+      }
+    },
+    {
+      "id": "commitment/ff01/distinct-keys-distinct-commitments",
+      "description": "two record keys differing in one bit MUST produce different commitments",
+      "spec_ref": "§4.6",
+      "assertion": "distinct",
+      "expected": {
+        "commitment_a": "0e48f452638c2e84f3bab0b2e375b4419301a96fde656e097f1f963dc4ef2c67",
+        "commitment_b": "239f093876977160a5ac4b0951ffd84bf7dd6915ab708f78a1d3a93780433d7d",
+        "must_be_equal": false
+      }
+    }
+  ],
+  "retired": []
+}

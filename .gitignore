@@ -33,3 +33,8 @@ obj/
 
 # Internal scratch docs (not persisted to repo)
 internal/
+
+# Vector generator virtualenv (tools/vector-gen)
+tools/vector-gen/.venv/
+*.egg-info/
+__pycache__/

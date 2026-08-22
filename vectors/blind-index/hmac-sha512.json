@@ -1,0 +1,92 @@
+{
+  "schema": "fieldseal-vectors/blind-index/v1",
+  "vector_suite_version": "0.1.0-provisional",
+  "group": "blind-index",
+  "spec_version": "0.1-draft",
+  "vectors": [
+    {
+      "id": "blind-index/hmac-sha512/ascii-email-b15",
+      "description": "hmac-sha512 index over 'alice@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "index_id": "email-eq",
+      "plaintext_utf8": "alice@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
+        "blind_index": "9f6a",
+        "stored": "9f6a",
+        "stored_bytes": 2
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/mixed-case-email-b15",
+      "description": "hmac-sha512 index over 'Alice@Example.COM' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "index_id": "email-eq",
+      "plaintext_utf8": "Alice@Example.COM",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
+        "blind_index": "9f6a",
+        "stored": "9f6a",
+        "stored_bytes": 2
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/non-ascii-b15",
+      "description": "hmac-sha512 index over 'grüße@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "index_id": "email-eq",
+      "plaintext_utf8": "grüße@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "6772c3bc737365406578616d706c652e636f6d",
+        "raw": "e36f43d9acf9045e1ced3793d10d797995cd21ee3014fe69143e47bb73a2bac1ee8469feeb2e1da3d255501091bd12a5be3201d6721ca21f4ebc0a4887c8fbf9",
+        "blind_index": "e36e",
+        "stored": "e36e",
+        "stored_bytes": 2
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/byte-aligned-16-b16",
+      "description": "hmac-sha512 index over 'alice@example.com' truncated to 16 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "index_id": "email-eq",
+      "plaintext_utf8": "alice@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 16,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
+        "blind_index": "9f6b",
+        "stored": "9f6b",
+        "stored_bytes": 2
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/normalizer-collapses-case",
+      "description": "values differing only by case MUST produce the same index under the nfc-casefold normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "expected": {
+        "index_a": "9f6a",
+        "index_b": "9f6a",
+        "must_be_equal": true
+      }
+    }
+  ],
+  "retired": []
+}
