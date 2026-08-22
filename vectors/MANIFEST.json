@@ -1,0 +1,43 @@
+{
+  "vector_suite_version": "0.1.0-provisional",
+  "spec_version": "0.1-draft",
+  "provisional": true,
+  "provisional_note": "Every suite identifier here is in the reserved 0xFF00-0xFFFF provisional range (spec §4.8). These vectors are built against constructions marked [PROVISIONAL] in the specification and adopted under Gate 0a; they are not a stable release and the expected values may change when Gate 0b closes.",
+  "files": [
+    {
+      "path": "blind-index/argon2id.json",
+      "sha256": "f5ddaa6baa69a97de1d50924767ee19272d38863fbd95ed59020d887cb653e32",
+      "bytes": 4368
+    },
+    {
+      "path": "blind-index/hmac-sha512.json",
+      "sha256": "e3af9cecb198d1b88d75269d28d5f2370abc5b6d36ec0f41de480b4f19749ebb",
+      "bytes": 3643
+    },
+    {
+      "path": "commitment/ff01.json",
+      "sha256": "4206cc1e14b41a4c2a5387451179246c51909551f59c36ebe50211c892555c1a",
+      "bytes": 1137
+    },
+    {
+      "path": "context/canonical.json",
+      "sha256": "570d38802d50a248265ac6b6c18d0b123324867341de5f3d0c334f464d7af234",
+      "bytes": 5781
+    },
+    {
+      "path": "envelope/ff01.json",
+      "sha256": "1f7f84513eb50273cbc922753f95cc40440b96c12129c681f6bd18e785e96f3a",
+      "bytes": 19038
+    },
+    {
+      "path": "kdf/index-key.json",
+      "sha256": "c852018eb1bccb413b294959c6cd551963873a5396d528b09fb29ec81e8e3538",
+      "bytes": 2478
+    },
+    {
+      "path": "kdf/record-key.json",
+      "sha256": "69b2050acac6ae7088285963d724c95df773c6d93f1cf625a6199b84dd142c93",
+      "bytes": 3934
+    }
+  ]
+}

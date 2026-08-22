@@ -1,0 +1,19 @@
+[project]
+name = "fieldseal-vector-gen"
+version = "0.1.0"
+description = "Generates the Fieldseal cross-implementation test vectors"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42",
+  "argon2-cffi>=23",
+]
+
+[project.scripts]
+fieldseal-vector-gen = "fieldseal_vectorgen.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["fieldseal_vectorgen*"]

@@ -1,0 +1,124 @@
+{
+  "schema": "fieldseal-vectors/blind-index/v1",
+  "vector_suite_version": "0.1.0-provisional",
+  "group": "blind-index",
+  "spec_version": "0.1-draft",
+  "vectors": [
+    {
+      "id": "blind-index/argon2id/ascii-email-b15",
+      "description": "argon2id index over 'alice@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "index_id": "ssn-eq",
+      "plaintext_utf8": "alice@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "blind_index": "b0c0",
+        "stored": "b0c0",
+        "stored_bytes": 2,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "argon2_params": {
+        "version": 19,
+        "t": 3,
+        "m_kib": 32768,
+        "p": 1,
+        "output_len": 64
+      }
+    },
+    {
+      "id": "blind-index/argon2id/mixed-case-email-b15",
+      "description": "argon2id index over 'Alice@Example.COM' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "index_id": "ssn-eq",
+      "plaintext_utf8": "Alice@Example.COM",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "blind_index": "b0c0",
+        "stored": "b0c0",
+        "stored_bytes": 2,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "argon2_params": {
+        "version": 19,
+        "t": 3,
+        "m_kib": 32768,
+        "p": 1,
+        "output_len": 64
+      }
+    },
+    {
+      "id": "blind-index/argon2id/non-ascii-b15",
+      "description": "argon2id index over 'grüße@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "index_id": "ssn-eq",
+      "plaintext_utf8": "grüße@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 15,
+      "expected": {
+        "normalized": "6772c3bc737365406578616d706c652e636f6d",
+        "raw": "987eb59564227b062334cfb95ee63076b663b22578ab7a6249b01e9a3321065a5830ee3e3af79d4c8b934406b87f19038ff8f1786112ac206fd6d4f1d3b55af6",
+        "blind_index": "987e",
+        "stored": "987e",
+        "stored_bytes": 2,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "argon2_params": {
+        "version": 19,
+        "t": 3,
+        "m_kib": 32768,
+        "p": 1,
+        "output_len": 64
+      }
+    },
+    {
+      "id": "blind-index/argon2id/byte-aligned-16-b16",
+      "description": "argon2id index over 'alice@example.com' truncated to 16 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "index_id": "ssn-eq",
+      "plaintext_utf8": "alice@example.com",
+      "normalizer": "nfc-casefold",
+      "b_bits": 16,
+      "expected": {
+        "normalized": "616c696365406578616d706c652e636f6d",
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "blind_index": "b0c0",
+        "stored": "b0c0",
+        "stored_bytes": 2,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "argon2_params": {
+        "version": 19,
+        "t": 3,
+        "m_kib": 32768,
+        "p": 1,
+        "output_len": 64
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-case",
+      "description": "values differing only by case MUST produce the same index under the nfc-casefold normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "expected": {
+        "index_a": "b0c0",
+        "index_b": "b0c0",
+        "must_be_equal": true
+      }
+    }
+  ],
+  "retired": []
+}
