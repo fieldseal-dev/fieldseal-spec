@@ -35,7 +35,7 @@ Every one of these is expected to be what the eventual review changes. Spec §4.
 | # | Provisionally adopted | Spec text carrying the marker | Closes at Gate 0b via |
 |---|---|---|---|
 | G1 | `commitment = HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", len = 32)`, verified constant-time before AEAD open | §4.6, §3.1 | [Q2](../16-reviewer-brief.md#q2) |
-| G2 | Argon2id with password = normalized plaintext, salt HKDF-derived from the index key, index key supplied via RFC 9106's secret parameter `K` | §7.3 | [Q3](../16-reviewer-brief.md#q3) |
+| G2 | **Narrowed 2026-08-22.** Argon2id, password = normalized plaintext, salt = HKDF-SHA-512(index_key, info `fieldseal-argon2-salt-v1`, 16 B), v0x13/t3/m32MiB/p1/out64. Argon2's `K` and `X` **forbidden** — `K` was in the original proposal and is ruled out on portability (unreachable in Python), which is an engineering finding the project settled itself | §7.3 | [Q3](../16-reviewer-brief.md#q3) — now a single question: is salt-only keying sound? |
 | G4 | A presence bitmap over the optional context fields, making `canonical_context` injective across absent vs. zero-length | §6.2 | [Q4](../16-reviewer-brief.md#q4) |
 | G5 | The pinned check-order state machine, reporting `COMMITMENT_INVALID` where context mismatch and key confusion are indistinguishable; diagnostic re-derivation optional | §9 | [Q5](../16-reviewer-brief.md#q5) |
 | G7 | Suite `0xFF02` retained naming libsodium's `crypto_aead_xchacha20poly1305_ietf_*`, so the two-suite mechanics stay exercised; the normative-source question is untouched | §4.2 | [Q6](../16-reviewer-brief.md#q6) |

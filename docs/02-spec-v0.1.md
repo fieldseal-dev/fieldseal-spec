@@ -452,7 +452,7 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 ### 7.3 Index derivation function selection (normative)
 
-> **[PROVISIONAL — G2]** The selection *rule* below is settled; its parameterization is not. The Argon2id invocation layout that realizes it — what serves as password, how the salt is derived, and where the index key enters (RFC 9106's secret parameter `K`) — is unsettled: see [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3). Blind-index vectors under Gate 0a are generated from the proposal in that issue and are expected to change if it does.
+> **[PROVISIONAL — G2]** The selection rule and the invocation below are adopted provisionally under Gate 0a. **Narrowed 2026-08-22:** routing the index key through Argon2's secret parameter `K` — the original proposal — is **ruled out on portability grounds**, which is an engineering finding the project could settle itself, not a cryptographic judgment (see the Argon2id invocation below and [gap G2](issues/G02-argon2id-parameters.md)). What remains open is cryptographic and stays with the reviewers: whether salt-only keying through a domain-separated HKDF step is sound for this deterministic, keyed use. See [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3).
 
 | Domain class | Required IDF | Examples |
 |---|---|---|
@@ -463,6 +463,32 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 **Honest cost, which MUST be documented:** Argon2id at 4 iterations / 32 MiB costs roughly 10–100 ms **per query term**. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
 
+**Argon2id invocation (normative).** Where §7.3 selects Argon2id, `IDF(index_key, normalize(plaintext))` is exactly:
+
+```
+salt = HKDF-SHA-512(ikm    = index_key,
+                    salt   = "",
+                    info   = "fieldseal-argon2-salt-v1",
+                    length = 16)
+
+raw  = Argon2id(password    = normalize(plaintext),
+                salt        = salt,
+                version     = 0x13,
+                t           = 3,          // iterations
+                m           = 32768,      // KiB, i.e. 32 MiB
+                p           = 1,          // parallelism
+                output_len  = 64)
+```
+
+The index key enters **only** through the salt. Argon2's optional secret parameter `K` (RFC 9106 §3.1) MUST NOT be used, and its associated-data parameter `X` MUST NOT be used. Deployments MAY raise `t` and `m`; raising either produces a different index and is therefore a new index under §7.8, not a reconfiguration of an existing one. `version`, `p`, `output_len`, and the salt derivation MUST NOT vary.
+
+*Justification, and an honest cost.* The obvious construction routes `index_key` through `K`, which is what this specification proposed until 2026-08-22. It is not implementable portably: libsodium's `crypto_pwhash` exposes no secret parameter at all, and Python's `argon2-cffi` exposes one only through an ultra-low-level call its own documentation warns against, while Node's `node-argon2` does expose it. A construction that one reference core can express and another cannot is this project's central claim failing, so `K` is excluded on portability grounds rather than on cryptographic ones. The evidence table is in [gap G2](issues/G02-argon2id-parameters.md).
+
+Two costs follow and are stated rather than hidden. First, keying now rests entirely on the salt, so the defense-in-depth argument for `K` — that the index stays keyed even if the salt derivation is misused — is gone. Second, the salt is fixed at 16 bytes because libsodium requires exactly that, so the keyed material at this step is 128 bits rather than the index key's 256. An adversary without `index_key` still faces a 128-bit barrier before the memory-hard function, which is not the binding constraint on this design, but it is a reduction and it is forced by portability.
+
+`p = 1` is likewise forced: libsodium exposes no parallelism parameter, so any other value is unreachable there. **[VERIFY]** libsodium's fixed internal value during Phase 1; if it is not 1, this line changes and every Argon2id vector regenerates.
+
+The construction that remains — a memory-hard function over the plaintext, keyed through a domain-separated salt derived from a per-index key — is the shape CipherSweet ships, which documents Argon2id "where the blind index key is the Argon2 salt." This specification adds the HKDF step so that the raw index key is never handed to Argon2 directly and so that the salt is domain-separated from every other use of that key.
 ### 7.4 Truncation length (normative)
 
 Let `P` be the projected number of **distinct** values in the column (not the number of rows). `P` MUST be ≥ 16.
