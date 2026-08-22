@@ -26,8 +26,46 @@ concurrency:
 env:
   # Pin the toolchain. Bump deliberately, not automatically.
   PYTHON_VERSION: "3.12"
+  # >= 24.7.0: the TypeScript core's Argon2id backend is node:crypto's
+  # argon2Sync, which first shipped there (core/typescript/README.md).
+  NODE_VERSION: "24"
 
 jobs:
+  typescript-core:
+    name: TypeScript core vs the pinned vector suite
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core/typescript
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: core/typescript/package-lock.json
+
+      - name: Install (lockfile-exact)
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run typecheck && npm run build
+
+      - name: Run the suite (vectors, gates, totality, primitives, providers)
+        run: npm test
+
+      # Same harness code as the vitest run, emitted in the docs/14 §4 shape.
+      # Exit status is non-zero on any failure or non-pass out-of-band entry.
+      - name: Emit the conformance report
+        run: npm run --silent vectors > ../../conformance-typescript.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-typescript
+          path: conformance-typescript.json
+
   python-core:
     name: Python core vs the pinned vector suite
     runs-on: ubuntu-24.04

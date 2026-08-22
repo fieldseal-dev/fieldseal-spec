@@ -70,6 +70,8 @@ docs/
   16-reviewer-brief.md    the Phase 0 cryptographic-review brief (reading path, gating questions)
   17-m2-implementer-brief.md  handoff for building a second core in isolation (the
                           independence rule as a followable protocol)
+  18-m2-report.md         the M2 result: TypeScript core vs the pinned suite, isolation
+                          statement, divergence/ambiguity list (D-01..D-20)
 examples/                 end-to-end demonstration applications (Phase 1+)
 CONTRIBUTING.md           how to contribute spec changes
 SECURITY.md               how to report security issues
@@ -224,7 +226,11 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 ## Building, Linting, Testing
 
-**Currently:** No build, lint, or test commands exist. Phase 1 will add per-language test suites running the shared vectors.
+**Python core** (`core/python`): `pip install -e "./core/python[argon2,dev]"`, `pytest core/python/tests -q`, report via `python core/python/tests/run_vectors.py` (see `.github/workflows/conformance.yml`).
+
+**TypeScript core** (`core/typescript`, Node ≥ 24.7): `npm ci`, `npm test` (vitest: vector harness + gates + totality + primitives + providers), `npm run vectors` (emits the `docs/14` §4 conformance report), `npm run build`, `npm run typecheck`. Zero runtime dependencies.
+
+**Independence rule:** a second core is built without reading the first or the generator — `docs/17-m2-implementer-brief.md` is the protocol, `docs/18-m2-report.md` the first result. When working on `core/typescript`, do not consult `core/python/**` or `tools/vector-gen/**` to resolve a mismatch; record it.
 
 **When implementations arrive:** Each language will have its own build and test setup (Makefile, pyproject.toml, package.json, etc.). Adapters will be integrated into the same test suite and MUST demonstrate coverage through a documented matrix (spec §10.2).
 
