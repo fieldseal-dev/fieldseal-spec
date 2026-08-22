@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Fieldseal** is a portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.
 
-**Current status:** Pre-alpha design work (Phase 0 of 3). The specification is a working draft that has not been independently reviewed. Focus is on the specification itself; code implementation begins in Phase 1 (~12 weeks after cryptographic review). See `docs/01-prd.md` for the complete roadmap and success metrics.
+**Current status:** Pre-alpha design work (Phase 0 of 3). The specification is a working draft that has not been independently reviewed. The Phase 0 exit gate was split on 2026-08-22 (`docs/01-prd.md` §8): **Gate 0a** (spec gaps resolved or provisionally resolved and marked; registry on provisional suite identifiers) permits implementation and is closed; **Gate 0b** (two credentialed cryptographic reviewers) permits freezing the format and is still open. Phase 1 code may therefore begin, but nothing may be frozen, published as stable, or offered for adoption. See `docs/01-prd.md` for the complete roadmap and success metrics.
 
 **Central claim:** A value encrypted by implementation A in one language is decryptable by implementation B in another language using the same key. This is verified through machine-readable test vectors (cross-implementation round trips in CI). If this claim fails, the project has failed — everything else is secondary.
 
@@ -182,7 +182,7 @@ Each ORM has hard limits. When implementing adapters, consult the spec's per-ORM
 
 ## Key Decision Points and Open Questions
 
-These are unresolved before Phase 1 and should shape your thinking about changes:
+These shape your thinking about changes. Items 1 and 2 are **provisionally decided under Gate 0a and still open** — ADR-0001 took option C (fresh envelope, AWS-aligned constructions); ADR-0002 deferred to the status quo without deciding. Both are reversible at Gate 0b, and the spec marks the affected sections `[PROVISIONAL]`. Items 3–6 remain untouched. Do not close any of these by engineering judgment, and do not treat a provisional decision as a settled one.
 
 1. **Profile the AWS structured-encryption format or define fresh?** (§13.1) — Profiling buys interoperability and reduces novelty risk; defining fresh buys freedom from DynamoDB semantics. **Highest-leverage decision.**
 2. **Which FIPS-approvable AEAD for suite 0x0001?** (§13.2) — AES-256-GCM + explicit commitment (current), AES-256-CBC-HMAC-SHA-512 (committing natively, more overhead), or wait for AES-GCM-SIV (not FIPS, best misuse resistance).
@@ -207,9 +207,9 @@ When starting on this codebase:
 
 ---
 
-## No Code Yet (Phase 0)
+## Code and the Split Gate (Phase 0 → Phase 1)
 
-This repository currently contains specification and documentation only. Code will begin in Phase 1, following independent cryptographic review (an exit gate for Phase 0). When implementations are written:
+This repository currently contains specification and documentation only, but that is now a statement about progress rather than about permission. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
 
 - Core libraries will be in `core/{python,typescript,java,dotnet,go}` and MUST pass the shared test vectors in CI.
 - ORM adapters will be in `adapters/{django,sqlalchemy,...}` and MUST contain zero cryptographic code.

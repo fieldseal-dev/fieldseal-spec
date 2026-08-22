@@ -43,7 +43,7 @@ stage consume (matrix over consumer × producer pairs):
 
 gate:
   all pairs green, or the workflow fails. A pair may be `skipped` ONLY for a suite the
-  consumer does not claim (0x0002), and skips are visible in the summary, never silent.
+  consumer does not claim (0xFF02), and skips are visible in the summary, never silent.
 ```
 
 Self-pairs (`python→python`) stay in the matrix deliberately: they distinguish "producer broke" from "pair broke," halving diagnosis time.
@@ -61,11 +61,11 @@ Every harness (core or adapter) emits `conformance-report.json`:
   "vector_suite_version": "0.1.0",
   "spec_version": "0.1-draft",
   "claimed_levels": { "L0": true, "L1": false },
-  "suites_supported": ["0x0001"],
+  "suites_supported": ["0xFF01"],
   "environment": { "runtime": "CPython 3.12.x", "os": "ubuntu-24.04", "crypto_backend": "OpenSSL 3.x" },
   "results": [
-    { "id": "envelope/0001/basic-roundtrip", "status": "pass" },
-    { "id": "envelope/0002/basic-roundtrip", "status": "skipped", "reason": "suite 0x0002 not implemented" }
+    { "id": "envelope/ff01/basic-roundtrip", "status": "pass" },
+    { "id": "envelope/ff02/basic-roundtrip", "status": "skipped", "reason": "suite 0xFF02 not implemented" }
   ],
   "out_of_band": [
     { "id": "spec/3.5/length-bound", "status": "pass", "method": "unit test asserting 2^31 refused with LENGTH_EXCEEDED" }

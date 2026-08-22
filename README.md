@@ -4,7 +4,7 @@
 
 **Read it on the web: [fieldseal.dev](https://fieldseal.dev)** — the specification and every design document below, rendered and cross-linked.
 
-> **Status: pre-alpha design work.** The specification is a working draft. It has not been independently reviewed. Nothing here is ready for production use.
+> **Status: pre-alpha design work.** The specification is a working draft. **It has not been independently reviewed**, and every cipher suite in the registry is provisional for that reason (spec §4.2, §4.8) — implementations refuse to encrypt under a provisional suite unless an operator explicitly acknowledges it. Nothing here is ready for production use.
 >
 > **Naming and namespaces — status checked 2026-08-10.** The earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
 >
@@ -75,7 +75,7 @@ Three artifacts:
 | [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
 | [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
 | [`docs/issues/`](docs/issues/) | The thirteen spec gaps (G1–G13) found during tech-spec authoring and review, posted as [issues #1–#13](https://github.com/fieldseal-dev/fieldseal-spec/issues). Eight are now resolved in the draft; the five that remain — G1, G2, G4, G5, G7 — are exactly the five that cannot close without cryptographic review. Each file carries the issue body and, where closed, the resolution. |
-| [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: reading path, the eight gating questions, ground rules. |
+| [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: eight self-contained question cards, ground rules, outreach log. Answering one is a complete contribution. |
 
 All of these are published at **[fieldseal.dev/docs](https://fieldseal.dev/docs/)** if you would rather read them in a browser. The site is built from `docs/` in this repository — there is exactly one copy of the specification text, so the published version cannot drift from the source.
 
@@ -102,9 +102,9 @@ internal/              namespace-placeholder packages (npm, PyPI), not a product
 ```
 
 Everything under `core/`, `adapters/`, `tools/`, `bench/`, `examples/`, and `vectors/` is a
-directory with a README describing what will land there in Phase 1. There is no code yet, by
-design — see [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for what
-unblocks it.
+directory with a README describing what will land there in Phase 1. There is no code yet —
+Gate 0a (see below) opened on 2026-08-22 and Phase 1 has not started. See
+[`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for the plan.
 
 ## Design commitments
 
@@ -142,7 +142,9 @@ Reproduced from the spec so nobody has to find them:
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Specification changes go through an issue before a PR, and every normative change needs a citation and test vectors.
 
-**Cryptographic review is the gate on everything else.** Phase 0 does not exit — and no code gets written — until the specification has been reviewed by people who did not write it. [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) is the brief: the reading path, the eight gating questions, and the ground rules. The five open spec gaps ([#1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1), [#2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2), [#4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), [#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5), [#7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7)) are deliberately unresolved for the same reason.
+**Cryptographic review is the gate on the format freeze.** The Phase 0 exit gate was split on 2026-08-22 (`docs/01-prd.md` §8) because reviewer recruitment had not succeeded and one gate was holding two different permissions. **Gate 0a** — every spec gap resolved or provisionally resolved and marked, the registry on provisional suite identifiers — permits implementation and was closed by the project. **Gate 0b** — at least two people with real cryptographic credentials — permits freezing, and until it closes no suite identifier is assigned, no stable vector suite is published, no conformance claim is made against a frozen format, and no adoption is invited. The five review-gated spec gaps ([#1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1), [#2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2), [#4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), [#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5), [#7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7)) are **provisionally adopted and still open** — the spec marks each `[PROVISIONAL]` and names the question that would close it.
+
+[`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) is the brief, and it is built so that **answering one question is a complete contribution** — each of the eight is a self-contained card naming the few pages to read, the concrete proposal, and the kind of answer that settles it. The cheapest is [Q4](docs/16-reviewer-brief.md#q4) (~20 minutes, an encoding-injectivity question needing no project context); the highest-leverage is [Q7](docs/16-reviewer-brief.md#q7).
 
 Also valuable, and not requiring a cryptographer:
 

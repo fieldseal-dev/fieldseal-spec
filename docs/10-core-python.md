@@ -24,7 +24,7 @@
 |---|---|---|
 | AES-256-GCM, HKDF-SHA-512, HMAC, constant-time compare | `cryptography` (pyca) | Core required dependency. `AESGCM` accepts AAD and 12-byte nonces; `HKDF` with `hashes.SHA512()`; `constant_time.bytes_eq`. **[VERIFY]** exact minimum version at implementation |
 | Argon2id raw output | `argon2-cffi` | `argon2.low_level.hash_secret_raw(secret=…, salt=…, time_cost=…, memory_cost=…, parallelism=…, hash_len=32, type=Type.ID)` provides raw output with explicit salt — exactly the IDF shape §7.2 needs. **[VERIFY]** parameter names/behavior; blocked anyway on spec gap G2 for the invocation layout |
-| XChaCha20-Poly1305 (suite 0x0002) | `PyNaCl` (libsodium binding), optional extra `fieldseal[xchacha]` | pyca `cryptography` ships `ChaCha20Poly1305` but **not** XChaCha20-Poly1305 **[VERIFY — if pyca has added it, drop PyNaCl]**. PyNaCl's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto-normative libsodium construction (spec gap G7) |
+| XChaCha20-Poly1305 (suite 0xFF02) | `PyNaCl` (libsodium binding), optional extra `fieldseal[xchacha]` | pyca `cryptography` ships `ChaCha20Poly1305` but **not** XChaCha20-Poly1305 **[VERIFY — if pyca has added it, drop PyNaCl]**. PyNaCl's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto-normative libsodium construction (spec gap G7) |
 | KMS wrappers | `fieldseal[aws]` → `boto3`, `fieldseal[gcp]`, `fieldseal[azure]` optional extras | Never in the required set (docs/09 §11); each implements the `Wrapper` interface only |
 | CSPRNG | stdlib `secrets.token_bytes` | Kernel-backed, fork-safe; no dependency |
 
@@ -43,8 +43,8 @@ src/fieldseal/
   context.py         FieldContext (frozen dataclass), canonical_context(), aad()
   kdf.py             record_key(), index_key()
   aead/__init__.py   AeadBackend protocol
-  aead/gcm.py        suite 0x0001 backend
-  aead/xchacha.py    suite 0x0002 backend (import guarded by the extra)
+  aead/gcm.py        suite 0xFF01 backend
+  aead/xchacha.py    suite 0xFF02 backend (import guarded by the extra)
   commitment.py      pending spec gap G1 — module exists with NotImplementedError + issue link
   blindindex.py      IDFs, truncate, normalizers (argon2 parts pending G2; truncate pinned, spec §7.2)
   keyprovider.py     KeyProvider protocol, StaticKeyProvider, DerivedKeyProvider, EnvelopeKeyProvider
@@ -65,8 +65,8 @@ from fieldseal.keyprovider import EnvelopeKeyProvider
 
 fs = Fieldseal(
     key_provider=provider,
-    allowed_suites={0x0001},
-    write_suite=0x0001,
+    allowed_suites={0xFF01},
+    write_suite=0xFF01,
     read_mode="strict",
     cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
     indexes=[IndexDeclaration(...)],
@@ -80,7 +80,7 @@ ct2: bytes = fs.rotate(ct, ctx)
 await fs.warm([ctx, ...])          # the only coroutine on the client
 ```
 
-- `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0x0002 must still derive the correct key for a 0x0001 envelope during mixed-suite reads and rotation).
+- `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0xFF02 must still derive the correct key for a 0xFF01 envelope during mixed-suite reads and rotation).
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
 - Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
 
