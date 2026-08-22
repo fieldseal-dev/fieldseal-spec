@@ -30,28 +30,29 @@ def generate() -> dict:
         ("utf8-multibyte", "utf8-multibyte", _ctx()),
         ("row-id-present", "ssn-9b", _ctx(row_id=I.ROW_ID)),
         ("tenant-absent", "ssn-9b", _ctx(tenant_id=None)),
-        ("purpose-max-index-id", "ssn-9b",
-         _ctx(purpose="index:" + "a" * 32)),
     ]
     for slug, pt_name, ctx in cases:
         pt = I.PLAINTEXTS[pt_name]
-        # purpose must be "encrypt" for record-key derivation (spec §5.3);
-        # the max-index-id case exercises the grammar in canonical_context,
-        # so it is derived under an encrypt-purpose context.
-        seal_ctx = ctx if ctx.purpose == "encrypt" else _ctx()
+        # Every envelope context carries purpose="encrypt" -- spec §5.3
+        # constrains record-key derivation to it, so an index purpose is not
+        # expressible here at all. The maximum-length index-id belongs to the
+        # context family, which is where it is covered; a vector here that
+        # silently substituted an encrypt context would be a duplicate of
+        # basic-roundtrip wearing a name that claims otherwise.
+        assert ctx.purpose == "encrypt", slug
         s = seal(SUITE, I.TENANT_DEK, I.KEY_ID, I.MSG_SEED, I.NONCE_FF01,
-                 seal_ctx, pt)
+                 ctx, pt)
         vectors.append({
             "id": f"envelope/ff01/{slug}",
             "description": f"{len(pt)}-byte plaintext, "
-                           f"{'row_id present' if seal_ctx.row_id else 'row_id absent'}",
+                           f"{'row_id present' if ctx.row_id else 'row_id absent'}",
             "spec_ref": "§3.1, §4.2, §5.3, §6.2, §6.3",
             "suite_id": suite_str(SUITE),
             "tenant_dek": I.TENANT_DEK.hex(),
             "key_id": I.KEY_ID.hex(),
             "msg_seed": I.MSG_SEED.hex(),
             "nonce": I.NONCE_FF01.hex(),
-            "context": ctx_json(seal_ctx),
+            "context": ctx_json(ctx),
             "plaintext": pt.hex(),
             "expected": {
                 "envelope": s.envelope.hex(),

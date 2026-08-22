@@ -26,8 +26,8 @@
     },
     {
       "path": "envelope/ff01.json",
-      "sha256": "142b1e81dc7c367dde5701ea4818588956bc4a64b6a399e819dd13cc7b9dd216",
-      "bytes": 20900
+      "sha256": "1f7f84513eb50273cbc922753f95cc40440b96c12129c681f6bd18e785e96f3a",
+      "bytes": 19038
     },
     {
       "path": "kdf/index-key.json",

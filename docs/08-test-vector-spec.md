@@ -138,7 +138,9 @@ Input state is complete: no key provider, no cache, no modes — this family tes
 - Each envelope vector is exercised in **both directions**: encrypt(inputs) → `expected.envelope`, and decrypt(`expected.envelope`) → `plaintext`. The harness contract (§5) requires both.
 - `suite_id` sits at the vector's top level, outside the `context` object, deliberately: the context's `suite_id` member is filled by the **core**, never by the caller — from the write suite on encrypt and from the parsed header on decrypt (docs/09 §3.2 step 4). A vector that carried it inside `context` would imply the caller supplies it.
 
-Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-shaped value · a 1 KiB value · a value crossing an AEAD block boundary · `row_id` present · `row_id` absent · `tenant_id` present · multi-byte UTF-8 plaintext (as raw bytes — the core is bytes-in/bytes-out) · maximum-length `purpose` string.
+Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-shaped value · a 1 KiB value · a value crossing an AEAD block boundary · `row_id` present · `row_id` absent · `tenant_id` present · `tenant_id` absent · multi-byte UTF-8 plaintext (as raw bytes — the core is bytes-in/bytes-out).
+
+**Correction 2026-08-22 — "maximum-length `purpose` string" was removed from that list.** It is not expressible in this family: spec §5.3 constrains record-key derivation to `purpose = "encrypt"`, so an envelope vector cannot carry an index purpose at all. A generator that substituted an encrypt context to satisfy the requirement would emit a byte-identical duplicate of the basic round trip under a name claiming otherwise — which is worse than no coverage, because it reports as a passing case. The maximum-length `index-id` is covered where it is actually reachable, in `context/canonical.json`.
 
 ### 4.2 `kdf/` — key derivation
 
