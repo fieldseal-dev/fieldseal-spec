@@ -94,5 +94,16 @@ def generate_hmac() -> dict:
     return wrapper("blind-index", _vectors("email-eq", "hmac-sha512", idf_hmac))
 
 
+ARGON2ID_HELD_OUT = (
+    "The Argon2id primitive has not been checked against any external "
+    "known-answer source. RFC 9106 §5.3's vector supplies a nonzero secret (K) "
+    "and associated data (X), both forbidden by spec §7.3 and unsuppliable "
+    "from Python, so it cannot serve as that check. These values are this "
+    "generator's output and nothing has corroborated them."
+)
+
+
 def generate_argon2id() -> dict:
-    return wrapper("blind-index", _vectors("ssn-eq", "argon2id", idf_argon2id))
+    return wrapper("blind-index",
+                   _vectors("ssn-eq", "argon2id", idf_argon2id),
+                   held_out_reason=ARGON2ID_HELD_OUT)

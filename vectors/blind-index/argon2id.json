@@ -3,6 +3,7 @@
   "vector_suite_version": "0.1.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
+  "status": "held-out",
   "vectors": [
     {
       "id": "blind-index/argon2id/ascii-email-b15",
@@ -120,5 +121,7 @@
       }
     }
   ],
-  "retired": []
+  "retired": [],
+  "held_out_reason": "The Argon2id primitive has not been checked against any external known-answer source. RFC 9106 §5.3's vector supplies a nonzero secret (K) and associated data (X), both forbidden by spec §7.3 and unsuppliable from Python, so it cannot serve as that check. These values are this generator's output and nothing has corroborated them.",
+  "conformance": "MUST NOT be counted toward any conformance claim (docs/14 §4)."
 }

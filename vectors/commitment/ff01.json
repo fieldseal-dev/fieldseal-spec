@@ -3,6 +3,7 @@
   "vector_suite_version": "0.1.0-provisional",
   "group": "commitment",
   "spec_version": "0.1-draft",
+  "status": "pinned",
   "vectors": [
     {
       "id": "commitment/ff01/from-record-key",

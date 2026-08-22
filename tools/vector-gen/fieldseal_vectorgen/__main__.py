@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .families import (blind_index_family, commitment_family, context_family,
                        envelope_family, kdf_family)
-from .manifest import build_manifest, write_json
+from .manifest import HELD_OUT, build_manifest, write_json
 
 STDLIB_FAMILIES = {
     "context/canonical.json": context_family.generate,
@@ -79,8 +79,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  self-check: {n} envelope vectors decrypt back to plaintext")
 
     manifest = args.out / "MANIFEST.json"
-    write_json(manifest, build_manifest(args.out, written))
-    print(f"  wrote MANIFEST.json ({len(written)} files)")
+    payload = build_manifest(args.out, written)
+    write_json(manifest, payload)
+    print(f"  wrote MANIFEST.json ({len(payload['files'])} pinned, "
+          f"{len(payload['held_out'])} held out)")
+    for h in payload["held_out"]:
+        print(f"    HELD OUT: {h['path']} -- not part of the suite, "
+              f"MUST NOT be counted toward conformance")
 
     if args.stdlib_only:
         print("\nPARTIAL SUITE: envelope/ and blind-index/argon2id.json were "
