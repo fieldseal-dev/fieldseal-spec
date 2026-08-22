@@ -1,0 +1,38 @@
+{
+  "name": "@fieldseal/core",
+  "version": "0.1.0-provisional",
+  "description": "Fieldseal core (TypeScript/Node): transparent field-level encryption at the data-access layer. Provisional suite 0xFF01 only; not independently reviewed; not for production use.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "test": "vitest run",
+    "vectors": "node --no-warnings=ExperimentalWarning tests/run_vectors.ts",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "fast-check": "^4.3.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

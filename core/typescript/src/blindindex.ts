@@ -1,0 +1,231 @@
+/**
+ * Blind indexes (spec §7): index derivation functions, the bit-exact
+ * truncation of §7.2, and index declarations with their construction-time
+ * gates (§7.4 band, §7.6 cardinality, §6.1 identifier grammar).
+ */
+
+import { createHmac, argon2Sync } from "node:crypto";
+import { isValidIndexId, UUID_LEN } from "./context.ts";
+import { ConfigurationError } from "./errors.ts";
+import { hkdfSha512 } from "./kdf.ts";
+import { isNormalizerId, type NormalizerId } from "./normalize.ts";
+
+export type IdfId = "hmac-sha512" | "argon2id";
+
+/** Spec §7.3 Argon2id invocation constants. Only t and m may be raised by a deployment. */
+export const ARGON2_VERSION = 0x13;
+export const ARGON2_MIN_T = 3;
+export const ARGON2_MIN_M_KIB = 32768;
+export const ARGON2_P = 1;
+export const ARGON2_OUTPUT_LEN = 64;
+export const ARGON2_SALT_LEN = 16;
+export const ARGON2_SALT_INFO = new TextEncoder().encode("fieldseal-argon2-salt-v1");
+
+export interface Argon2Params {
+  readonly timeCost: number;
+  readonly memoryKib: number;
+}
+
+/**
+ * Abstracts the Argon2id primitive so the backend is swappable without API
+ * change (docs/11 §2). The shipped backend is `node:crypto`'s native
+ * `argon2Sync` (Node ≥ 24.7 with OpenSSL ≥ 3.2), which is synchronous,
+ * returns raw output, takes an explicit parallelism, and -- unlike libsodium
+ * and argon2-cffi -- accepts the RFC 9106 §5.3 secret and associated data,
+ * which is what lets this core check the primitive against that RFC vector
+ * even though the Fieldseal invocation forbids both (see tests/primitives).
+ */
+export interface Argon2Backend {
+  readonly name: string;
+  argon2id(password: Uint8Array, salt: Uint8Array, t: number, mKib: number, p: number, outLen: number): Uint8Array;
+}
+
+export const nodeArgon2Backend: Argon2Backend = {
+  name: "node:crypto argon2Sync",
+  argon2id(password, salt, t, mKib, p, outLen) {
+    // Spec §7.3: K (secret) and X (associatedData) MUST NOT be used. They are
+    // deliberately not passed, not passed-as-empty: "not used" and "empty"
+    // are the same H0 input in RFC 9106 §3.2 (both contribute LE32(0)), but
+    // omitting them keeps the call shape identical to backends that cannot
+    // take them at all.
+    //
+    // There is no `version` parameter: node:crypto's Argon2 is version 0x13
+    // only (an undocumented `version` key is silently ignored -- verified on
+    // Node 24.16 -- and the RFC 9106 §5.3 vector, which is a version-19
+    // vector, reproduces exactly). ARGON2_VERSION is therefore a recorded
+    // fact about the backend rather than an argument to it.
+    return new Uint8Array(
+      argon2Sync("argon2id", {
+        message: password,
+        nonce: salt,
+        parallelism: p,
+        tagLength: outLen,
+        memory: mKib,
+        passes: t,
+      }),
+    );
+  },
+};
+
+export function hmacSha512(key: Uint8Array, data: Uint8Array): Uint8Array {
+  return new Uint8Array(createHmac("sha512", key).update(data).digest());
+}
+
+/** The §7.3 salt: HKDF-SHA-512(ikm = index_key, salt = "", info = "fieldseal-argon2-salt-v1", 16). */
+export function argon2Salt(indexKey: Uint8Array): Uint8Array {
+  return hkdfSha512(indexKey, new Uint8Array(0), ARGON2_SALT_INFO, ARGON2_SALT_LEN);
+}
+
+/** IDF(index_key, normalized) per spec §7.3, for either IDF. */
+export function idf(
+  which: IdfId,
+  indexKey: Uint8Array,
+  normalized: Uint8Array,
+  argon2?: Argon2Params,
+  backend: Argon2Backend = nodeArgon2Backend,
+): Uint8Array {
+  if (which === "hmac-sha512") return hmacSha512(indexKey, normalized);
+  const params = argon2 ?? { timeCost: ARGON2_MIN_T, memoryKib: ARGON2_MIN_M_KIB };
+  return backend.argon2id(normalized, argon2Salt(indexKey), params.timeCost, params.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+}
+
+/**
+ * truncate(raw, b) per spec §7.2: keep the first ⌈b/8⌉ bytes, zero the
+ * trailing 8·⌈b/8⌉ − b bits of the final byte, bits numbered MSB-first.
+ * Output length is exactly ⌈b/8⌉.
+ */
+export function truncateBits(raw: Uint8Array, b: number): Uint8Array {
+  if (!Number.isInteger(b) || b < 1 || b > raw.length * 8) {
+    throw new ConfigurationError(`truncation length ${b} bits is outside 1..${raw.length * 8}`);
+  }
+  const nBytes = Math.ceil(b / 8);
+  const out = new Uint8Array(raw.subarray(0, nBytes)); // copy, never alias
+  const dropBits = nBytes * 8 - b;
+  if (dropBits > 0) {
+    const mask = (0xff << dropBits) & 0xff;
+    out[nBytes - 1] = (out[nBytes - 1] as number) & mask;
+  }
+  return out;
+}
+
+export interface CardinalityOverride {
+  readonly reason: string;
+  readonly approvedBy: string;
+  readonly date: string;
+}
+
+/** docs/09 §7 IndexDeclaration, declared to the client at construction. */
+export interface IndexDeclaration {
+  readonly tableUuid: Uint8Array;
+  readonly columnUuid: Uint8Array;
+  /** Defaults to "exact" (spec §7.2). */
+  readonly indexId?: string;
+  readonly idf: IdfId;
+  readonly argon2?: Argon2Params;
+  readonly normalize: NormalizerId;
+  readonly truncateBits: number;
+  /** Projected number of DISTINCT values (spec §7.4), ≥ 16; ≥ 2^10 unless overridden (§7.6). */
+  readonly projectedPopulation: number;
+  readonly cardinalityOverride?: CardinalityOverride;
+  /** Declares the column as heavily skewed (spec §7.6); gated like low cardinality. */
+  readonly skewed?: boolean;
+}
+
+export interface ValidatedIndex {
+  readonly key: string;
+  readonly indexId: string;
+  readonly idf: IdfId;
+  readonly argon2: Argon2Params | undefined;
+  readonly normalize: NormalizerId;
+  readonly truncateBits: number;
+  readonly projectedPopulation: number;
+  readonly overridden: boolean;
+}
+
+export const CARDINALITY_GATE = 1 << 10;
+
+export function indexRegistryKey(tableUuid: Uint8Array, columnUuid: Uint8Array, indexId: string): string {
+  return `${Buffer.from(tableUuid).toString("hex")}/${Buffer.from(columnUuid).toString("hex")}/${indexId}`;
+}
+
+/**
+ * Construction-time validation (docs/09 §2, §7). Everything here is a
+ * `ConfigurationError`: configuration validation sits outside the §9
+ * taxonomy (docs/08 §4.3), and a declaration that fails must never reach a
+ * key derivation.
+ */
+export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
+  if (!(d.tableUuid instanceof Uint8Array) || d.tableUuid.length !== UUID_LEN) {
+    throw new ConfigurationError(`index declaration: tableUuid must be ${UUID_LEN} bytes`);
+  }
+  if (!(d.columnUuid instanceof Uint8Array) || d.columnUuid.length !== UUID_LEN) {
+    throw new ConfigurationError(`index declaration: columnUuid must be ${UUID_LEN} bytes`);
+  }
+  const indexId = d.indexId ?? "exact";
+  if (typeof indexId !== "string" || !isValidIndexId(indexId)) {
+    // Spec §6.1: refused when the index is declared, never at call time.
+    throw new ConfigurationError(
+      `index declaration: index-id ${JSON.stringify(indexId)} violates the spec §6.1 grammar [a-z0-9-]{1,32}`,
+    );
+  }
+  if (d.idf !== "hmac-sha512" && d.idf !== "argon2id") {
+    throw new ConfigurationError(`index declaration ${indexId}: idf must be "hmac-sha512" or "argon2id" (spec §7.3)`);
+  }
+  let argon2: Argon2Params | undefined;
+  if (d.idf === "argon2id") {
+    argon2 = d.argon2 ?? { timeCost: ARGON2_MIN_T, memoryKib: ARGON2_MIN_M_KIB };
+    if (!Number.isInteger(argon2.timeCost) || argon2.timeCost < ARGON2_MIN_T) {
+      throw new ConfigurationError(`index declaration ${indexId}: Argon2id timeCost must be an integer ≥ ${ARGON2_MIN_T} (spec §7.3)`);
+    }
+    if (!Number.isInteger(argon2.memoryKib) || argon2.memoryKib < ARGON2_MIN_M_KIB) {
+      throw new ConfigurationError(`index declaration ${indexId}: Argon2id memoryKib must be an integer ≥ ${ARGON2_MIN_M_KIB} (spec §7.3)`);
+    }
+  } else if (d.argon2 !== undefined) {
+    throw new ConfigurationError(`index declaration ${indexId}: argon2 parameters given for an hmac-sha512 index`);
+  }
+  if (typeof d.normalize !== "string" || !isNormalizerId(d.normalize)) {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: normalize must be one of the shipped normalizers (docs/09 §7); custom normalizers are a portability break`,
+    );
+  }
+  const P = d.projectedPopulation;
+  if (!Number.isInteger(P) || P < 16) {
+    throw new ConfigurationError(`index declaration ${indexId}: projectedPopulation must be an integer ≥ 16 (spec §7.4)`);
+  }
+  const b = d.truncateBits;
+  const rawBits = ARGON2_OUTPUT_LEN * 8; // both IDFs produce 64 bytes
+  if (!Number.isInteger(b) || b < 1 || b > rawBits) {
+    throw new ConfigurationError(`index declaration ${indexId}: truncateBits must be an integer in 1..${rawBits}`);
+  }
+  // Spec §7.4: 2 ≤ P × 2^(−b) < √P, b rounded down. A declared b outside the
+  // band is a spec violation the core can see at construction, so it is
+  // refused here rather than silently accepted.
+  const collisions = P / 2 ** b;
+  if (!(collisions >= 2 && collisions < Math.sqrt(P))) {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: truncateBits=${b} is outside the spec §7.4 band for P=${P} (need 2 ≤ P·2^−b < √P; got ${collisions.toFixed(3)})`,
+    );
+  }
+  // Spec §7.6 default-deny gate.
+  const gated = P < CARDINALITY_GATE || d.skewed === true;
+  let overridden = false;
+  if (gated) {
+    const o = d.cardinalityOverride;
+    if (o === undefined || !o.reason || !o.approvedBy || !o.date) {
+      throw new ConfigurationError(
+        `index declaration ${indexId}: refused by the spec §7.6 cardinality gate (P=${P}${d.skewed ? ", declared skewed" : ""}); an explicit cardinalityOverride {reason, approvedBy, date} is required`,
+      );
+    }
+    overridden = true;
+  }
+  return {
+    key: indexRegistryKey(d.tableUuid, d.columnUuid, indexId),
+    indexId,
+    idf: d.idf,
+    argon2,
+    normalize: d.normalize,
+    truncateBits: b,
+    projectedPopulation: P,
+    overridden,
+  };
+}
