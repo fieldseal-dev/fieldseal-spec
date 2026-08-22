@@ -3,8 +3,10 @@
  * (docs/08 §7), so that agreement with the pinned vectors is not the only
  * evidence the primitives are right:
  *
- *   HKDF        RFC 5869 §A.1 test case 1 (SHA-256; the RFC has no SHA-512 vectors,
- *               so the SHA-512 path is cross-checked against a hand-rolled expand)
+ *   HKDF        RFC 5869 §A.1-A.3 (SHA-256; the RFC has no SHA-512 vectors, so the
+ *               SHA-512 path is cross-checked against node:crypto.hkdfSync where
+ *               that accepts the input, and against a hand-rolled expand beyond
+ *               hkdfSync's 1024-byte info ceiling)
  *   AES-256-GCM The GCM specification's test cases 13 and 14 (McGrew–Viega),
  *               which NIST's CAVP GCM suite also contains
  *   Argon2id    RFC 9106 §5.3 -- reproducible on THIS stack because node:crypto
@@ -17,21 +19,67 @@ import { argon2Sync, createHmac, hkdfSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { gcmOpen, gcmSeal } from "../src/aead/gcm.ts";
 import { ARGON2_P, ARGON2_VERSION, truncateBits } from "../src/blindindex.ts";
-import { hkdfSha512 } from "../src/kdf.ts";
+import { InvalidArgumentError } from "../src/errors.ts";
+import { HKDF_SHA512_MAX_LEN, hkdf, hkdfSha512 } from "../src/kdf.ts";
 import { caseFoldFull, normalize, CASEFOLD_UNICODE_VERSION } from "../src/normalize.ts";
 import { bytes, hex } from "./helpers.ts";
 
 describe("HKDF", () => {
-  it("RFC 5869 A.1 test case 1 (SHA-256) -- argument order of hkdfSync", () => {
-    const okm = new Uint8Array(
-      hkdfSync("sha256", hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"), hex("000102030405060708090a0b0c"), hex("f0f1f2f3f4f5f6f7f8f9"), 42),
-    );
-    expect(Buffer.from(okm).toString("hex")).toBe(
-      "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
-    );
+  // RFC 5869 Appendix A. The algorithm is implemented over createHmac in
+  // src/kdf.ts (Node's hkdfSync and Web Crypto deriveBits both cap `info` at
+  // 1024 bytes, which canonical_context can exceed), so it is pinned to the
+  // RFC's published answers directly rather than to Node's implementation.
+  const A1 = {
+    ikm: hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+    salt: hex("000102030405060708090a0b0c"),
+    info: hex("f0f1f2f3f4f5f6f7f8f9"),
+    len: 42,
+    okm: "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+  };
+  const A2 = {
+    ikm: new Uint8Array(80).map((_, i) => i),
+    salt: new Uint8Array(80).map((_, i) => 0x60 + i),
+    info: new Uint8Array(80).map((_, i) => 0xb0 + i),
+    len: 82,
+    okm: "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c58179ec3e87c14c01d5c1f3434f1d87",
+  };
+  const A3 = {
+    ikm: hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+    salt: new Uint8Array(0),
+    info: new Uint8Array(0),
+    len: 42,
+    okm: "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8",
+  };
+
+  it("RFC 5869 A.1, A.2 (multi-block, 80-byte inputs), A.3 (empty salt and info) -- SHA-256", () => {
+    for (const v of [A1, A2, A3]) {
+      expect(Buffer.from(hkdf("sha256", 32, v.ikm, v.salt, v.info, v.len)).toString("hex")).toBe(v.okm);
+    }
   });
 
-  it("hkdfSha512 equals a hand-rolled RFC 5869 extract-then-expand over createHmac", () => {
+  it("RFC 5869 A.1 -- argument order of node:crypto.hkdfSync, the oracle used below", () => {
+    const okm = new Uint8Array(hkdfSync("sha256", A1.ikm, A1.salt, A1.info, A1.len));
+    expect(Buffer.from(okm).toString("hex")).toBe(A1.okm);
+  });
+
+  it("hkdfSha512 equals node:crypto.hkdfSync on every input hkdfSync accepts (info <= 1024 bytes)", () => {
+    for (const [ikm, salt, info, len] of [
+      [bytes("ikm"), new Uint8Array(0), bytes("fieldseal-commit-v1"), 32],
+      [new Uint8Array(32).fill(1), new Uint8Array(48).fill(2), new Uint8Array(90).fill(3), 32],
+      [new Uint8Array(32), bytes("fieldseal-index-v1"), bytes("x"), 100],
+      [bytes("k"), new Uint8Array(0), bytes("fieldseal-argon2-salt-v1"), 16],
+      [new Uint8Array(32).fill(7), new Uint8Array(64).fill(8), new Uint8Array(1024).fill(9), 64], // hkdfSync's ceiling
+      [new Uint8Array(32).fill(7), new Uint8Array(64).fill(8), new Uint8Array(1024).fill(9), 200], // four blocks
+    ] as const) {
+      const expected = new Uint8Array(hkdfSync("sha512", ikm, salt, info, len));
+      expect(Buffer.from(hkdfSha512(ikm, salt, info, len)).equals(Buffer.from(expected))).toBe(true);
+    }
+  });
+
+  it("hkdfSha512 accepts info longer than 1024 bytes (canonical_context is unbounded, spec §6.1)", () => {
+    // hkdfSync refuses this input; the reference is an independently written
+    // RFC 5869 expand over createHmac, so the two implementations share only
+    // the primitive.
     const hand = (ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, len: number): Uint8Array => {
       const prk = createHmac("sha512", salt).update(ikm).digest();
       const out: Buffer[] = [];
@@ -42,13 +90,19 @@ describe("HKDF", () => {
       }
       return new Uint8Array(Buffer.concat(out).subarray(0, len));
     };
-    for (const [ikm, salt, info, len] of [
-      [bytes("ikm"), new Uint8Array(0), bytes("fieldseal-commit-v1"), 32],
-      [new Uint8Array(32).fill(1), new Uint8Array(48).fill(2), new Uint8Array(90).fill(3), 32],
-      [new Uint8Array(32), bytes("fieldseal-index-v1"), bytes("x"), 100],
-      [bytes("k"), new Uint8Array(0), bytes("fieldseal-argon2-salt-v1"), 16],
-    ] as const) {
-      expect(Buffer.from(hkdfSha512(ikm, salt, info, len)).equals(Buffer.from(hand(ikm, salt, info, len)))).toBe(true);
+    for (const infoLen of [1025, 2082, 70_000]) {
+      const ikm = new Uint8Array(32).fill(0x11);
+      const salt = new Uint8Array(48).fill(0x22);
+      const info = new Uint8Array(infoLen).map((_, i) => i & 0xff);
+      expect(() => hkdfSync("sha512", ikm, salt, info, 32)).toThrow(/1024/);
+      expect(Buffer.from(hkdfSha512(ikm, salt, info, 32)).equals(Buffer.from(hand(ikm, salt, info, 32)))).toBe(true);
+    }
+  });
+
+  it("output length is bounded by RFC 5869 §2.3 (L <= 255 * HashLen) with a typed error", () => {
+    expect(hkdfSha512(bytes("ikm"), new Uint8Array(0), bytes("info"), HKDF_SHA512_MAX_LEN).length).toBe(HKDF_SHA512_MAX_LEN);
+    for (const bad of [0, -1, 1.5, HKDF_SHA512_MAX_LEN + 1]) {
+      expect(() => hkdfSha512(bytes("ikm"), new Uint8Array(0), bytes("info"), bad)).toThrow(InvalidArgumentError);
     }
   });
 

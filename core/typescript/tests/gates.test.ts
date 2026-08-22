@@ -260,3 +260,41 @@ describe("docs/08 §6 determinism injection", () => {
     expect(unreached.sort()).toEqual(["testing/index.ts"]);
   });
 });
+
+describe("spec §6.1 unbounded context fields", () => {
+  // canonical_context is HKDF's `info` (§5.3, §7.2). Node's built-in HKDF
+  // caps `info` at 1024 bytes; an implementation built on it cannot derive
+  // the key for a context another core can write once tenant_id + row_id
+  // pass ~930 bytes. src/kdf.ts implements RFC 5869 over createHmac so that
+  // no context a caller can express is refused by the primitive.
+  const c = makeClient({ indexes: [INDEX] });
+
+  it("encrypt / decrypt / rotate / blindIndex accept a context whose canonical encoding exceeds 1024 bytes", () => {
+    for (const [tenantLen, rowLen] of [
+      [950, 0],
+      [2000, 0],
+      [0, 2000],
+      [4096, 4096],
+      [70_000, 0],
+    ] as const) {
+      const ctx = {
+        ...CTX,
+        tenantId: new Uint8Array(tenantLen).map((_, i) => i & 0xff),
+        rowId: rowLen ? new Uint8Array(rowLen).fill(0x5a) : null,
+      };
+      const env = c.encrypt(PT, ctx);
+      expect(env.length).toBe(111 + PT.length);
+      expect(Buffer.from(c.decrypt(env, ctx)).equals(Buffer.from(PT))).toBe(true);
+      expect(Buffer.from(c.decrypt(c.rotate(env, ctx), ctx)).equals(Buffer.from(PT))).toBe(true);
+      expect(c.blindIndex(PT, { ...ctx, purpose: "index:exact" }).length).toBe(2);
+    }
+  });
+
+  it("a large tenant_id still binds: a one-byte change in it is COMMITMENT_INVALID, not a quiet success", () => {
+    const tenantId = new Uint8Array(3000).fill(0x41);
+    const env = c.encrypt(PT, { ...CTX, tenantId });
+    const altered = new Uint8Array(tenantId);
+    altered[2999] = 0x40; // 'A' with bit 0 cleared
+    expect(codeOf(() => c.decrypt(env, { ...CTX, tenantId: altered }))).toBe("COMMITMENT_INVALID");
+  });
+});
