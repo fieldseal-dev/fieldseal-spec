@@ -71,15 +71,25 @@ The motivation is not theoretical. AWS shipped [AWS-2025-032](https://aws.amazon
 | **Read** | Spec §7.2–§7.3 (blind-index construction and IDF selection) · RFC 9106 §3.1 |
 | **Time** | ~30–45 min |
 | **Proposal** | [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) |
-| **Provisional status** | Adopted; spec §7.3 carries a `[PROVISIONAL]` marker |
+| **Provisional status** | Adopted and **narrowed 2026-08-22**; spec §7.3 now pins the full invocation and carries a `[PROVISIONAL]` marker |
 
-Proposed: password = the normalized plaintext; salt = HKDF-derived from the index key; index key supplied through RFC 9106's secret parameter `K`.
+Spec §7.3 pins this exactly:
 
-The salt is deterministic, which inverts the usual advice — but determinism is the entire point of a blind index, and a per-value random salt would make equality lookup impossible. The question is whether *this* way of being deterministic is sound.
+```
+salt = HKDF-SHA-512(ikm = index_key, salt = "", info = "fieldseal-argon2-salt-v1", length = 16)
+raw  = Argon2id(password = normalize(plaintext), salt = salt,
+                version = 0x13, t = 3, m = 32768 KiB, p = 1, output_len = 64)
+```
 
-**A constraint discovered 2026-08-22, which may decide this before soundness does.** Argon2's `K` is not portable. libsodium's `crypto_pwhash` exposes no secret parameter at all; Python's `argon2-cffi` exposes it only through an ultra-low-level call its own documentation warns against; Node's `node-argon2` exposes it as `secret`. Since Python and TypeScript are the two Phase 1 cores and the project's whole claim is byte-identical output across them, a `K`-based construction is one the TypeScript core can express and the Python core cannot. Evidence and sources are in [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2). Note also that CipherSweet — the prior art this construction is modelled on — uses the index key *as the Argon2 salt*, which may be a considered choice or may be libsodium's API showing through.
+The index key enters **only** through the salt. Argon2's optional secret parameter `K` and associated data `X` are forbidden.
 
-**What closes it:** is the deterministic, key-derived salt sound in this keyed setting, and is `K` the right place for the index key? Given the constraint above, the more useful form may be: among (a) `K = index_key`, (b) CipherSweet's salt-as-key, and (c) domain-separated concatenation into the password, which are cryptographically defensible — and does ruling out (a) on portability grounds cost anything real?
+That is not where this started. The original proposal put `index_key` in `K`, and the project withdrew it — not on cryptographic grounds but because `K` is unreachable in Python. libsodium's `crypto_pwhash` exposes no secret parameter at all; `argon2-cffi` exposes one only through an ultra-low-level call its own documentation warns against; Node's `node-argon2` does expose it. A construction one reference core can express and the other cannot is this project's central claim failing, so the option is dead regardless of its merits. Sources are in [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2).
+
+Two costs follow, and the specification states both. Keying now rests entirely on the salt, so the defense-in-depth argument for `K` is gone. And the salt is 16 bytes because libsodium requires exactly 16, so the keyed material at this step is 128 bits rather than 256.
+
+The construction that remains is close to what CipherSweet ships — Argon2id "where the blind index key is the Argon2 salt" — with an HKDF step added so the raw key never reaches Argon2 directly.
+
+**What closes it:** one question. Is salt-only keying, through a domain-separated HKDF step, sound for this deterministic keyed use? The salt is deterministic by design, since determinism is the point of a blind index. If your answer is that it is unsound, the live alternative is explicit domain-separated concatenation into the password — not a return to `K`, which is not available to us.
 
 <a id="q4"></a>
 ### Q4 — Is the canonical context encoding injective?
