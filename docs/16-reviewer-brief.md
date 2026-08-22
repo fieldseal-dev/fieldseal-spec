@@ -183,8 +183,8 @@ Kept in the open so that "we could not find reviewers" is a claim with evidence 
 
 | Date | Venue or person | Question(s) put | Outcome |
 |---|---|---|---|
-| 2026-08-22 | IRTF CFRG list (`cfrg@irtf.org`) | [Q6](#q6) | **Drafted, not yet sent** — awaiting list subscription |
-| 2026-08-22 | Paragon Initiative (`security@paragonie.com`), for Scott Arciszewski | [Q3](#q3), [Q6](#q6) | **Drafted, not yet sent.** Chosen because one person authored both the CipherSweet blind-index construction Q3 diverges from and the expired `draft-irtf-cfrg-xchacha` behind Q6 |
+| 2026-08-22 | IRTF CFRG list (`cfrg@irtf.org`) | [Q6](#q6) | **Sent.** Awaiting response |
+| 2026-08-22 | Paragon Initiative (`security@paragonie.com`), for Scott Arciszewski | [Q3](#q3), [Q6](#q6) | **Sent.** Awaiting response. Chosen because one person authored both the CipherSweet blind-index construction Q3 diverges from and the expired `draft-irtf-cfrg-xchacha` behind Q6 |
 
 Channels this brief is written to be usable in, roughly in order of expected yield:
 
