@@ -48,7 +48,7 @@ Fieldseal(config) where config = {
 
 Design rules:
 
-- **Explicit allow-list.** `allowed_suites` has no default. Forcing the deployment to write `["0x0001"]` is the §4.3 retirement mechanism working as designed.
+- **Explicit allow-list.** `allowed_suites` has no default. Forcing the deployment to write `["0xFF01"]` is the §4.3 retirement mechanism working as designed.
 - **The client is immutable after construction.** Mode changes, suite changes, and provider changes are new clients. This removes a class of concurrency bugs and makes "which config produced this ciphertext" answerable.
 - **Construction validates everything**: write suite in allow-list, cache thresholds within §5.5 bounds, every declared index passing the §7.6 cardinality gate or carrying an explicit logged override, StaticKeyProvider triggering the §8 warning outside test configuration.
 - Per-language surface (constructor idioms, builder patterns) is defined in the per-language specs; the semantics above are fixed.
@@ -97,8 +97,8 @@ Proposed check order — **this order is an engineering proposal that must be pi
 4.  ctx.suite_id ← header.suite_id                // NORMATIVE-INTENT NOTE: on decrypt, the context's
                                                   // suite_id member comes from the parsed (and now
                                                   // allow-listed) header — NEVER from config.write_suite.
-                                                  // A 0x0002-writing client must still derive the right
-                                                  // key for a 0x0001 envelope (§4.3/§5.6 mixed-suite
+                                                  // A 0xFF02-writing client must still derive the right
+                                                  // key for a 0xFF01 envelope (§4.3/§5.6 mixed-suite
                                                   // reads; §5.9 re-encryption sweeps; §3.5 rotate).
                                                   // Tampering is caught: suite_id is bound in the KDF
                                                   // info and AAD (§6.2). Pinned normatively by G5.
@@ -170,7 +170,7 @@ Base64/text storage (spec §3.3) is likewise an adapter/storage concern: the cor
 
 A hard-coded, frozen table — not a plugin surface:
 
-| field | 0x0001 | 0x0002 |
+| field | 0xFF01 | 0xFF02 |
 |---|---|---|
 | aead | AES-256-GCM | XChaCha20-Poly1305 [G7: normative definition source] |
 | key_len | 32 | 32 |

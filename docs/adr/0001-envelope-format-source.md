@@ -1,6 +1,6 @@
 # ADR-0001: Profile the AWS structured-encryption format, or define the envelope fresh
 
-**Status:** OPEN — spec §13.1 calls this "the highest-leverage unresolved decision"; it blocks all Phase 1 code · **Date opened:** 2026-08-08 · **Spec refs:** §3, §13.1 · **PRD refs:** §10 item 1 (a plain list — the PRD has no §10 subsections), risk "a vendor ships an equivalent open format first"
+**Status:** **PROVISIONALLY DECIDED (option C)** under Gate 0a, 2026-08-22 — reversible at Gate 0b; spec §13.1 calls this "the highest-leverage unresolved decision" · **Date opened:** 2026-08-08 · **Spec refs:** §3, §4.8, §13.1 · **PRD refs:** §10 item 1 (a plain list — the PRD has no §10 subsections), risk "a vendor ships an equivalent open format first"
 
 ## Context
 
@@ -44,4 +44,14 @@ Define the envelope fresh but deliberately align internal constructions (commitm
 
 ## Decision
 
-*(open)*
+**Provisional (Gate 0a), 2026-08-22 — option C: define the envelope fresh, with AWS-aligned internal constructions.**
+
+*Why C and not A.* Criterion 1 decides it. [Appendix A](0001-appendix-a-expressibility-mapping.md) answered the expressibility question against A: spec §6.3's dual-layer binding is not expressible in the AWS format, §3.2/§4.4 survive only as reworded equivalent-protection arguments, and per-cell embedding costs 1.4×–2.4× the fresh envelope at the §3.3 benchmark. Criterion 1 says A fails if a normative requirement cannot be expressed without weakening, and one cannot. The appendix is verified work — pinned at AWS commit `a82094c`, all eight `structured-encryption/` files re-read as raw text — so this is not a provisional finding being treated as settled.
+
+*Why C and not B.* B and C produce the same bytes; C is B plus a discipline. The discipline is what criterion 2 asks for — every internal construction that can cite an AWS ESDK v2 precedent does so explicitly, so the surface a reviewer must treat as novel is the framing rather than the framing *and* the derivations. The spec already did this implicitly for `msg_seed` (§3.1 cites the ESDK v2 Message ID). Making it a stated policy costs nothing now and is very hard to retrofit later.
+
+*What stays open, and why this is provisional.* Criterion 2 is a question about *review*, and the review has not happened — the ADR's own evidence list requires "an opinion from at least one of the Phase 0 cryptographic reviewers specifically on envelope-format novelty risk," which remains outstanding as reviewer question [Q7](../16-reviewer-brief.md#q7). This decision is therefore recorded under Gate 0a (PRD §8): it is written normatively so implementation can proceed, and the envelope it produces is carried by provisional suite identifiers (spec §4.8) precisely so that a Gate 0b finding is recoverable. Criterion 4 also remains unaddressed by fiat rather than by argument: C avoids the AWS-evolution problem only because it takes no dependency on AWS's format, which is a consequence of the choice and not evidence for it.
+
+*What would reverse it.* A reviewer judging the fresh framing's novelty unacceptable, or AWS generalizing their format beyond DynamoDB — the ADR's own "changes the calculus toward A" condition, and still worth the early-contact approach PRD §9 recommends. Reversal after Phase 1 code exists costs the envelope layout and `docs/08`/`docs/09` §4, which is exactly the cost the ADR's Context paragraph warned about; Gate 0a accepts that exposure knowingly rather than by omission.
+
+*What was not decided here.* Option C constrains the envelope's *derivations*, not its AEAD — that is ADR-0002, provisionally deferred.

@@ -1,10 +1,10 @@
 # Fieldseal Core Specification
 
-**Version:** 0.1-draft · **Date:** 2026-08-08 · **Status:** Working draft. Not for production use. Not independently reviewed.
+**Version:** 0.1-draft · **Date:** 2026-08-08 (rev. 2026-08-22) · **Status:** Working draft. Not for production use. **Not independently reviewed** — the Phase 0 cryptographic review has not taken place, and every suite in the registry is provisional (§4.2, §4.8) for that reason.
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174).
 
-> **Reviewer note.** Every normative statement below carries its justification inline. Where the underlying literature is contested, or where a design choice was made against a plausible alternative, this is stated rather than hidden. Sections marked **[OPEN]** are unresolved and are listed in §13.
+> **Reviewer note.** Every normative statement below carries its justification inline. Where the underlying literature is contested, or where a design choice was made against a plausible alternative, this is stated rather than hidden. Two markers appear in the text and mean different things. **[OPEN]** marks a question this specification has not answered; all of them are listed in §13. **[PROVISIONAL]** marks a question it has answered *provisionally under Gate 0a* (PRD §8) so that implementation could begin — the answer is written normatively, is what the vectors and cores are built against, and is expected to be the thing your review changes. Each provisional marker names its tracker issue and the question in [`16-reviewer-brief.md`](16-reviewer-brief.md) that would close it. Nothing marked provisional is settled, and §4.8 keeps data written under one identifiable after the fact.
 
 ---
 
@@ -73,7 +73,7 @@ A conformant ciphertext is the concatenation:
  \________________ header (51 B) ________________/
 ```
 
-Fields marked `*` have sizes determined by `suite_id`; the values shown are for suite `0x0001`.
+Fields marked `*` have sizes determined by `suite_id`; the values shown are for suite `0xFF01`.
 
 | Field | Size | Description |
 |---|---|---|
@@ -85,7 +85,7 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 | `ciphertext` | variable | AEAD output. |
 | `tag` | suite-defined, ≥16 B | AEAD authentication tag. |
 | `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. |
-
+| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is open (§4.6, gap G1), as is whether the mandatory suite needs one at all (§13.2). |
 ### 3.2 Header authentication (normative)
 
 `fmt_ver`, `suite_id`, `key_id`, and `msg_seed` MUST be included in the AEAD's additional authenticated data (§6.2–§6.3). They MUST NOT be an unauthenticated prefix. (`msg_seed` is additionally self-authenticating: tampering with it changes the derived key and fails the tag check — §5.3.)
@@ -96,7 +96,7 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 
 Implementations MUST support storing the envelope in a binary column type (`BYTEA`, `VARBINARY`, `BLOB`). Implementations MAY support base64 text storage, and if they do, MUST document the resulting overhead.
 
-*Justification and honest cost.* A 9-byte US Social Security Number under suite `0x0001` becomes 51 (header, including the 32-byte derivation seed) + 12 (nonce) + 9 (ciphertext) + 16 (tag) + 32 (commitment) = **120 bytes binary**, or **160 bytes base64** — a 13.3× or 17.8× expansion. The fixed overhead is 111 bytes per encrypted field; across a 20-encrypted-column, 100-million-row table that is roughly 220 GB of envelope overhead alone, before index bloat and before WAL/replication amplification of the same. Base64 is a 33% tax paid on every row, forever.
+*Justification and honest cost.* A 9-byte US Social Security Number under suite `0xFF01` becomes 51 (header, including the 32-byte derivation seed) + 12 (nonce) + 9 (ciphertext) + 16 (tag) + 32 (commitment) = **120 bytes binary**, or **160 bytes base64** — a 13.3× or 17.8× expansion. The fixed overhead is 111 bytes per encrypted field; across a 20-encrypted-column, 100-million-row table that is roughly 220 GB of envelope overhead alone, before index bloat and before WAL/replication amplification of the same. Base64 is a 33% tax paid on every row, forever.
 
 This envelope is deliberately heavier than Tink's 5-byte prefix. The extra bytes purchase authenticated key identification, key commitment, per-write derived keys, and context binding. A deployment that does not need those properties should not pay for them — and should not use this specification.
 
@@ -128,12 +128,20 @@ Data at rest has no peer and therefore **no negotiation**. The header is a decla
 
 ### 4.2 Registry
 
+**No suite identifier is assigned yet.** Until Gate 0b closes (PRD §8) the registry defines *provisional* suites only, in the reserved `0xFF00`–`0xFFFF` range governed by §4.8. The `0x0001` and `0x0002` identifiers are **reserved but unassigned**, and MUST NOT appear in any envelope until the constructions they will name are frozen.
+
 | `suite_id` | Name | AEAD | Nonce | KDF | Committing | FIPS-approvable | Status |
 |---|---|---|---|---|---|---|---|
-| `0x0001` | `FLE-AES256GCM-HKDF-SHA512` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[OPEN]** — see §13.2 |
-| `0x0002` | `FLE-XCHACHA20POLY1305-HKDF-SHA512` | XChaCha20-Poly1305 | 192-bit RBG | HKDF-SHA-512 | No — explicit 32 B commitment REQUIRED | **No** | Optional, non-FIPS |
+| `0xFF01` | `FLE-AES256GCM-HKDF-SHA512-PROVISIONAL` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[PROVISIONAL]** — AEAD choice deferred (§13.2, ADR-0002); commitment construction open (§4.6, G1) |
+| `0xFF02` | `FLE-XCHACHA20POLY1305-HKDF-SHA512-PROVISIONAL` | XChaCha20-Poly1305 | 192-bit RBG | HKDF-SHA-512 | No — explicit 32 B commitment REQUIRED | **No** | **[PROVISIONAL]** — no normative definition of the AEAD yet exists (§4.2 note, G7) |
+| `0x0001` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF01`'s constructions freeze at Gate 0b |
+| `0x0002` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF02`'s constructions freeze at Gate 0b, if it survives |
 
-Implementations MUST support `0x0001`. Implementations MAY support `0x0002`. No more than two suites will be defined in v1.0.
+Implementations MUST support `0xFF01`. Implementations MAY support `0xFF02`. No more than two suites will be defined in v1.0.
+
+> **[PROVISIONAL — G7]** XChaCha20-Poly1305 has no IETF RFC; `draft-irtf-cfrg-xchacha` expired, and libsodium's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto standard. A specification that requires a citation for every normative claim cannot name a suite it cannot cite. The open question is whether to name libsodium's construction normatively (the PASETO precedent) or drop the suite and ship a one-suite registry — see [issue #7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7) and reviewer question [Q6](16-reviewer-brief.md#q6). `0xFF02` exists under Gate 0a so the two-suite mechanics (allow-listing, mixed-suite reads, rotation across suites) are exercised by the vectors and the cross-implementation matrix; the mechanics are what Phase 1 is proving, and they are unaffected by which AEAD ultimately fills the slot.
+
+A provisional suite is a complete, frozen suite in every sense §4.1 requires — it offers the caller no algorithm agility whatsoever. "Provisional" constrains the *project*, not the caller: it says this project may still change these constructions, and §4.8 governs what an implementation may do with one in the meantime.
 
 ### 4.3 Suite allow-listing (normative)
 
@@ -166,6 +174,8 @@ Authentication tags MUST be at least 128 bits. Tag truncation MUST NOT be suppor
 
 ### 4.6 Key commitment (normative)
 
+> **[PROVISIONAL — G1]** The *requirement* below is settled: every suite provides key commitment. The **construction** that satisfies it is not — its derivation, its inputs, and where it is verified in the decrypt order are all open. See [issue #1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1) and reviewer question [Q2](16-reviewer-brief.md#q2). Whether the mandatory suite needs an explicit commitment at all is downstream of [ADR-0002](adr/0002-suite-0x0001-aead.md), itself provisional (§13.2): a natively committing AEAD would set `commit_len = 0`.
+
 Every suite MUST provide key commitment, either by using a committing AEAD or by emitting an explicit 32-byte commitment value derived from the key. AAD binding alone MUST NOT be relied upon for this purpose.
 
 *Justification.* None of AES-GCM, AES-GCM-SIV, or (X)ChaCha20-Poly1305 is key-committing. In a multi-key system where the header names a key ID and an adversary may influence which key is used, a single ciphertext can be crafted to decrypt validly under two keys ("invisible salamanders"), enabling partitioning-oracle attacks (Len–Grubbs–Ristenpart, [USENIX Security '21](https://www.usenix.org/system/files/sec21-len.pdf); Bellare–Hoang, EUROCRYPT '22).
@@ -188,6 +198,24 @@ An implementation MUST NOT support, and this specification will not register:
 *Justification for OPE/ORE.* Grubbs, Sekniqi, Kolesnikov, Boneh and Ristenpart ([S&P 2017](https://www.ieee-security.org/TC/SP2017/papers/433.pdf)), abstract verbatim: "attacks that recover **99% of first names, 97% of last names, and 90% of birthdates**." Against the successor CLWW scheme: **98%** of first names and **97%** of ZIP codes (BCLO managed only 12% on ZIP codes). Against Kerschbaum's frequency-hiding scheme: top-10 first names **86%**. Their conclusion: "the security benefits of deployed schemes is quite marginal." Naveed–Kamara–Wright ([CCS 2015](https://cs.brown.edu/people/seny/pubs/edb.pdf)) recovered, on real US hospital data under OPE: admission month, disease severity and mortality risk at **100% for 100% of the 200 largest hospitals**; length of stay ≥99.77% of patients for 100% of hospitals.
 
 *Justification for FPE.* Format-preserving encryption is excluded because it preserves the plaintext's format and therefore its domain structure, which is precisely what the frequency-analysis results above exploit. Note that SP 800-38G Update 1 **remains a current NIST recommendation** — this specification's exclusion is a design choice, not a claim that NIST has withdrawn FPE. SP 800-38G Rev. 1 is at second public draft (3 Feb 2025) and proposes dropping FF3, retaining only FF1.
+
+### 4.8 Provisional suites (normative)
+
+The `0xFF00`–`0xFFFF` identifier range is permanently reserved for provisional and experimental suites, and no suite in that range will ever be promoted in place. A provisional suite that survives review is re-registered under a fresh low-range identifier and the provisional identifier is retired unused. An envelope is therefore never ambiguous about whether the construction that produced it had been reviewed, and the answer is one masked comparison on `suite_id` — available from bytes 1–2 of any stored envelope, without a key.
+
+**On encrypt.** An implementation MUST refuse to produce an envelope naming a provisional `suite_id` unless the deployment has explicitly armed provisional use. The arming mechanism MUST NOT default to armed, MUST be an affirmative out-of-band act (an environment variable or an explicit constructor argument), and MUST NOT be satisfiable by the ordinary configuration that carries `allowed_suites` and `write_suite` — an operator who arms a provisional suite is to have done so deliberately, not inherited it from a copied config. Refusal raises `SUITE_PROVISIONAL` (§9) at the API boundary, before key acquisition and before any cryptographic processing.
+
+**On decrypt.** Provisional suites are subject only to the ordinary allow-list of §4.3 and require no arming. Reading data one has already written is not what the gate exists to prevent, and making recovery harder than writing would be exactly the wrong incentive.
+
+**On rotate.** `rotate()` produces ciphertext and is an encrypt for this purpose: it requires arming.
+
+**On conformance.** A conformance claim (§10) made against a provisional suite MUST name the provisional identifier and MUST NOT be restated as a claim against the reserved identifier it instantiates. The conformance report of `docs/14` carries the provisional identifier verbatim.
+
+*Justification.* The Phase 0 exit gate is split (PRD §8): Gate 0a permits implementation work, Gate 0b — independent cryptographic review — permits freezing. Between the two there is working code whose constructions may still change, which is a state this project had no vocabulary for. The failure this section prevents is an operator migrating production data behind a construction later found wrong, on the strength of a README paragraph nobody read; a normative, code-enforced refusal puts the warning where the operator will actually meet it. The reserved-range rule adds the recovery property: if a construction is overturned at Gate 0b, every row written under it is identifiable in bulk from the stored bytes alone, with no key and no application involvement.
+
+The arming mechanism deliberately mirrors the `FIELDSEAL_TEST_MODE` gate that arms determinism injection (`docs/08-test-vector-spec.md` §6) — same shape, same reasoning, one concept for an implementer to learn rather than two.
+
+*What this is not.* Arming a provisional suite does not make it reviewed, and nothing here licenses describing it as such. It records that the operator was told.
 
 ---
 
@@ -332,6 +360,8 @@ An identifier outside this grammar MUST be refused as a configuration error when
 
 ### 6.2 Canonical encoding (normative)
 
+> **[PROVISIONAL — G4]** The encoding below is injective only once the absent-field cases are pinned, and they are not. `row_id` is "omitted entirely if null" (§6.4), while `tenant_id` has no stated null encoding at all — so an absent `tenant_id` and a present-but-zero-length `tenant_id` currently produce identical bytes. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). An implementation built under Gate 0a MUST adopt the presence-bitmap proposal in that issue; the field set it covers may change at Gate 0b.
+
 ```
 canonical_context(ctx) =
     u64be(len(suite_id))   ‖ suite_id
@@ -421,6 +451,8 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 *Justification.* SP 800-57 §5.2 ("a single key shall be used for only one purpose"). Both CipherSweet and `blind_index` implement per-index key separation; CipherSweet's design note is explicit: "Each blind index on each column uses a distinct key from your encryption key and each other blind index key." Cross-column shared keys additionally merge frequency-analysis populations, which is the opposite of what §7.6 requires.
 
 ### 7.3 Index derivation function selection (normative)
+
+> **[PROVISIONAL — G2]** The selection *rule* below is settled; its parameterization is not. The Argon2id invocation layout that realizes it — what serves as password, how the salt is derived, and where the index key enters (RFC 9106's secret parameter `K`) — is unsettled: see [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3). Blind-index vectors under Gate 0a are generated from the proposal in that issue and are expected to change if it does.
 
 | Domain class | Required IDF | Examples |
 |---|---|---|
@@ -552,6 +584,8 @@ Implementations MUST NOT provide a key-destruction API without a configurable de
 
 ## 9. Errors
 
+> **[PROVISIONAL — G5]** The error *set* below is settled. The **precedence** among these codes on the decrypt path is not — under dual-layer binding (§6.3) a context mismatch and a key confusion are indistinguishable at decrypt time. See [issue #5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5) and reviewer question [Q5](16-reviewer-brief.md#q5). An implementation built under Gate 0a MUST pin an order and declare it in its conformance report (`docs/14`); the pinned order may change at Gate 0b.
+
 An implementation MUST distinguish at least these error types, and MUST NOT collapse them into a single "decryption failed":
 
 | Error | Meaning | Likely cause |
@@ -565,10 +599,13 @@ An implementation MUST distinguish at least these error types, and MUST NOT coll
 | `NOT_CIPHERTEXT` | Input is not a recognizable envelope | Unmigrated plaintext; see §10.3 |
 | `MODE_VIOLATION` | The operation is not permitted in the configured read mode | `encrypt()` or `rotate()` on a `readonly` client (§10.3) |
 | `LENGTH_EXCEEDED` | Plaintext exceeds the §3.5 bound, on encrypt or as implied by an envelope on decrypt | A blob stored in a field-level column; a corrupted or hostile length |
+| `SUITE_PROVISIONAL` | The write suite is provisional (§4.8) and provisional use has not been armed | An attempt to write real data before Gate 0b closes |
 
 `MODE_VIOLATION` is raised at the API boundary, before any cryptographic processing or key acquisition begins, and therefore sits outside the decrypt-path error ordering. Its message MUST name both the rejected operation and the active mode: a mode violation is a deployment-configuration error, and an implementation that reports only "operation not permitted" sends the operator looking in the wrong place. One code covers all present and future modes rather than one code per mode, so that adding a mode is not a breaking change to the error taxonomy.
 
 `LENGTH_EXCEEDED` is a distinct code rather than a reuse of `MODE_VIOLATION`, which is specifically about a configured mode forbidding an operation — a length rejection is neither mode-dependent nor configuration-dependent. On encrypt it is raised at the API boundary on the same terms as `MODE_VIOLATION`; on decrypt it is a function of the received byte count alone (§3.5).
+
+`SUITE_PROVISIONAL` is likewise raised at the API boundary before key acquisition, and is a property of the suite rather than of the configured mode, so it does not participate in the decrypt-path ordering either. Its message MUST name the provisional `suite_id` and the arming mechanism the deployment failed to set (§4.8) — an operator who meets this error needs to be told both that the construction is unreviewed and exactly what acknowledging that entails.
 
 Error messages MUST NOT include plaintext, key material, or derived key values.
 
@@ -726,9 +763,11 @@ An implementation MUST pass the full vector suite to claim any conformance level
 ## 13. Open questions
 
 **13.1 Profile the AWS structured-encryption format, or define fresh?**
-[aws/aws-database-encryption-sdk-dynamodb/specification/structured-encryption/](https://github.com/aws/aws-database-encryption-sdk-dynamodb/blob/main/specification/structured-encryption/header.md) is a normative, RFC-2119 specification written against generic "Structured Data" with Terminal fields, not DynamoDB types. Profiling it buys interoperability with a shipping implementation and reduces novelty risk. Defining fresh buys freedom from DynamoDB item semantics and AWS KMS assumptions in the key-provider model. **This is the highest-leverage unresolved decision and should be settled before any code is written.**
+[aws/aws-database-encryption-sdk-dynamodb/specification/structured-encryption/](https://github.com/aws/aws-database-encryption-sdk-dynamodb/blob/main/specification/structured-encryption/header.md) is a normative, RFC-2119 specification written against generic "Structured Data" with Terminal fields, not DynamoDB types. Profiling it buys interoperability with a shipping implementation and reduces novelty risk. Defining fresh buys freedom from DynamoDB item semantics and AWS KMS assumptions in the key-provider model. **This is the highest-leverage unresolved decision.** Under the split gate (PRD §8) it is settled *provisionally* before code and *finally* before freeze.
 
-**13.2 Which FIPS-approvable AEAD for suite `0x0001`?**
+> **Gate 0a provisional decision (2026-08-22) — option C: fresh envelope, AWS-aligned constructions.** [ADR-0001](adr/0001-envelope-format-source.md) carries the reasoning. [Appendix A](adr/0001-appendix-a-expressibility-mapping.md)'s clause-level mapping found the strict AWS profile fails — §6.3 dual-layer binding is not expressible in the AWS format, and per-cell embedding costs 1.4×–2.4× the fresh envelope at the §3.3 benchmark — which the ADR itself already recorded as evidence favoring C. Provisional under §4.8: it unblocks implementation and leaves the envelope-novelty question open for Gate 0b ([Q7](16-reviewer-brief.md#q7)).
+
+**13.2 Which FIPS-approvable AEAD for the mandatory suite (`0x0001`, provisionally `0xFF01`)?**
 
 | Candidate | Expansion | Committing | FIPS | Nonce-misuse |
 |---|---|---|---|---|
@@ -737,6 +776,8 @@ An implementation MUST pass the full vector suite to claim any conformance level
 | AES-256-GCM-SIV | 28 B | No | **No** — not in the SP 800-38 series, not CAVP-testable | **Graceful** |
 
 The registry currently names AES-256-GCM plus an explicit commitment. AES-CBC-HMAC is committing natively and is what CipherSweet's FIPSCrypto backend and JOSE's `A256CBC-HS512` use, at 20–36 bytes more per field. **Caveat:** "FIPS-approved" for the composite rests on composing two approved primitives rather than a NIST-defined AEAD mode — a validation-strategy argument, not a CAVP algorithm listing. Confirm with a testing lab before asserting it to a buyer.
+
+> **Gate 0a provisional decision (2026-08-22) — the status quo (AES-256-GCM + explicit commitment) is retained, and is explicitly *not* decided.** [ADR-0002](adr/0002-suite-0x0001-aead.md)'s own overhead evidence concludes the arithmetic does not settle this: criterion 1 (a testing lab's written opinion on option B's composition claim) and criterion 3 (a reviewer's endorsement that the per-write-key mitigation suffices in a database setting) dominate, and neither input exists yet. Retaining A is a **deferral, not a choice** — provisional suite `0xFF01` instantiates it so vectors and cores can be built, and that identifier is expendable if Gate 0b selects B. Of every provisional decision recorded here this is the one most likely to be overturned, and §4.8's arming gate exists largely because of it.
 
 **13.3 Should the registry reserve space for a NIST accordion mode?**
 NIST announced (6 June 2025) development of cryptographic accordion modes based on HCTR2 for future SP 800-197x publications. These are wide-block, tweakable, and are the eventual standards-track answer to precisely this problem. The suite registry should be structured to absorb one.

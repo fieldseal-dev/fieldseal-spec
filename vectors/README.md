@@ -26,9 +26,9 @@ JSON, one file per vector group. Every binary value hex-encoded. Every vector ca
 
 ```json
 {
-  "id": "envelope/0001/basic-roundtrip",
+  "id": "envelope/ff01/basic-roundtrip",
   "spec_ref": "§3.1, §4.2",
-  "suite_id": "0x0001",
+  "suite_id": "0xFF01",
   "tenant_dek": "hex...",
   "key_id": "hex...",
   "msg_seed": "hex...",

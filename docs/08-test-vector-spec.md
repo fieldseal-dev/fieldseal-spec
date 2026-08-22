@@ -35,8 +35,8 @@ vectors/
   keys/
     test-keys.json         shared, PUBLIC test key material referenced by key_ref (never real keys)
   envelope/
-    0001.json              suite 0x0001 round trips
-    0002.json              suite 0x0002 round trips (consumed only by implementations claiming 0x0002)
+    ff01.json              suite 0xFF01 round trips
+    ff02.json              suite 0xFF02 round trips (consumed only by implementations claiming 0xFF02)
   kdf/
     record-key.json
     index-key.json
@@ -46,8 +46,8 @@ vectors/
     hmac-sha512.json
     argon2id.json
   commitment/
-    0001.json
-    0002.json
+    ff01.json
+    ff02.json
   errors/
     format.json            structural failures: truncation, unknown fmt_ver, unregistered suite
     policy.json            allow-list, read-mode cases
@@ -55,8 +55,8 @@ vectors/
   cross/
     keys → ../keys/test-keys.json (by reference, not symlink — see §4.7's key_ref rule)
     static/
-      python/0001.json     envelopes produced by each released implementation
-      typescript/0001.json
+      python/ff01.json     envelopes produced by each released implementation
+      typescript/ff01.json
 ```
 
 `MANIFEST.json` carries a semver `vector_suite_version`. Implementations record the version they were validated against in their conformance claim (see `docs/14-conformance-ci.md`).
@@ -68,7 +68,7 @@ vectors/
 | Value | Encoding | Rationale |
 |---|---|---|
 | All binary values (keys, seeds, nonces, ciphertexts, contexts, UUID surrogates) | Lowercase hex, no `0x` prefix, even length | Matches `vectors/README.md`; unambiguous, diff-friendly |
-| `suite_id` | String `"0x0001"` (4 hex digits, `0x` prefix) | Matches the existing README example; visually distinct from binary blobs |
+| `suite_id` | String `"0xFF01"` (`0x` prefix, four **uppercase** hex digits) | Matches the existing README example; visually distinct from binary blobs. Case is pinned because provisional identifiers (spec §4.8) contain letters and harnesses compare this field as a string |
 | `fmt_ver` | String `"0x01"` | Same convention as `suite_id` |
 | Absent optional value (`row_id`, `tenant_id`) | JSON `null` | Distinct from empty: `""` (hex) means *present with zero length*. See gap G4 in §9 — the spec must define whether zero-length and null are distinct on the wire before vectors covering that case are authored. |
 | Text values (`purpose`, normalization names, error codes) | JSON string, ASCII | `purpose` is a protocol string, not user text |
@@ -95,7 +95,7 @@ Every file shares a common wrapper:
 
 Every vector object carries:
 
-- `id` — stable string, grammar: `<family>/<file-stem>/<slug>` where `slug` matches `[a-z0-9-]{1,64}`. Example: `envelope/0001/basic-roundtrip`. Never reused, even after retirement.
+- `id` — stable string, grammar: `<family>/<file-stem>/<slug>` where `slug` matches `[a-z0-9-]{1,64}`. Example: `envelope/ff01/basic-roundtrip`. Never reused, even after retirement.
 - `description` — one sentence, for failure messages.
 - `spec_ref` — the section(s) the vector exercises, e.g. `"§3.1, §4.2"`.
 
@@ -105,14 +105,14 @@ Input state is complete: no key provider, no cache, no modes — this family tes
 
 ```json
 {
-  "id": "envelope/0001/basic-roundtrip",
+  "id": "envelope/ff01/basic-roundtrip",
   "description": "9-byte plaintext, tenant context, row_id absent",
   "spec_ref": "§3.1, §4.2, §5.3, §6.2, §6.3",
-  "suite_id": "0x0001",
+  "suite_id": "0xFF01",
   "tenant_dek": "…64 hex chars (32 B)…",
   "key_id": "…32 hex chars (16 B)…",
   "msg_seed": "…64 hex chars (32 B)…",
-  "nonce": "…24 hex chars (12 B for 0x0001)…",
+  "nonce": "…24 hex chars (12 B for 0xFF01)…",
   "context": {
     "table_uuid": "…32 hex…",
     "column_uuid": "…32 hex…",
@@ -146,7 +146,7 @@ Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-sh
 {
   "id": "kdf/record-key/row-id-absent",
   "spec_ref": "§5.3",
-  "suite_id": "0x0001",
+  "suite_id": "0xFF01",
   "tenant_dek": "…hex…",
   "key_id": "…hex…",
   "msg_seed": "…hex…",
@@ -203,16 +203,16 @@ Key material + envelope inputs → expected 32-byte commitment. **Fully blocked 
 {
   "id": "errors/crypto/tag-bit-flip",
   "spec_ref": "§9",
-  "suite_id": "0x0001",
+  "suite_id": "0xFF01",
   "config": {
-    "allowed_suites": ["0x0001"],
+    "allowed_suites": ["0xFF01"],
     "read_mode": "strict",
-    "registered_suites": ["0x0001", "0x0002"]
+    "registered_suites": ["0xFF01", "0xFF02"]
   },
   "tenant_dek": "…hex…",
   "context": { ... },
   "input": "…hex, the (possibly malformed) envelope bytes…",
-  "derived_from": "envelope/0001/basic-roundtrip",
+  "derived_from": "envelope/ff01/basic-roundtrip",
   "mutation": "flip bit 0 of tag byte 0",
   "expected": { "error": "TAG_INVALID" }
 }
@@ -251,7 +251,7 @@ Two mechanisms, one file format:
 {
   "schema": "fieldseal-vectors/cross/v1",
   "producer": { "implementation": "python", "version": "0.1.0", "commit": "…", "produced_at": "…" },
-  "suite_id": "0x0001",
+  "suite_id": "0xFF01",
   "cases": [
     {
       "id": "cross/python/0001/case-001",
@@ -277,7 +277,7 @@ Each language core ships a conformance harness (in its own test framework) that 
 
 1. Load `MANIFEST.json`, verify file hashes, and record `vector_suite_version`.
 2. Validate every vector file against `vectors/schema/` before use (a malformed vector suite must fail loudly, not skip silently).
-3. Run every vector for every family the implementation claims (0x0002 families only if the suite is implemented).
+3. Run every vector for every family the implementation claims (0xFF02 families only if the suite is implemented).
 4. For `envelope/`: assert both directions (§4.1).
 5. For `errors/`: assert the **exact** error code — a mapping table from vector error strings to the language's exception/error types is part of each core's tech spec (`docs/10-…`, `docs/11-…`).
 6. Report results in the machine-readable format defined in `docs/14-conformance-ci.md` §4, so the conformance report is assembled identically across languages.
@@ -323,7 +323,7 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 | G4 | `tenant_id = null` encoding in `canonical_context` unspecified (§6.2 defines omission only for `row_id`); null vs zero-length ambiguity | `context/`, any envelope vector with absent tenant |
 | G5 | Error classification/precedence undefined: the order of format → policy → key → commitment → AEAD checks, and how a context mismatch (which manifests as a wrong derived key under dual binding) maps onto `AAD_MISMATCH` vs `COMMITMENT_INVALID` | most of `errors/crypto.json` |
 | G6 | No error code for mode violations (`encrypt()` in `readonly` mode); `readonly`'s non-envelope read behavior undefined — **resolved 2026-08-09** (issue #6): spec §9 adds `MODE_VIOLATION`, §10.3 specifies both axes per mode (`readonly` = pass-through on non-envelope input, refuses `encrypt`/`rotate`, permits `blind_index`) | `errors/policy.json` fully unblocked |
-| G7 | Suite 0x0002's AEAD (XChaCha20-Poly1305) has no IETF RFC; the spec does not name a normative definition (libsodium's construction is the de-facto standard; draft-irtf-cfrg-xchacha expired) | `envelope/0002.json` confidence, though not its mechanics |
+| G7 | Suite 0xFF02's AEAD (XChaCha20-Poly1305) has no IETF RFC; the spec does not name a normative definition (libsodium's construction is the de-facto standard; draft-irtf-cfrg-xchacha expired) | `envelope/ff02.json` confidence, though not its mechanics |
 | G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values — **resolved 2026-08-09** (issue #8): spec §7.11 makes raw `⌈b/8⌉` bytes in a binary column the MUST, lowercase hex without prefix the declared-per-column MAY, exact byte/string equality under a binary collation | `blind-index/` storage assertions unblocked; the adapter specs' interim recommendation is now normative |
 
 Nothing else in this document is blocked: file formats, schemas, harness contract, injection contract, cross protocol, and the `errors/format.json` + `errors/policy.json` families can be built immediately — `errors/policy.json` in full, now that G6 has closed.

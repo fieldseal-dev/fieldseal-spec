@@ -1,6 +1,6 @@
 # ADR-0002: Which FIPS-approvable AEAD for suite 0x0001
 
-**Status:** OPEN — blocks suite freeze, envelope arithmetic, commitment design (gap G1), and all vector expected values · **Date opened:** 2026-08-08 · **Spec refs:** §4.2, §4.6, §13.2 · **PRD refs:** §10 item 2 (a plain list — the PRD has no §10 subsections)
+**Status:** **OPEN — provisionally deferred to the status quo (option A)** under Gate 0a, 2026-08-22, so that envelope arithmetic exists to implement against. This is a deferral, not a decision: the two criteria that decide it both need external input the project does not have. · **Date opened:** 2026-08-08 · **Spec refs:** §4.2, §4.6, §4.8, §13.2 · **PRD refs:** §10 item 2 (a plain list — the PRD has no §10 subsections)
 
 ## Context
 
@@ -63,4 +63,17 @@ Spec follow-up when this ADR closes (do not apply now): §13.2's overhead phrasi
 
 ## Decision
 
-*(open)*
+**Not decided. Provisionally deferred to option A (AES-256-GCM + explicit 32 B commitment) under Gate 0a, 2026-08-22.**
+
+The distinction matters and is not a hedge. Two of this ADR's four criteria are dispositive, and neither can be satisfied from inside the project:
+
+- **Criterion 1** needs a testing lab's written opinion on whether option B's composition claim survives as a FIPS-validation story. Spec §13.2 instructs exactly this ("confirm with a testing lab before asserting it to a buyer"). No lab has been engaged. Without that opinion, B's principal advantage over A is unsubstantiated — which is not the same as refuted.
+- **Criterion 3** needs a cryptographic reviewer to state that the per-write-key structure (`msg_seed`, §4.4/§5.3) is a sufficient mitigation for AES-GCM's catastrophic nonce-misuse profile in a database setting. That is reviewer question [Q1](../16-reviewer-brief.md#q1), the question this ADR's own criterion says is decisive: "if reviewers balk, B's misuse profile becomes decisive."
+
+**Criterion 2 is closed and it does not help.** The [overhead evidence](#overhead-evidence-criterion-2) above establishes that B with the RFC 7518 truncated tag is *smaller* than A at the §3.3 benchmark (115 vs 120 B) — the opposite of this ADR's original framing — and that the deltas are single bytes to tens of bytes either way. That section's own conclusion stands: "None of this decides the ADR." Its function was to remove an incorrect argument from the scales, and it did.
+
+**Why defer to A rather than pick B.** Deferring to the status quo is the choice that costs least if it is wrong. A is what the spec, `docs/08`–`docs/11` and the vector shapes already assume, so retaining it means Gate 0a changes nothing that would have to be changed back. Choosing B now would additionally *dissolve* gap G1 for the mandatory suite (a natively committing AEAD sets `commit_len = 0`), which reads as progress and is not: G1 must still be solved for `0xFF02`, and closing it in the mandatory suite by construction would hide an unresolved question rather than answer it.
+
+**What the deferral costs.** Suite `0xFF01` instantiates A, and every vector expected value under it is A-shaped. If Gate 0b selects B, those values regenerate and `0xFF01` retires unused — spec §4.8 exists so that this is a bounded cost rather than a data-migration event. Of the provisional positions taken at Gate 0a this is the one most likely to be overturned, because it rests on a reviewer endorsement nobody has given yet.
+
+**Sub-question carried forward.** Spec §4.5 forbids tag truncation. Read literally that rules out B's RFC 7518-standard 32 B truncated HMAC-SHA-512 tag and forces the B′ row; read per §4.5's own justification (a ≥128-bit floor aimed at short GCM tags) the 256-bit tag qualifies. This is unresolved and is part of reviewer question [Q8](../16-reviewer-brief.md#q8) — it must be settled *before* B could be selected, not after.

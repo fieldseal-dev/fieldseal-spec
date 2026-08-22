@@ -2,11 +2,13 @@
 
 **Date:** 2026-08-08 · **Status:** all thirteen posted to the GitHub tracker on 2026-08-08; issue numbers align with gap numbers (G*n* = issue #*n*). These files remain the canonical drafts; edits after posting belong in the tracker.
 
-**As of 2026-08-09, eight are resolved** — G3, G6, G8, G9, G10, G11, G12, G13 — which is every gap flagged *no cryptographic review required*. The five that remain (G1, G2, G4, G5, G7) are exactly the five flagged **Yes** or **Partly**, so nothing further in this list can close by engineering judgment: they wait on the Phase 0 reviewers (`docs/16-reviewer-brief.md` Q2–Q6). G11 is a partial close — its grammar is settled, its injectivity question belongs to G4.
+**As of 2026-08-09, eight are resolved** — G3, G6, G8, G9, G10, G11, G12, G13 — which is every gap flagged *no cryptographic review required*. The five that remain (G1, G2, G4, G5, G7) are exactly the five flagged **Yes** or **Partly**, so nothing further in this list can close by engineering judgment: they wait on the Phase 0 reviewers (`docs/16-reviewer-brief.md`). G11 is a partial close — its grammar is settled, its injectivity question belongs to G4.
+
+**As of 2026-08-22, those five are *provisionally adopted* under Gate 0a and remain open.** The Phase 0 exit gate has been split (PRD §8) so that reviewer availability no longer blocks implementation. See [Provisional adoptions](#provisional-adoptions-gate-0a-2026-08-22) below for what each now says in the spec and what would close it. Nothing about the crypto-review column has been relaxed.
 
 These are the specification gaps found while writing the Phase 1 tech-spec suite (G1–G11) and during its consistency review (G12–G13), consolidated in `docs/07-implementation-plan.md` §5. Per `CONTRIBUTING.md`, every specification change starts as an issue carrying: a justification with a citation, a statement of what it breaks, and test-vector obligations. Each file here is one complete issue body in that shape, titled and labeled per `CLAUDE.md` ("label the issue with the section it touches").
 
-"Proposed direction" in each issue is a **starting point for discussion, not a decision** — the ones marked *needs cryptographic review* must not be closed by engineering judgment alone.
+"Proposed direction" in each issue is a **starting point for discussion, not a decision** — the ones marked *needs cryptographic review* must not be closed by engineering judgment alone. That rule is unchanged by the Gate 0a provisional adoptions below: adopting a proposed direction provisionally, in marked spec text, with the tracker issue left open, is not closing it.
 
 | # | Issue | File | Section | Blocks | Crypto review |
 |---|---|---|---|---|---|
@@ -24,7 +26,25 @@ These are the specification gaps found while writing the Phase 1 tech-spec suite
 | G12 | [#12](https://github.com/fieldseal-dev/fieldseal-spec/issues/12) | [`G12-unique-constraint-contradiction.md`](G12-unique-constraint-contradiction.md) | §7.10, §7.4 | adapter DDL guidance | No |
 | G13 | [#13](https://github.com/fieldseal-dev/fieldseal-spec/issues/13) | [`G13-prisma-in-rewrite-vs-reject.md`](G13-prisma-in-rewrite-vs-reject.md) | §10.2, §7.10 | Prisma conformance wording | No |
 
+## Provisional adoptions (Gate 0a, 2026-08-22)
+
+**These are not closures and must not be read as any.** The Phase 0 exit gate is now split (PRD §8): Gate 0a permits implementation, Gate 0b — two credentialed reviewers — permits freezing. G1, G2, G4, G5 and G7 are the five gaps that cannot close by engineering judgment, and they remain **open on the tracker**. What changed on 2026-08-22 is only that each issue's *proposed direction* is now written into the spec as normative text carrying a **[PROVISIONAL]** marker, so that vectors and cores have something concrete to be built against.
+
+Every one of these is expected to be what the eventual review changes. Spec §4.8 is the containment: the constructions below are reachable only through provisional suite identifiers (`0xFF01`, `0xFF02`), an implementation refuses to *write* under one without affirmative out-of-band arming, and anything written that way is identifiable afterwards from stored bytes alone.
+
+| # | Provisionally adopted | Spec text carrying the marker | Closes at Gate 0b via |
+|---|---|---|---|
+| G1 | `commitment = HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", len = 32)`, verified constant-time before AEAD open | §4.6, §3.1 | [Q2](../16-reviewer-brief.md#q2) |
+| G2 | Argon2id with password = normalized plaintext, salt HKDF-derived from the index key, index key supplied via RFC 9106's secret parameter `K` | §7.3 | [Q3](../16-reviewer-brief.md#q3) |
+| G4 | A presence bitmap over the optional context fields, making `canonical_context` injective across absent vs. zero-length | §6.2 | [Q4](../16-reviewer-brief.md#q4) |
+| G5 | The pinned check-order state machine, reporting `COMMITMENT_INVALID` where context mismatch and key confusion are indistinguishable; diagnostic re-derivation optional | §9 | [Q5](../16-reviewer-brief.md#q5) |
+| G7 | Suite `0xFF02` retained naming libsodium's `crypto_aead_xchacha20poly1305_ietf_*`, so the two-suite mechanics stay exercised; the normative-source question is untouched | §4.2 | [Q6](../16-reviewer-brief.md#q6) |
+
+A provisional adoption is reversed, not amended, if the review rejects it: the spec text is replaced, the affected vector family regenerates, and the provisional suite identifier retires. The `[PROVISIONAL]` marker in each spec section names its tracker issue and its reviewer question so the reversal path is discoverable from the spec alone.
+
 ## Closure log
+
+*Closures only. Provisional adoptions are recorded in the section above and are deliberately absent here.*
 
 | # | Resolved | Resolution |
 |---|---|---|
