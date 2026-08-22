@@ -358,6 +358,8 @@ An identifier outside this grammar MUST be refused as a configuration error when
 
 **This does not settle the encoding's injectivity.** Whether `canonical_context` is injective over its whole field set — in particular the still-unspecified encoding of an absent `tenant_id` — is open, and is tracked separately as a specification issue against §6.2.
 
+**The optional fields carry no length bound.** `tenant_id` and `row_id` are unbounded here, which makes the KDF `info` of §5.3 and §7.2 unbounded; several platform HKDF implementations cap `info` (Node.js at 1024 bytes, OpenSSL 3.0–3.5 at 32 KiB), so an implementation built on one cannot derive keys for every context another can write. Whether this section should bound those fields — or instead require implementations to accept any `info` the encoding can produce — is open and tracked as [issue #43](https://github.com/fieldseal-dev/fieldseal-spec/issues/43) (G14). This paragraph is a pointer, not a rule; nothing here is settled by it.
+
 ### 6.2 Canonical encoding (normative)
 
 > **[PROVISIONAL — G4]** The presence-bitmap encoding below is adopted provisionally under Gate 0a — it is what makes this encoding injective across the absent-versus-zero-length cases, which the previous positional form was not. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). What stays open is whether the encoding is injective over the current *and* plausibly-extended field set; the bit assignment may change at Gate 0b.

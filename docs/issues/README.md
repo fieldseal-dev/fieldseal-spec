@@ -1,12 +1,14 @@
-# Spec-gap issue drafts (G1–G13)
+# Spec-gap issue drafts (G1–G14)
 
-**Date:** 2026-08-08 · **Status:** all thirteen posted to the GitHub tracker on 2026-08-08; issue numbers align with gap numbers (G*n* = issue #*n*). These files remain the canonical drafts; edits after posting belong in the tracker.
+**Date:** 2026-08-08 · **Status:** all thirteen posted to the GitHub tracker on 2026-08-08; issue numbers align with gap numbers (G*n* = issue #*n*) for G1–G13 only — G14, filed 2026-08-22, is tracker #43, the intervening numbers having gone to pull requests. These files remain the canonical drafts; edits after posting belong in the tracker.
 
 **As of 2026-08-09, eight are resolved** — G3, G6, G8, G9, G10, G11, G12, G13 — which is every gap flagged *no cryptographic review required*. The five that remain (G1, G2, G4, G5, G7) are exactly the five flagged **Yes** or **Partly**, so nothing further in this list can close by engineering judgment: they wait on the Phase 0 reviewers (`docs/16-reviewer-brief.md`). G11 is a partial close — its grammar is settled, its injectivity question belongs to G4.
 
 **As of 2026-08-22, those five are *provisionally adopted* under Gate 0a and remain open.** The Phase 0 exit gate has been split (PRD §8) so that reviewer availability no longer blocks implementation. See [Provisional adoptions](#provisional-adoptions-gate-0a-2026-08-22) below for what each now says in the spec and what would close it. Nothing about the crypto-review column has been relaxed.
 
-These are the specification gaps found while writing the Phase 1 tech-spec suite (G1–G11) and during its consistency review (G12–G13), consolidated in `docs/07-implementation-plan.md` §5. Per `CONTRIBUTING.md`, every specification change starts as an issue carrying: a justification with a citation, a statement of what it breaks, and test-vector obligations. Each file here is one complete issue body in that shape, titled and labeled per `CLAUDE.md` ("label the issue with the section it touches").
+**G14 was added on 2026-08-22**, found in review of the TypeScript core rather than in the tech-spec suite: the optional context fields are unbounded, so the KDF `info` is unbounded, and platform HKDFs (Node at 1024 bytes, OpenSSL 3.0–3.5 at 32 KiB, .NET on Linux through OpenSSL) cap it. It needs no cryptographic review and is closable by engineering judgment, but should be seen by the Phase 0 reviewers first because it sizes the extension headroom of the §6.2 encoding Q4 asks about.
+
+These are the specification gaps found while writing the Phase 1 tech-spec suite (G1–G11), during its consistency review (G12–G13), and in core review (G14), consolidated in `docs/07-implementation-plan.md` §5. Per `CONTRIBUTING.md`, every specification change starts as an issue carrying: a justification with a citation, a statement of what it breaks, and test-vector obligations. Each file here is one complete issue body in that shape, titled and labeled per `CLAUDE.md` ("label the issue with the section it touches").
 
 "Proposed direction" in each issue is a **starting point for discussion, not a decision** — the ones marked *needs cryptographic review* must not be closed by engineering judgment alone. That rule is unchanged by the Gate 0a provisional adoptions below: adopting a proposed direction provisionally, in marked spec text, with the tracker issue left open, is not closing it.
 
@@ -25,6 +27,7 @@ These are the specification gaps found while writing the Phase 1 tech-spec suite
 | G11 | [#11](https://github.com/fieldseal-dev/fieldseal-spec/issues/11) | [`G11-purpose-grammar.md`](G11-purpose-grammar.md) | §6.1, §7.2 | context negative vectors | No |
 | G12 | [#12](https://github.com/fieldseal-dev/fieldseal-spec/issues/12) | [`G12-unique-constraint-contradiction.md`](G12-unique-constraint-contradiction.md) | §7.10, §7.4 | adapter DDL guidance | No |
 | G13 | [#13](https://github.com/fieldseal-dev/fieldseal-spec/issues/13) | [`G13-prisma-in-rewrite-vs-reject.md`](G13-prisma-in-rewrite-vs-reject.md) | §10.2, §7.10 | Prisma conformance wording | No |
+| G14 | [#43](https://github.com/fieldseal-dev/fieldseal-spec/issues/43) | [`G14-context-field-length-bound.md`](G14-context-field-length-bound.md) | §6.1, §6.2 (§5.3, §7.2) | one boundary behavior; max-context vectors in `context/`, `envelope/`, `kdf/` | No |
 
 ## Provisional adoptions (Gate 0a, 2026-08-22)
 
