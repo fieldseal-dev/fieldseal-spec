@@ -6,7 +6,6 @@
  */
 
 import { validateIndexDeclaration, type IndexDeclaration, type ValidatedIndex } from "./blindindex.ts";
-import { validateCachePolicy, type CachePolicy } from "./cache.ts";
 import { ConfigurationError, suiteHex } from "./errors.ts";
 import type { KeyProvider } from "./keyprovider.ts";
 import { getSuite, isRegistered } from "./registry.ts";
@@ -34,8 +33,6 @@ export interface FieldsealConfig {
   readonly writeSuite: number;
   /** Default "strict" (spec §10.3). */
   readonly readMode?: ReadMode;
-  /** Validated for §5.5 bounds when given; EnvelopeKeyProvider carries its own cache. */
-  readonly cache?: CachePolicy;
   readonly indexes?: readonly IndexDeclaration[];
   readonly onWarning?: (w: Warning) => void;
   readonly metrics?: Metrics;
@@ -101,7 +98,16 @@ export function validateConfig(config: FieldsealConfig, arming: ArmingOptions = 
   }
   const mode = config.readMode ?? "strict";
   if (!READ_MODES.includes(mode)) throw new ConfigurationError(`config.readMode must be one of ${READ_MODES.join(", ")} (spec §10.3)`);
-  if (config.cache !== undefined) validateCachePolicy(config.cache);
+  // In this binding the §5.5 DEK cache lives on EnvelopeKeyProvider, whose
+  // constructor requires the policy. A client-level `cache` field would be
+  // accepted and dropped -- a config claim the client cannot honor (an
+  // operator would believe they bounded key lifetime and have bounded
+  // nothing) -- so its presence is refused rather than ignored.
+  if ((config as { cache?: unknown }).cache !== undefined) {
+    throw new ConfigurationError(
+      "config.cache has no effect in this binding: the §5.5 DEK cache is EnvelopeKeyProvider's own 'cache' option, required at provider construction (docs/09 §2, §8.3)",
+    );
+  }
 
   const indexes = new Map<string, ValidatedIndex>();
   for (const d of config.indexes ?? []) {

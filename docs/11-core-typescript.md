@@ -60,11 +60,10 @@ core/typescript/src/
 import { Fieldseal, FieldContext } from "@fieldseal/core";
 
 const fs = new Fieldseal({
-  keyProvider,
+  keyProvider,   // EnvelopeKeyProvider carries the §5.5 cache policy in its own options
   allowedSuites: [0xFF01],
   writeSuite: 0xFF01,
   readMode: "strict",
-  cache: { maxAgeMs: 600_000, maxUses: 1_000_000, capacity: 10_000 },
   indexes: [ ... ],
 });
 
@@ -77,6 +76,7 @@ await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async met
 ```
 
 - Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are never accepted** — encoding is the adapter's job (docs/09 §5), and an implicit `utf8` coercion here is exactly the kind of cross-language divergence the vectors exist to catch.
+- Deviation from docs/09 §2's config sketch: there is **no client-level `cache` field**. The §5.5 cache policy is `EnvelopeKeyProvider`'s own required `cache` option (docs/09 §2's "required for EnvelopeKeyProvider", enforced at provider construction); a `cache` key present in the client config is refused with a `ConfigurationError` rather than accepted and ignored.
 - Errors: `FieldsealError` subclasses, each with `code` matching the §9 strings (`"TAG_INVALID"`, …) for the vector harness mapping.
 - Method naming is the docs/09 §12 casing rule applied: `blindIndex`/`isCiphertext` are the camelCase renderings of the fixed operation names.
 
@@ -84,7 +84,7 @@ await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async met
 
 - **Zeroization honesty:** `Buffer.fill(0)` on evicted DEKs overwrites the visible allocation; V8 may have copied during prior operations and `node:crypto` may hold internal copies. Same honest-limitation wording rule as Python (docs/09 §8.3). No `mlock` (documented deviation).
 - **Constant-time:** `crypto.timingSafeEqual` for commitment/tag-adjacent comparisons; it throws on length mismatch, so length-check first with a public-length rationale comment.
-- **`Buffer` aliasing:** never return a `Buffer` that aliases an internal buffer (no `subarray` on cache-held material — always copy out).
+- **`Buffer` aliasing:** never return a `Buffer` that aliases an internal buffer (no `subarray` on cache-held material — always copy out). "Internal" includes Node's shared `Buffer` pool: `Buffer.from(bytes)` and small `Buffer.allocUnsafe` allocations are views into a pool `ArrayBuffer` shared with unrelated allocations, reachable from the returned value as `.buffer`. Every `Buffer` the client returns is therefore an unpooled `Buffer.alloc` copy whose `ArrayBuffer` is exactly the returned bytes.
 - **Worker threads:** the client is safe to construct per-worker; DEK cache is per-instance and not shared across workers (no `SharedArrayBuffer` key storage — key material in a `SharedArrayBuffer` would widen the memory-exposure surface for no functional gain).
 
 ## 6. Testing plan

@@ -344,10 +344,16 @@ export class EnvelopeKeyProvider implements KeyProvider {
     // Named version first, then the active version, then the rest -- all
     // from cache; what is not cached is simply not a candidate ("serve only
     // what the cache can decrypt").
+    //
+    // `peek`, not `get`: docs/09 §8.3 increments the §5.5 use count per
+    // `encryption_key` return. Charging every offered candidate here would
+    // advance every version's counter with the scope's total decrypt
+    // traffic -- a per-provider count wearing a per-key-version name -- and
+    // evict old-but-valid versions at a rate unrelated to their actual use.
     const order = [hit.version, set.activeVersion, ...set.versions.map((v) => v.version)].filter((v, i, a) => a.indexOf(v) === i);
     const out: Uint8Array[] = [];
     for (const v of order) {
-      const k = this.cache.get(cacheKey(hit.scope, v, "dek"));
+      const k = this.cache.peek(cacheKey(hit.scope, v, "dek"));
       if (k !== undefined) out.push(k);
     }
     return out;

@@ -118,6 +118,14 @@ export class Fieldseal {
     seedIn: Uint8Array | undefined,
     nonceIn: Uint8Array | undefined,
   ): Buffer {
+    // docs/08 §6 arming gate, enforced at the seam itself, not only in the
+    // testing/ wrapper: caller-supplied materials must never reach the
+    // pipeline in an unarmed process, whatever path delivered them.
+    if ((seedIn !== undefined || nonceIn !== undefined) && process.env[TEST_MODE_ENV] !== "1") {
+      throw new ConfigurationError(
+        `caller-supplied msg_seed/nonce reached the encrypt pipeline without ${TEST_MODE_ENV}=1; the injection seam is inert unless armed (docs/08 §6)`,
+      );
+    }
     // The injection path re-runs the boundary checks so that a test-mode
     // encrypt is refused on exactly the terms a production encrypt is
     // (docs/08 §6: "the full production pipeline except CSPRNG generation").
@@ -185,7 +193,7 @@ export class Fieldseal {
       // permissive and readonly: pass-through, with the §10.3 warning and metric.
       this.#warn("plaintext-read", `non-envelope input returned as-is in read mode '${this.#cfg.readMode}' (${rec.detail})`);
       this.#cfg.metrics.plaintextReads?.();
-      return Buffer.from(input);
+      return copyOut(input);
     }
     if (rec.kind === "unknown-format-version") {
       throw this.#count(new UnknownFormatVersionError(rec.fmtVer));
@@ -224,7 +232,9 @@ export class Fieldseal {
         if (!verifyCommitment(recordKey, env.commitment)) continue;
         const pt = gcmOpen(recordKey, header.nonce, env.ciphertext, env.tag, aad);
         if (pt === null) throw this.#count(new TagInvalidError(env.suite.id, header.keyId));
-        return Buffer.from(pt);
+        const out = copyOut(pt);
+        pt.fill(0); // the intermediate is ours; the caller gets the only live copy
+        return out;
       } finally {
         recordKey.fill(0);
       }
@@ -259,7 +269,11 @@ export class Fieldseal {
       try {
         const normalized = normalize(decl.normalize, plaintext);
         const raw = idf(decl.idf, indexKey, normalized, decl.argon2);
-        return Buffer.from(truncateBits(raw, decl.truncateBits));
+        try {
+          return copyOut(truncateBits(raw, decl.truncateBits));
+        } finally {
+          raw.fill(0); // the untruncated IDF output reveals more than the stored index value
+        }
       } finally {
         indexKey.fill(0);
       }
@@ -311,4 +325,18 @@ export class Fieldseal {
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Copy into an unpooled Buffer before returning it (docs/11 §5 aliasing
+ * rule). `Buffer.from(bytes)` copies too, but into Node's shared 8 KiB
+ * Buffer pool: the result's `.buffer` is the pool's backing ArrayBuffer,
+ * shared with unrelated allocations across the process, and a caller doing
+ * `new Uint8Array(out.buffer)` (or transferring it) would see them.
+ * `Buffer.alloc` never uses the pool.
+ */
+function copyOut(src: Uint8Array): Buffer {
+  const out = Buffer.alloc(src.length);
+  out.set(src);
+  return out;
 }

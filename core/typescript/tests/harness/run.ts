@@ -601,8 +601,12 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "api-boundary-order": "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED → context validation (INVALID_ARGUMENT, non-§9); all before key acquisition",
   "provisional-arming": "second constructor argument { armProvisionalSuites: true } or environment variable FIELDSEAL_ARM_PROVISIONAL_SUITES=1; read at construction; never part of the config object",
   "unimplemented-registered-suite": "0xFF02 is registered (isCiphertext → true) but refused at construction if allow-listed or set as writeSuite (CONFIGURATION_ERROR naming G7); no §9 code is reachable for it because no client can be built that accepts it",
-  "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- from the G1 issue draft\'s proposed direction; spec §4.6 itself states no formula',
+  "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- as spec §4.6 states under its [PROVISIONAL — G1] marker (since 2026-08-23); provisional until G1 closes',
   "rotate-in-permissive": "rotate() on non-envelope input in permissive mode encrypts the pass-through value (decrypt ∘ encrypt, literally composed)",
+  "normalizer-text-over-bytes":
+    "blind_index accepts only bytes (Uint8Array; strings are never accepted); nfc-casefold-v1 decodes them as strict UTF-8 and refuses invalid UTF-8 with INVALID_ARGUMENT (never a replacement-character rendering); " +
+    "then platform NFC (ICU; version in environment.unicode_platform), then vendored CaseFolding-17.0.0.txt full folding (C+F, no Turkic special case), no second normalization after folding, then UTF-8 encode " +
+    "(docs/09 §7; docs/18 D-10; G15 part D)",
 };
 
 export const HARNESS_NOTES: string[] = [

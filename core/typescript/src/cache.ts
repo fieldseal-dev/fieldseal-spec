@@ -2,7 +2,11 @@
  * In-memory tenant-DEK cache (spec §5.5; docs/09 §8.3).
  *
  * Eviction on max-age AND max-uses (≤ 2^32) AND capacity (LRU). Evicted
- * material is overwritten with zeros.
+ * material is overwritten with zeros. Max-age is enforced on every read
+ * (`get`, `peek`, `has`) and swept on every `put`, so expired material does
+ * not linger until its exact key happens to be read again. Uses count per
+ * cached entry, incremented per `encryption_key` return (docs/09 §8.3);
+ * decrypt-path candidate reads go through `peek` and do not count.
  *
  * Zeroization honesty (docs/11 §5): `fill(0)` overwrites the visible
  * allocation. V8 may have copied the bytes during earlier operations and
@@ -83,6 +87,11 @@ export class DekCache {
 
   /** Stores a private copy of `material`; the caller's buffer is never aliased. */
   put(key: string, material: Uint8Array): void {
+    // TTL is a security parameter (spec §5.5): expired material must not sit
+    // in memory until someone happens to `get` its exact key. Sweeping here
+    // keeps eviction off the value path (`put` runs from warm()/refresh) and
+    // stops expired entries from consuming capacity evictions of live ones.
+    this.#sweepExpired();
     const existing = this.#entries.get(key);
     if (existing !== undefined) this.#drop(key, existing, "explicit", false);
     while (this.#entries.size >= this.policy.capacity) {
@@ -121,8 +130,39 @@ export class DekCache {
     return out;
   }
 
+  /**
+   * Returns a copy of the cached material without counting a §5.5 use.
+   * docs/09 §8.3: use counting is incremented per `encryption_key` return —
+   * a decrypt-path candidate read is not a use of the entry. Max-age is
+   * still enforced (an expired key must never be served, counted or not);
+   * there is no LRU touch, so peeks do not keep an otherwise-idle entry
+   * alive past capacity pressure.
+   */
+  peek(key: string): Uint8Array | undefined {
+    const e = this.#entries.get(key);
+    if (e === undefined) {
+      this.metrics.misses++;
+      return undefined;
+    }
+    if (this.#now() - e.insertedAt >= this.policy.maxAgeMs) {
+      this.#drop(key, e, "max-age", true);
+      this.metrics.misses++;
+      return undefined;
+    }
+    this.metrics.hits++;
+    return new Uint8Array(e.material);
+  }
+
   has(key: string): boolean {
-    return this.#entries.has(key);
+    const e = this.#entries.get(key);
+    if (e === undefined) return false;
+    if (this.#now() - e.insertedAt >= this.policy.maxAgeMs) {
+      // An expired entry is not "had"; saying otherwise would let a caller
+      // act on key material the TTL already retired.
+      this.#drop(key, e, "max-age", true);
+      return false;
+    }
+    return true;
   }
 
   evict(key: string): void {
@@ -133,6 +173,15 @@ export class DekCache {
   /** Evicts and zeroizes everything (e.g. before a fork, docs/09 §10). */
   clear(): void {
     for (const [k, e] of [...this.#entries]) this.#drop(k, e, "clear", true);
+  }
+
+  #sweepExpired(): void {
+    const now = this.#now();
+    // Entries are in LRU order (get() re-inserts), not insertion-time order,
+    // so a full walk is required; n is bounded by `capacity`.
+    for (const [k, e] of [...this.#entries]) {
+      if (now - e.insertedAt >= this.policy.maxAgeMs) this.#drop(k, e, "max-age", true);
+    }
   }
 
   #drop(key: string, e: Entry, cause: EvictionCause, count: boolean): void {
