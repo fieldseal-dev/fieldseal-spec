@@ -1,0 +1,459 @@
+{
+  "schema": "fieldseal-vectors/errors/v1",
+  "vector_suite_version": "0.2.0-provisional",
+  "group": "errors",
+  "spec_version": "0.1-draft",
+  "status": "pinned",
+  "vectors": [
+    {
+      "id": "errors/crypto/ciphertext-bit-flip",
+      "description": "bit 0 of ciphertext byte 0 flipped: the record key and its commitment are untouched, so the commitment verifies and the AEAD open fails -- TAG_INVALID (docs/09 §3.2 step 6)",
+      "spec_ref": "§9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603d3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of ciphertext byte 0",
+      "expected": {
+        "error": "TAG_INVALID"
+      }
+    },
+    {
+      "id": "errors/crypto/tag-bit-flip",
+      "description": "bit 0 of tag byte 0 flipped: the record key and its commitment are untouched, so the commitment verifies and the AEAD open fails -- TAG_INVALID (docs/09 §3.2 step 6)",
+      "spec_ref": "§9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626194086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of tag byte 0",
+      "expected": {
+        "error": "TAG_INVALID"
+      }
+    },
+    {
+      "id": "errors/crypto/nonce-bit-flip",
+      "description": "bit 0 of nonce byte 0 flipped: the record key and its commitment are untouched, so the commitment verifies and the AEAD open fails -- TAG_INVALID (docs/09 §3.2 step 6)",
+      "spec_ref": "§9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c815597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of nonce byte 0",
+      "expected": {
+        "error": "TAG_INVALID"
+      }
+    },
+    {
+      "id": "errors/crypto/commitment-bit-flip",
+      "description": "bit 0 of commitment byte 0 flipped: COMMITMENT_INVALID, and the AEAD is never opened with this key",
+      "spec_ref": "§9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eaf31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of commitment byte 0",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      }
+    },
+    {
+      "id": "errors/crypto/msg-seed-bit-flip",
+      "description": "bit 0 of msg_seed byte 0 flipped: the derived record key changes, so its commitment no longer matches -- COMMITMENT_INVALID under the pinned order (the seed is self-authenticating, §3.2; which code reports it is G5's)",
+      "spec_ref": "§3.2, §5.3, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef177e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of msg_seed byte 0",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/context-wrong-tenant",
+      "description": "decrypt under a different tenant_id: the record key re-derived under the wrong context does not commit to the envelope's commitment -- COMMITMENT_INVALID, indistinguishable from key confusion (G5)",
+      "spec_ref": "§6.3, §9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303032",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "context altered on the decrypt side only",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/context-wrong-column",
+      "description": "decrypt under a different column_uuid: the record key re-derived under the wrong context does not commit to the envelope's commitment -- COMMITMENT_INVALID, indistinguishable from key confusion (G5)",
+      "spec_ref": "§6.3, §9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "16fd27068baf433b82eb8c7fada847da",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "context altered on the decrypt side only",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/context-wrong-table",
+      "description": "decrypt under a different table_uuid: the record key re-derived under the wrong context does not commit to the envelope's commitment -- COMMITMENT_INVALID, indistinguishable from key confusion (G5)",
+      "spec_ref": "§6.3, §9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "context altered on the decrypt side only",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/context-row-id-added",
+      "description": "envelope written with row_id absent, decrypted with one present: the record key re-derived under the wrong context does not commit to the envelope's commitment -- COMMITMENT_INVALID, indistinguishable from key confusion (G5)",
+      "spec_ref": "§6.3, §9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": "726f772d3432",
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "context altered on the decrypt side only",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/context-row-id-dropped",
+      "description": "envelope written with row_id present, decrypted without it: the record key re-derived under the wrong context does not commit to the envelope's commitment -- COMMITMENT_INVALID, indistinguishable from key confusion (G5)",
+      "spec_ref": "§6.3, §9, §4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdefe362dd7a201c43c45d61f75e578f2befb98e5c5031a34768f1256302b0f4c571a6a9baa1997df08c8125b9570be30adc08a351e6da53276a33e46a5852ed7f03ed8dcfdc085dcfd15b479108402c656750ef0421806ba2d87ecfd3faf7794b51f447b7a993",
+      "derived_from": "envelope/ff01/row-id-present",
+      "mutation": "context altered on the decrypt side only",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      },
+      "provisional_on": [
+        "G5"
+      ]
+    },
+    {
+      "id": "errors/crypto/salamander-second-key",
+      "description": "a ciphertext and tag AES-GCM accepts under two record keys; the envelope's commitment is to the first. A provider resolving the same key_id to a second tenant DEK derives the second key, its commitment does not match, and the decrypt is refused -- COMMITMENT_INVALID. Without §4.6 the AEAD would have opened and returned aead_output_under_second_key",
+      "spec_ref": "§4.6, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef1f6bf69fc51b1e675db53d79f3797baef07fbdfb05e024efddfc9f5ec1b902e201a6656374141b85bba80a21fff5d5502079fe0fae43c68fc57138198fef70689a38f7441013cc588e668523252402bed58f3d4414a405430b05854565c26c194ab1a7b3219df7e1ee7fe5190b3516d6a926bcc4044731eade3184ee",
+      "mutation": "constructed, not mutated: see tools/vector-gen gcm.py",
+      "salamander": {
+        "msg_seed": "1f6bf69fc51b1e675db53d79f3797baef07fbdfb05e024efddfc9f5ec1b902e2",
+        "nonce": "01a6656374141b85bba80a21",
+        "record_key_under_tenant_dek": "881ae61d17db64fbec659936d278c35c5ba9cb7efbde2c55e1781becd30eb45f",
+        "record_key_under_tenant_dek_b": "99c5a0e129da728cf9ebd40e44737a423b7f161d8302e2ae6bfee33a94624b3e",
+        "aead_output_under_second_key": "8dae6af2d629db7713a46b06006144fe34f144fa19577183ddef297594802026"
+      },
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      }
+    },
+    {
+      "id": "errors/crypto/salamander-committed-key",
+      "description": "the same envelope under the key it commits to decrypts (positive control); the second block is whatever the solved ciphertext block decrypts to under this key",
+      "spec_ref": "§4.6",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef1f6bf69fc51b1e675db53d79f3797baef07fbdfb05e024efddfc9f5ec1b902e201a6656374141b85bba80a21fff5d5502079fe0fae43c68fc57138198fef70689a38f7441013cc588e668523252402bed58f3d4414a405430b05854565c26c194ab1a7b3219df7e1ee7fe5190b3516d6a926bcc4044731eade3184ee",
+      "mutation": "constructed: see salamander-second-key",
+      "salamander": {
+        "msg_seed": "1f6bf69fc51b1e675db53d79f3797baef07fbdfb05e024efddfc9f5ec1b902e2",
+        "nonce": "01a6656374141b85bba80a21",
+        "record_key_under_tenant_dek": "881ae61d17db64fbec659936d278c35c5ba9cb7efbde2c55e1781becd30eb45f",
+        "record_key_under_tenant_dek_b": "99c5a0e129da728cf9ebd40e44737a423b7f161d8302e2ae6bfee33a94624b3e",
+        "aead_output_under_second_key": "8dae6af2d629db7713a46b06006144fe34f144fa19577183ddef297594802026"
+      },
+      "expected": {
+        "plaintext": "53414c414d414e4445522d424c4f434be68a7cf69c1c324eb54e608281921d26"
+      }
+    }
+  ],
+  "retired": [],
+  "pinned_order": "Expected outcomes follow the decrypt-path order of docs/09 §3.2 as declared by both shipped cores (docs/14 §4 pinned_decisions.decrypt-order, 2026-08-23): recognition -> LENGTH_EXCEEDED -> SUITE_NOT_ALLOWED -> KEY_UNAVAILABLE -> per candidate: record key, constant-time commitment verify, AEAD open (TAG_INVALID) -> COMMITMENT_INVALID. Spec §9 marks the order [PROVISIONAL - G5]; vectors whose outcome depends on it carry provisional_on and regenerate if the order changes at Gate 0b.",
+  "withheld": [
+    {
+      "case": "AAD_MISMATCH on any 0xFF01 input",
+      "why": "not raisable under §6.3 dual binding: a context mismatch changes the record key and fails at the commitment check. Both cores declare this (pinned_decisions.aad-mismatch); G5 owns whether the code survives"
+    },
+    {
+      "case": "decrypt with a wrong purpose",
+      "why": "spec §5.3 constrains record-key derivation to purpose = \"encrypt\"; a decrypt under an index purpose is an API-boundary argument error, not a §9 outcome"
+    }
+  ]
+}

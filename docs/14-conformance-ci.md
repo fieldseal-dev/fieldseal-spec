@@ -48,7 +48,7 @@ gate:
 
 Self-pairs (`python→python`) stay in the matrix deliberately: they distinguish "producer broke" from "pair broke," halving diagnosis time.
 
-Static cross vectors (`vectors/cross/static/`) are additionally verified by each core's ordinary vector harness — they catch drift against *released* implementations, while the dynamic job catches drift at head.
+`key_ref` resolution uses `vectors/keys/test-keys.json`, emitted by the generator since suite 0.2.0 (format in docs/08 §4.7; two refs, `tenant-a-dek-v1` and `tenant-b-dek-v1`). Static cross vectors (`vectors/cross/static/`) are additionally verified by each core's ordinary vector harness — they catch drift against *released* implementations, while the dynamic job catches drift at head.
 
 ## 4. Conformance report format
 

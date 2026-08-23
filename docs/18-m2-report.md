@@ -66,6 +66,8 @@ The brief's list (§3): for every mismatch, the vector id, computed and expected
 
 Nothing above changed a byte of the envelope. The three that could split two cores on real data without any vector noticing are **D-10(c)/(d)**, **D-13** and **D-03**; the one that would have blocked an implementer without the issue drafts is **D-01**.
 
+*Status, 2026-08-23 (vector suite 0.2.0-provisional).* The four vector drifts are resolved in the generator: `context/` carries `suite_id` (D-05), `kdf/index-key.json` carries the index purpose in `context` (D-06), `blind-index/` uses docs/08 §4.4's shape and `nfc-casefold-v1` (D-07), and assertion vectors carry their inputs (D-08). D-17's `envelope_bytes` is now in docs/08 §4.1's shape. D-09 is half closed: `errors/` exists (66 vectors) and `keys/test-keys.json` defines the `key_ref` format; `cross/` and `schema/` do not yet. D-11's per-suite minimum is pinned by a vector (`provisional_on: ["D-11"]`). Both cores pass the new suite 127/127 with identical result ids — the first time the declared decrypt order (D-02) has been a tested agreement rather than two matching strings.
+
 ## 4. Dependency deviations from `docs/11` §2
 
 | `docs/11` row | Finding | Deviation |

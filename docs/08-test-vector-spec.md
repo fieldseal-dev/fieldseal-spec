@@ -33,7 +33,8 @@ vectors/
     errors.schema.json
     cross.schema.json
   keys/
-    test-keys.json         shared, PUBLIC test key material referenced by key_ref (never real keys)
+    test-keys.json         shared, PUBLIC test key material referenced by key_ref (never real keys);
+                           emitted by the generator, listed in MANIFEST.support, never run
   envelope/
     ff01.json              suite 0xFF01 round trips
     ff02.json              suite 0xFF02 round trips (consumed only by implementations claiming 0xFF02)
@@ -77,6 +78,11 @@ vectors/
 Vector files are UTF-8, LF line endings (repo `.gitattributes` pins LF), 2-space indent, keys in the order given by the schema — so that regenerated files diff cleanly.
 
 ---
+
+**Two fields common to every family since suite 0.2.0 (2026-08-23):**
+
+- `provisional_on` — a list of gap identifiers (`"G5"`, `"G14"`, `"G15"`) or, for a pin not yet owned by an issue, the `docs/18` divergence id (`"D-11"`). Present on every vector whose expected value would change if that gap closed the other way; absent otherwise. A harness does not act on it — it is the reader's map from an expected value to the decision that produced it, and the regeneration list when a gap closes.
+- `assertion` vectors (`"distinct"` / `"equal"`) carry an `inputs` object holding both sides' inputs, so an implementation reproduces each side and then checks the relation. Earlier suites carried only the literal expected values (docs/18 D-08); a harness that merely compares the literals is no longer checking anything.
 
 ## 4. Vector file format per family
 
@@ -157,13 +163,15 @@ Minimum case coverage per suite: empty plaintext (0 B) · 1 B · a 9-byte SSN-sh
 }
 ```
 
-`kdf/index-key.json` mirrors it with `tenant_index_key` as input, `purpose` of the form `"index:<index-id>"`, `row_id` forced null (spec §7.2), and `expected.index_key`. Include two vectors differing **only** in the index identifier (`index:exact` vs `index:prefix3`) to pin the §7.2 distinctness rule, and two differing only in `column_uuid` to pin per-column separation.
+`kdf/index-key.json` mirrors it with `tenant_index_key` as input, `context.purpose` of the form `"index:<index-id>"`, `row_id` null (spec §7.2), and `expected.index_key`; a top-level `index_id` repeats the identifier for readability only. (Until suite 0.2.0 the context carried `purpose = "encrypt"` and a harness had to construct the index purpose itself — docs/18 D-06.) The file carries two vectors differing **only** in the index identifier (`email-eq` vs `ssn-eq`) to pin the §7.2 distinctness rule, two differing only in `column_uuid` to pin per-column separation, one whose caller context carried a `row_id` (marked `same_as` the row-less vector, since §7.2 drops it), and one at the maximum index-path context (G14).
 
 ### 4.3 `context/` — canonical encoding
 
 Byte-exact `canonical_context` and `AAD` outputs for representative contexts. This family exists so an implementation can debug encoding independently of any cryptography.
 
-Required cases: all fields present · `row_id` null (omitted entirely per §6.2) · `tenant_id` at boundary lengths (1 B, 16 B, 64 B) · `purpose` = `"encrypt"` and `"index:exact"` · a context whose fields contain bytes that would be misparsed under naive concatenation (e.g. a `tenant_id` ending in bytes that look like a `u64be` length prefix) — this is the anti-forgery case that justifies §6.2.
+Required cases: all fields present · `row_id` null (omitted entirely per §6.2) · `tenant_id` at boundary lengths (1 B, 16 B, 64 B) · `purpose` = `"encrypt"` and an index purpose · a context whose fields contain bytes that would be misparsed under naive concatenation (a `tenant_id` ending in bytes that look like a `u64be` length prefix followed by eight bytes) — this is the anti-forgery case that justifies §6.2. Every vector carries a top-level `suite_id`, since `canonical_context` embeds one (docs/18 D-05; emitted since suite 0.2.0, as are the boundary and forgery cases, which 0.1.0 lacked).
+
+**G14 lengths (suite 0.2.0, `provisional_on: ["G14"]`):** `tenant_id` and `row_id` at 255 bytes each (the bound G14 proposes), at 2000 bytes each (above the 1024-byte HKDF `info` cap of `node:crypto` — the length that split the two cores on 2026-08-22 with no vector noticing), and the longest index-path context (2000-byte `tenant_id`, 32-character index-id). The same maximum context appears in `envelope/ff01.json` and both `kdf/` files. If G14 adopts a bound below 2000, those vectors retire and a refusal vector replaces them.
 
 **Grammar refusals (G11, issue #11, resolved 2026-08-09):** spec §6.1 now constrains `index-id` to `[a-z0-9-]{1,32}`, so this family also carries negative *declarations* — `index:Exact` (uppercase), `index:é` (non-ASCII), `index:` (empty), and a 33-byte identifier. These pin a refusal at index-declaration time, not an error code: configuration validation sits outside the §9 taxonomy, so the vector asserts that the declaration is rejected and deliberately does not name a code (each core maps it to its own `ConfigurationError`, docs/09 §9). They belong here rather than in `errors/` for that reason.
 
@@ -175,9 +183,13 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
 {
   "id": "blind-index/hmac-sha512/email-15bit",
   "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+  "suite_id": "0xFF01",
   "idf": "hmac-sha512",
   "idf_params": {},
   "index_key": "…hex (32 B)…",
+  "tenant_index_key": "…hex (32 B)…",
+  "index_id": "email-eq",
+  "context": { "…the §7.2 derivation context: purpose index:<id>, row_id null…" },
   "normalize": "nfc-casefold-v1",
   "plaintext": "…hex of the ALREADY-NORMALIZED value…",
   "plaintext_preimage": "USER@Example.COM",
@@ -190,27 +202,33 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
 }
 ```
 
-- `plaintext` is the post-normalization byte string and is the normative input; `plaintext_preimage` documents where it came from and lets an implementation that ships the named normalizer test it too. Normalizer identifiers (`nfc-casefold-v1`, …) are declared in `docs/09-core-architecture.md` §7; the vector suite only ever references declared identifiers.
+- `plaintext` is the post-normalization byte string and is the normative input; `plaintext_preimage` documents where it came from and lets an implementation that ships the named normalizer test it too. Normalizer identifiers (`nfc-casefold-v1`, …) are declared in `docs/09-core-architecture.md` §7; the vector suite only ever references declared identifiers (suite 0.1.0 wrote `nfc-casefold`; corrected in 0.2.0, docs/18 D-07).
+- `index_key` is the normative key input. `tenant_index_key`, `index_id` and `context` are its provenance under spec §7.2, carried so a harness can run the public `blind_index` operation end to end from the vector alone (reported as `<id>#pipeline`, docs/14 §4) without recovering the tenant key from `kdf/`.
+- One vector (`fold-not-nfc-stable`, U+01F0) pins that no second normalization follows the fold — the reading of docs/09 §7 both cores implement and G15 part D proposes to make explicit; it is marked `provisional_on: ["G15"]`.
 - `expected.stored` asserts the spec §7.11 storage contract (G8, issue #8). `stored.binary` MUST equal `expected.index` byte for byte and `stored.octets` MUST equal `⌈b/8⌉`; the redundancy is deliberate, because it converts an assumption every implementation would otherwise make silently into a test that fails when one of them pads, length-prefixes, or base64s the column. `stored.hex` is the lowercase text-column form for implementations supporting that alternative — a harness whose implementation is binary-only skips `stored.hex` and reports it skipped, but MUST assert `stored.binary` and `stored.octets`.
-- Argon2id vectors carry full `idf_params`: `{"version": 19, "time_cost": …, "memory_kib": …, "parallelism": …, "output_len": 32, "salt": "…hex…"}`. Most Argon2id vectors use **reduced parameters** (small memory/time) so CI stays fast; at least one vector per file MUST use the spec-minimum production parameters (≥3 iterations / 32 MiB, spec §7.3) so the production configuration path is exercised.
-- **Blocked (G2 only):** the exact Argon2id invocation (what is password vs salt vs secret, parallelism, output length) is not defined by spec v0.1 — gap G2 in §9. The bit-level truncation rule is now pinned (spec §7.2, G3 resolved 2026-08-08: leading `⌈b/8⌉` bytes, trailing bits of the final byte zeroed, MSB-first), so `blind-index/hmac.json` is fully authorable including truncated expected values. Per spec §12, each file carries at least three `b mod 8 ≠ 0` vectors (e.g. b = 12, 21, 30) plus one multiple-of-8 control. Argon2id expected values wait on G2.
+- Argon2id vectors carry full `idf_params`: `{"version": 19, "time_cost": 3, "memory_kib": 32768, "parallelism": 1, "output_len": 64, "salt": "…hex…"}` — exactly spec §7.3's single pinned invocation. (This document previously allowed "reduced parameters" for CI speed; §7.3 pins one tuple and the cost is ~40 ms per vector, so there is nothing to reduce.) `salt` is the HKDF-derived value of §7.3, asserted separately so an HKDF-step bug and an Argon2-step bug are distinguishable.
+- The bit-level truncation rule is pinned (spec §7.2, G3 resolved 2026-08-08: leading `⌈b/8⌉` bytes, trailing bits of the final byte zeroed, MSB-first). Per spec §12, each file carries at least three `b mod 8 ≠ 0` vectors plus one multiple-of-8 control; suite 0.2.0 ships b = 12, 15, 21, 30 and the control at 16. The Argon2id invocation is pinned provisionally (G2, narrowed 2026-08-22); `blind-index/argon2id.json` is generated and **held out** — see §9.
 
 ### 4.5 `commitment/`
 
-Key material + envelope inputs → expected 32-byte commitment. **Fully blocked by gap G1** (§9): spec §4.6 mandates a commitment and §3.1 reserves 32 bytes, but no construction is defined. The file layout is reserved; authoring waits on the spec issue.
+`record_key` → expected 32-byte commitment, with `expected.salt` (empty), `expected.info` (the §4.6 label) and `expected.length` stated. Authored against the §4.6 provisional construction (G1; `provisional_on: ["G1"]`). The file's assertion vector carries two record keys differing in exactly one bit (bit 0 of the last byte) and their distinct commitments — suite 0.1.0's description claimed one bit while its inputs differed in 32.
 
 ### 4.6 `errors/`
 
 ```json
 {
   "id": "errors/crypto/tag-bit-flip",
-  "spec_ref": "§9",
+  "spec_ref": "§9, §4.6",
   "suite_id": "0xFF01",
+  "operation": "decrypt",
   "config": {
     "allowed_suites": ["0xFF01"],
+    "write_suite": "0xFF01",
     "read_mode": "strict",
-    "registered_suites": ["0xFF01", "0xFF02"]
+    "registered_suites": ["0xFF01", "0xFF02"],
+    "arm_provisional_suites": true
   },
+  "key_id": "…hex…",
   "tenant_dek": "…hex…",
   "context": { ... },
   "input": "…hex, the (possibly malformed) envelope bytes…",
@@ -221,8 +239,10 @@ Key material + envelope inputs → expected 32-byte commitment. **Fully blocked 
 ```
 
 - `input` is always literal bytes — `derived_from`/`mutation` are documentation, not instructions; harnesses never compute mutations.
-- `config` makes policy explicit because several errors are policy-dependent (`SUITE_NOT_ALLOWED` requires a suite that is registered but not allow-listed; `NOT_CIPHERTEXT` in `strict` vs the pass-through expectation in `permissive`).
-- Permissive-mode vectors use `"expected": { "value": "…hex…" }` instead of an error, pinning the pass-through behavior of §10.3.
+- `operation` is one of `decrypt` (the default), `encrypt`, `rotate`, `is_ciphertext`, `blind_index`; `input` is the operand (an envelope, a plaintext, a value to index). A `blind_index` vector also carries `tenant_index_key` and an `index_declaration` (`index_id`, `idf`, `normalize`, `truncate_bits`).
+- `config` makes policy explicit because several errors are policy-dependent (`SUITE_NOT_ALLOWED` requires a suite that is registered but not allow-listed; `NOT_CIPHERTEXT` in `strict` vs the pass-through expectation in `permissive`; the §4.8 gate depends on `arm_provisional_suites`). `key_id`/`tenant_dek` are the one key the provider resolves; a header naming any other `key_id` is `KEY_UNAVAILABLE`.
+- `expected` carries exactly one of: `error` (a §9 code), `value` (the literal input back — §10.3 pass-through), `plaintext`, `is_ciphertext` (a boolean), or `index` (a positive control through `blind_index`).
+- Each file carries `pinned_order` (the decrypt-path order its outcomes assume — docs/09 §3.2 as declared by both shipped cores) and a `withheld` list naming cases deliberately not authored because two readings of the text are both defensible today, with the gap that decides them. Vectors whose outcome depends on an open gap carry `provisional_on`.
 
 Required error coverage (each case = one or more vectors):
 
@@ -231,15 +251,21 @@ Required error coverage (each case = one or more vectors):
 | Envelope shorter than minimum length; empty input; truncation at every field boundary (mid-`key_id`, mid-`msg_seed`, mid-nonce, mid-tag, mid-commitment) | `NOT_CIPHERTEXT` | Per spec §3.4 recognition rules |
 | ASCII plaintext presented in `strict` mode | `NOT_CIPHERTEXT` | The migration-accident case |
 | Same input in `permissive` mode | pass-through value | With the §10.3 warning requirement noted |
-| `fmt_ver` = `0x00`, `0x02`, `0xff` on an otherwise valid envelope | **[blocked by G5]** | docs/09 §3.2 proposes `UNKNOWN_FORMAT_VERSION` only for reserved-known-future version bytes (e.g. `0x02`) and `NOT_CIPHERTEXT` (strict) / pass-through (permissive) for the rest (`0x00`, `0xff`) — spec §3.4 makes recognition require a *recognized* version. The split is pinned by the G5 issue |
+| `fmt_ver` = `0x00`, `0x03`, `0xff` on an otherwise valid envelope | `NOT_CIPHERTEXT` (strict) / pass-through (permissive) | Spec §3.4: not a recognized version |
+| `fmt_ver` = `0x02` at ≥ 111 bytes; at 110 bytes | `UNKNOWN_FORMAT_VERSION` in every mode; `NOT_CIPHERTEXT` | The reserved-known-future set `{0x02}` and the plausibility floor are G15 part A (`provisional_on`); `is_ciphertext` stays false for it |
+| A long envelope shortened by one byte | `COMMITMENT_INVALID` | Still ≥ 111 bytes with a registered suite, so recognition passes; the damage surfaces at the commitment check. Recognition cannot detect truncation beyond the minimum, and the vector says so |
+| `suite_id` = `0xFF02` on a 115-byte blob | `NOT_CIPHERTEXT` | Per-suite minimum (123 for a 24-byte nonce), docs/18 D-11 (`provisional_on`) |
 | `suite_id` unregistered (e.g. `0x00ff`) | `NOT_CIPHERTEXT` | Recognition, not authorization — §3.4 |
 | `suite_id` registered but not on allow-list | `SUITE_NOT_ALLOWED` | The §3.4 decoupling case: recognition must succeed |
 | `key_id` unknown to the provider | `KEY_UNAVAILABLE` | |
-| Each AAD-relevant context field altered on decrypt (wrong tenant, wrong column, wrong row, wrong purpose) | `AAD_MISMATCH` **[blocked by G5]** | Under the current construction a context mismatch surfaces at the KDF/commitment layer; classification needs the error-precedence spec issue |
+| Each context field altered on decrypt (wrong tenant, column, table; `row_id` added; `row_id` dropped) | `COMMITMENT_INVALID` (`provisional_on: ["G5"]`) | Under §6.3 dual binding a context mismatch derives the wrong record key and fails at the commitment check, indistinguishably from key confusion; `AAD_MISMATCH` is not raisable on 0xFF01 and is listed as withheld. A wrong *purpose* is an API-boundary argument error (§5.3), also withheld |
+| `nonce` bit flipped | `TAG_INVALID` | The nonce is not in the AAD; the record key and commitment are untouched |
 | Single bit flips in ciphertext; in tag | `TAG_INVALID` | |
 | Commitment bytes altered | `COMMITMENT_INVALID` | |
-| A ciphertext valid under two keys (invisible salamander) | `COMMITMENT_INVALID` | Requires a dedicated construction script during vector authoring, following Len–Grubbs–Ristenpart (USENIX '21); this is the vector that proves §4.6 does its job |
-| `msg_seed` altered | **[blocked by G5]** — self-authenticating per §3.2; whether it reports `COMMITMENT_INVALID` or `TAG_INVALID` depends on check order | |
+| A ciphertext valid under two keys (invisible salamander) | `COMMITMENT_INVALID` | Constructed by `tools/vector-gen/fieldseal_vectorgen/gcm.py` following Len–Grubbs–Ristenpart (USENIX '21): GCM's tag is linear in the ciphertext under GHASH, so one free block solves a linear equation in GF(2^128). The vector carries both record keys and the bytes the AEAD *would* have returned under the second key; a positive control decrypts the same envelope under the committed key. This is the vector that proves §4.6 does its job |
+| `msg_seed` altered | `COMMITMENT_INVALID` (`provisional_on: ["G5"]`) | Self-authenticating per §3.2: the derived record key changes, so its commitment no longer matches under the pinned order |
+| `encrypt()`/`rotate()` without §4.8 arming; `decrypt()`/`blind_index()` without arming | `SUITE_PROVISIONAL`; success | The gate and its deliberate absence on reads. `encrypt()` on a client both `readonly` and unarmed is `MODE_VIOLATION` (docs/18 D-04, `provisional_on`) |
+| `rotate()` on non-envelope input in `permissive` | **withheld** | G15 part B: both cores encrypt it; the issue proposes `NOT_CIPHERTEXT`. Authored when it settles |
 | `encrypt()` called in `readonly` mode | `MODE_VIOLATION` | Spec §9 and §10.3, pinned by G6 (issue #6). `rotate()` under `readonly` is the same case and MUST also be covered |
 | Reads in `readonly` mode (valid envelope; non-envelope input) | Plaintext; pass-through | Spec §10.3, pinned by G6: `readonly` takes `permissive`'s non-envelope behavior. Both are positive controls bounding the row above — they prove the mode refuses *writes*, not reads |
 | `blind_index()` called in `readonly` mode | Success | Spec §10.3, pinned by G6: computing an index for a WHERE clause is not a write. Positive control — a regression here silently makes read-only clients unable to query |
@@ -266,7 +292,7 @@ Two mechanisms, one file format:
 }
 ```
 
-- `key_ref` resolves into `vectors/keys/test-keys.json` so producers and consumers share key material without embedding it per file. **Everything in `keys/` is public test material by construction** — the file carries a banner field stating so, and no value in it may ever be used outside tests.
+- `key_ref` resolves into `vectors/keys/test-keys.json` so producers and consumers share key material without embedding it per file. **Everything in `keys/` is public test material by construction** — the file carries a banner field stating so, and no value in it may ever be used outside tests. The file's shape (emitted by the generator since suite 0.2.0): `{"schema": "fieldseal-vectors/keys/v1", "banner": …, "keys": {"<key_ref>": {"label", "suite_id", "key_id", "tenant_dek", "tenant_index_key"}}, "context_defaults": {"table_uuid", "column_uuid", "tenant_id"}}`. Two refs ship: `tenant-a-dek-v1` (the tenant every pinned vector uses) and `tenant-b-dek-v1`. It is listed in `MANIFEST.support`, hashed like every family and never iterated by a harness.
 - **Static cross vectors** (`cross/static/<impl>/`): regenerated by each implementation at each release using its *real production path* — runtime CSPRNG for `msg_seed` and nonce, no injection. Checked in. Every other implementation decrypts every case and compares plaintext. This is the offline, versioned form of the claim.
 - **Dynamic cross validation**: in CI, each implementation produces a fresh cross file as a build artifact; every other implementation consumes all of them (full N×N including self). Defined in `docs/14-conformance-ci.md`. CI MUST fail on any divergence (spec §12).
 - Case set per producer: minimum 16 cases per supported suite spanning the same size/shape coverage as §4.1, plus at least one case per context shape (row_id present/absent, tenant present/absent).
@@ -306,7 +332,7 @@ Contract, binding on all core tech specs:
 - **Independent verification before freeze:** expected values MUST be confirmed by a second, independently-written computation before a vector file is tagged. Phase 1 provides this naturally: the TypeScript core is written against the frozen *inputs* and must reproduce the expected values without consulting the generator. Divergence at this step means either an implementation bug or a spec ambiguity — both are exactly what the suite exists to catch. The generator is not an oracle; agreement of two independent implementations is.
 - Where an external, already-published vector exists for a primitive, the generator's primitive layer MUST be checked against it first. **Status of each source, re-verified 2026-08-22 (this bullet previously carried a flag saying they had not been):**
   - **HKDF-SHA-512** — RFC 5869's test vectors are SHA-256 and SHA-1 only, so only the structure is reusable, not the values. Unchanged from the original assessment.
-  - **AES-256-GCM** — NIST CAVP GCM vectors apply directly. **[VERIFY]** not yet wired into the generator's primitive layer.
+  - **AES-256-GCM** — NIST CAVP GCM vectors apply directly. Not wired into the generator's primitive layer, which takes AES-GCM from `cryptography`; the generator's own GHASH/tag implementation (`gcm.py`, used only to build the salamander vector) is checked against `cryptography`'s tags at generation time, which is a consistency check, not a CAVP one. **[VERIFY]** a CAVP vector in the primitive layer remains open.
   - **XChaCha20-Poly1305** — no RFC vectors exist because the construction has no RFC (gap G7); libsodium's test suite is the de-facto source.
   - **Argon2id** — ⚠️ **the plan named here does not work.** RFC 9106 §5.3's Argon2id test vector supplies a nonzero secret (`Secret[8]: 03 03 …`) and nonzero associated data (`Associated data[12]: 04 04 …`). Spec §7.3 forbids both `K` and `X`, and Python cannot supply `K` at all (gap G2's portability finding) — so this vector is **unreproducible on the Fieldseal stack** and cannot serve as the primitive check. A substitute known-answer source with empty `K`/`X` must be found before `blind-index/argon2id.json` is frozen; libsodium's `crypto_pwhash` test suite is the leading candidate, since libsodium is exactly the library that cannot supply `K` either. **Recorded as an open item, not a solved one.**
 - The Windows caveat: the repo pins LF via `.gitattributes` — the generator writes bytes, not platform-dependent text.
@@ -333,6 +359,8 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 | G8 | Blind-index *stored* representation undefined (raw bytes vs hex; column width) — two implementations sharing one database must store identical index values — **resolved 2026-08-09** (issue #8): spec §7.11 makes raw `⌈b/8⌉` bytes in a binary column the MUST, lowercase hex without prefix the declared-per-column MAY, exact byte/string equality under a binary collation | `blind-index/` storage assertions unblocked; the adapter specs' interim recommendation is now normative |
 
 **Status 2026-08-22 — nothing in this document is blocked any longer, and one family is deliberately held out.** G3, G6 and G8 closed on their merits; G1, G2, G4, G5 and G7 are *provisionally adopted* under Gate 0a (PRD §8) and remain open on the tracker, which is enough for a generator to be written against them. `tools/vector-gen/` emits `context/`, `kdf/`, `commitment/`, `blind-index/` and `envelope/ff01.json`.
+
+**Status 2026-08-23 — suite 0.2.0-provisional adds `errors/` (66 vectors in `format.json`, `policy.json`, `crypto.json`) and `keys/test-keys.json`; both cores pass 127/127 with identical result ids.** The `errors/` family became authorable once the two cores declared the same decrypt-path order (docs/14 §4 `pinned_decisions`); its G5- and G15-dependent outcomes carry `provisional_on`. Still not emitted: `cross/` (each core produces its own static file by its production path — docs/14 §3; the `keys/` format it needs now exists) and `envelope/ff02.json` / `commitment/ff02.json` (G7). `schema/` remains empty.
 
 **`blind-index/argon2id.json` is generated but NOT part of the pinned suite.** Its primitive has never been checked against an external known-answer source, and per §7 above the source this document named for that purpose cannot be used. Both reference implementations would otherwise inherit the same unverified assumption from one generator and agree with each other while being wrong — which is precisely the failure the two-implementation rule exists to prevent, so agreement here would be evidence of nothing. `MANIFEST.json` carries it under `held_out` rather than omitting it, with the reason and the unblocking condition; the file itself carries `"status": "held-out"`. A conformance run MUST iterate `files` only (`docs/14` §4).
 

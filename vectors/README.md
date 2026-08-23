@@ -6,7 +6,7 @@ Every implementation MUST run every vector for every conformance level it claims
 
 ## Layout
 
-*Status 2026-08-23.* `envelope/`, `kdf/`, `context/`, `blind-index/` and `commitment/` are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` (`blind-index/argon2id.json` is held out — see the manifest's `held_out` and `docs/07` §7). `errors/` and `cross/` are **not yet emitted**: both cores declare the same decrypt-path order in their conformance reports, which was the precondition for `errors/` (`docs/18` §7 item 2; the first cases are listed in `docs/issues/G15`), and `cross/` waits on the `docs/14` §3 N×N job. `schema/` is empty; each harness records that in its report's `harness_notes`.
+*Status 2026-08-23, suite `0.2.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 111 vectors; `blind-index/argon2id.json` is held out (see the manifest's `held_out` and `docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, listed under `MANIFEST.support` and never run. `cross/` is **not yet emitted**: each core produces its own static file through its production path (`docs/14` §3), which is core work rather than generator work. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
 
 
 ```

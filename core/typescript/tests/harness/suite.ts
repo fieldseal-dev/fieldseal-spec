@@ -32,6 +32,8 @@ export interface Manifest {
   spec_version: string;
   provisional: boolean;
   files: ManifestFile[];
+  /** Non-family files the suite ships (keys/); hashed, never iterated. */
+  support?: ManifestFile[];
   held_out: ManifestHeldOut[];
 }
 
@@ -77,6 +79,13 @@ export function loadSuite(dir: string = VECTORS_DIR): LoadedSuite {
     if (!Array.isArray(doc.vectors)) throw new SuiteIntegrityError(`${f.path}: vectors is not an array`);
     validateShape(f.path, doc);
     files.set(f.path, doc);
+  }
+  // Support files (keys/test-keys.json) are hashed like everything else and
+  // never run: nothing in them has an expected value.
+  for (const f of manifest.support ?? []) {
+    const bytes = readFileSync(join(dir, f.path));
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    if (sha !== f.sha256) throw new SuiteIntegrityError(`${f.path} (support): sha256 ${sha} != manifest ${f.sha256}`);
   }
   // A held-out file is checked for integrity (it is part of the published
   // suite as an artifact) but is NEVER iterated by a conformance run.
@@ -129,18 +138,19 @@ function validateShape(path: string, doc: VectorFile): void {
     if (v.assertion !== undefined) {
       if (v.assertion !== "distinct" && v.assertion !== "equal") throw new SuiteIntegrityError(`${path} ${id}: unknown assertion ${String(v.assertion)}`);
       req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
+      // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08).
+      req(path, id, v, "inputs", isObj, "an object");
       continue;
     }
+    req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
     switch (doc.group) {
       case "envelope":
-        req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
         for (const k of ["tenant_dek", "key_id", "msg_seed", "nonce", "plaintext"]) req(path, id, v, k, isHex, "hex");
         validateContext(path, id, v.context);
         for (const k of ["envelope", "canonical_context", "aad"]) req(path, id, ex, k, isHex, "hex");
         req(path, id, ex, "envelope_bytes", Number.isInteger, "an integer");
         break;
       case "kdf":
-        req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
         validateContext(path, id, v.context);
         for (const k of ["salt", "info"]) req(path, id, ex, k, isHex, "hex");
         if (id.startsWith("kdf/record-key/")) {
@@ -159,22 +169,52 @@ function validateShape(path: string, doc: VectorFile): void {
         req(path, id, ex, "length", Number.isInteger, "an integer");
         break;
       case "commitment":
-        req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
         req(path, id, v, "record_key", isHex, "hex");
         req(path, id, ex, "info", isHex, "hex");
         req(path, id, ex, "commitment", isHex, "hex");
         req(path, id, ex, "length", Number.isInteger, "an integer");
         break;
-      case "blind-index":
-        req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
+      case "blind-index": {
+        // docs/08 §4.4 shape (suite 0.2.0; D-07 resolved).
+        req(path, id, v, "idf", (x) => typeof x === "string", "a string");
+        req(path, id, v, "idf_params", isObj, "an object");
         req(path, id, v, "index_key", isHex, "hex");
+        req(path, id, v, "tenant_index_key", isHex, "hex");
         req(path, id, v, "index_id", (x) => typeof x === "string", "a string");
-        req(path, id, v, "plaintext_utf8", (x) => typeof x === "string", "a string");
-        req(path, id, v, "normalizer", (x) => typeof x === "string", "a string");
-        req(path, id, v, "b_bits", Number.isInteger, "an integer");
-        for (const k of ["normalized", "raw", "blind_index", "stored"]) req(path, id, ex, k, isHex, "hex");
-        req(path, id, ex, "stored_bytes", Number.isInteger, "an integer");
+        validateContext(path, id, v.context);
+        req(path, id, v, "normalize", (x) => typeof x === "string", "a string");
+        req(path, id, v, "plaintext", isHex, "hex");
+        req(path, id, v, "plaintext_preimage", (x) => typeof x === "string", "a string");
+        req(path, id, v, "truncate_bits", Number.isInteger, "an integer");
+        for (const k of ["raw", "index"]) req(path, id, ex, k, isHex, "hex");
+        if (!isObj(ex.stored)) throw new SuiteIntegrityError(`${path} ${id}: expected.stored is not an object`);
+        req(path, id, ex.stored, "binary", isHex, "hex");
+        req(path, id, ex.stored, "hex", isHex, "hex");
+        req(path, id, ex.stored, "octets", Number.isInteger, "an integer");
         break;
+      }
+      case "errors": {
+        // docs/08 §4.6 shape. `input` is literal bytes; `operation` defaults to decrypt.
+        req(path, id, v, "config", isObj, "an object");
+        const cfg = v.config as Record<string, unknown>;
+        req(path, id, cfg, "allowed_suites", Array.isArray, "an array");
+        req(path, id, cfg, "write_suite", isSuiteId, "a 0xXXXX suite id");
+        req(path, id, cfg, "read_mode", (x) => x === "strict" || x === "permissive" || x === "readonly", "a read mode");
+        req(path, id, cfg, "arm_provisional_suites", (x) => typeof x === "boolean", "a boolean");
+        req(path, id, v, "key_id", isHex, "hex");
+        req(path, id, v, "tenant_dek", isHex, "hex");
+        req(path, id, v, "input", isHex, "hex");
+        if (v.context !== undefined) validateContext(path, id, v.context);
+        const op = v.operation ?? "decrypt";
+        if (!["decrypt", "encrypt", "rotate", "is_ciphertext", "blind_index"].includes(op as string)) throw new SuiteIntegrityError(`${path} ${id}: unknown operation ${String(op)}`);
+        if (op === "blind_index") {
+          req(path, id, v, "tenant_index_key", isHex, "hex");
+          req(path, id, v, "index_declaration", isObj, "an object");
+        }
+        const kinds = ["error", "value", "plaintext", "is_ciphertext", "index"].filter((k) => k in ex);
+        if (kinds.length !== 1) throw new SuiteIntegrityError(`${path} ${id}: expected must carry exactly one of error/value/plaintext/is_ciphertext/index`);
+        break;
+      }
       default:
         throw new SuiteIntegrityError(`${path}: unknown group ${doc.group}`);
     }

@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.1.0-provisional",
+  "vector_suite_version": "0.2.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -10,17 +10,30 @@
       "description": "hmac-sha512 index over 'alice@example.com' truncated to 15 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
       "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "index_id": "email-eq",
-      "plaintext_utf8": "alice@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 15,
       "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
         "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
-        "blind_index": "9f6a",
-        "stored": "9f6a",
-        "stored_bytes": 2
+        "index": "9f6a",
+        "stored": {
+          "binary": "9f6a",
+          "hex": "9f6a",
+          "octets": 2
+        }
       }
     },
     {
@@ -28,35 +41,61 @@
       "description": "hmac-sha512 index over 'Alice@Example.COM' truncated to 15 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
       "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "index_id": "email-eq",
-      "plaintext_utf8": "Alice@Example.COM",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "Alice@Example.COM",
+      "truncate_bits": 15,
       "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
         "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
-        "blind_index": "9f6a",
-        "stored": "9f6a",
-        "stored_bytes": 2
+        "index": "9f6a",
+        "stored": {
+          "binary": "9f6a",
+          "hex": "9f6a",
+          "octets": 2
+        }
       }
     },
     {
-      "id": "blind-index/hmac-sha512/non-ascii-b15",
-      "description": "hmac-sha512 index over 'grüße@example.com' truncated to 15 bits",
+      "id": "blind-index/hmac-sha512/non-ascii-b21",
+      "description": "hmac-sha512 index over 'grüße@example.com' truncated to 21 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
       "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "index_id": "email-eq",
-      "plaintext_utf8": "grüße@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "6772c3bc737365406578616d706c652e636f6d",
+      "plaintext_preimage": "grüße@example.com",
+      "truncate_bits": 21,
       "expected": {
-        "normalized": "6772c3bc737365406578616d706c652e636f6d",
         "raw": "e36f43d9acf9045e1ced3793d10d797995cd21ee3014fe69143e47bb73a2bac1ee8469feeb2e1da3d255501091bd12a5be3201d6721ca21f4ebc0a4887c8fbf9",
-        "blind_index": "e36e",
-        "stored": "e36e",
-        "stored_bytes": 2
+        "index": "e36f40",
+        "stored": {
+          "binary": "e36f40",
+          "hex": "e36f40",
+          "octets": 3
+        }
       }
     },
     {
@@ -64,24 +103,142 @@
       "description": "hmac-sha512 index over 'alice@example.com' truncated to 16 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
       "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "index_id": "email-eq",
-      "plaintext_utf8": "alice@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 16,
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 16,
       "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
         "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
-        "blind_index": "9f6b",
-        "stored": "9f6b",
-        "stored_bytes": 2
+        "index": "9f6b",
+        "stored": {
+          "binary": "9f6b",
+          "hex": "9f6b",
+          "octets": 2
+        }
       }
     },
     {
+      "id": "blind-index/hmac-sha512/short-b12-b12",
+      "description": "hmac-sha512 index over 'alice@example.com' truncated to 12 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 12,
+      "expected": {
+        "raw": "9f6b3de5f32b84a4481635346b08398cb1f8afc983e59469b94ee5a00ef0f1c4481089a8a17510953a405af6e0b3302f67a65a6941c7cc8293f95389dba4ddf7",
+        "index": "9f60",
+        "stored": {
+          "binary": "9f60",
+          "hex": "9f60",
+          "octets": 2
+        }
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/b30-b30",
+      "description": "hmac-sha512 index over 'bob@example.org' truncated to 30 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "626f62406578616d706c652e6f7267",
+      "plaintext_preimage": "bob@example.org",
+      "truncate_bits": 30,
+      "expected": {
+        "raw": "fac2799dd9fcfdced6fcaef20e5f4af1c896ebca970e36477121f76294df7e87a2c6ea60b1f0ffb9b317247931f0c6d4aaf06bd5fb7daa07a8ec93d87053ac72",
+        "index": "fac2799c",
+        "stored": {
+          "binary": "fac2799c",
+          "hex": "fac2799c",
+          "octets": 4
+        }
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/fold-not-nfc-stable-b15",
+      "description": "hmac-sha512 index over 'ǰ@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "6acc8c406578616d706c652e636f6d",
+      "plaintext_preimage": "ǰ@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "acdaa97379addc150aa1ab4c96c044d24ba1a8f61221b570a7f384468206f20d1a9012edb9304173b992366764d6f7dbcd7aa73b61f040b6532b878cfdc1be07",
+        "index": "acda",
+        "stored": {
+          "binary": "acda",
+          "hex": "acda",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
       "id": "blind-index/hmac-sha512/normalizer-collapses-case",
-      "description": "values differing only by case MUST produce the same index under the nfc-casefold normalizer",
+      "description": "values differing only by case MUST produce the same index under the nfc-casefold-v1 normalizer",
       "spec_ref": "§7.2",
       "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "hmac-sha512",
+        "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "alice@example.com",
+        "plaintext_preimage_b": "Alice@Example.COM",
+        "truncate_bits": 15
+      },
       "expected": {
         "index_a": "9f6a",
         "index_b": "9f6a",

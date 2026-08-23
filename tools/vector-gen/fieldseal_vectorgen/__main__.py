@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .families import (blind_index_family, commitment_family, context_family,
-                       envelope_family, kdf_family)
+                       envelope_family, errors_family, kdf_family, keys_family)
 from .manifest import HELD_OUT, build_manifest, write_json
 
 STDLIB_FAMILIES = {
@@ -24,7 +24,14 @@ STDLIB_FAMILIES = {
 
 DEPENDENT_FAMILIES = {
     "envelope/ff01.json": envelope_family.generate,          # cryptography
+    "errors/format.json": errors_family.generate_format,     # cut from envelope/
+    "errors/policy.json": errors_family.generate_policy,
+    "errors/crypto.json": errors_family.generate_crypto,     # salamander: AES
     "blind-index/argon2id.json": blind_index_family.generate_argon2id,  # argon2-cffi
+}
+
+SUPPORT_FILES = {
+    "keys/test-keys.json": keys_family.generate,
 }
 
 
@@ -66,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     families = dict(STDLIB_FAMILIES)
     if not args.stdlib_only:
         families.update(DEPENDENT_FAMILIES)
+    families.update(SUPPORT_FILES)
 
     written: list[Path] = []
     for rel, fn in families.items():
@@ -82,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = build_manifest(args.out, written)
     write_json(manifest, payload)
     print(f"  wrote MANIFEST.json ({len(payload['files'])} pinned, "
+          f"{len(payload['support'])} support, "
           f"{len(payload['held_out'])} held out)")
     for h in payload["held_out"]:
         print(f"    HELD OUT: {h['path']} -- not part of the suite, "

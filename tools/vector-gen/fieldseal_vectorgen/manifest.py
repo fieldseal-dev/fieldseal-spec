@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-VECTOR_SUITE_VERSION = "0.1.0-provisional"
+VECTOR_SUITE_VERSION = "0.2.0-provisional"
 SPEC_VERSION = "0.1-draft"
 
 # Families generated but deliberately NOT part of the pinned suite. Listed
@@ -49,12 +49,19 @@ def _entry(root: Path, f: Path) -> dict:
     }
 
 
+# Files the suite ships that are not vector families: no expected values, so
+# nothing to run. Hashed like everything else; a harness MUST NOT iterate them.
+SUPPORT = {"keys/test-keys.json"}
+
+
 def build_manifest(root: Path, written: list[Path]) -> dict:
-    pinned, held = [], []
+    pinned, held, support = [], [], []
     for f in sorted(written):
         rel = f.relative_to(root).as_posix()
         if rel in HELD_OUT:
             held.append({**_entry(root, f), **HELD_OUT[rel]})
+        elif rel in SUPPORT:
+            support.append(_entry(root, f))
         else:
             pinned.append(_entry(root, f))
     return {
@@ -69,6 +76,7 @@ def build_manifest(root: Path, written: list[Path]) -> dict:
             "expected values may change when Gate 0b closes."
         ),
         "files": pinned,
+        "support": support,
         "held_out": held,
         "held_out_note": (
             "Generated, reviewable, and NOT part of the suite. A conformance "

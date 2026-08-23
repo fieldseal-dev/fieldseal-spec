@@ -1,0 +1,464 @@
+{
+  "schema": "fieldseal-vectors/errors/v1",
+  "vector_suite_version": "0.2.0-provisional",
+  "group": "errors",
+  "spec_version": "0.1-draft",
+  "status": "pinned",
+  "vectors": [
+    {
+      "id": "errors/policy/suite-not-allowed",
+      "description": "a recognized 0xFF02 envelope shape against a client allowing only 0xFF01: SUITE_NOT_ALLOWED -- recognition succeeded, so there is no pass-through in strict (§3.4 decoupling)",
+      "spec_ref": "§3.4, §4.3, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c8000102030405060708090a0b0c0d0e0f10111213141516173c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "suite_id ff02, 24-byte nonce spliced in",
+      "expected": {
+        "error": "SUITE_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "errors/policy/suite-not-allowed-permissive",
+      "description": "a recognized 0xFF02 envelope shape against a client allowing only 0xFF01: SUITE_NOT_ALLOWED -- recognition succeeded, so there is no pass-through in permissive (§3.4 decoupling)",
+      "spec_ref": "§3.4, §4.3, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c8000102030405060708090a0b0c0d0e0f10111213141516173c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "suite_id ff02, 24-byte nonce spliced in",
+      "expected": {
+        "error": "SUITE_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "errors/policy/key-unavailable",
+      "description": "key_id altered to one the provider cannot resolve: KEY_UNAVAILABLE before any derivation (docs/09 §3.2 step 5)",
+      "spec_ref": "§8, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010023456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "flip bit 0 of key_id byte 0",
+      "expected": {
+        "error": "KEY_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "errors/policy/encrypt-in-readonly",
+      "description": "encrypt() on a readonly client: MODE_VIOLATION at the API boundary",
+      "spec_ref": "§9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "encrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "313233343536373839",
+      "expected": {
+        "error": "MODE_VIOLATION"
+      }
+    },
+    {
+      "id": "errors/policy/rotate-in-readonly",
+      "description": "rotate() on a readonly client: MODE_VIOLATION, before the decrypt inside it runs (docs/09 §3.5)",
+      "spec_ref": "§9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "rotate",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "error": "MODE_VIOLATION"
+      }
+    },
+    {
+      "id": "errors/policy/decrypt-in-readonly",
+      "description": "decrypt() of a valid envelope on a readonly client succeeds -- the mode refuses writes, not reads (positive control)",
+      "spec_ref": "§10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "plaintext": "313233343536373839"
+      }
+    },
+    {
+      "id": "errors/policy/non-envelope-in-readonly",
+      "description": "non-envelope input on a readonly client is returned as-is: readonly takes permissive's pass-through (G6)",
+      "spec_ref": "§10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "value": "3132332d34352d36373839"
+      }
+    },
+    {
+      "id": "errors/policy/blind-index-in-readonly",
+      "description": "blind_index() succeeds readonly: computing an index for a WHERE clause is not a write (G6) (positive control)",
+      "spec_ref": "§4.8, §10.3, §7.2",
+      "suite_id": "0xFF01",
+      "operation": "blind_index",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "616c696365406578616d706c652e636f6d",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_declaration": {
+        "index_id": "email-eq",
+        "idf": "hmac-sha512",
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "9f6a"
+      }
+    },
+    {
+      "id": "errors/policy/blind-index-unarmed",
+      "description": "blind_index() succeeds unarmed: §4.8 gates encrypt and rotate only (positive control)",
+      "spec_ref": "§4.8, §10.3, §7.2",
+      "suite_id": "0xFF01",
+      "operation": "blind_index",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": false
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "616c696365406578616d706c652e636f6d",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_declaration": {
+        "index_id": "email-eq",
+        "idf": "hmac-sha512",
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "9f6a"
+      }
+    },
+    {
+      "id": "errors/policy/encrypt-unarmed",
+      "description": "encrypt() under a provisional write suite without arming: SUITE_PROVISIONAL at the API boundary, before key acquisition",
+      "spec_ref": "§4.8, §9",
+      "suite_id": "0xFF01",
+      "operation": "encrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": false
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "313233343536373839",
+      "expected": {
+        "error": "SUITE_PROVISIONAL"
+      }
+    },
+    {
+      "id": "errors/policy/rotate-unarmed",
+      "description": "rotate() produces ciphertext and is an encrypt for this purpose: SUITE_PROVISIONAL without arming",
+      "spec_ref": "§4.8, §9",
+      "suite_id": "0xFF01",
+      "operation": "rotate",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": false
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "error": "SUITE_PROVISIONAL"
+      }
+    },
+    {
+      "id": "errors/policy/decrypt-unarmed",
+      "description": "decrypt() needs no arming -- reading data one has already written is not what the gate exists to prevent (positive control)",
+      "spec_ref": "§4.8",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": false
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "plaintext": "313233343536373839"
+      }
+    },
+    {
+      "id": "errors/policy/encrypt-readonly-and-unarmed",
+      "description": "encrypt() on a client that is both readonly and unarmed: MODE_VIOLATION -- the mode check precedes the arming check at the API boundary (docs/18 D-04; both cores declare this order)",
+      "spec_ref": "§4.8, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "encrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": false
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "313233343536373839",
+      "expected": {
+        "error": "MODE_VIOLATION"
+      },
+      "provisional_on": [
+        "D-04"
+      ]
+    }
+  ],
+  "retired": [],
+  "pinned_order": "Expected outcomes follow the decrypt-path order of docs/09 §3.2 as declared by both shipped cores (docs/14 §4 pinned_decisions.decrypt-order, 2026-08-23): recognition -> LENGTH_EXCEEDED -> SUITE_NOT_ALLOWED -> KEY_UNAVAILABLE -> per candidate: record key, constant-time commitment verify, AEAD open (TAG_INVALID) -> COMMITMENT_INVALID. Spec §9 marks the order [PROVISIONAL - G5]; vectors whose outcome depends on it carry provisional_on and regenerate if the order changes at Gate 0b.",
+  "withheld": [
+    {
+      "case": "rotate() on non-envelope input in permissive mode",
+      "why": "G15 part B: both cores encrypt it today; the issue proposes NOT_CIPHERTEXT. Authored when the issue settles, either way"
+    },
+    {
+      "case": "a client allow-listing a registered suite it cannot perform (0xFF02)",
+      "why": "construction-time CONFIGURATION_ERROR, outside the §9 taxonomy (docs/18 D-12; G7)"
+    }
+  ]
+}

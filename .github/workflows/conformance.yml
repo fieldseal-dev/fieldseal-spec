@@ -167,6 +167,16 @@ jobs:
               if doc.get("status") != "pinned":
                   fail.append(f"{entry['path']}: in MANIFEST.files but status={doc.get('status')!r}")
 
+          # Support files (keys/) are hashed like a family and never run;
+          # a harness that iterated one would find no vectors to run.
+          for entry in m.get("support", []):
+              p = root / entry["path"]
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != entry["sha256"]:
+                  fail.append(f"{entry['path']}: sha256 {got} != {entry['sha256']}")
+              if "vectors" in json.loads(p.read_text("utf-8")):
+                  fail.append(f"{entry['path']}: a support file must not carry vectors")
+
           for entry in m.get("held_out", []):
               doc = json.loads((root / entry["path"]).read_text("utf-8"))
               if doc.get("status") != "held-out":
@@ -195,5 +205,5 @@ jobs:
               for f in fail:
                   print(f"  - {f}")
               sys.exit(1)
-          print(f"OK: {len(pinned)} pinned, {len(held)} held out, all provisional.")
+          print(f"OK: {len(pinned)} pinned, {len(m.get('support', []))} support, {len(held)} held out, all provisional.")
           PY
