@@ -18,9 +18,13 @@ assembly path from outside, and it is a separate subpackage so that
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from ..context import FieldContext
 from ..errors import ModeViolation
+
+if TYPE_CHECKING:
+    from ..api import Fieldseal
 
 _ARMED = os.environ.get("FIELDSEAL_TEST_MODE") == "1"
 
@@ -34,20 +38,23 @@ def _require_armed() -> None:
             "outside vector-test mode is non-conformant.")
 
 
-def encrypt_with_materials(client, plaintext: bytes, ctx: FieldContext,
+def encrypt_with_materials(client: Fieldseal, plaintext: bytes, ctx: FieldContext,
                            msg_seed: bytes, nonce: bytes) -> bytes:
-    """The full production pipeline except CSPRNG generation -- same KDF, same
-    AAD, same commitment, same assembly (docs/08 §6)."""
-    _require_armed()
-    from ..registry import SUITES
+    """The full production pipeline except CSPRNG generation -- same boundary
+    gates, same KDF, same AAD, same commitment, same assembly (docs/08 §6).
 
-    suite = SUITES[client._write_suite]
+    docs/09 §3.1: this "replaces exactly [the two entropy draws] and nothing
+    else". In particular it does not bypass the API boundary: a readonly
+    client refuses with MODE_VIOLATION, an unarmed one with SUITE_PROVISIONAL,
+    an over-bound plaintext with LENGTH_EXCEEDED -- exactly as `encrypt` would.
+    A seam that skipped the gates would let a harness certify an
+    implementation whose gates do not work.
+    """
+    _require_armed()
+    suite = client._write_boundary(plaintext, ctx)
     if len(msg_seed) != 32:
         raise ValueError("msg_seed is 32 bytes (spec §3.1)")
     if len(nonce) != suite.nonce_len:
         raise ValueError(f"suite {suite.suite_id:#06x} takes a "
                          f"{suite.nonce_len}-byte nonce")
-    bound = ctx.with_suite(client._write_suite)
-    key_id, tenant_dek = client._provider.dek_for(bound)
-    return client._assemble(suite, bound, tenant_dek, key_id, msg_seed,
-                            nonce, plaintext)
+    return client._encrypt_with(suite, plaintext, ctx, msg_seed, nonce)

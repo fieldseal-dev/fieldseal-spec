@@ -68,6 +68,7 @@ fs = Fieldseal(
     allowed_suites={0xFF01},
     write_suite=0xFF01,
     read_mode="strict",
+    arm_provisional_suites=False,      # spec §4.8; or FIELDSEAL_ARM_PROVISIONAL_SUITES=1 (docs/14 §4)
     cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
     indexes=[IndexDeclaration(...)],
 )
@@ -82,7 +83,8 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 
 - `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0xFF02 must still derive the correct key for a 0xFF01 envelope during mixed-suite reads and rotation).
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
-- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `ConfigurationError`. Each carries `.code: str` equal to the vector-suite string (docs/09 §9).
+- Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `SuiteProvisional` (code `SUITE_PROVISIONAL`, spec §4.8), and two implementation-local codes docs/09 §9 permits outside §9: `ConfigurationError` (construction time) and `InvalidArgument` (an operand refused at the API boundary — an index purpose handed to `encrypt`, invalid UTF-8 handed to a text normalizer). Each carries `.code: str` equal to the vector-suite string (docs/09 §9). `FieldsealWarning` is the spec §10.3 warning for the pass-through modes.
+- `KeyProvider` is spec §8's interface by name: `encryption_key(ctx) -> (key_material, key_id)` with purpose routing, and `decryption_keys(header) -> Sequence[bytes]` returning every currently-valid version in preference order; the client tries each candidate's commitment in turn (docs/09 §3.2 step 6).
 
 ## 5. Security-relevant implementation notes
 
