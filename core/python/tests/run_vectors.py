@@ -90,8 +90,9 @@ PINNED_DECISIONS = {
         "because no client can be built that accepts it  [D-12]"),
     "commitment-construction": (
         "HKDF-SHA-512(ikm = record_key, salt = \"\", info = "
-        "\"fieldseal-commit-v1\", 32) -- from the G1 issue draft's proposed "
-        "direction; spec §4.6 itself states no formula  [D-01]"),
+        "\"fieldseal-commit-v1\", 32), verified constant-time before AEAD "
+        "open -- spec §4.6's provisional construction (written 2026-08-23 "
+        "from the G1 draft; G1 stays open)  [D-01]"),
     "rotate-in-permissive": (
         "rotate() on non-envelope input in permissive mode encrypts the "
         "pass-through value (decrypt ∘ encrypt, literally composed)  [D-13]"),
