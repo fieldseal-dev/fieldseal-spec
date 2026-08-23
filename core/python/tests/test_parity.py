@@ -24,18 +24,31 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("FIELDSEAL_TEST_MODE", "1")
 
-from fieldseal import Fieldseal, FieldContext                      # noqa: E402
-from fieldseal.envelope import (MAX_PLAINTEXT, MIN_ENVELOPE_LEN,   # noqa: E402
-                                EnvelopeHeader, is_ciphertext,
-                                serialize_header)
-from fieldseal.errors import (CommitmentInvalid, ConfigurationError,  # noqa: E402
-                              FieldsealError, FieldsealWarning,
-                              InvalidArgument, KeyUnavailable,
-                              LengthExceeded, ModeViolation, NotCiphertext,
-                              SuiteNotAllowed, SuiteProvisional, TagInvalid,
-                              UnknownFormatVersion)
-from fieldseal.keyprovider import StaticKeyProvider                # noqa: E402
-from fieldseal.testing import encrypt_with_materials               # noqa: E402
+from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal.envelope import (  # noqa: E402
+    MAX_PLAINTEXT,
+    MIN_ENVELOPE_LEN,
+    EnvelopeHeader,
+    is_ciphertext,
+    serialize_header,
+)
+from fieldseal.errors import (  # noqa: E402
+    CommitmentInvalid,
+    ConfigurationError,
+    FieldsealError,
+    FieldsealWarning,
+    InvalidArgument,
+    KeyUnavailable,
+    LengthExceeded,
+    ModeViolation,
+    NotCiphertext,
+    SuiteNotAllowed,
+    SuiteProvisional,
+    TagInvalid,
+    UnknownFormatVersion,
+)
+from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
+from fieldseal.testing import encrypt_with_materials  # noqa: E402
 
 KEY_ID = bytes(range(16))
 DEK = bytes(range(32))

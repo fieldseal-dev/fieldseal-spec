@@ -51,7 +51,7 @@ def _entry(root: Path, f: Path) -> dict:
 
 # Files the suite ships that are not vector families: no expected values, so
 # nothing to run. Hashed like everything else; a harness MUST NOT iterate them.
-SUPPORT = {"keys/test-keys.json"}
+SUPPORT = {"keys/test-keys.json", "cross/corpus.json"}
 
 
 def build_manifest(root: Path, written: list[Path]) -> dict:

@@ -52,6 +52,11 @@
   ],
   "support": [
     {
+      "path": "cross/corpus.json",
+      "sha256": "801fa3b4936135955debf5d1f32f028b842e14456bc05a2ed09a086e306cdf70",
+      "bytes": 19416
+    },
+    {
       "path": "keys/test-keys.json",
       "sha256": "e299b257e76ea3db34774739182697dc4ad7409b6c0210389dd9b9878db7b4ef",
       "bytes": 1423

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from run_vectors import run
 
 REPORT = run()
@@ -38,6 +37,7 @@ def test_no_two_vectors_share_an_expected_envelope():
     the suite does not have. envelope/ff01/purpose-max-index-id was exactly
     that until 2026-08-22."""
     import json
+
     from run_vectors import VECTORS
     doc = json.loads((VECTORS / "envelope" / "ff01.json").read_text("utf-8"))
     seen: dict[str, str] = {}

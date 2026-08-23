@@ -27,7 +27,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "vectors": "node --no-warnings=ExperimentalWarning tests/run_vectors.ts",
-    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "cross:produce": "node --no-warnings=ExperimentalWarning tests/cross/produce.ts",
+    "cross:consume": "node --no-warnings=ExperimentalWarning tests/cross/consume.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

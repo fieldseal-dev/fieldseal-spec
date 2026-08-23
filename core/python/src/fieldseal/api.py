@@ -24,13 +24,28 @@ from cryptography.hazmat.primitives import constant_time
 from .aead.gcm import GcmBackend
 from .blindindex import IDFS, NORMALIZERS, truncate
 from .context import FieldContext, aad
-from .envelope import (FMT_VER, MAX_PLAINTEXT, EnvelopeHeader,
-                       implied_plaintext_len, is_ciphertext, recognize,
-                       serialize_header, split)
-from .errors import (CommitmentInvalid, ConfigurationError, FieldsealWarning,
-                     InvalidArgument, KeyUnavailable, LengthExceeded,
-                     ModeViolation, NotCiphertext, SuiteNotAllowed,
-                     SuiteProvisional)
+from .envelope import (
+    FMT_VER,
+    MAX_PLAINTEXT,
+    EnvelopeHeader,
+    implied_plaintext_len,
+    is_ciphertext,
+    recognize,
+    serialize_header,
+    split,
+)
+from .errors import (
+    CommitmentInvalid,
+    ConfigurationError,
+    FieldsealWarning,
+    InvalidArgument,
+    KeyUnavailable,
+    LengthExceeded,
+    ModeViolation,
+    NotCiphertext,
+    SuiteNotAllowed,
+    SuiteProvisional,
+)
 from .kdf import commitment, index_key, record_key
 from .keyprovider import KeyProvider
 from .registry import SUITES, Suite, is_provisional
