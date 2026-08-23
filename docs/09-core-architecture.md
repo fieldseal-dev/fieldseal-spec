@@ -18,7 +18,7 @@ core/<lang>/
   context      FieldContext, canonical_context, AAD       (spec §6)
   kdf          record-key and index-key derivation        (spec §5.3, §7.2)
   aead         per-suite AEAD backends over platform crypto
-  commitment   key-commitment compute/verify              (spec §4.6; construction pending G1)
+  commitment   key-commitment compute/verify              (spec §4.6; construction provisional, G1)
   blindindex   IDFs (Argon2id, HMAC-SHA-512), truncation, normalizers  (spec §7)
   keyprovider  KeyProvider interface + Static/Derived/Envelope providers  (spec §8)
   cache        DEK cache (max-age + max-uses + zeroization)  (spec §5.5)
@@ -71,7 +71,7 @@ These pipelines are the reference sequence every implementation follows. Steps m
 6. nonce    = CSPRNG(suite.nonce_len)                      // §4.4
 7. cc  = canonical_context(ctx)                            // §6.2
 8. record_key = HKDF(ikm=dek, salt=key_id ‖ msg_seed, info=cc, len=suite.key_len)   // §5.3
-9. commitment = commit(record_key …)                       // §4.6; construction pending G1
+9. commitment = HKDF-SHA-512(record_key, salt "", "fieldseal-commit-v1", 32)  // §4.6, provisional (G1)
 10. aad = AAD(fmt_ver, key_id, msg_seed, cc)               // §6.2
 11. ct, tag = suite.aead.seal(record_key, nonce, plaintext, aad)
 12. return fmt_ver ‖ suite_id ‖ key_id ‖ msg_seed ‖ nonce ‖ ct ‖ tag ‖ commitment

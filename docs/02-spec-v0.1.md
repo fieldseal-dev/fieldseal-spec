@@ -84,8 +84,7 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 | `nonce` | suite-defined | Freshly generated per encryption operation. |
 | `ciphertext` | variable | AEAD output. |
 | `tag` | suite-defined, ≥16 B | AEAD authentication tag. |
-| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. |
-| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is open (§4.6, gap G1), as is whether the mandatory suite needs one at all (§13.2). |
+| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is adopted provisionally in §4.6 (gap G1), as is whether the mandatory suite needs one at all (§13.2). |
 ### 3.2 Header authentication (normative)
 
 `fmt_ver`, `suite_id`, `key_id`, and `msg_seed` MUST be included in the AEAD's additional authenticated data (§6.2–§6.3). They MUST NOT be an unauthenticated prefix. (`msg_seed` is additionally self-authenticating: tampering with it changes the derived key and fails the tag check — §5.3.)
@@ -132,7 +131,7 @@ Data at rest has no peer and therefore **no negotiation**. The header is a decla
 
 | `suite_id` | Name | AEAD | Nonce | KDF | Committing | FIPS-approvable | Status |
 |---|---|---|---|---|---|---|---|
-| `0xFF01` | `FLE-AES256GCM-HKDF-SHA512-PROVISIONAL` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[PROVISIONAL]** — AEAD choice deferred (§13.2, ADR-0002); commitment construction open (§4.6, G1) |
+| `0xFF01` | `FLE-AES256GCM-HKDF-SHA512-PROVISIONAL` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[PROVISIONAL]** — AEAD choice deferred (§13.2, ADR-0002); commitment construction adopted provisionally (§4.6, G1) |
 | `0xFF02` | `FLE-XCHACHA20POLY1305-HKDF-SHA512-PROVISIONAL` | XChaCha20-Poly1305 | 192-bit RBG | HKDF-SHA-512 | No — explicit 32 B commitment REQUIRED | **No** | **[PROVISIONAL]** — no normative definition of the AEAD yet exists (§4.2 note, G7) |
 | `0x0001` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF01`'s constructions freeze at Gate 0b |
 | `0x0002` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF02`'s constructions freeze at Gate 0b, if it survives |
@@ -174,9 +173,28 @@ Authentication tags MUST be at least 128 bits. Tag truncation MUST NOT be suppor
 
 ### 4.6 Key commitment (normative)
 
-> **[PROVISIONAL — G1]** The *requirement* below is settled: every suite provides key commitment. The **construction** that satisfies it is not — its derivation, its inputs, and where it is verified in the decrypt order are all open. See [issue #1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1) and reviewer question [Q2](16-reviewer-brief.md#q2). Whether the mandatory suite needs an explicit commitment at all is downstream of [ADR-0002](adr/0002-suite-0x0001-aead.md), itself provisional (§13.2): a natively committing AEAD would set `commit_len = 0`.
+> **[PROVISIONAL — G1]** The *requirement* below is settled: every suite provides key commitment. The **construction** that satisfies it is adopted provisionally under Gate 0a — the derivation, its inputs and its verification point are written below so that vectors and cores have one thing to agree on, and all three are what the review is asked to judge. See [issue #1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1) and reviewer question [Q2](16-reviewer-brief.md#q2). Whether the mandatory suite needs an explicit commitment at all is downstream of [ADR-0002](adr/0002-suite-0x0001-aead.md), itself provisional (§13.2): a natively committing AEAD would set `commit_len = 0`.
 
 Every suite MUST provide key commitment, either by using a committing AEAD or by emitting an explicit 32-byte commitment value derived from the key. AAD binding alone MUST NOT be relied upon for this purpose.
+
+**Provisional construction (Gate 0a, 2026-08-23).** For every registered suite whose AEAD is not itself committing — both provisional suites — the 32-byte `commitment` field of §3.1 is:
+
+```
+commitment = KDF(
+    ikm     = record_key,                    // §5.3, the key the AEAD is opened with
+    salt    = "",                            // zero-length; RFC 5869 §2.2 then uses HashLen zero bytes
+    info    = "fieldseal-commit-v1",         // 19 ASCII bytes, fixed
+    length  = 32
+)
+```
+
+where `KDF` is the suite's KDF — HKDF-SHA-512 for `0xFF01` and `0xFF02`. The label is the domain separator: record-key derivation (§5.3) and index-key derivation (§7.2) use the same KDF with `canonical_context` as `info`, and `canonical_context` begins with a presence byte and a length-prefixed `suite_id`, so no `info` of theirs can equal this one.
+
+On decrypt, an implementation MUST derive `record_key` from each candidate key (§8), recompute `commitment`, and compare it with the envelope's field in constant time **before** opening the AEAD with that key. A candidate whose recomputed value does not match MUST NOT be used to open the ciphertext; if no candidate matches, the result is `COMMITMENT_INVALID` (§9). Where this check sits among the other §9 outcomes is G5's subject; that it precedes the AEAD is this section's.
+
+*What the construction commits to.* `record_key` is a function of `tenant_dek`, `key_id`, `msg_seed` and `canonical_context` (§5.3), so the commitment binds all four jointly, through one derivation, without any of them being re-encoded here. Two consequences follow and are stated rather than left to be discovered. First, a ciphertext cannot verify under two different tenant keys unless HKDF-SHA-512 collides on distinct inputs, which is the collision-binding property wanted. Second, a *context* mismatch at decrypt time changes `record_key` and therefore fails here, indistinguishably from a wrong key — which is why §9 cannot promise `AAD_MISMATCH` on these suites and why G5 exists.
+
+*What is open.* The choice of deriving from `record_key` rather than from the tenant key and `msg_seed` directly (the AWS Database Encryption SDK derives its commitment key from the data key and message ID, then MACs the header — `docs/adr/0001-appendix-a-expressibility-mapping.md`, F7); whether a KDF output is the right commitment primitive or a MAC over the header would be stronger; and whether 32 bytes is the right length. Test vectors: `vectors/commitment/ff01.json`.
 
 *Justification.* None of AES-GCM, AES-GCM-SIV, or (X)ChaCha20-Poly1305 is key-committing. In a multi-key system where the header names a key ID and an adversary may influence which key is used, a single ciphertext can be crafted to decrypt validly under two keys ("invisible salamanders"), enabling partitioning-oracle attacks (Len–Grubbs–Ristenpart, [USENIX Security '21](https://www.usenix.org/system/files/sec21-len.pdf); Bellare–Hoang, EUROCRYPT '22).
 

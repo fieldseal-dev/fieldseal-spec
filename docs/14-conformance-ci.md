@@ -99,7 +99,7 @@ Every harness (core or adapter) emits `conformance-report.json`:
 | `api-boundary-order` | The order of `MODE_VIOLATION`, `SUITE_PROVISIONAL`, `LENGTH_EXCEEDED` and operand validation on `encrypt`/`rotate` | D-04 |
 | `provisional-arming` | The §4.8 arming mechanism, by name: the environment variable and the constructor form | G15 part C; D-14 |
 | `unimplemented-registered-suite` | What a client configured with a registered suite it cannot perform does | G7; D-12 |
-| `commitment-construction` | The §4.6 formula implemented, until §4.6 states it | G1; D-01 |
+| `commitment-construction` | The §4.6 formula implemented. §4.6 has stated it provisionally since 2026-08-23; the key stays until G1 closes, because a provisional formula is exactly the kind a report should keep naming | G1; D-01 |
 | `rotate-in-permissive` | What `rotate()` does with non-envelope input in `permissive` mode | G15 part B; D-13 |
 | `normalizer-text-over-bytes` | How a text normalizer treats bytes input and invalid UTF-8; whether folding is followed by a second normalization; where the Unicode version comes from | docs/09 §7; G15 part D; D-10 |
 
