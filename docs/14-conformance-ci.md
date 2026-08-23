@@ -95,15 +95,15 @@ Every harness (core or adapter) emits `conformance-report.json`:
 |---|---|---|
 | `decrypt-order` | The full decrypt-path precedence, from recognition to `COMMITMENT_INVALID`, including what non-recognition becomes in each read mode | §9 `[PROVISIONAL — G5]`; docs/09 §3.2; D-02, D-11 |
 | `aad-mismatch` | Whether and when `AAD_MISMATCH` is raised on each suite's path | G5; D-02 |
-| `unknown-format-version-set` | The set of `fmt_ver` bytes that raise `UNKNOWN_FORMAT_VERSION`, and the length at which they do | D-03 |
+| `unknown-format-version-set` | The set of `fmt_ver` bytes that raise `UNKNOWN_FORMAT_VERSION`, and the length at which they do | G15 part A; D-03 |
 | `api-boundary-order` | The order of `MODE_VIOLATION`, `SUITE_PROVISIONAL`, `LENGTH_EXCEEDED` and operand validation on `encrypt`/`rotate` | D-04 |
-| `provisional-arming` | The §4.8 arming mechanism, by name: the environment variable and the constructor form | D-14 |
+| `provisional-arming` | The §4.8 arming mechanism, by name: the environment variable and the constructor form | G15 part C; D-14 |
 | `unimplemented-registered-suite` | What a client configured with a registered suite it cannot perform does | G7; D-12 |
 | `commitment-construction` | The §4.6 formula implemented, until §4.6 states it | G1; D-01 |
-| `rotate-in-permissive` | What `rotate()` does with non-envelope input in `permissive` mode | D-13 |
-| `normalizer-text-over-bytes` | How a text normalizer treats bytes input and invalid UTF-8; whether folding is followed by a second normalization; where the Unicode version comes from | docs/09 §7; D-10 |
+| `rotate-in-permissive` | What `rotate()` does with non-envelope input in `permissive` mode | G15 part B; D-13 |
+| `normalizer-text-over-bytes` | How a text normalizer treats bytes input and invalid UTF-8; whether folding is followed by a second normalization; where the Unicode version comes from | docs/09 §7; G15 part D; D-10 |
 
-A core MAY add keys for pins of its own; it MUST NOT omit one above. (As of 2026-08-23 the Python report carries all nine; the TypeScript report carries the first eight, its D-10 pins being stated in docs/18 §3 rather than in the report — adding the ninth key there is a pending follow-up, not a conformance failure.) When the specification settles a row, the row is removed here and the key becomes optional — a report that still carries it is stating what the spec now states, which is harmless. **The `provisional-arming` environment variable both cores currently read is `FIELDSEAL_ARM_PROVISIONAL_SUITES=1`**; spec §4.8 constrains the mechanism's shape but does not yet name it (D-14), and the name belongs there once an issue carries it.
+A core MAY add keys for pins of its own; it MUST NOT omit one above. (As of 2026-08-23 the Python report carries all nine; the TypeScript report carries the first eight, its D-10 pins being stated in docs/18 §3 rather than in the report — adding the ninth key there is a pending follow-up, not a conformance failure.) When the specification settles a row, the row is removed here and the key becomes optional — a report that still carries it is stating what the spec now states, which is harmless. **The `provisional-arming` environment variable both cores currently read is `FIELDSEAL_ARM_PROVISIONAL_SUITES=1`**; spec §4.8 constrains the mechanism's shape but does not yet name it (D-14); G15 part C carries the name to §4.8.
 
 `harness_notes` (reserved on the same date) is a list of free-text statements about what the harness could not do or had to assume — a schema directory that was empty, a vector family whose fields did not match docs/08 and were mapped, an id-suffix convention. The convention both shipped harnesses use: `<id>#decrypt` is the decrypt direction of an `envelope/` vector (docs/08 §4.1 requires both directions, and a separate result makes a one-sided failure visible); `<id>#pipeline` is a `blind-index/` vector run end to end through the public `blind_index` operation rather than through the primitives; `<id>#async` is the G9 async pass (docs/08 §5 item 9).
 
