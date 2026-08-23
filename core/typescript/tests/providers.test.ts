@@ -36,6 +36,46 @@ describe("DekCache (spec §5.5)", () => {
     expect(material[0]).toBe(9); // the caller's copy is untouched; the cache held its own
   });
 
+  it("sweeps expired entries on put(), without waiting for their key to be read", () => {
+    let now = 0;
+    const evicted: string[] = [];
+    const c = new DekCache({ maxAgeMs: 100, maxUses: 1000, capacity: 10 }, { now: () => now, onEvict: (k, cause) => evicted.push(`${k}:${cause}`) });
+    c.put("a", new Uint8Array(32).fill(1));
+    c.put("b", new Uint8Array(32).fill(2));
+    now = 100; // both expired; neither is ever get()
+    c.put("c", new Uint8Array(32).fill(3));
+    expect(c.size).toBe(1);
+    expect(evicted.sort()).toEqual(["a:max-age", "b:max-age"]);
+  });
+
+  it("has() does not claim an expired entry", () => {
+    let now = 0;
+    const c = new DekCache({ maxAgeMs: 100, maxUses: 1000, capacity: 10 }, { now: () => now });
+    c.put("k", new Uint8Array(32));
+    expect(c.has("k")).toBe(true);
+    now = 100;
+    expect(c.has("k")).toBe(false);
+    expect(c.size).toBe(0);
+    expect(c.metrics.evictions["max-age"]).toBe(1);
+  });
+
+  it("peek() returns a copy without counting a §5.5 use, but still enforces max-age", () => {
+    let now = 0;
+    const c = new DekCache({ maxAgeMs: 100, maxUses: 2, capacity: 10 }, { now: () => now });
+    c.put("k", new Uint8Array(32).fill(7));
+    for (let i = 0; i < 50; i++) expect(c.peek("k")![0]).toBe(7); // never depletes max-uses
+    const copy = c.peek("k")!;
+    copy.fill(0);
+    expect(c.peek("k")![0]).toBe(7); // a copy, not the cached material
+    expect(c.get("k")).toBeDefined(); // use 1
+    expect(c.get("k")).toBeDefined(); // use 2 → evicted
+    expect(c.peek("k")).toBeUndefined();
+    c.put("k2", new Uint8Array(32));
+    now = 100;
+    expect(c.peek("k2")).toBeUndefined();
+    expect(c.metrics.evictions["max-age"]).toBe(1);
+  });
+
   it("evicts on max-uses exactly, and returns copies (no aliasing)", () => {
     const c = new DekCache({ maxAgeMs: 1e9, maxUses: 3, capacity: 10 });
     c.put("k", new Uint8Array(32).fill(1));
@@ -91,7 +131,7 @@ describe("StaticKeyProvider (spec §8)", () => {
 
 describe("DerivedKeyProvider (docs/09 §8.2)", () => {
   const root = new Uint8Array(32).fill(0x5a);
-  it("round-trips across tenants, versions, and without a tenant; index key is a sibling", () => {
+  it("round-trips across tenants, versions, and without a tenant; index key is a sibling", async () => {
     const p = new DerivedKeyProvider({ rootSecret: root, versions: [1, 2], activeVersion: 2 });
     const c = makeClient({ keyProvider: p });
     const ctxA = CTX;
@@ -112,9 +152,15 @@ describe("DerivedKeyProvider (docs/09 §8.2)", () => {
     const old = new DerivedKeyProvider({ rootSecret: root, versions: [1], activeVersion: 1 });
     const envV1 = makeClient({ keyProvider: old }).encrypt(PT, ctxA);
     expect(Buffer.from(c.decrypt(envV1, ctxA)).equals(Buffer.from(PT))).toBe(true);
-    // A version no longer valid is KEY_UNAVAILABLE, never a silent fallback.
+    // A version no longer valid is never a silent fallback. Before warm()
+    // the scope itself is unresolved -- KEY_UNAVAILABLE (no candidates).
+    // After warm() the scope resolves, the retired v1 is excluded, and the
+    // remaining v2 candidate is tried and fails the commitment check --
+    // COMMITMENT_INVALID, the candidate loop's honest exhaustion code.
     const onlyV2 = makeClient({ keyProvider: new DerivedKeyProvider({ rootSecret: root, versions: [2] }) });
     expect(codeOf(() => onlyV2.decrypt(envV1, ctxA))).toBe("KEY_UNAVAILABLE");
+    await onlyV2.warm([ctxA]);
+    expect(codeOf(() => onlyV2.decrypt(envV1, ctxA))).toBe("COMMITMENT_INVALID");
   });
   it("resolves scopes it has not seen only after warm()", async () => {
     const writer = makeClient({ keyProvider: new DerivedKeyProvider({ rootSecret: root }) });
@@ -191,6 +237,19 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     c.encrypt(PT, CTX);
     expect(codeOf(() => c.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
   });
+
+  it("decrypt-path candidate reads do not deplete §5.5 max-uses (docs/09 §8.3: uses count per encryptionKey return)", async () => {
+    const p = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 3, capacity: 16 } });
+    const c = makeClient({ keyProvider: p });
+    await c.warm([CTX]);
+    const env = c.encrypt(PT, CTX); // use 1
+    for (let i = 0; i < 20; i++) {
+      expect(Buffer.from(c.decrypt(env, CTX)).equals(Buffer.from(PT))).toBe(true);
+    }
+    c.encrypt(PT, CTX); // use 2
+    c.encrypt(PT, CTX); // use 3 → evicted on return
+    expect(codeOf(() => c.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
+  });
 });
 
 describe("construction-time configuration gates (docs/09 §2, §7)", () => {
@@ -261,6 +320,12 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
     expect(codeOf(() => c2.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
   });
 
+  it("a client-level cache policy is refused, not silently dropped", () => {
+    const msg = messageOf(() => makeClient({ cache: { maxAgeMs: 60_000, maxUses: 1000, capacity: 16 } } as unknown as Record<string, never>));
+    expect(msg).toMatch(/EnvelopeKeyProvider/);
+    expect(msg).toMatch(/no effect/);
+  });
+
   it("returned Buffers never alias caller or internal memory", () => {
     const c = makeClient();
     const env = c.encrypt(PT, CTX);
@@ -270,5 +335,20 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
     const copy = new Uint8Array(env);
     env.fill(0);
     expect(Buffer.from(c.decrypt(copy, CTX)).equals(Buffer.from(PT))).toBe(true);
+  });
+
+  it("returned Buffers do not alias Node's shared Buffer pool either (docs/11 §5)", () => {
+    const c = makeClient({
+      readMode: "permissive",
+      indexes: [{ tableUuid: TABLE, columnUuid: COLUMN, idf: "hmac-sha512", normalize: "identity", truncateBits: 15, projectedPopulation: 65536 }],
+    });
+    const env = c.encrypt(PT, CTX);
+    const outputs = [env, c.decrypt(env, CTX), c.decrypt(bytes("plain pass-through"), CTX), c.blindIndex(PT, { ...CTX, purpose: "index:exact" })];
+    for (const out of outputs) {
+      // A pool-backed Buffer is a view into a shared ArrayBuffer larger than
+      // itself; an owned allocation's ArrayBuffer is exactly the Buffer.
+      expect(out.buffer.byteLength).toBe(out.length);
+      expect(out.byteOffset).toBe(0);
+    }
   });
 });

@@ -1,4 +1,7 @@
-"""`blind-index/hmac-sha512.json` and `blind-index/argon2id.json` (spec §7)."""
+"""`blind-index/hmac-sha512.json` and `blind-index/argon2id.json` (spec §7).
+
+File shape per docs/08 §4.4; normalizer identifiers per docs/09 §7.
+"""
 
 from __future__ import annotations
 
@@ -11,23 +14,35 @@ from ..blindindex import (ARGON2_MEMORY_KIB, ARGON2_OUTPUT_LEN,
 from ..context import FieldContext
 from ..keys import index_key
 from ..primitives import truncate
-from ._common import suite_str, wrapper
+from ._common import ctx_json, suite_str, wrapper
 
 SUITE = 0xFF01
+NORMALIZER = "nfc-casefold-v1"   # docs/09 §7's versioned identifier
 
 
-def normalize_nfc_casefold(value: str) -> bytes:
-    """A declared normalizer (spec §7.2). Declared per column, immutable after
-    writes begin."""
+def normalize_nfc_casefold_v1(value: str) -> bytes:
+    """docs/09 §7: NFC, then full case folding, then UTF-8 -- read literally,
+    with no second normalization after the fold (G15 part D, item 4). The
+    fold is the interpreter's (CPython 3.14: Unicode 16.0); every case below
+    uses only characters whose folding is identical in 16.0 and 17.0."""
     return unicodedata.normalize("NFC", value).casefold().encode("utf-8")
 
 
-# b values: 15 bits exercises the non-byte-aligned path that G3 pinned.
+# (slug, preimage, truncate_bits, provisional_on)
+# Spec §12 / docs/08 §4.4: at least three b mod 8 != 0 values plus one
+# multiple-of-8 control. 15 is the value G3 was pinned on; 12, 21 and 30 are
+# the examples docs/08 gives.
 CASES = [
-    ("ascii-email", "alice@example.com", "nfc-casefold", 15),
-    ("mixed-case-email", "Alice@Example.COM", "nfc-casefold", 15),
-    ("non-ascii", "gr\u00fc\u00dfe@example.com", "nfc-casefold", 15),
-    ("byte-aligned-16", "alice@example.com", "nfc-casefold", 16),
+    ("ascii-email", "alice@example.com", 15, None),
+    ("mixed-case-email", "Alice@Example.COM", 15, None),
+    ("non-ascii", "grüße@example.com", 21, None),
+    ("byte-aligned-16", "alice@example.com", 16, None),
+    ("short-b12", "alice@example.com", 12, None),
+    ("b30", "bob@example.org", 30, None),
+    # U+01F0 (LATIN SMALL LETTER J WITH CARON) folds to U+006A U+030C, which
+    # NFC would recompose to U+01F0 again. This pins that no second
+    # normalization follows the fold: the stored bytes are 6a cc 8c, not c7 b0.
+    ("fold-not-nfc-stable", "ǰ@example.com", 15, "G15"),
 ]
 
 
@@ -37,53 +52,75 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
                        tenant_id=I.TENANT_ID)
     ik = index_key(I.TENANT_INDEX_KEY, ctx, index_id)
     out = []
-    for slug, value, normalizer, b_bits in CASES:
-        normalized = normalize_nfc_casefold(value)
+    for slug, preimage, b_bits, provisional_on in CASES:
+        normalized = normalize_nfc_casefold_v1(preimage)
         raw = idf(ik, normalized)
         idx = truncate(raw, b_bits)
         vec = {
             "id": f"blind-index/{idf_name}/{slug}-b{b_bits}",
-            "description": f"{idf_name} index over {value!r} truncated to "
+            "description": f"{idf_name} index over {preimage!r} truncated to "
                            f"{b_bits} bits",
             "spec_ref": "§7.2, §7.3, §7.4, §7.11",
             "suite_id": suite_str(SUITE),
+            "idf": idf_name,
+            "idf_params": {},
+            # The normative input is index_key. tenant_index_key and context
+            # are its provenance (spec §7.2), carried so a harness can run
+            # the public blind_index operation end to end from this vector
+            # alone instead of recovering the tenant key from kdf/.
             "index_key": ik.hex(),
+            "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
             "index_id": index_id,
-            "plaintext_utf8": value,
-            "normalizer": normalizer,
-            "b_bits": b_bits,
+            "context": ctx_json(ctx.for_index(index_id)),
+            "normalize": NORMALIZER,
+            "plaintext": normalized.hex(),
+            "plaintext_preimage": preimage,
+            "truncate_bits": b_bits,
             "expected": {
-                "normalized": normalized.hex(),
                 "raw": raw.hex(),
-                "blind_index": idx.hex(),
+                "index": idx.hex(),
                 # spec §7.11: raw ceil(b/8) bytes in a binary column is the
                 # MUST; declared-per-column lowercase hex is the only MAY.
-                "stored": idx.hex(),
-                "stored_bytes": len(idx),
+                "stored": {"binary": idx.hex(), "hex": idx.hex(),
+                           "octets": len(idx)},
             },
         }
         if idf_name == "argon2id":
-            vec["argon2_params"] = {
-                "version": ARGON2_VERSION, "t": ARGON2_TIME_COST,
-                "m_kib": ARGON2_MEMORY_KIB, "p": ARGON2_PARALLELISM,
+            vec["idf_params"] = {
+                "version": ARGON2_VERSION, "time_cost": ARGON2_TIME_COST,
+                "memory_kib": ARGON2_MEMORY_KIB,
+                "parallelism": ARGON2_PARALLELISM,
                 "output_len": ARGON2_OUTPUT_LEN,
+                # Asserted separately so an HKDF-step bug and an Argon2-step
+                # bug are distinguishable at the point of failure.
+                "salt": argon2_salt(ik).hex(),
             }
-            # Asserted separately so an HKDF-step bug and an Argon2-step bug
-            # are distinguishable at the point of failure.
-            vec["expected"]["salt"] = argon2_salt(ik).hex()
+            vec["provisional_on"] = ["G2"]
+        if provisional_on:
+            vec["provisional_on"] = vec.get("provisional_on", []) + [provisional_on]
         out.append(vec)
 
     # Case folding is the point of declaring a normalizer: these two inputs
-    # must collide, or equality lookup does not work.
-    a = truncate(idf(ik, normalize_nfc_casefold("alice@example.com")), 15)
-    b = truncate(idf(ik, normalize_nfc_casefold("Alice@Example.COM")), 15)
+    # must collide, or equality lookup does not work. Inputs carried (D-08).
+    pre_a, pre_b = "alice@example.com", "Alice@Example.COM"
+    a = truncate(idf(ik, normalize_nfc_casefold_v1(pre_a)), 15)
+    b = truncate(idf(ik, normalize_nfc_casefold_v1(pre_b)), 15)
     assert a == b
     out.append({
         "id": f"blind-index/{idf_name}/normalizer-collapses-case",
         "description": "values differing only by case MUST produce the same "
-                       "index under the nfc-casefold normalizer",
+                       f"index under the {NORMALIZER} normalizer",
         "spec_ref": "§7.2",
         "assertion": "equal",
+        "suite_id": suite_str(SUITE),
+        "inputs": {
+            "idf": idf_name,
+            "index_key": ik.hex(),
+            "normalize": NORMALIZER,
+            "plaintext_preimage_a": pre_a,
+            "plaintext_preimage_b": pre_b,
+            "truncate_bits": 15,
+        },
         "expected": {"index_a": a.hex(), "index_b": b.hex(),
                      "must_be_equal": True},
     })
@@ -95,11 +132,12 @@ def generate_hmac() -> dict:
 
 
 ARGON2ID_HELD_OUT = (
-    "The Argon2id primitive has not been checked against any external "
-    "known-answer source. RFC 9106 §5.3's vector supplies a nonzero secret (K) "
-    "and associated data (X), both forbidden by spec §7.3 and unsuppliable "
-    "from Python, so it cannot serve as that check. These values are this "
-    "generator's output and nothing has corroborated them."
+    "Held pending a project decision (docs/18 D-15). The generator's Argon2id "
+    "primitive is checked against libsodium's seven published known answers "
+    "(empty K and X) at every run, and the TypeScript core reproduces these "
+    "values through an independent backend; the original ground for the "
+    "hold-out is met. Counting the family is the project's call, recorded in "
+    "docs/07 §7 and MANIFEST.json, not the generator's."
 )
 
 

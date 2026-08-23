@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ARM_PROVISIONAL_ENV, ModeViolationError, SuiteProvisionalError, type Warning } from "../src/index.ts";
+import { INTERNALS } from "../src/internal.ts";
 import { encrypt_with_materials, TestModeNotArmedError } from "../src/testing/index.ts";
 import { bytes, codeOf, CTX, makeClient, messageOf, withEnv } from "./helpers.ts";
 
@@ -195,6 +196,20 @@ describe("docs/08 §6 determinism injection", () => {
     });
     withEnv("FIELDSEAL_TEST_MODE", "0", () => {
       expect(() => encrypt_with_materials(c, PT, CTX, SEED, NONCE)).toThrow(TestModeNotArmedError);
+    });
+  });
+
+  it("the registered seam itself is gated, not only the testing/ wrapper", () => {
+    // Defense in depth: even code that reaches the WeakMap-registered
+    // closure directly (bypassing encrypt_with_materials) must find the
+    // docs/08 §6 gate at the pipeline, in an unarmed process.
+    const seam = INTERNALS.get(c)!;
+    withEnv("FIELDSEAL_TEST_MODE", undefined, () => {
+      expect(codeOf(() => seam.encryptWithMaterials(PT, CTX, SEED, NONCE))).toBe("CONFIGURATION_ERROR");
+      expect(messageOf(() => seam.encryptWithMaterials(PT, CTX, SEED, NONCE))).toContain("FIELDSEAL_TEST_MODE");
+    });
+    withEnv("FIELDSEAL_TEST_MODE", "1", () => {
+      expect(seam.encryptWithMaterials(PT, CTX, SEED, NONCE).length).toBe(120);
     });
   });
 

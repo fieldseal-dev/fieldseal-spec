@@ -1,0 +1,27 @@
+{
+  "schema": "fieldseal-vectors/keys/v1",
+  "vector_suite_version": "0.2.0-provisional",
+  "spec_version": "0.1-draft",
+  "banner": "PUBLIC TEST MATERIAL. Every value in this file is published in a public repository and is known to everyone. It exists so that cross-implementation producers and consumers share key material by reference (key_ref) instead of embedding it per file. No value here may ever be used outside a test, and an implementation that accepts it outside FIELDSEAL_TEST_MODE is misconfigured, not conformant.",
+  "keys": {
+    "tenant-a-dek-v1": {
+      "label": "the tenant every pinned vector uses",
+      "suite_id": "0xFF01",
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    },
+    "tenant-b-dek-v1": {
+      "label": "a second tenant, for multi-key cases",
+      "suite_id": "0xFF01",
+      "key_id": "fedcba9876543210fedcba9876543210",
+      "tenant_dek": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "tenant_index_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+    }
+  },
+  "context_defaults": {
+    "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+    "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+    "tenant_id": "74656e616e742d30303031"
+  }
+}

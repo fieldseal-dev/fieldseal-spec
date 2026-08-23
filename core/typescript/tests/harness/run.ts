@@ -12,6 +12,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
+import type { ReadMode } from "../../src/config.ts";
 import { argon2Salt, idf, truncateBits, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
@@ -21,7 +22,7 @@ import { StaticKeyProvider } from "../../src/keyprovider.ts";
 import { CASEFOLD_UNICODE_VERSION, normalize, type NormalizerId } from "../../src/normalize.ts";
 import { FMT_VER, SUITE_FF01, getSuite, isProvisionalId } from "../../src/registry.ts";
 import { encrypt_with_materials } from "../../src/testing/index.ts";
-import { hex, hexOrNull, loadSuite, parseSuiteId, type LoadedSuite } from "./suite.ts";
+import { hex, hexOrNull, loadSuite, parseSuiteId } from "./suite.ts";
 
 export type Status = "pass" | "fail" | "skipped";
 
@@ -84,11 +85,8 @@ function errCode(e: unknown): string {
   return `UNTYPED(${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
 }
 
-/** Map a vector's normalizer identifier onto the shipped set (docs/09 §7). */
-const NORMALIZER_ALIASES: Record<string, NormalizerId> = {
-  // The pinned vectors say "nfc-casefold"; docs/09 §7 declares "nfc-casefold-v1".
-  // Recorded as divergence D-07 in the M2 report; mapped here, not silently.
-  "nfc-casefold": "nfc-casefold-v1",
+/** The shipped normalizer set (docs/09 §7). Suite 0.2.0 uses these identifiers verbatim (D-07 resolved). */
+const NORMALIZERS: Record<string, NormalizerId> = {
   "nfc-casefold-v1": "nfc-casefold-v1",
   identity: "identity",
   "digits-only-v1": "digits-only-v1",
@@ -104,20 +102,58 @@ function mismatch(what: string, got: Uint8Array | string | number | undefined, w
 // Family runners
 
 function runAssertion(v: Record<string, unknown>): Result {
-  // Assertion vectors carry only literal expected values and no inputs, so
-  // the only thing an implementation can check is the literal relation.
-  // Recorded as divergence D-08; reported as pass with reproducible=false.
+  // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08
+  // resolved), so each side is reproduced and then the relation is checked.
+  const id = v.id as string;
   const ex = v.expected as Record<string, unknown>;
-  const vals = Object.entries(ex).filter(([k]) => k !== "must_be_equal").map(([, x]) => x as string);
-  const allEqual = vals.every((x) => x === vals[0]);
+  const inp = v.inputs as Record<string, unknown>;
   const want = ex.must_be_equal as boolean;
-  const ok = allEqual === want;
-  return {
-    id: v.id as string,
-    status: ok ? "pass" : "fail",
-    ...(ok ? {} : { reason: `literal values ${allEqual ? "are" : "are not"} all equal; must_be_equal=${want}` }),
-    details: { reproducible: false, note: "assertion vector carries no inputs; only the literal relation between its expected values was checked" },
-  };
+  const suiteId = parseSuiteId(v.suite_id as string);
+  const problems: string[] = [];
+  try {
+    let a: Uint8Array;
+    let b: Uint8Array;
+    let wantA: string;
+    let wantB: string;
+    if (id.startsWith("context/")) {
+      a = canonicalContext({ ...ctxFromVector(inp.context_a as Record<string, unknown>), suiteId });
+      b = canonicalContext({ ...ctxFromVector(inp.context_b as Record<string, unknown>), suiteId });
+      [wantA, wantB] = [ex.tenant_absent as string, ex.tenant_zero_length as string];
+    } else if (id.startsWith("kdf/record-key/")) {
+      const suite = getSuite(suiteId)!;
+      const keyId = hex(inp.key_id as string);
+      const cc = canonicalContext({ ...ctxFromVector(inp.context as Record<string, unknown>), suiteId });
+      a = deriveRecordKey(suite, hex(inp.tenant_dek as string), keyId, hex(inp.msg_seed_a as string), cc);
+      b = deriveRecordKey(suite, hex(inp.tenant_dek as string), keyId, hex(inp.msg_seed_b as string), cc);
+      [wantA, wantB] = [ex.key_a as string, ex.key_b as string];
+    } else if (id.startsWith("kdf/index-key/")) {
+      const tik = hex(inp.tenant_index_key as string);
+      a = deriveIndexKey(tik, { ...ctxFromVector(inp.context_a as Record<string, unknown>), suiteId });
+      b = deriveIndexKey(tik, { ...ctxFromVector(inp.context_b as Record<string, unknown>), suiteId });
+      [wantA, wantB] = [ex.key_a as string, ex.key_b as string];
+    } else if (id.startsWith("commitment/")) {
+      a = computeCommitment(hex(inp.record_key_a as string));
+      b = computeCommitment(hex(inp.record_key_b as string));
+      [wantA, wantB] = [ex.commitment_a as string, ex.commitment_b as string];
+    } else if (id.startsWith("blind-index/")) {
+      const which = inp.idf as IdfId;
+      const normId = NORMALIZERS[inp.normalize as string];
+      if (normId === undefined) throw new Error(`unknown normalizer ${String(inp.normalize)}`);
+      const ik = hex(inp.index_key as string);
+      const bits = inp.truncate_bits as number;
+      a = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_a as string))), bits);
+      b = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_b as string))), bits);
+      [wantA, wantB] = [ex.index_a as string, ex.index_b as string];
+    } else {
+      throw new Error("no assertion runner for this family");
+    }
+    if (!eq(a, hex(wantA))) problems.push(mismatch("side a", a, hex(wantA)));
+    if (!eq(b, hex(wantB))) problems.push(mismatch("side b", b, hex(wantB)));
+    if (eq(a, b) !== want) problems.push(`sides ${eq(a, b) ? "are" : "are not"} equal; must_be_equal=${want}`);
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
 function client(dek: Uint8Array, keyId: Uint8Array, extra: Partial<ConstructorParameters<typeof Fieldseal>[0]> = {}): Fieldseal {
@@ -219,12 +255,9 @@ function runKdf(v: Record<string, unknown>): Result {
       const rk = deriveRecordKey(suite, hex(v.tenant_dek as string), keyId, msgSeed, cc);
       if (!eq(rk, hex(ex.record_key!))) problems.push(mismatch("record_key", rk, hex(ex.record_key!)));
     } else {
-      // kdf/index-key: the vector's context carries purpose "encrypt" with a
-      // separate index_id; the spec's derivation uses purpose "index:<id>"
-      // (divergence D-06 in the M2 report). The harness builds the spec's
-      // context from the two fields.
-      const indexId = v.index_id as string;
-      const resolved: ResolvedContext = { ...ctx, purpose: `index:${indexId}`, rowId: null, suiteId };
+      // kdf/index-key: since suite 0.2.0 the vector's context carries the
+      // index purpose itself (D-06 resolved); it is used exactly as given.
+      const resolved: ResolvedContext = { ...ctx, suiteId };
       const cc = canonicalContext(resolved);
       if (!eq(INDEX_KEY_SALT, hex(ex.salt!))) problems.push(mismatch("salt", INDEX_KEY_SALT, hex(ex.salt!)));
       if (!eq(cc, hex(ex.info!))) problems.push(mismatch("info", cc, hex(ex.info!)));
@@ -244,9 +277,7 @@ function runContext(v: Record<string, unknown>): Result {
   const ctx = ctxFromVector(v.context as Record<string, unknown>);
   const problems: string[] = [];
   try {
-    // The context family carries no suite_id while canonical_context
-    // includes one (spec §6.2); the harness assumes 0xFF01 (divergence D-05).
-    const cc = canonicalContext({ ...ctx, suiteId: SUITE_FF01 });
+    const cc = canonicalContext({ ...ctx, suiteId: parseSuiteId(v.suite_id as string) });
     const presence = (ctx.tenantId != null ? 1 : 0) | (ctx.rowId != null ? 2 : 0);
     if (presence !== ex.presence) problems.push(mismatch("presence", presence, ex.presence));
     if (!eq(cc, hex(ex.canonical_context as string))) problems.push(mismatch("canonical_context", cc, hex(ex.canonical_context as string)));
@@ -254,9 +285,7 @@ function runContext(v: Record<string, unknown>): Result {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0
-    ? { id, status: "pass", details: { assumed_suite_id: "0xFF01" } }
-    : { id, status: "fail", reason: problems.join("; ") };
+  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
 function runCommitment(v: Record<string, unknown>): Result {
@@ -275,67 +304,64 @@ function runCommitment(v: Record<string, unknown>): Result {
   return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
-interface IndexKeyOrigin {
-  tenantIndexKey: Uint8Array;
-  ctx: FieldContext;
-  indexId: string;
-  suiteId: number;
-}
-
-function runBlindIndex(v: Record<string, unknown>, fileStem: string, origins: Map<string, IndexKeyOrigin>): Result[] {
+function runBlindIndex(v: Record<string, unknown>): Result[] {
   const id = v.id as string;
   if (v.assertion !== undefined) return [runAssertion(v)];
-  const ex = v.expected as Record<string, string | number>;
-  const which: IdfId = fileStem === "hmac-sha512" ? "hmac-sha512" : "argon2id";
+  const ex = v.expected as Record<string, unknown>;
+  const stored = ex.stored as Record<string, string | number>;
+  const which = v.idf as IdfId;
   const indexKey = hex(v.index_key as string);
-  const b = v.b_bits as number;
-  const normId = NORMALIZER_ALIASES[v.normalizer as string];
+  const b = v.truncate_bits as number;
+  const normId = NORMALIZERS[v.normalize as string];
+  const params = v.idf_params as Record<string, number>;
+  const argon2 = which === "argon2id" ? { timeCost: params.time_cost!, memoryKib: params.memory_kib! } : undefined;
   const results: Result[] = [];
   const problems: string[] = [];
-  const details: Record<string, unknown> = {};
   try {
-    if (normId === undefined) throw new Error(`unknown normalizer ${String(v.normalizer)}`);
-    details.normalizer_mapped_to = normId;
-    const input = new TextEncoder().encode(v.plaintext_utf8 as string);
-    const normalized = normalize(normId, input);
-    if (!eq(normalized, hex(ex.normalized as string))) problems.push(mismatch("normalized", normalized, hex(ex.normalized as string)));
-    const params = v.argon2_params as Record<string, number> | undefined;
-    const raw = idf(which, indexKey, normalized, params ? { timeCost: params.t!, memoryKib: params.m_kib! } : undefined);
+    if (normId === undefined) throw new Error(`unknown normalizer ${String(v.normalize)}`);
+    // docs/08 §4.4: `plaintext` (already normalized) is the normative input;
+    // the preimage checks the shipped normalizer against it.
+    const wantNormalized = hex(v.plaintext as string);
+    const normalized = normalize(normId, new TextEncoder().encode(v.plaintext_preimage as string));
+    if (!eq(normalized, wantNormalized)) problems.push(mismatch("normalizer", normalized, wantNormalized));
+    const raw = idf(which, indexKey, wantNormalized, argon2);
     if (!eq(raw, hex(ex.raw as string))) problems.push(mismatch("raw", raw, hex(ex.raw as string)));
-    if (which === "argon2id" && typeof ex.salt === "string") {
+    if (which === "argon2id" && typeof params.salt === "string") {
       const salt = argon2Salt(indexKey);
-      if (!eq(salt, hex(ex.salt))) problems.push(mismatch("salt", salt, hex(ex.salt)));
+      if (!eq(salt, hex(params.salt as unknown as string))) problems.push(mismatch("salt", salt, hex(params.salt as unknown as string)));
     }
     const bi = truncateBits(raw, b);
-    if (!eq(bi, hex(ex.blind_index as string))) problems.push(mismatch("blind_index", bi, hex(ex.blind_index as string)));
-    // Spec §7.11 stored form: the raw truncated bytes, exactly ⌈b/8⌉ of them.
-    if (!eq(bi, hex(ex.stored as string))) problems.push(mismatch("stored", bi, hex(ex.stored as string)));
-    if (bi.length !== ex.stored_bytes || bi.length !== Math.ceil(b / 8)) problems.push(mismatch("stored_bytes", bi.length, ex.stored_bytes));
-    details.stored_hex = toHex(bi); // the §7.11 lowercase-hex alternative, asserted against `stored` above
+    if (!eq(bi, hex(ex.index as string))) problems.push(mismatch("index", bi, hex(ex.index as string)));
+    // Spec §7.11 stored form: the raw truncated bytes, exactly ⌈b/8⌉ of them;
+    // lowercase hex is the declared-per-column alternative.
+    if (!eq(bi, hex(stored.binary as string))) problems.push(mismatch("stored.binary", bi, hex(stored.binary as string)));
+    if (toHex(bi) !== stored.hex) problems.push(mismatch("stored.hex", toHex(bi), stored.hex));
+    if (bi.length !== stored.octets || bi.length !== Math.ceil(b / 8)) problems.push(mismatch("stored.octets", bi.length, stored.octets));
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  results.push(problems.length === 0 ? { id, status: "pass", details } : { id, status: "fail", reason: problems.join("; "), details });
+  results.push(problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") });
 
-  // Full client pipeline, when the vector's index_key is the output of a
-  // kdf/index-key vector (then the tenant index key and context are known).
-  const origin = origins.get(toHex(indexKey));
-  if (origin !== undefined && normId !== undefined) {
+  // Full client pipeline from the tenant index key and context the vector
+  // carries (suite 0.2.0), through the public blindIndex operation.
+  if (normId !== undefined) {
     const pid = `${id}#pipeline`;
     try {
+      const ctx = ctxFromVector(v.context as Record<string, unknown>);
       const P = 2 ** (b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
+      const suiteId = parseSuiteId(v.suite_id as string);
       const fs = new Fieldseal(
         {
-          keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: origin.tenantIndexKey }),
-          allowedSuites: [origin.suiteId],
-          writeSuite: origin.suiteId,
+          keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: hex(v.tenant_index_key as string) }),
+          allowedSuites: [suiteId],
+          writeSuite: suiteId,
           indexes: [
             {
-              tableUuid: origin.ctx.tableUuid,
-              columnUuid: origin.ctx.columnUuid,
-              indexId: origin.indexId,
+              tableUuid: ctx.tableUuid,
+              columnUuid: ctx.columnUuid,
+              indexId: v.index_id as string,
               idf: which,
-              ...(which === "argon2id" ? { argon2: { timeCost: (v.argon2_params as Record<string, number>).t!, memoryKib: (v.argon2_params as Record<string, number>).m_kib! } } : {}),
+              ...(argon2 ? { argon2 } : {}),
               normalize: normId,
               truncateBits: b,
               projectedPopulation: P,
@@ -344,21 +370,95 @@ function runBlindIndex(v: Record<string, unknown>, fileStem: string, origins: Ma
         },
         { armProvisionalSuites: true },
       );
-      const out = fs.blindIndex(new TextEncoder().encode(v.plaintext_utf8 as string), {
-        ...origin.ctx,
-        purpose: `index:${origin.indexId}`,
+      const out = fs.blindIndex(new TextEncoder().encode(v.plaintext_preimage as string), {
+        ...ctx,
         rowId: hex("deadbeef"), // must be ignored by index derivation (spec §7.2 row_id = null)
       });
       results.push(
-        eq(out, hex(ex.stored as string))
-          ? { id: pid, status: "pass", details: { via: "Fieldseal.blindIndex with tenant index key from kdf/index-key" } }
-          : { id: pid, status: "fail", reason: mismatch("blindIndex()", out, hex(ex.stored as string)) },
+        eq(out, hex(stored.binary as string))
+          ? { id: pid, status: "pass", details: { via: "Fieldseal.blindIndex with the vector's tenant index key" } }
+          : { id: pid, status: "fail", reason: mismatch("blindIndex()", out, hex(stored.binary as string)) },
       );
     } catch (e) {
       results.push({ id: pid, status: "fail", reason: `blindIndex raised ${errCode(e)}` });
     }
   }
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// errors/ (docs/08 §4.6): one operation per vector against a client built
+// from the vector's config. `input` is literal; `expected` is one of
+// {error}, {value} (pass-through), {plaintext}, {is_ciphertext}, {index}.
+
+function runErrors(v: Record<string, unknown>): Result {
+  const id = v.id as string;
+  const cfg = v.config as Record<string, unknown>;
+  const ex = v.expected as Record<string, unknown>;
+  const op = (v.operation ?? "decrypt") as string;
+  const ctx = v.context !== undefined ? ctxFromVector(v.context as Record<string, unknown>) : undefined;
+  const input = hex(v.input as string);
+  const decl = v.index_declaration as Record<string, unknown> | undefined;
+  const want = "error" in ex ? `error ${String(ex.error)}` : JSON.stringify(ex);
+  let got: Uint8Array | boolean;
+  try {
+    const fs = new Fieldseal(
+      {
+        keyProvider: new StaticKeyProvider({
+          dek: hex(v.tenant_dek as string),
+          keyId: hex(v.key_id as string),
+          ...(v.tenant_index_key !== undefined ? { indexKey: hex(v.tenant_index_key as string) } : {}),
+        }),
+        allowedSuites: (cfg.allowed_suites as string[]).map(parseSuiteId),
+        writeSuite: parseSuiteId(cfg.write_suite as string),
+        readMode: cfg.read_mode as ReadMode,
+        ...(decl && ctx
+          ? {
+              indexes: [
+                {
+                  tableUuid: ctx.tableUuid,
+                  columnUuid: ctx.columnUuid,
+                  indexId: decl.index_id as string,
+                  idf: decl.idf as IdfId,
+                  normalize: NORMALIZERS[decl.normalize as string]!,
+                  truncateBits: decl.truncate_bits as number,
+                  projectedPopulation: 2 ** ((decl.truncate_bits as number) + 1),
+                },
+              ],
+            }
+          : {}),
+      },
+      { armProvisionalSuites: cfg.arm_provisional_suites as boolean },
+    );
+    switch (op) {
+      case "decrypt":
+        got = fs.decrypt(input, ctx!);
+        break;
+      case "rotate":
+        got = fs.rotate(input, ctx!);
+        break;
+      case "encrypt":
+        got = fs.encrypt(input, ctx!);
+        break;
+      case "is_ciphertext":
+        got = fs.isCiphertext(input);
+        break;
+      case "blind_index":
+        got = fs.blindIndex(input, { ...ctx!, purpose: `index:${decl!.index_id as string}` });
+        break;
+      default:
+        return { id, status: "fail", reason: `unknown operation ${op}` };
+    }
+  } catch (e) {
+    const code = errCode(e);
+    const ok = "error" in ex && ex.error === code;
+    return ok ? { id, status: "pass", details: { raised: code } } : { id, status: "fail", reason: `expected ${want}, raised ${code}`, details: { raised: code } };
+  }
+  if ("error" in ex) return { id, status: "fail", reason: `expected ${want}, no error raised` };
+  if ("is_ciphertext" in ex) return got === ex.is_ciphertext ? { id, status: "pass" } : { id, status: "fail", reason: `is_ciphertext returned ${String(got)}, expected ${String(ex.is_ciphertext)}` };
+  const wantBytes = hex(((ex.value ?? ex.plaintext ?? ex.index) as string) ?? "");
+  const gotBytes = got as Uint8Array;
+  return eq(gotBytes, wantBytes) ? { id, status: "pass" } : { id, status: "fail", reason: mismatch(op, gotBytes, wantBytes) };
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +521,7 @@ export function runSuite(opts: RunOptions = {}): Report {
   try {
     const suite = loadSuite(opts.vectorsDir);
     const results: Result[] = [];
-    const origins = indexKeyOrigins(suite);
-    for (const [path, doc] of suite.files) {
-      const stem = path.split("/").pop()!.replace(/\.json$/, "");
+    for (const [, doc] of suite.files) {
       for (const v of doc.vectors) {
         switch (doc.group) {
           case "envelope":
@@ -439,7 +537,10 @@ export function runSuite(opts: RunOptions = {}): Report {
             results.push(runCommitment(v));
             break;
           case "blind-index":
-            results.push(...runBlindIndex(v, stem, origins));
+            results.push(...runBlindIndex(v));
+            break;
+          case "errors":
+            results.push(runErrors(v));
             break;
           default:
             results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
@@ -488,23 +589,6 @@ export function runSuite(opts: RunOptions = {}): Report {
   }
 }
 
-function indexKeyOrigins(suite: LoadedSuite): Map<string, IndexKeyOrigin> {
-  const m = new Map<string, IndexKeyOrigin>();
-  const doc = suite.files.get("kdf/index-key.json");
-  if (doc === undefined) return m;
-  for (const v of doc.vectors) {
-    if (v.assertion !== undefined) continue;
-    const ex = v.expected as Record<string, string>;
-    m.set(ex.index_key!, {
-      tenantIndexKey: hex(v.tenant_index_key as string),
-      ctx: ctxFromVector(v.context as Record<string, unknown>),
-      indexId: v.index_id as string,
-      suiteId: parseSuiteId(v.suite_id as string),
-    });
-  }
-  return m;
-}
-
 /** Spec §9 [PROVISIONAL G5] obliges a Gate 0a implementation to pin an order and declare it here. */
 export const PINNED_DECISIONS: Record<string, string> = {
   "decrypt-order":
@@ -517,15 +601,19 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "api-boundary-order": "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED → context validation (INVALID_ARGUMENT, non-§9); all before key acquisition",
   "provisional-arming": "second constructor argument { armProvisionalSuites: true } or environment variable FIELDSEAL_ARM_PROVISIONAL_SUITES=1; read at construction; never part of the config object",
   "unimplemented-registered-suite": "0xFF02 is registered (isCiphertext → true) but refused at construction if allow-listed or set as writeSuite (CONFIGURATION_ERROR naming G7); no §9 code is reachable for it because no client can be built that accepts it",
-  "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- from the G1 issue draft\'s proposed direction; spec §4.6 itself states no formula',
+  "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- as spec §4.6 states under its [PROVISIONAL — G1] marker (since 2026-08-23); provisional until G1 closes',
   "rotate-in-permissive": "rotate() on non-envelope input in permissive mode encrypts the pass-through value (decrypt ∘ encrypt, literally composed)",
+  "normalizer-text-over-bytes":
+    "blind_index accepts only bytes (Uint8Array; strings are never accepted); nfc-casefold-v1 decodes them as strict UTF-8 and refuses invalid UTF-8 with INVALID_ARGUMENT (never a replacement-character rendering); " +
+    "then platform NFC (ICU; version in environment.unicode_platform), then vendored CaseFolding-17.0.0.txt full folding (C+F, no Turkic special case), no second normalization after folding, then UTF-8 encode " +
+    "(docs/09 §7; docs/18 D-10; G15 part D)",
 };
 
 export const HARNESS_NOTES: string[] = [
   "docs/08 §5 item 2 (JSON-Schema validation) could not be performed: vectors/schema/ is empty in the checkout this harness ran against. The harness performs its own structural validation of every vector object before running it.",
   "Envelope vectors are reported twice: '<id>' is the encrypt direction (envelope, canonical_context, aad, envelope_bytes) and '<id>#decrypt' is the decrypt direction.",
-  "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key recovered from the kdf/index-key vector that produced the vector's index_key.",
-  "Assertion vectors (assertion: distinct|equal) carry no inputs; only the literal relation between their expected values is checked (details.reproducible = false).",
-  "The context family carries no suite_id; 0xFF01 was assumed. The kdf/index-key family carries purpose 'encrypt' plus a separate index_id; the spec's purpose 'index:<id>' was constructed from both. The blind-index family names normalizer 'nfc-casefold'; it was mapped to the shipped 'nfc-casefold-v1'. See the M2 divergence report.",
+  "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key and context the vector carries (suite 0.2.0).",
+  "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
+  "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
   "blind-index/argon2id.json is held out (MANIFEST.held_out) and was not iterated; it is reported as not-run. Nothing about Argon2id contributes to this report's summary.",
 ];

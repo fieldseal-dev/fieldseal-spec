@@ -11,7 +11,7 @@
 | Item | Decision | Notes |
 |---|---|---|
 | Package name | `@fieldseal/core` | Claim the npm `@fieldseal` scope before first publish (PRD naming note) |
-| Runtime target | Node ≥ 20 LTS **[VERIFY current LTS floor at implementation]** | Server-only. Browser/edge runtimes are **explicitly out of scope for v0**: the sync API + KMS provider model presumes a server process, and Web Crypto's AEAD API is async-only, which conflicts with spec §11.1. Say this in the README rather than letting bundler users discover it |
+| Runtime target | **Node ≥ 24.7** (`package.json` `engines`) — the floor is set by `crypto.argon2Sync`, which landed in 24.7; earlier drafts said ≥ 20 LTS with the floor to be verified | Server-only. Browser/edge runtimes are **explicitly out of scope for v0**: the sync API + KMS provider model presumes a server process, and Web Crypto's AEAD API is async-only, which conflicts with spec §11.1. Say this in the README rather than letting bundler users discover it |
 | Language/build | TypeScript strict mode; `tsc` emit, no bundler | Small surface; keep the toolchain boring |
 | Module format | ESM with `exports` map; CJS compatibility decided at implementation **[flag]** — TypeORM/older Prisma toolchains still commonly `require()`; if CJS is dropped, document the interop path | |
 | Tests | vitest | Same harness contract as Python (docs/08 §5) |
@@ -23,10 +23,10 @@
 |---|---|---|
 | AES-256-GCM, HKDF-SHA-512, HMAC, CSPRNG, constant-time compare | `node:crypto` | `createCipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 })` + `setAAD`; `createHmac("sha512", …)`; `randomBytes`; `timingSafeEqual`. Zero external deps for suite 0xFF01. **HKDF is RFC 5869 over `createHmac`, not `hkdfSync` (revised 2026-08-22):** both `hkdfSync` and Web Crypto `deriveBits` refuse an `info` longer than 1024 bytes, and `info` here is `canonical_context`, whose `tenant_id`/`row_id` are unbounded (spec §6.1) — an envelope another core writes under a ~1 KiB context would be unreadable. Pinned to RFC 5869 A.1–A.3 and to `hkdfSync` on every input it accepts (`tests/primitives.test.ts`) |
 | XChaCha20-Poly1305 (suite 0xFF02) | `@noble/ciphers`, optional peer/optional dependency | `node:crypto` supports `chacha20-poly1305` but **not** the XChaCha (24-byte-nonce) variant **[VERIFY]**. `@noble/ciphers` is audited, pure-JS, and implements the libsodium-compatible construction. Alternative: `sodium-native` (faster, native build cost). Decision deferred to implementation with this default: **@noble/ciphers**, because an optional suite should not impose a native toolchain |
-| Argon2id **synchronous** raw output | **Open decision — the hardest dependency choice in either Phase 1 core**, but no longer constrained by secret-parameter support: the 2026-08-22 narrowing removed `K` from spec §7.3, so every candidate below is back in scope and the choice turns purely on *sync raw output*. Candidates: `sodium-native` (`crypto_pwhash` is sync, raw output, explicit 16-byte salt — now the front-runner, and its fixed 16-byte salt is precisely why §7.3 pins that length) · `@node-rs/argon2` (**[VERIFY]** sync raw-output API) · npm `argon2` / node-argon2 (async-only API **[VERIFY]** — unusable for the sync §11.1 `blind_index` if so) | Abstract behind an internal `Argon2Backend` interface so the choice is swappable without API change. **[VERIFY]** that the chosen backend lets `p` be set to 1 explicitly, or fixes it there — §7.3 pins `p = 1` and flags libsodium's internal value as unconfirmed |
+| Argon2id **synchronous** raw output | **Decided at implementation: `node:crypto.argon2Sync`** (Node ≥ 24.7) — sync, raw output, explicit 16-byte salt, `parallelism` settable to 1, no `K`/`X` exposed, zero dependencies. The earlier candidates (`sodium-native`, `@node-rs/argon2`, npm `argon2`) are superseded; the 2026-08-22 narrowing that removed `K` from spec §7.3 is what made a no-dependency backend sufficient | Still behind an internal backend seam so a runtime without `argon2Sync` could be served by another backend without API change; the shipped core does not carry one |
 | KMS wrappers | `@fieldseal/kms-aws` etc., separate packages | Same rule as Python: required dependency set for suite 0xFF01 is **empty beyond node:crypto** |
 
-**Event-loop honesty (must appear in the package README):** a synchronous Argon2id blocks the Node event loop for 10–100 ms per query term (spec §7.3's quoted cost, measured at 4 iterations / 32 MiB — slightly above its 3-iteration minimum). That is far worse for Node than for threaded runtimes. Guidance: (a) confine Argon2id-indexed queries to worker threads at the application layer, or (b) prefer HMAC indexes where the domain class permits (§7.3 table).
+**Event-loop honesty (must appear in the package README):** a synchronous Argon2id blocks the Node event loop for 10–100 ms per query term (spec §7.3's quoted cost at its pinned `t = 3` / 32 MiB invocation; 41 ms measured with `argon2Sync` on 2026-08-23). That is far worse for Node than for threaded runtimes. Guidance: (a) confine Argon2id-indexed queries to worker threads at the application layer, or (b) prefer HMAC indexes where the domain class permits (§7.3 table).
 
 **Async companion (`blindIndexAsync`) — now permitted, not yet decided.** G9 (issue #9) closed 2026-08-09: spec §11.1 allows optional async companions, so this core no longer needs a spec change to ship one. What it does need is evidence and a price. The price is fixed by §11.1 and docs/08 §5 clause 9: byte-identical output, identical error codes, the whole vector suite run a second time through the async path, and a sync `blindIndex` that is *not* a blocking wait on the async one. The evidence is the WS-C week-one benchmark (`docs/07-implementation-plan.md` §6) at spec-minimum Argon2id parameters — ship the companion if that benchmark shows the sync path is untenable in a real Prisma request path, and skip it if HMAC domains and worker threads cover the realistic cases. Naming is deliberately unpinned by the spec, so `blindIndexAsync` is this core's choice; if the benchmark says the sync path is untenable *at all* parameters, that is no longer an ergonomics question and goes back to the spec as a §7.3 issue.
 
@@ -60,11 +60,10 @@ core/typescript/src/
 import { Fieldseal, FieldContext } from "@fieldseal/core";
 
 const fs = new Fieldseal({
-  keyProvider,
+  keyProvider,   // EnvelopeKeyProvider carries the §5.5 cache policy in its own options
   allowedSuites: [0xFF01],
   writeSuite: 0xFF01,
   readMode: "strict",
-  cache: { maxAgeMs: 600_000, maxUses: 1_000_000, capacity: 10_000 },
   indexes: [ ... ],
 });
 
@@ -77,14 +76,15 @@ await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async met
 ```
 
 - Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are never accepted** — encoding is the adapter's job (docs/09 §5), and an implicit `utf8` coercion here is exactly the kind of cross-language divergence the vectors exist to catch.
+- Deviation from docs/09 §2's config sketch: there is **no client-level `cache` field**. The §5.5 cache policy is `EnvelopeKeyProvider`'s own required `cache` option (docs/09 §2's "required for EnvelopeKeyProvider", enforced at provider construction); a `cache` key present in the client config is refused with a `ConfigurationError` rather than accepted and ignored.
 - Errors: `FieldsealError` subclasses, each with `code` matching the §9 strings (`"TAG_INVALID"`, …) for the vector harness mapping.
 - Method naming is the docs/09 §12 casing rule applied: `blindIndex`/`isCiphertext` are the camelCase renderings of the fixed operation names.
 
 ## 5. Security-relevant implementation notes
 
-- **Zeroization honesty:** `Buffer.fill(0)` on evicted DEKs overwrites the visible allocation; V8 may have copied during prior operations and `node:crypto` may hold internal copies. Same honest-limitation wording rule as Python (docs/09 §8.3). No `mlock` (documented deviation).
+- **Zeroization honesty:** `Buffer.fill(0)` on evicted DEKs overwrites the visible allocation; V8 may have copied during prior operations and `node:crypto` may hold internal copies. Same honest-limitation wording rule as Python (docs/09 §8.3). No `mlock` (documented deviation). One documented exception on the decrypt path: the candidate arrays `decryptionKeys` returns are **not** zeroized by the client after the candidate loop — the §8 interface does not give the core ownership of them, and a custom provider may return buffers it still needs — so the shipped providers' per-call copies reach GC unzeroized (the encrypt path zeroizes its own copy; the derived record key is zeroized on both paths). Granting the client ownership so it may zeroize candidates is a docs/09 §8.1 interface question for both cores, not a binding-level fix.
 - **Constant-time:** `crypto.timingSafeEqual` for commitment/tag-adjacent comparisons; it throws on length mismatch, so length-check first with a public-length rationale comment.
-- **`Buffer` aliasing:** never return a `Buffer` that aliases an internal buffer (no `subarray` on cache-held material — always copy out).
+- **`Buffer` aliasing:** never return a `Buffer` that aliases an internal buffer (no `subarray` on cache-held material — always copy out). "Internal" includes Node's shared `Buffer` pool: `Buffer.from(bytes)` and small `Buffer.allocUnsafe` allocations are views into a pool `ArrayBuffer` shared with unrelated allocations, reachable from the returned value as `.buffer`. Every `Buffer` the client returns is therefore an unpooled `Buffer.alloc` copy whose `ArrayBuffer` is exactly the returned bytes.
 - **Worker threads:** the client is safe to construct per-worker; DEK cache is per-instance and not shared across workers (no `SharedArrayBuffer` key storage — key material in a `SharedArrayBuffer` would widen the memory-exposure surface for no functional gain).
 
 ## 6. Testing plan

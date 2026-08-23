@@ -84,8 +84,7 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 | `nonce` | suite-defined | Freshly generated per encryption operation. |
 | `ciphertext` | variable | AEAD output. |
 | `tag` | suite-defined, ≥16 B | AEAD authentication tag. |
-| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. |
-| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is open (§4.6, gap G1), as is whether the mandatory suite needs one at all (§13.2). |
+| `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is adopted provisionally in §4.6 (gap G1), as is whether the mandatory suite needs one at all (§13.2). |
 ### 3.2 Header authentication (normative)
 
 `fmt_ver`, `suite_id`, `key_id`, and `msg_seed` MUST be included in the AEAD's additional authenticated data (§6.2–§6.3). They MUST NOT be an unauthenticated prefix. (`msg_seed` is additionally self-authenticating: tampering with it changes the derived key and fails the tag check — §5.3.)
@@ -132,14 +131,14 @@ Data at rest has no peer and therefore **no negotiation**. The header is a decla
 
 | `suite_id` | Name | AEAD | Nonce | KDF | Committing | FIPS-approvable | Status |
 |---|---|---|---|---|---|---|---|
-| `0xFF01` | `FLE-AES256GCM-HKDF-SHA512-PROVISIONAL` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[PROVISIONAL]** — AEAD choice deferred (§13.2, ADR-0002); commitment construction open (§4.6, G1) |
+| `0xFF01` | `FLE-AES256GCM-HKDF-SHA512-PROVISIONAL` | AES-256-GCM | 96-bit RBG | HKDF-SHA-512 (SP 800-56C) | No — explicit 32 B commitment REQUIRED | **Yes** (CAVP-testable) | **[PROVISIONAL]** — AEAD choice deferred (§13.2, ADR-0002); commitment construction adopted provisionally (§4.6, G1) |
 | `0xFF02` | `FLE-XCHACHA20POLY1305-HKDF-SHA512-PROVISIONAL` | XChaCha20-Poly1305 | 192-bit RBG | HKDF-SHA-512 | No — explicit 32 B commitment REQUIRED | **No** | **[PROVISIONAL]** — no normative definition of the AEAD yet exists (§4.2 note, G7) |
 | `0x0001` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF01`'s constructions freeze at Gate 0b |
 | `0x0002` | *(reserved, unassigned)* | — | — | — | — | — | Assigned when `0xFF02`'s constructions freeze at Gate 0b, if it survives |
 
 Implementations MUST support `0xFF01`. Implementations MAY support `0xFF02`. No more than two suites will be defined in v1.0.
 
-> **[PROVISIONAL — G7]** XChaCha20-Poly1305 has no IETF RFC; `draft-irtf-cfrg-xchacha` expired, and libsodium's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto standard. A specification that requires a citation for every normative claim cannot name a suite it cannot cite. The open question is whether to name libsodium's construction normatively (the PASETO precedent) or drop the suite and ship a one-suite registry — see [issue #7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7) and reviewer question [Q6](16-reviewer-brief.md#q6). `0xFF02` exists under Gate 0a so the two-suite mechanics (allow-listing, mixed-suite reads, rotation across suites) are exercised by the vectors and the cross-implementation matrix; the mechanics are what Phase 1 is proving, and they are unaffected by which AEAD ultimately fills the slot.
+> **[PROVISIONAL — G7]** XChaCha20-Poly1305 has no IETF RFC; `draft-irtf-cfrg-xchacha` expired, and libsodium's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto standard. A specification that requires a citation for every normative claim cannot name a suite it cannot cite. The open question is whether to name libsodium's construction normatively (the PASETO precedent) or drop the suite and ship a one-suite registry — see [issue #7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7) and reviewer question [Q6](16-reviewer-brief.md#q6). `0xFF02` exists under Gate 0a so the two-suite mechanics (allow-listing, mixed-suite reads, rotation across suites) are exercised by the vectors and the cross-implementation matrix; the mechanics are what Phase 1 is proving, and they are unaffected by which AEAD ultimately fills the slot. **Input received 2026-08-23** (CFRG list; recorded in issue #7 and `16-reviewer-brief.md` Q6): the expired draft is archival and citable as it stands; and the extended nonce XChaCha provides is what §5.3's per-write key derivation already provides, so a third option — RFC 8439 ChaCha20-Poly1305 under the derived key, with the suite's purpose restated as *a different hardness assumption from AES* rather than "non-NIST" — is now the one issue #7 proposes. This marker's question is unchanged; its answer set is larger.
 
 A provisional suite is a complete, frozen suite in every sense §4.1 requires — it offers the caller no algorithm agility whatsoever. "Provisional" constrains the *project*, not the caller: it says this project may still change these constructions, and §4.8 governs what an implementation may do with one in the meantime.
 
@@ -166,6 +165,8 @@ A database breaks every construction SP 800-38D permits:
 
 The volume constraint is not solved by counting. It is solved structurally by per-write key derivation from the envelope's random 32-byte `msg_seed` (§3.1, §5.3): no derived key ever encrypts more than one value, so the §8.3 ceiling is unreachable regardless of tenant size or `row_id` configuration. The random nonce is retained as defense in depth on top of key uniqueness.
 
+The nonce length is fixed at the AEAD's native 96 bits for `0xFF01`, and a longer random GCM nonce is not an alternative to the derivation above: SP 800-38D permits other IV lengths but hashes them to 128 bits, which adds a `q²/2^min(r,128)` term to both the confidentiality and the authenticity bounds, and NIST's second public draft of SP 800-38D Revision 1 is considering withdrawing non-96-bit IV support altogether ([SP 800-38D r1 2prd](https://csrc.nist.gov/pubs/sp/800/38/d/r1/2prd); J. Preuß Mattsson, public comments, 2026). Per-write key derivation with a 32-byte seed is the construction both that draft's commenters and CFRG recommend for random extended nonces — `K' = KDF(K, E)`, then the AEAD under `K'` — and it is what §5.3 specifies.
+
 ### 4.5 Tag length (normative)
 
 Authentication tags MUST be at least 128 bits. Tag truncation MUST NOT be supported.
@@ -174,9 +175,28 @@ Authentication tags MUST be at least 128 bits. Tag truncation MUST NOT be suppor
 
 ### 4.6 Key commitment (normative)
 
-> **[PROVISIONAL — G1]** The *requirement* below is settled: every suite provides key commitment. The **construction** that satisfies it is not — its derivation, its inputs, and where it is verified in the decrypt order are all open. See [issue #1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1) and reviewer question [Q2](16-reviewer-brief.md#q2). Whether the mandatory suite needs an explicit commitment at all is downstream of [ADR-0002](adr/0002-suite-0x0001-aead.md), itself provisional (§13.2): a natively committing AEAD would set `commit_len = 0`.
+> **[PROVISIONAL — G1]** The *requirement* below is settled: every suite provides key commitment. The **construction** that satisfies it is adopted provisionally under Gate 0a — the derivation, its inputs and its verification point are written below so that vectors and cores have one thing to agree on, and all three are what the review is asked to judge. See [issue #1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1) and reviewer question [Q2](16-reviewer-brief.md#q2). Whether the mandatory suite needs an explicit commitment at all is downstream of [ADR-0002](adr/0002-suite-0x0001-aead.md), itself provisional (§13.2): a natively committing AEAD would set `commit_len = 0`.
 
 Every suite MUST provide key commitment, either by using a committing AEAD or by emitting an explicit 32-byte commitment value derived from the key. AAD binding alone MUST NOT be relied upon for this purpose.
+
+**Provisional construction (Gate 0a, 2026-08-23).** For every registered suite whose AEAD is not itself committing — both provisional suites — the 32-byte `commitment` field of §3.1 is:
+
+```
+commitment = KDF(
+    ikm     = record_key,                    // §5.3, the key the AEAD is opened with
+    salt    = "",                            // zero-length; RFC 5869 §2.2 then uses HashLen zero bytes
+    info    = "fieldseal-commit-v1",         // 19 ASCII bytes, fixed
+    length  = 32
+)
+```
+
+where `KDF` is the suite's KDF — HKDF-SHA-512 for `0xFF01` and `0xFF02`. The label is the domain separator: record-key derivation (§5.3) and index-key derivation (§7.2) use the same KDF with `canonical_context` as `info`, and `canonical_context` begins with a presence byte and a length-prefixed `suite_id`, so no `info` of theirs can equal this one.
+
+On decrypt, an implementation MUST derive `record_key` from each candidate key (§8), recompute `commitment`, and compare it with the envelope's field in constant time **before** opening the AEAD with that key. A candidate whose recomputed value does not match MUST NOT be used to open the ciphertext; if no candidate matches, the result is `COMMITMENT_INVALID` (§9). Where this check sits among the other §9 outcomes is G5's subject; that it precedes the AEAD is this section's.
+
+*What the construction commits to.* `record_key` is a function of `tenant_dek`, `key_id`, `msg_seed` and `canonical_context` (§5.3), so the commitment binds all four jointly, through one derivation, without any of them being re-encoded here. Two consequences follow and are stated rather than left to be discovered. First, a ciphertext cannot verify under two different tenant keys unless HKDF-SHA-512 collides on distinct inputs, which is the collision-binding property wanted. Second, a *context* mismatch at decrypt time changes `record_key` and therefore fails here, indistinguishably from a wrong key — which is why §9 cannot promise `AAD_MISMATCH` on these suites and why G5 exists.
+
+*What is open.* The choice of deriving from `record_key` rather than from the tenant key and `msg_seed` directly (the AWS Database Encryption SDK derives its commitment key from the data key and message ID, then MACs the header — `docs/adr/0001-appendix-a-expressibility-mapping.md`, F7); whether a KDF output is the right commitment primitive or a MAC over the header would be stronger; and whether 32 bytes is the right length. Test vectors: `vectors/commitment/ff01.json`.
 
 *Justification.* None of AES-GCM, AES-GCM-SIV, or (X)ChaCha20-Poly1305 is key-committing. In a multi-key system where the header names a key ID and an adversary may influence which key is used, a single ciphertext can be crafted to decrypt validly under two keys ("invisible salamanders"), enabling partitioning-oracle attacks (Len–Grubbs–Ristenpart, [USENIX Security '21](https://www.usenix.org/system/files/sec21-len.pdf); Bellare–Hoang, EUROCRYPT '22).
 
@@ -358,6 +378,8 @@ An identifier outside this grammar MUST be refused as a configuration error when
 
 **This does not settle the encoding's injectivity.** Whether `canonical_context` is injective over its whole field set — in particular the still-unspecified encoding of an absent `tenant_id` — is open, and is tracked separately as a specification issue against §6.2.
 
+**The optional fields carry no length bound.** `tenant_id` and `row_id` are unbounded here, which makes the KDF `info` of §5.3 and §7.2 unbounded; several platform HKDF implementations cap `info` (Node.js at 1024 bytes, OpenSSL 3.0–3.5 at 32 KiB), so an implementation built on one cannot derive keys for every context another can write. Whether this section should bound those fields — or instead require implementations to accept any `info` the encoding can produce — is open and tracked as [issue #43](https://github.com/fieldseal-dev/fieldseal-spec/issues/43) (G14). This paragraph is a pointer, not a rule; nothing here is settled by it.
+
 ### 6.2 Canonical encoding (normative)
 
 > **[PROVISIONAL — G4]** The presence-bitmap encoding below is adopted provisionally under Gate 0a — it is what makes this encoding injective across the absent-versus-zero-length cases, which the previous positional form was not. See [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4) and reviewer question [Q4](16-reviewer-brief.md#q4). What stays open is whether the encoding is injective over the current *and* plausibly-extended field set; the bit assignment may change at Gate 0b.
@@ -470,7 +492,7 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 *Justification.* If the index key leaks, an HMAC index over an enumerable domain is invertible by brute force in seconds. Paragonie's analysis of the chosen-plaintext case is direct: an attacker "can iterate every possible value as a user and then correlate with the resultant blind index value." `blind_index` defaults to Argon2id for this reason.
 
-**Honest cost, which MUST be documented:** Argon2id at 4 iterations / 32 MiB costs roughly 10–100 ms **per query term**. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
+**Honest cost, which MUST be documented:** Argon2id at the invocation below (`t = 3`, 32 MiB, `p = 1`) costs roughly 10–100 ms **per query term** — 34 ms with argon2-cffi and 41 ms with Node 24's `crypto.argon2Sync`, measured 2026-08-23 on one idle Zen 4 desktop core; contended or older hosts sit toward the top of the range. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
 
 **Argon2id invocation (normative).** Where §7.3 selects Argon2id, `IDF(index_key, normalize(plaintext))` is exactly:
 
@@ -495,7 +517,7 @@ The index key enters **only** through the salt. Argon2's optional secret paramet
 
 Two costs follow and are stated rather than hidden. First, keying now rests entirely on the salt, so the defense-in-depth argument for `K` — that the index stays keyed even if the salt derivation is misused — is gone. Second, the salt is fixed at 16 bytes because libsodium requires exactly that, so the keyed material at this step is 128 bits rather than the index key's 256. An adversary without `index_key` still faces a 128-bit barrier before the memory-hard function, which is not the binding constraint on this design, but it is a reduction and it is forced by portability.
 
-`p = 1` is likewise forced: libsodium exposes no parallelism parameter, so any other value is unreachable there. **[VERIFY]** libsodium's fixed internal value during Phase 1; if it is not 1, this line changes and every Argon2id vector regenerates.
+`p = 1` is likewise forced: libsodium exposes no parallelism parameter, so any other value is unreachable there. **Verified 2026-08-23** from source: `crypto_pwhash_argon2id()` in `src/libsodium/crypto_pwhash/argon2/pwhash_argon2id.c` (branch `stable`) calls `argon2id_hash_raw(opslimit, memlimit / 1024, (uint32_t) 1U, …)`, and `argon2.c` assigns that argument to both `context.lanes` and `context.threads`; the value is the literal `1`, not a configurable default. The Node 24 `crypto.argon2Sync` backend takes `parallelism` explicitly and the shipped cores pass `1`.
 
 The construction that remains — a memory-hard function over the plaintext, keyed through a domain-separated salt derived from a per-index key — is the shape CipherSweet ships, which documents Argon2id "where the blind index key is the Argon2 salt." This specification adds the HKDF step so that the raw index key is never handed to Argon2 directly and so that the salt is domain-separated from every other use of that key.
 ### 7.4 Truncation length (normative)

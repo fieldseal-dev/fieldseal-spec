@@ -103,10 +103,14 @@ www/                   the fieldseal.dev site — Hugo, no theme, no JavaScript;
 internal/              namespace-placeholder packages (npm, PyPI), not a product
 ```
 
-Everything under `core/`, `adapters/`, `tools/`, `bench/`, `examples/`, and `vectors/` is a
-directory with a README describing what will land there in Phase 1. There is no code yet —
-Gate 0a (see below) opened on 2026-08-22 and Phase 1 has not started. See
-[`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for the plan.
+Gate 0a (see below) opened on 2026-08-22, and what exists under those directories is: two
+cores, `core/python` and `core/typescript`, each passing the pinned vector suite 42/42, the
+second written without reading the first; the vectors themselves and the generator that
+emits them (`tools/vector-gen`). Every other directory — the remaining cores, every adapter,
+the backfill and leakage tools, `bench/`, `examples/` — holds only a README describing what
+lands there. See [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for the
+plan and [`docs/18-m2-report.md`](docs/18-m2-report.md) for what the two cores' agreement
+does and does not establish.
 
 ## Design commitments
 

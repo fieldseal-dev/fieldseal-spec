@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,17 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from fieldseal import Fieldseal, FieldContext                      # noqa: E402
-from fieldseal.envelope import is_ciphertext, parse_header         # noqa: E402
-from fieldseal.errors import (CommitmentInvalid, ConfigurationError,  # noqa: E402
-                              FieldsealError, ModeViolation,
-                              SuiteProvisional)
-from fieldseal.keyprovider import StaticKeyProvider                # noqa: E402
+from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal.envelope import is_ciphertext  # noqa: E402
+from fieldseal.errors import (  # noqa: E402
+    CommitmentInvalid,
+    ConfigurationError,
+    FieldsealError,
+    FieldsealWarning,
+    ModeViolation,
+    SuiteProvisional,
+)
+from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
 
 KEY_ID = bytes(range(16))
 DEK = bytes(range(32))
@@ -32,44 +38,47 @@ CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
 
 
 def _client(**kw) -> Fieldseal:
-    kw.setdefault("acknowledge_provisional_suite", True)
-    return Fieldseal(key_provider=StaticKeyProvider(KEY_ID, DEK, INDEX_KEY),
-                     allowed_suites={0xFF01}, write_suite=0xFF01, **kw)
+    kw.setdefault("arm_provisional_suites", True)
+    with warnings.catch_warnings():
+        # The §10.3 warning is asserted in test_parity.py; here it is noise.
+        warnings.simplefilter("ignore", FieldsealWarning)
+        return Fieldseal(key_provider=StaticKeyProvider(KEY_ID, DEK, INDEX_KEY),
+                         allowed_suites={0xFF01}, write_suite=0xFF01, **kw)
 
 
 # -- spec §4.8, the provisional gate ------------------------------------------
 
 def test_unarmed_client_refuses_to_encrypt(monkeypatch):
-    monkeypatch.delenv("FIELDSEAL_ALLOW_PROVISIONAL_SUITE", raising=False)
-    fs = _client(acknowledge_provisional_suite=False)
+    monkeypatch.delenv("FIELDSEAL_ARM_PROVISIONAL_SUITES", raising=False)
+    fs = _client(arm_provisional_suites=False)
     with pytest.raises(SuiteProvisional) as e:
         fs.encrypt(b"secret", CTX)
     # The message must name the suite and the mechanism: an operator meeting
     # this needs to know both that the construction is unreviewed and exactly
     # what acknowledging it entails (spec §9).
     assert "0xff01" in str(e.value).lower()
-    assert "FIELDSEAL_ALLOW_PROVISIONAL_SUITE" in str(e.value)
+    assert "FIELDSEAL_ARM_PROVISIONAL_SUITES" in str(e.value)
 
 
 def test_unarmed_client_still_decrypts(monkeypatch):
     """Spec §4.8: decrypt is deliberately ungated. Making recovery harder than
     writing would be exactly the wrong incentive."""
-    monkeypatch.delenv("FIELDSEAL_ALLOW_PROVISIONAL_SUITE", raising=False)
+    monkeypatch.delenv("FIELDSEAL_ARM_PROVISIONAL_SUITES", raising=False)
     blob = _client().encrypt(b"secret", CTX)
-    assert _client(acknowledge_provisional_suite=False).decrypt(blob, CTX) \
+    assert _client(arm_provisional_suites=False).decrypt(blob, CTX) \
         == b"secret"
 
 
 def test_env_var_arms_the_gate(monkeypatch):
-    monkeypatch.setenv("FIELDSEAL_ALLOW_PROVISIONAL_SUITE", "1")
-    assert _client(acknowledge_provisional_suite=False).encrypt(b"x", CTX)
+    monkeypatch.setenv("FIELDSEAL_ARM_PROVISIONAL_SUITES", "1")
+    assert _client(arm_provisional_suites=False).encrypt(b"x", CTX)
 
 
 def test_rotate_is_a_write_for_the_gate(monkeypatch):
-    monkeypatch.delenv("FIELDSEAL_ALLOW_PROVISIONAL_SUITE", raising=False)
+    monkeypatch.delenv("FIELDSEAL_ARM_PROVISIONAL_SUITES", raising=False)
     blob = _client().encrypt(b"secret", CTX)
     with pytest.raises(SuiteProvisional):
-        _client(acknowledge_provisional_suite=False).rotate(blob, CTX)
+        _client(arm_provisional_suites=False).rotate(blob, CTX)
 
 
 # -- spec §10.3, read modes (G6) ----------------------------------------------
@@ -188,8 +197,10 @@ def test_purpose_grammar_is_enforced():
 def test_index_purpose_never_gets_the_dek():
     """Spec §8: purpose routing is a provider obligation, not a convention."""
     p = StaticKeyProvider(KEY_ID, DEK, INDEX_KEY)
-    with pytest.raises(ConfigurationError):
-        p.dek_for(CTX.for_index("email-eq").with_suite(0xFF01))
+    material, key_id = p.encryption_key(
+        CTX.for_index("email-eq").with_suite(0xFF01))
+    assert material == INDEX_KEY and material != DEK
+    assert p.encryption_key(CTX.with_suite(0xFF01)) == (DEK, KEY_ID)
 
 
 # -- review findings, 2026-08-22 ----------------------------------------------

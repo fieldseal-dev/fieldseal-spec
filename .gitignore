@@ -34,6 +34,11 @@ obj/
 # Internal scratch docs (not persisted to repo)
 internal/
 
+# Conformance reports (docs/14 §4) written in-tree by local harness runs
+conformance-*.json
+cross-*.json
+verdict-*.json
+
 # Vector generator virtualenv (tools/vector-gen)
 tools/vector-gen/.venv/
 *.egg-info/

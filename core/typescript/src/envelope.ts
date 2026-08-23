@@ -131,7 +131,11 @@ export function serialize(
   if (nonce.length !== suite.nonceLen) throw new Error("internal: nonce length");
   if (tag.length !== suite.tagLen) throw new Error("internal: tag length");
   if (commitment.length !== suite.commitLen) throw new Error("internal: commitment length");
-  const out = Buffer.allocUnsafe(fixedOverhead(suite) + ciphertext.length);
+  // Buffer.alloc, never allocUnsafe/from: this Buffer is returned to the
+  // caller by encrypt(), and a pool-backed allocation would hand out a view
+  // whose `.buffer` is Node's shared pool -- unrelated allocations, visible
+  // (docs/11 §5 aliasing rule).
+  const out = Buffer.alloc(fixedOverhead(suite) + ciphertext.length);
   let o = 0;
   out[o++] = FMT_VER;
   out[o++] = (suite.id >>> 8) & 0xff;

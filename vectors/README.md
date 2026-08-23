@@ -4,7 +4,10 @@
 
 Every implementation MUST run every vector for every conformance level it claims, in CI, and CI MUST fail on any divergence.
 
-## Layout (planned)
+## Layout
+
+*Status 2026-08-23, suite `0.2.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 111 vectors; `blind-index/argon2id.json` is held out (see the manifest's `held_out` and `docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, and `cross/corpus.json` is the 16-case input corpus every cross producer encrypts — both under `MANIFEST.support`, never run by a harness. The *dynamic* cross exchange runs in CI (`docs/14` §3: each core produces through its production path, every core decrypts every producer, self-pairs included); `cross/static/` — per-release checked-in envelopes — waits for a first release to pin. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
+
 
 ```
 vectors/
@@ -20,7 +23,7 @@ vectors/
                      to be decrypted by every other implementation
 ```
 
-## Format (planned)
+## Format
 
 JSON, one file per vector group. Every binary value hex-encoded. Every vector carries a stable `id`, the full input state (no implicit defaults), the expected output, and a `spec_ref` pointing at the section it exercises.
 

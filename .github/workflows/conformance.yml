@@ -15,6 +15,10 @@ on:
       - "tools/vector-gen/**"
       - ".github/workflows/conformance.yml"
   workflow_dispatch:
+  schedule:
+    # Nightly (docs/14 §2): a Node, OpenSSL or pip-dependency change altering
+    # behavior is exactly the drift the cross job exists to catch.
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read
@@ -77,13 +81,18 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install the core and its test extras
-        run: python -m pip install --disable-pip-version-check -e "./core/python[argon2,dev]"
+        run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2,dev]"
 
       - name: Run the suite
         run: python -m pytest core/python/tests -q
 
+      # docs/14 §4 JSON on stdout, prose on stderr. Exit status is non-zero on
+      # any failure or non-pass out-of-band entry. The parse step exists
+      # because this file once captured a prose summary under a .json name.
       - name: Emit the conformance report
-        run: python core/python/tests/run_vectors.py > conformance-python.json
+        run: |
+          python core/python/tests/run_vectors.py > conformance-python.json
+          python -c "import json; r = json.load(open('conformance-python.json')); print(r['summary'], sorted(r['pinned_decisions']))"
 
       # docs/14 §4: reports are uploaded as artifacts on every run.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -103,7 +112,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install the generator
-        run: python -m pip install --disable-pip-version-check -e ./tools/vector-gen
+        run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e ./tools/vector-gen
 
       # The generator is deterministic by construction -- no CSPRNG, no clock
       # (docs/08 §7). So a regenerated suite that differs from the committed
@@ -162,8 +171,22 @@ jobs:
               if doc.get("status") != "pinned":
                   fail.append(f"{entry['path']}: in MANIFEST.files but status={doc.get('status')!r}")
 
+          # Support files (keys/) are hashed like a family and never run;
+          # a harness that iterated one would find no vectors to run.
+          for entry in m.get("support", []):
+              p = root / entry["path"]
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != entry["sha256"]:
+                  fail.append(f"{entry['path']}: sha256 {got} != {entry['sha256']}")
+              if "vectors" in json.loads(p.read_text("utf-8")):
+                  fail.append(f"{entry['path']}: a support file must not carry vectors")
+
           for entry in m.get("held_out", []):
-              doc = json.loads((root / entry["path"]).read_text("utf-8"))
+              p = root / entry["path"]
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != entry["sha256"]:
+                  fail.append(f"{entry['path']} (held out): sha256 {got} != {entry['sha256']}")
+              doc = json.loads(p.read_text("utf-8"))
               if doc.get("status") != "held-out":
                   fail.append(f"{entry['path']}: held out but status={doc.get('status')!r}")
               for field in ("reason", "unblocks_when"):
@@ -190,5 +213,123 @@ jobs:
               for f in fail:
                   print(f"  - {f}")
               sys.exit(1)
-          print(f"OK: {len(pinned)} pinned, {len(held)} held out, all provisional.")
+          print(f"OK: {len(pinned)} pinned, {len(m.get('support', []))} support, {len(held)} held out, all provisional.")
           PY
+
+  # docs/14 §3: the N x N cross-implementation job -- the one that matters.
+  # Each implementation encrypts the shared corpus through its REAL
+  # production path (runtime CSPRNG, no injection); every implementation
+  # (self-pairs included, to split "producer broke" from "pair broke")
+  # decrypts every producer's artifact and compares plaintext byte-exact.
+  cross-produce:
+    name: "cross: ${{ matrix.impl }} produces"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        impl: [python, typescript]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: matrix.impl == 'python'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install the Python core
+        if: matrix.impl == 'python'
+        run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
+      - name: Produce (python)
+        if: matrix.impl == 'python'
+        run: python core/python/tests/cross_produce.py --out cross-python.json
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.impl == 'typescript'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: core/typescript/package-lock.json
+      - name: Install the TypeScript core
+        if: matrix.impl == 'typescript'
+        working-directory: core/typescript
+        run: npm ci
+      - name: Produce (typescript)
+        if: matrix.impl == 'typescript'
+        working-directory: core/typescript
+        run: npm run --silent cross:produce -- --out ../../cross-typescript.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cross-${{ matrix.impl }}
+          path: cross-${{ matrix.impl }}.json
+
+  cross-consume:
+    name: "cross: ${{ matrix.consumer }} decrypts every producer"
+    runs-on: ubuntu-24.04
+    needs: cross-produce
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer: [python, typescript]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cross-*
+          merge-multiple: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: matrix.consumer == 'python'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install the Python core
+        if: matrix.consumer == 'python'
+        run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
+      - name: Consume every producer (python)
+        if: matrix.consumer == 'python'
+        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json --verdict verdict-python.json
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.consumer == 'typescript'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: core/typescript/package-lock.json
+      - name: Install the TypeScript core
+        if: matrix.consumer == 'typescript'
+        working-directory: core/typescript
+        run: npm ci
+      - name: Consume every producer (typescript)
+        if: matrix.consumer == 'typescript'
+        working-directory: core/typescript
+        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json --verdict ../../verdict-typescript.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: verdict-${{ matrix.consumer }}
+          path: verdict-${{ matrix.consumer }}.json
+
+  # Lint and strict typing for the Python core (the TypeScript job already
+  # typechecks; ruff runs against the project [tool.ruff], never a user-level
+  # config).
+  python-lint:
+    name: Python lint and strict typing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2,dev]"
+
+      - name: ruff
+        working-directory: core/python
+        run: python -m ruff check src tests
+
+      - name: mypy --strict
+        working-directory: core/python
+        run: python -m mypy src

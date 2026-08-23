@@ -101,7 +101,7 @@ The construction that remains is close to what CipherSweet ships — Argon2id "w
 | **Proposal** | [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), incl. [#11](https://github.com/fieldseal-dev/fieldseal-spec/issues/11) |
 | **Provisional status** | Adopted; spec §6.2 carries a `[PROVISIONAL]` marker |
 
-`canonical_context` is used twice — as the KDF `info` parameter and inside the AEAD's AAD — so an aliasing collision is a key-reuse bug and an authentication bug simultaneously. The optional fields are where it is weak: `row_id` is "omitted entirely if null" while `tenant_id` has no stated null encoding at all, so an absent `tenant_id` and a present-but-zero-length one currently produce identical bytes. Proposed fix: a presence bitmap.
+`canonical_context` is used twice — as the KDF `info` parameter and inside the AEAD's AAD — so an aliasing collision is a key-reuse bug and an authentication bug simultaneously. The optional fields are where it is weak: `row_id` is "omitted entirely if null" while `tenant_id` has no stated null encoding at all, so under the original positional encoding an absent `tenant_id` and a present-but-zero-length one produced identical bytes. The fix — a presence bitmap — is in §6.2 provisionally under Gate 0a and is what the cores and vectors now use; the question for you is whether it is the right fix.
 
 **What closes it:** confirmation that the chosen encoding is injective over the current field set *and* over plausible future extensions — or a demonstrated aliasing. This is the cheapest question here and the one where a counterexample is most likely.
 
@@ -136,6 +136,14 @@ No RFC exists. `draft-irtf-cfrg-xchacha` expired. libsodium's `crypto_aead_xchac
 **The precedent is weaker than it first looks** (verified 2026-08-22). PASETO **v2.local** does specify XChaCha20-Poly1305 "using an AEAD interface such as the one provided in libsodium," citing no RFC or draft — a real instance of the choice. But **v4.local** moved to XChaCha20 with a separate BLAKE2b-MAC, so it is not a second instance; and PASETO's author is also the author of the expired `draft-irtf-cfrg-xchacha`, so what reads as independent corroboration is one party's judgment. The draft's status is pinned: revision **-03, expired 2023-05-02, datatracker state "Dead IRTF Document."**
 
 **What closes it:** a position, not an analysis. Is a libsodium-defined suite acceptable in a specification seeking independent review, or is a one-suite registry the honest answer? This is the fastest question in the set and it is genuinely blocked on someone else's judgment.
+
+**Input received, 2026-08-23 (CFRG list, in reply to the 2026-08-22 post; not a review, recorded as what it is).** Three replies, two substantive:
+
+- *Neil Madden*: not aware of any other stable specification for XChaCha20-Poly1305 — so no revival to wait for — and asks whether a general-purpose KDF deriving a subkey for standard ChaCha20-Poly1305 would not achieve the same end.
+- *John Preuß Mattsson (Ericsson)*: (1) `draft-irtf-cfrg-xchacha-03` **is a stable, citable document** — "it will not change, and the IETF will keep the document available indefinitely" (`https://www.ietf.org/archive/id/draft-irtf-cfrg-xchacha-03.txt`), which answers the citation question this brief thought was blocked; (2) "non-NIST" is the wrong design goal — *a different hardness assumption* is the sensible one, and this project's rationale wording should say that instead; (3) the recommended way to get random extended nonces with any AEAD is `K' = KDF(K, E); C = AEAD(K', N, P, A)` — which is **already §5.3**, with the 32-byte `msg_seed` as `E` — so the 192-bit nonce that motivated XChaCha is redundant here and plain RFC 8439 ChaCha20-Poly1305 under the derived key is the fully citable alternative; (4) NIST's SP 800-38D r1 second public draft is considering removing support for non-96-bit GCM IVs (`https://csrc.nist.gov/pubs/sp/800/38/d/r1/2prd`; his comments at `https://emanjon.github.io/NIST-comments/2026%20SP%20800-38D.pdf`), and long random GCM nonces are hashed to 128 bits and add a `q²/2^min(r,128)` term to both bounds — a citation §4.4 lacked.
+- The third reply did not engage with the question and is not recorded further.
+
+The list archive is `https://mailarchive.ietf.org/arch/browse/cfrg/` (thread subject as posted, 2026-08-22/23). Consequence for this question: it now has **three** answers rather than two — cite the archival draft, drop the suite, or re-base `0xFF02` on RFC 8439 ChaCha20-Poly1305 with §5.3 as the nonce extension — and the third is the one `docs/issues/G07` now proposes. The position a reviewer is asked for is unchanged in kind: which of the three.
 
 <a id="q7"></a>
 ### Q7 — Is the fresh envelope's novelty risk acceptable?
@@ -193,7 +201,7 @@ Kept in the open so that "we could not find reviewers" is a claim with evidence 
 
 | Date | Venue or person | Question(s) put | Outcome |
 |---|---|---|---|
-| 2026-08-22 | IRTF CFRG list (`cfrg@irtf.org`) | [Q6](#q6) | **Sent.** Awaiting response |
+| 2026-08-22 | IRTF CFRG list (`cfrg@irtf.org`) | [Q6](#q6) | **Answered 2026-08-23** — three replies; two substantive (Madden; Preuß Mattsson), recorded under [Q6](#q6) and in `issues/G07`. Not a review. Reply from this side pending |
 | 2026-08-22 | Paragon Initiative (`security@paragonie.com`), for Scott Arciszewski | [Q3](#q3), [Q6](#q6) | **Sent.** Awaiting response. Chosen because one person authored both the CipherSweet blind-index construction Q3 diverges from and the expired `draft-irtf-cfrg-xchacha` behind Q6 |
 
 Channels this brief is written to be usable in, roughly in order of expected yield:
