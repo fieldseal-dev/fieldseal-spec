@@ -31,17 +31,16 @@ REPO = Path(__file__).resolve().parents[3]
 VECTORS = REPO / "vectors"
 sys.path.insert(0, str(REPO / "core" / "python" / "src"))
 
-import fieldseal                                                   # noqa: E402
-from fieldseal import Fieldseal, FieldContext                      # noqa: E402
-from fieldseal.api import PROVISIONAL_ENV                          # noqa: E402
-from fieldseal.blindindex import (NORMALIZERS, idf_hmac_sha512,    # noqa: E402
-                                  truncate)
-from fieldseal.context import aad, canonical_context               # noqa: E402
-from fieldseal.envelope import MAX_PLAINTEXT, serialize_header     # noqa: E402
-from fieldseal.errors import FieldsealError, LengthExceeded        # noqa: E402
-from fieldseal.kdf import commitment, index_key, record_key        # noqa: E402
-from fieldseal.keyprovider import StaticKeyProvider                # noqa: E402
-from fieldseal.testing import encrypt_with_materials               # noqa: E402
+import fieldseal  # noqa: E402
+from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal.api import PROVISIONAL_ENV  # noqa: E402
+from fieldseal.blindindex import NORMALIZERS, idf_hmac_sha512, truncate  # noqa: E402
+from fieldseal.context import aad, canonical_context  # noqa: E402
+from fieldseal.envelope import MAX_PLAINTEXT, serialize_header  # noqa: E402
+from fieldseal.errors import FieldsealError, LengthExceeded  # noqa: E402
+from fieldseal.kdf import commitment, index_key, record_key  # noqa: E402
+from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
+from fieldseal.testing import encrypt_with_materials  # noqa: E402
 
 H = bytes.fromhex
 
@@ -460,8 +459,8 @@ def _commit() -> str:
 
 
 def _environment() -> dict:
-    from cryptography.hazmat.backends.openssl import backend as ossl
     import cryptography
+    from cryptography.hazmat.backends.openssl import backend as ossl
     return {
         "runtime": f"{platform.python_implementation()} "
                    f"{platform.python_version()}",

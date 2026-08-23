@@ -18,12 +18,17 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from fieldseal import Fieldseal, FieldContext                      # noqa: E402
-from fieldseal.envelope import is_ciphertext                       # noqa: E402
-from fieldseal.errors import (CommitmentInvalid, ConfigurationError,  # noqa: E402
-                              FieldsealError, FieldsealWarning,
-                              ModeViolation, SuiteProvisional)
-from fieldseal.keyprovider import StaticKeyProvider                # noqa: E402
+from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal.envelope import is_ciphertext  # noqa: E402
+from fieldseal.errors import (  # noqa: E402
+    CommitmentInvalid,
+    ConfigurationError,
+    FieldsealError,
+    FieldsealWarning,
+    ModeViolation,
+    SuiteProvisional,
+)
+from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
 
 KEY_ID = bytes(range(16))
 DEK = bytes(range(32))

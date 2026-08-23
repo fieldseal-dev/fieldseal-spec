@@ -25,7 +25,7 @@ Monorepo (current layout). GitHub Actions **[assumption: GitHub remains the host
   conformance.yml    assembles per-run conformance reports into the published summary
 ```
 
-Path filtering keeps unrelated changes cheap; `cross.yml` runs on changes to any `core/**`, `vectors/**`, or on a nightly schedule (catching toolchain drift — a Node or OpenSSL upgrade changing behavior is exactly the class of bug this project exists to surface).
+*Delta, 2026-08-23:* what ships today is one workflow, `conformance.yml`, whose jobs cover the roles above that exist (`typescript-core`, `python-core`, `vectors-reproducible`, `suite-integrity`, `cross-produce`/`cross-consume`, `python-lint`); the per-file split happens when adapters arrive. Path filtering keeps unrelated changes cheap; `cross.yml` runs on changes to any `core/**`, `vectors/**`, or on a nightly schedule (catching toolchain drift — a Node or OpenSSL upgrade changing behavior is exactly the class of bug this project exists to surface).
 
 ## 3. The cross job (the one that matters)
 
@@ -47,6 +47,8 @@ gate:
 ```
 
 Self-pairs (`python→python`) stay in the matrix deliberately: they distinguish "producer broke" from "pair broke," halving diagnosis time.
+
+*Implemented 2026-08-23* in `conformance.yml` (`cross-produce` matrix → artifacts → `cross-consume` matrix, plus the nightly schedule): each producer encrypts the 16-case shared corpus (`vectors/cross/corpus.json`, generator-emitted so it cannot drift between languages) through its production path; each consumer decrypts every producer's artifact — 64 pair-cases per run, including the 2000-byte-context envelope that failed silently on 2026-08-22. Producers: `core/python/tests/cross_produce.py`, `core/typescript/tests/cross/produce.ts` (npm `cross:produce`); consumers likewise. A verdict artifact is uploaded per consumer.
 
 `key_ref` resolution uses `vectors/keys/test-keys.json`, emitted by the generator since suite 0.2.0 (format in docs/08 §4.7; two refs, `tenant-a-dek-v1` and `tenant-b-dek-v1`). Static cross vectors (`vectors/cross/static/`) are additionally verified by each core's ordinary vector harness — they catch drift against *released* implementations, while the dynamic job catches drift at head.
 

@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 from .families import (blind_index_family, commitment_family, context_family,
-                       envelope_family, errors_family, kdf_family, keys_family)
+                       cross_corpus_family, envelope_family, errors_family,
+                       kdf_family, keys_family)
 from .manifest import HELD_OUT, build_manifest, write_json
 
 STDLIB_FAMILIES = {
@@ -32,6 +33,7 @@ DEPENDENT_FAMILIES = {
 
 SUPPORT_FILES = {
     "keys/test-keys.json": keys_family.generate,
+    "cross/corpus.json": cross_corpus_family.generate,
 }
 
 
