@@ -1,0 +1,1368 @@
+{
+  "schema": "fieldseal-vectors/errors/v1",
+  "vector_suite_version": "0.2.0-provisional",
+  "group": "errors",
+  "spec_version": "0.1-draft",
+  "status": "pinned",
+  "vectors": [
+    {
+      "id": "errors/format/empty-input",
+      "description": "zero-length input",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/empty-input-permissive",
+      "description": "zero-length input (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "",
+      "expected": {
+        "value": ""
+      }
+    },
+    {
+      "id": "errors/format/empty-input-readonly",
+      "description": "zero-length input (readonly: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "",
+      "expected": {
+        "value": ""
+      }
+    },
+    {
+      "id": "errors/format/one-byte",
+      "description": "a single byte",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "41",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/ascii-plaintext",
+      "description": "an unmigrated ASCII value presented as ciphertext -- the migration-accident case",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/ascii-plaintext-permissive",
+      "description": "an unmigrated ASCII value presented as ciphertext -- the migration-accident case (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "value": "3132332d34352d36373839"
+      }
+    },
+    {
+      "id": "errors/format/ascii-plaintext-readonly",
+      "description": "an unmigrated ASCII value presented as ciphertext -- the migration-accident case (readonly: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "value": "3132332d34352d36373839"
+      }
+    },
+    {
+      "id": "errors/format/header-only",
+      "description": "exactly the 51-byte header, nothing after",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c8",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 51 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-key-id",
+      "description": "basic-roundtrip truncated mid key_id (10 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcd",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 10 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-msg-seed",
+      "description": "basic-roundtrip truncated mid msg_seed (30 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 30 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-nonce",
+      "description": "basic-roundtrip truncated mid nonce (55 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1b",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 55 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-ciphertext",
+      "description": "basic-roundtrip truncated mid ciphertext (70 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 70 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-tag",
+      "description": "basic-roundtrip truncated mid tag (85 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 85 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/truncated-mid-commitment",
+      "description": "basic-roundtrip truncated mid commitment (100 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac21",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 100 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/one-under-minimum",
+      "description": "basic-roundtrip truncated one byte under the 111-byte 0xFF01 minimum (110 bytes, under the 0xFF01 minimum of 111)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 110 bytes",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/one-under-minimum-permissive",
+      "description": "basic-roundtrip truncated one byte under the 111-byte 0xFF01 minimum (110 bytes, under the 0xFF01 minimum of 111) (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 110 bytes",
+      "expected": {
+        "value": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613"
+      }
+    },
+    {
+      "id": "errors/format/one-under-minimum-readonly",
+      "description": "basic-roundtrip truncated one byte under the 111-byte 0xFF01 minimum (110 bytes, under the 0xFF01 minimum of 111) (readonly: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 110 bytes",
+      "expected": {
+        "value": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613"
+      }
+    },
+    {
+      "id": "errors/format/truncated-beyond-minimum",
+      "description": "one-kib envelope minus its last byte: still structurally an envelope (1134 >= 111, suite registered), so recognition passes and the damage surfaces at the commitment check, not as NOT_CIPHERTEXT",
+      "spec_ref": "§3.4, §4.6, §9",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff010123456789abcdef0123456789abcdef2f6527226ed04be984984e7acae2e1a8f1e105a8a1051047b4393b534be819cf6f9956b97ba30ebb61110df50ed56262960c9d5231b44b7a40600cc93a6e7971753eb6258d458f2d6ac471129ebd590328a68cab30922412d422940cb95724950a152692282d08babdd8bd2e12f2a3121bf0da59c3f99f432ea73ca4dd8faa42a0b2c69d301d357b944608462f27614b50bcbaec97374090c2252903ec157f67d6e943de5196b712912f057ea2e9110e831d57c7a4e7586469fb3b923ae18bc3d02ed37eedcc4144cd8eea6a4c6845befcd0c074a06db13c7d06de0824cd49eb4f23dfd2ea7ef60f85f12ad936bfc353d61b5fffefec74f0032de6416dd97009dec350f1e085d2760f3b02a9799a7ca776097e37d30994f49157ef1d3e241ea522315a12a6e28cdc8e908b2d04706373a0385639552b8913b5e7f80d0aef3d23150fb9f37eb372363c638a45fb37a75c764d532fbfa3751bb2c678d1268d0a287ca47058406a78609a05e3ad8b79d51dcdc19edac05cd7db8e97e889f9a1e1b71b34bfcc4457ccfba9f3ed03bffb117f6c78eb561a37c830ad4608493355e4489b234499bcde9b2174f2aef1882b89633c33fa0e6b496f425c06e652915a2dbd2d6b8c1487da8aaf521591e6da34c296a47213f7b1757038275ea622f7be2212bed28e6b2e87233bf612a7f05ee5aa171e383bf98f19add7099d0618f9b99ee664ee16ee430867294de9fbee02154a7b4e7469afeff2eb35fb154aa3fb53d2ba515ff70a9960e0e47f4e79a9cbd464f3d43bd6538eb491c32050736cb7f99b2cbed4d975b1e32ffd161b6286fe50e9cd4bbdf8e2bdbfeafa66a2c801fa01d95e8a670de31dd1d12b73729268d48da16d266e116f841e902e59211131fccf35e40472a414c816348b187621bf04c0a2b1109c66c0cf532eb7903a57308e63d0380c785585f7976672fb29f080c9d93c1b67598e92a3ffae23411c94099f50f16d367c7586498b0c7d23d11014a674f67fc0c193f8f03635c68323d8dbe3964313b7cba0b125e47141537dadc5fa3f898790918c55ea7426347169ad01e4a0ea7503d8c0c0dbf34e5f457f788cff76967bd858594df8a83010ef23119a9a67823ea183dc15d632049d4eec30572bc2f466602c59326eb758991a0af8b4b907f04c9725a88077f95b7f810cb385006bac3263e7179bff6ade11d5b73825d8da10e5d4fcc175d950fd80e8767437c819073185434dbcb89b23f09da4876252cdfc6a7f7ece4fad151ac92d4a92109eaf1384776e203fd80373c90e3bf35679ab23a3a5c5ca1c724374ce6b27c73c628e45ded5e65b225b250cc42cf62df859888e89c0c284208b92c1f11dcfc4d6e947cf388bf7ebe7b380da61f0d2cd4d2935638f808a5a6cdf359b6183695faadb2b406a73157454e3ebefd315be4626725add21a9589383eab9cad7d137fb50893ca05e97f5225e03bebc0ae526f5c8b8fa990e328b690f4ee1594228cf946ff38de1fbebaed67d4378401039fad56bd446494e7390117dd0be4fa96394f1a0382809f1f72938d6e06ea5daf38f80",
+      "derived_from": "envelope/ff01/one-kib",
+      "mutation": "drop the last byte",
+      "expected": {
+        "error": "COMMITMENT_INVALID"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-00",
+      "description": "fmt_ver = 0x00 on an otherwise valid envelope -- not a recognized version (§3.4)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "00ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x00",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-00-permissive",
+      "description": "fmt_ver = 0x00 on an otherwise valid envelope -- not a recognized version (§3.4) (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "00ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x00",
+      "expected": {
+        "value": "00ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-03",
+      "description": "fmt_ver = 0x03 on an otherwise valid envelope -- not a recognized version (§3.4)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "03ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x03",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-03-permissive",
+      "description": "fmt_ver = 0x03 on an otherwise valid envelope -- not a recognized version (§3.4) (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "03ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x03",
+      "expected": {
+        "value": "03ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-ff",
+      "description": "fmt_ver = 0xff on an otherwise valid envelope -- not a recognized version (§3.4)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "ffff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0xff",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-ff-permissive",
+      "description": "fmt_ver = 0xff on an otherwise valid envelope -- not a recognized version (§3.4) (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "ffff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0xff",
+      "expected": {
+        "value": "ffff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7"
+      }
+    },
+    {
+      "id": "errors/format/fmt-ver-02-reserved",
+      "description": "fmt_ver = 0x02, the reserved-known-future version, at a plausible length (>= 111): UNKNOWN_FORMAT_VERSION in every read mode -- data from a newer implementation is never handed to the application as plaintext (strict)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x02",
+      "expected": {
+        "error": "UNKNOWN_FORMAT_VERSION"
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/fmt-ver-02-reserved-permissive",
+      "description": "fmt_ver = 0x02, the reserved-known-future version, at a plausible length (>= 111): UNKNOWN_FORMAT_VERSION in every read mode -- data from a newer implementation is never handed to the application as plaintext (permissive)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x02",
+      "expected": {
+        "error": "UNKNOWN_FORMAT_VERSION"
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/fmt-ver-02-reserved-readonly",
+      "description": "fmt_ver = 0x02, the reserved-known-future version, at a plausible length (>= 111): UNKNOWN_FORMAT_VERSION in every read mode -- data from a newer implementation is never handed to the application as plaintext (readonly)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "readonly",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set byte 0 to 0x02",
+      "expected": {
+        "error": "UNKNOWN_FORMAT_VERSION"
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/fmt-ver-02-under-minimum",
+      "description": "fmt_ver = 0x02 on a 110-byte blob: below the plausibility floor, so not 'a newer envelope' but non-envelope input",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 110 bytes, set byte 0 to 0x02",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/fmt-ver-02-under-minimum-permissive",
+      "description": "fmt_ver = 0x02 on a 110-byte blob: below the plausibility floor, so not 'a newer envelope' but non-envelope input (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 110 bytes, set byte 0 to 0x02",
+      "expected": {
+        "value": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613"
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/suite-unregistered",
+      "description": "suite_id = 0x00FF, not in the registry -- recognition fails (§3.4); this is not SUITE_NOT_ALLOWED",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "0100ff0123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set bytes 1-2 to 00 ff",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/suite-unregistered-permissive",
+      "description": "suite_id = 0x00FF, not in the registry -- recognition fails (§3.4); this is not SUITE_NOT_ALLOWED (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "0100ff0123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set bytes 1-2 to 00 ff",
+      "expected": {
+        "value": "0100ff0123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7"
+      }
+    },
+    {
+      "id": "errors/format/suite-reserved-unassigned",
+      "description": "suite_id = 0x0001, reserved but unassigned until Gate 0b (§4.2) -- not a registered suite today",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "0100010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "set bytes 1-2 to 00 01",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/format/suite-ff02-under-its-minimum",
+      "description": "suite_id = 0xFF02 on a 115-byte blob: above the global minimum (111) but below 0xFF02's own (123, 24-byte nonce) -- recognition is per-suite, so not an envelope",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028b",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 115 bytes, set bytes 1-2 to ff 02",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      },
+      "provisional_on": [
+        "D-11"
+      ]
+    },
+    {
+      "id": "errors/format/suite-ff02-under-its-minimum-permissive",
+      "description": "suite_id = 0xFF02 on a 115-byte blob: above the global minimum (111) but below 0xFF02's own (123, 24-byte nonce) -- recognition is per-suite, so not an envelope (permissive: returned as-is, §10.3)",
+      "spec_ref": "§3.4, §9, §10.3",
+      "suite_id": "0xFF01",
+      "operation": "decrypt",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028b",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "mutation": "truncate to 115 bytes, set bytes 1-2 to ff 02",
+      "expected": {
+        "value": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028b"
+      },
+      "provisional_on": [
+        "D-11"
+      ]
+    },
+    {
+      "id": "errors/format/is-ciphertext-valid",
+      "description": "is_ciphertext over a valid envelope",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": true
+      }
+    },
+    {
+      "id": "errors/format/is-ciphertext-under-minimum",
+      "description": "is_ciphertext over 110 bytes",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "01ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": false
+      }
+    },
+    {
+      "id": "errors/format/is-ciphertext-fmt-ver-03",
+      "description": "is_ciphertext over fmt_ver 0x03",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "03ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": false
+      }
+    },
+    {
+      "id": "errors/format/is-ciphertext-fmt-ver-02",
+      "description": "is_ciphertext over fmt_ver 0x02 at plausible length: false -- a future version need not keep suite_id at bytes 1-2, so the check that makes recognition trustworthy cannot run; decrypt raises UNKNOWN_FORMAT_VERSION instead (G15 part A)",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": false
+      },
+      "provisional_on": [
+        "G15"
+      ]
+    },
+    {
+      "id": "errors/format/is-ciphertext-suite-unregistered",
+      "description": "is_ciphertext over suite 0x00FF",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "0100ff0123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": false
+      }
+    },
+    {
+      "id": "errors/format/is-ciphertext-suite-ff02-plausible",
+      "description": "is_ciphertext over suite 0xFF02 at >= 123 bytes: registered, so true -- recognition is independent of the allow-list (§3.4)",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7000000000000000000000000",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": true
+      }
+    },
+    {
+      "id": "errors/format/is-ciphertext-suite-ff02-under-its-minimum",
+      "description": "is_ciphertext over suite 0xFF02 at 115 bytes: false (per-suite minimum)",
+      "spec_ref": "§3.4",
+      "suite_id": "0xFF01",
+      "operation": "is_ciphertext",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input": "01ff020123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028b",
+      "derived_from": "envelope/ff01/basic-roundtrip",
+      "expected": {
+        "is_ciphertext": false
+      },
+      "provisional_on": [
+        "D-11"
+      ]
+    }
+  ],
+  "retired": [],
+  "pinned_order": "Expected outcomes follow the decrypt-path order of docs/09 §3.2 as declared by both shipped cores (docs/14 §4 pinned_decisions.decrypt-order, 2026-08-23): recognition -> LENGTH_EXCEEDED -> SUITE_NOT_ALLOWED -> KEY_UNAVAILABLE -> per candidate: record key, constant-time commitment verify, AEAD open (TAG_INVALID) -> COMMITMENT_INVALID. Spec §9 marks the order [PROVISIONAL - G5]; vectors whose outcome depends on it carry provisional_on and regenerate if the order changes at Gate 0b.",
+  "withheld": [
+    {
+      "case": "LENGTH_EXCEEDED on decrypt (implied plaintext over 2^31-1)",
+      "why": "spec §3.5/§12 exempt it from the literal-bytes rule; docs/14 §4 out_of_band carries the substitute assertion"
+    }
+  ]
+}

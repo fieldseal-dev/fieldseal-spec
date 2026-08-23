@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-VECTOR_SUITE_VERSION = "0.1.0-provisional"
+VECTOR_SUITE_VERSION = "0.2.0-provisional"
 SPEC_VERSION = "0.1-draft"
 
 # Families generated but deliberately NOT part of the pinned suite. Listed
@@ -14,20 +14,20 @@ SPEC_VERSION = "0.1-draft"
 HELD_OUT = {
     "blind-index/argon2id.json": {
         "reason": (
-            "The Argon2id primitive has never been checked against an external "
-            "known-answer source. RFC 9106 §5.3's test vector -- the source "
-            "docs/08 §7 named for this -- supplies a nonzero secret (K) and "
-            "associated data (X), both forbidden by spec §7.3 and unsuppliable "
-            "from Python, so it is unreproducible on this stack. Until a "
-            "substitute known-answer source exists, both reference "
-            "implementations would inherit the same unverified assumption from "
-            "this generator and agree with each other while being wrong."
+            "Held pending a project decision (docs/18 D-15). The original "
+            "ground -- that the Argon2id primitive had never been checked "
+            "against an external known-answer source -- no longer holds: "
+            "since 2026-08-23 the generator checks argon2-cffi against "
+            "libsodium's seven published crypto_pwhash answers (empty K and "
+            "X, 16-byte salt, p = 1) at every run, and the TypeScript core's "
+            "node:crypto backend reproduces RFC 9106 §5.3 and all four "
+            "vectors in this file. What remains is the decision to count "
+            "the family, which the project makes, not the generator."
         ),
         "unblocks_when": (
-            "A known-answer source for Argon2id with empty K and X is "
-            "identified and the generator's primitive layer is checked against "
-            "it. libsodium's crypto_pwhash test suite is the leading candidate, "
-            "since libsodium cannot supply K either."
+            "The project records the decision in docs/07 §7 and moves this "
+            "path from held_out to files (tools/vector-gen manifest.HELD_OUT); "
+            "both harnesses then run it. No expected value changes."
         ),
         "tracking": "docs/08-test-vector-spec.md §7; gap G2",
     },
@@ -49,12 +49,19 @@ def _entry(root: Path, f: Path) -> dict:
     }
 
 
+# Files the suite ships that are not vector families: no expected values, so
+# nothing to run. Hashed like everything else; a harness MUST NOT iterate them.
+SUPPORT = {"keys/test-keys.json"}
+
+
 def build_manifest(root: Path, written: list[Path]) -> dict:
-    pinned, held = [], []
+    pinned, held, support = [], [], []
     for f in sorted(written):
         rel = f.relative_to(root).as_posix()
         if rel in HELD_OUT:
             held.append({**_entry(root, f), **HELD_OUT[rel]})
+        elif rel in SUPPORT:
+            support.append(_entry(root, f))
         else:
             pinned.append(_entry(root, f))
     return {
@@ -69,6 +76,7 @@ def build_manifest(root: Path, written: list[Path]) -> dict:
             "expected values may change when Gate 0b closes."
         ),
         "files": pinned,
+        "support": support,
         "held_out": held,
         "held_out_note": (
             "Generated, reviewable, and NOT part of the suite. A conformance "

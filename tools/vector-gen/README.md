@@ -35,14 +35,21 @@ py -3 -m fieldseal_vectorgen --out ../../vectors --stdlib-only
 | `keys.py` | Record-key and index-key derivation (spec §5.3, §7.2) |
 | `blindindex.py` | HMAC-SHA-512 and Argon2id IDFs (spec §7.3) |
 | `envelope.py` | Envelope assembly and commitment (spec §3.1, §4.6) |
-| `families/` | One module per vector family; each returns a file dict |
-| `manifest.py` | `MANIFEST.json` with per-file sha256 |
+| `gcm.py` | GF(2^128), GHASH and the GCM tag — only to build the invisible-salamander vector (docs/08 §4.6); checked against `cryptography`'s tags at generation time |
+| `families/` | One module per vector family; each returns a file dict. `errors_family.py` cuts its inputs from `envelope_family`'s output so the bytes match; `keys_family.py` emits the `cross/` key material |
+| `manifest.py` | `MANIFEST.json` with per-file sha256; `files` (run), `support` (hashed, never run), `held_out` |
 
 ## Determinism
 
 Every input is fixed in `inputs.py`. The generator uses no CSPRNG and no clock,
 so re-running it on unchanged inputs reproduces byte-identical files — which is
 what makes `MANIFEST.json`'s hashes meaningful and keeps regeneration diffs
-reviewable. Real implementations MUST use a CSPRNG for `msg_seed` and `nonce`
+reviewable. Seeds and nonces are per vector, derived from the vector id
+(`SHA-256("fieldseal-vector-seed:" + id)`, and the nonce likewise) — suite
+0.1.0 shared one seed and one nonce across every envelope vector, which made six
+of them AES-GCM nonce reuse under one record key, shipped as test data by a
+specification whose second commitment is a fresh nonce on every write. The
+envelope family asserts at generation time that no (record key, nonce) pair
+repeats. Real implementations MUST use a CSPRNG for `msg_seed` and `nonce`
 (spec §3.1, §4.4); the fixed values here are a testing affordance only, and
 `docs/08` §6 governs how a core is allowed to accept them.

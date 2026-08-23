@@ -22,6 +22,7 @@ import platform
 import subprocess
 import sys
 import unicodedata
+import warnings
 from pathlib import Path
 
 os.environ.setdefault("FIELDSEAL_TEST_MODE", "1")
@@ -37,17 +38,12 @@ from fieldseal.blindindex import (NORMALIZERS, idf_hmac_sha512,    # noqa: E402
                                   truncate)
 from fieldseal.context import aad, canonical_context               # noqa: E402
 from fieldseal.envelope import MAX_PLAINTEXT, serialize_header     # noqa: E402
-from fieldseal.errors import LengthExceeded                        # noqa: E402
+from fieldseal.errors import FieldsealError, LengthExceeded        # noqa: E402
 from fieldseal.kdf import commitment, index_key, record_key        # noqa: E402
 from fieldseal.keyprovider import StaticKeyProvider                # noqa: E402
 from fieldseal.testing import encrypt_with_materials               # noqa: E402
 
 H = bytes.fromhex
-
-# docs/08 §4.4 names the normalizer `nfc-casefold-v1` (via docs/09 §7); the
-# shipped vectors say `nfc-casefold`. Mapped here, explicitly, and recorded in
-# the report (docs/18 D-07). The core ships only the versioned identifier.
-VECTOR_NORMALIZER_ALIASES = {"nfc-casefold": "nfc-casefold-v1"}
 
 # Spec §9 (G5), docs/14 §4: what this core pinned where the specification is
 # open or silent, in one place, so the Python and TypeScript reports can be
@@ -116,14 +112,8 @@ def _client(key_id: bytes, dek: bytes, index_key_material: bytes) -> Fieldseal:
     )
 
 
-def _ctx(v: dict, suite_id: int = 0xFF01) -> FieldContext:
-    c = v["context"]
-    return FieldContext(
-        table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
-        purpose=c["purpose"],
-        tenant_id=None if c["tenant_id"] is None else H(c["tenant_id"]),
-        row_id=None if c["row_id"] is None else H(c["row_id"]),
-    ).with_suite(suite_id)
+def _ctx(v: dict, suite_id: int) -> FieldContext:
+    return _ctx_from(v["context"], suite_id)
 
 
 def _record(results: list[dict], vid: str, ok: bool, reason: str = "",
@@ -136,105 +126,155 @@ def _record(results: list[dict], vid: str, ok: bool, reason: str = "",
     results.append(entry)
 
 
-def _suite_id(v: dict, default: int = 0xFF01) -> int:
-    return int(v["suite_id"], 16) if "suite_id" in v else default
+def _suite_id(v: dict) -> int:
+    return int(v["suite_id"], 16)
+
+
+def _ctx_from(c: dict, suite_id: int) -> FieldContext:
+    return FieldContext(
+        table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
+        purpose=c["purpose"],
+        tenant_id=None if c["tenant_id"] is None else H(c["tenant_id"]),
+        row_id=None if c["row_id"] is None else H(c["row_id"]),
+    ).with_suite(suite_id)
 
 
 # -- families -----------------------------------------------------------------
 
 def run_context(doc: dict, results: list[dict]) -> None:
     for v in doc["vectors"]:
+        sid = _suite_id(v)
         if v.get("assertion") == "distinct":
-            ok = (v["expected"]["tenant_absent"]
-                  != v["expected"]["tenant_zero_length"])
-            _record(results, v["id"], ok, reproducible=False)
+            # Suite 0.2.0 carries both inputs (docs/18 D-08): reproduce each
+            # side, then check the relation.
+            a = canonical_context(_ctx_from(v["inputs"]["context_a"], sid))
+            b = canonical_context(_ctx_from(v["inputs"]["context_b"], sid))
+            ok = (a.hex() == v["expected"]["tenant_absent"]
+                  and b.hex() == v["expected"]["tenant_zero_length"]
+                  and (a == b) == v["expected"]["must_be_equal"])
+            _record(results, v["id"], ok)
             continue
-        # The family carries no suite_id (docs/18 D-05); 0xFF01 is assumed.
-        ctx = _ctx(v, _suite_id(v))
-        ok = (canonical_context(ctx).hex()
-              == v["expected"]["canonical_context"]
-              and ctx.presence == v["expected"]["presence"])
-        _record(results, v["id"], ok, assumed_suite_id="0xFF01")
+        ctx = _ctx(v, sid)
+        encoded = canonical_context(ctx)
+        ok = (encoded.hex() == v["expected"]["canonical_context"]
+              and ctx.presence == v["expected"]["presence"]
+              and len(encoded) == v["expected"]["length"])
+        _record(results, v["id"], ok)
+
+
+def _index_key_from(tenant_index_key: bytes, ictx: FieldContext) -> bytes:
+    """The core's index_key takes the caller's context and the index-id and
+    retargets the purpose itself; a vector context already carries
+    `index:<id>`. Split it back so the core does the retargeting."""
+    assert ictx.purpose.startswith("index:"), ictx.purpose
+    return index_key(tenant_index_key, ictx, ictx.purpose[len("index:"):])
 
 
 def run_kdf(doc: dict, results: list[dict]) -> None:
     for v in doc["vectors"]:
+        sid = _suite_id(v)
         if v.get("assertion") == "distinct":
-            ok = v["expected"]["key_a"] != v["expected"]["key_b"]
-            _record(results, v["id"], ok, reproducible=False)
+            i = v["inputs"]
+            if "msg_seed_a" in i:
+                ctx = _ctx_from(i["context"], sid)
+                a = record_key(H(i["tenant_dek"]), H(i["key_id"]),
+                               H(i["msg_seed_a"]), ctx, 32)
+                b = record_key(H(i["tenant_dek"]), H(i["key_id"]),
+                               H(i["msg_seed_b"]), ctx, 32)
+            else:
+                a = _index_key_from(H(i["tenant_index_key"]),
+                                    _ctx_from(i["context_a"], sid))
+                b = _index_key_from(H(i["tenant_index_key"]),
+                                    _ctx_from(i["context_b"], sid))
+            ok = (a.hex() == v["expected"]["key_a"]
+                  and b.hex() == v["expected"]["key_b"]
+                  and (a == b) == v["expected"]["must_be_equal"])
+            _record(results, v["id"], ok)
         elif "tenant_dek" in v:
             got = record_key(H(v["tenant_dek"]), H(v["key_id"]),
-                             H(v["msg_seed"]), _ctx(v, _suite_id(v)), 32)
+                             H(v["msg_seed"]), _ctx(v, sid), 32)
             _record(results, v["id"], got.hex() == v["expected"]["record_key"])
         else:
-            # The vector carries purpose "encrypt" plus a separate index_id;
-            # the spec's "index:<id>" purpose is constructed from both
-            # (docs/18 D-06).
-            ctx = _ctx(v, _suite_id(v))
-            got = index_key(H(v["tenant_index_key"]), ctx, v["index_id"])
+            # Suite 0.2.0: the context carries the index purpose itself
+            # (docs/18 D-06), so it is used exactly as given.
+            ctx = _ctx(v, sid)
+            got = _index_key_from(H(v["tenant_index_key"]), ctx)
             ok = (got.hex() == v["expected"]["index_key"]
-                  and canonical_context(ctx.for_index(v["index_id"])).hex()
-                  == v["expected"]["info"])
+                  and canonical_context(ctx).hex() == v["expected"]["info"])
             _record(results, v["id"], ok)
 
 
 def run_commitment(doc: dict, results: list[dict]) -> None:
     for v in doc["vectors"]:
         if v.get("assertion") == "distinct":
-            ok = (v["expected"]["commitment_a"]
-                  != v["expected"]["commitment_b"])
-            _record(results, v["id"], ok, reproducible=False)
+            a = commitment(H(v["inputs"]["record_key_a"]))
+            b = commitment(H(v["inputs"]["record_key_b"]))
+            ok = (a.hex() == v["expected"]["commitment_a"]
+                  and b.hex() == v["expected"]["commitment_b"]
+                  and (a == b) == v["expected"]["must_be_equal"])
+            _record(results, v["id"], ok)
         else:
             ok = (commitment(H(v["record_key"])).hex()
                   == v["expected"]["commitment"])
             _record(results, v["id"], ok)
 
 
-def _index_key_origins() -> dict[str, tuple[bytes, dict]]:
-    """index_key hex -> (tenant_index_key, kdf/index-key vector). Lets a
-    blind-index vector, which carries only the derived key, be run end to end
-    through `Fieldseal.blind_index` with a provider holding the tenant key."""
-    doc = json.loads((VECTORS / "kdf" / "index-key.json").read_text("utf-8"))
-    return {v["expected"]["index_key"]: (H(v["tenant_index_key"]), v)
-            for v in doc["vectors"] if "tenant_index_key" in v}
+def _blind_index_primitive(idf: str, index_key_bytes: bytes,
+                           normalized: bytes, b_bits: int) -> tuple[bytes, bytes]:
+    if idf != "hmac-sha512":
+        raise ValueError(f"harness runs hmac-sha512 only; got {idf}")
+    raw = idf_hmac_sha512(index_key_bytes, normalized)
+    return raw, truncate(raw, b_bits)
 
 
 def run_blind_index(doc: dict, results: list[dict]) -> None:
-    origins = _index_key_origins()
     for v in doc["vectors"]:
+        sid = _suite_id(v)
         if v.get("assertion") == "equal":
-            ok = v["expected"]["index_a"] == v["expected"]["index_b"]
-            _record(results, v["id"], ok, reproducible=False)
+            i = v["inputs"]
+            norm = NORMALIZERS[i["normalize"]]
+            _, a = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                          norm(i["plaintext_preimage_a"]),
+                                          i["truncate_bits"])
+            _, b = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                          norm(i["plaintext_preimage_b"]),
+                                          i["truncate_bits"])
+            ok = (a.hex() == v["expected"]["index_a"]
+                  and b.hex() == v["expected"]["index_b"]
+                  and (a == b) == v["expected"]["must_be_equal"])
+            _record(results, v["id"], ok)
             continue
-        name = VECTOR_NORMALIZER_ALIASES.get(v["normalizer"], v["normalizer"])
-        normalized = NORMALIZERS[name](v["plaintext_utf8"])
-        raw = idf_hmac_sha512(H(v["index_key"]), normalized)
-        stored = truncate(raw, v["b_bits"])
-        ok = (normalized.hex() == v["expected"]["normalized"]
-              and raw.hex() == v["expected"]["raw"]
-              and stored.hex() == v["expected"]["blind_index"]
-              and stored.hex() == v["expected"]["stored"]
-              and len(stored) == v["expected"]["stored_bytes"])
-        _record(results, v["id"], ok, normalizer_mapped_to=name)
-        # End to end through the public API, with the tenant index key the
-        # kdf/index-key family says produced this vector's index_key.
-        origin = origins.get(v["index_key"])
-        if origin is None:
-            _record(results, v["id"] + "#pipeline", False,
-                    "no kdf/index-key vector produces this index_key")
-            continue
-        tenant_index_key, kv = origin
-        fs = _client(bytes(16), b"\x22" * 32, tenant_index_key)
-        got = fs.blind_index(v["plaintext_utf8"], _ctx(kv, _suite_id(v)),
-                             index_id=v["index_id"], b_bits=v["b_bits"],
-                             idf="hmac-sha512", normalizer=name)
-        # Bytes in must equal text in (the core is bytes-in/bytes-out).
-        got_b = fs.blind_index(v["plaintext_utf8"].encode("utf-8"),
-                               _ctx(kv, _suite_id(v)), index_id=v["index_id"],
-                               b_bits=v["b_bits"], idf="hmac-sha512",
-                               normalizer=name)
+        # Primitive level: the vector's normalized plaintext is the normative
+        # input (docs/08 §4.4); the preimage checks the shipped normalizer.
+        normalized = NORMALIZERS[v["normalize"]](v["plaintext_preimage"])
+        raw, stored = _blind_index_primitive(v["idf"], H(v["index_key"]),
+                                             H(v["plaintext"]),
+                                             v["truncate_bits"])
+        exp = v["expected"]
+        checks = {
+            "normalizer": normalized.hex() == v["plaintext"],
+            "raw": raw.hex() == exp["raw"],
+            "index": stored.hex() == exp["index"],
+            "stored.binary": stored.hex() == exp["stored"]["binary"],
+            "stored.hex": stored.hex() == exp["stored"]["hex"],
+            "stored.octets": len(stored) == exp["stored"]["octets"],
+        }
+        _record(results, v["id"], all(checks.values()),
+                " ".join(f"{k}={ok}" for k, ok in checks.items()))
+        # End to end through the public API with the tenant index key the
+        # vector carries, text-in and bytes-in (the core is bytes-in/out).
+        ctx = _ctx(v, sid)
+        caller_ctx = FieldContext(
+            table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            purpose="encrypt", tenant_id=ctx.tenant_id, row_id=None)
+        fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]))
+        kw = dict(index_id=v["index_id"], b_bits=v["truncate_bits"],
+                  idf=v["idf"], normalizer=v["normalize"])
+        got = fs.blind_index(v["plaintext_preimage"], caller_ctx, **kw)
+        got_b = fs.blind_index(v["plaintext_preimage"].encode("utf-8"),
+                               caller_ctx, **kw)
         _record(results, v["id"] + "#pipeline",
-                got.hex() == v["expected"]["stored"] and got == got_b,
+                got.hex() == exp["stored"]["binary"] and got == got_b,
                 f"got {got.hex()} (bytes-in {got_b.hex()})")
 
 
@@ -276,6 +316,73 @@ def run_envelope(doc: dict, results: list[dict]) -> None:
             _record(results, v["id"] + "#decrypt", False, repr(exc))
 
 
+def _errors_client(v: dict) -> Fieldseal:
+    c = v["config"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")     # §10.3 warns in permissive/readonly
+        return Fieldseal(
+            key_provider=StaticKeyProvider(
+                H(v["key_id"]), H(v["tenant_dek"]),
+                H(v["tenant_index_key"]) if "tenant_index_key" in v
+                else b"\x22" * 32),
+            allowed_suites={int(x, 16) for x in c["allowed_suites"]},
+            write_suite=int(c["write_suite"], 16),
+            read_mode=c["read_mode"],
+            arm_provisional_suites=c["arm_provisional_suites"],
+        )
+
+
+def run_errors(doc: dict, results: list[dict]) -> None:
+    """docs/08 §4.6. `input` is literal; `expected` is one of
+    {error}, {value} (pass-through), {plaintext}, {is_ciphertext}, {index}."""
+    for v in doc["vectors"]:
+        op = v.get("operation", "decrypt")
+        exp = v["expected"]
+        try:
+            fs = _errors_client(v)
+            data = H(v["input"])
+            ctx = _ctx(v, _suite_id(v)) if "context" in v else None
+            if op == "decrypt":
+                got: object = fs.decrypt(data, ctx)
+            elif op == "rotate":
+                got = fs.rotate(data, ctx)
+            elif op == "encrypt":
+                got = fs.encrypt(data, ctx)
+            elif op == "is_ciphertext":
+                got = fs.is_ciphertext(data)
+            elif op == "blind_index":
+                d = v["index_declaration"]
+                got = fs.blind_index(data, ctx, index_id=d["index_id"],
+                                     b_bits=d["truncate_bits"], idf=d["idf"],
+                                     normalizer=d["normalize"])
+            else:
+                raise ValueError(f"unknown operation {op!r}")
+        except FieldsealError as exc:
+            ok = exp.get("error") == exc.code
+            _record(results, v["id"], ok,
+                    f"expected {exp}, raised {exc.code}", raised=exc.code)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            _record(results, v["id"], False,
+                    f"expected {exp}, raised non-Fieldseal {exc!r}")
+            continue
+        if "error" in exp:
+            ok, detail = False, f"expected {exp['error']}, no error raised"
+        elif "is_ciphertext" in exp:
+            ok, detail = got == exp["is_ciphertext"], f"got {got!r}"
+        elif "value" in exp:
+            ok = (isinstance(got, (bytes, bytearray, memoryview))
+                  and bytes(got).hex() == exp["value"])
+            detail = "pass-through value differs"
+        elif "plaintext" in exp:
+            ok, detail = bytes(got).hex() == exp["plaintext"], "plaintext differs"
+        elif "index" in exp:
+            ok, detail = bytes(got).hex() == exp["index"], f"got {bytes(got).hex()}"
+        else:
+            ok, detail = False, f"unrecognized expectation {exp}"
+        _record(results, v["id"], ok, detail)
+
+
 RUNNERS = {
     "context/canonical.json": run_context,
     "kdf/record-key.json": run_kdf,
@@ -283,6 +390,9 @@ RUNNERS = {
     "commitment/ff01.json": run_commitment,
     "blind-index/hmac-sha512.json": run_blind_index,
     "envelope/ff01.json": run_envelope,
+    "errors/format.json": run_errors,
+    "errors/policy.json": run_errors,
+    "errors/crypto.json": run_errors,
 }
 
 
@@ -426,15 +536,13 @@ def run() -> dict:
             "Fieldseal.blind_index() end to end, text-in and bytes-in, using "
             "the tenant index key recovered from the kdf/index-key vector that "
             "produced the vector's index_key.",
-            "Assertion vectors (assertion: distinct|equal) carry no inputs; "
-            "only the literal relation between their expected values is "
-            "checked (details.reproducible = false).",
-            "The context family carries no suite_id; 0xFF01 was assumed. The "
-            "kdf/index-key family carries purpose 'encrypt' plus a separate "
-            "index_id; the spec's purpose 'index:<id>' was constructed from "
-            "both. The blind-index family names normalizer 'nfc-casefold'; it "
-            "was mapped to the shipped 'nfc-casefold-v1'. See docs/18 D-05 to "
-            "D-08.",
+            "Assertion vectors (assertion: distinct|equal) carry their inputs "
+            "since suite 0.2.0; both sides are reproduced and the relation "
+            "checked.",
+            "errors/ vectors run each operation against a client built from "
+            "the vector's config; a raised FieldsealError is matched by code, "
+            "a non-Fieldseal exception is a failure. The blind_index cases "
+            "pass the preimage bytes and the vector's index_declaration.",
             "blind-index/argon2id.json is held out (MANIFEST.held_out) and was "
             "not iterated; it is reported as not-run. Nothing about Argon2id "
             "contributes to this report's summary.",

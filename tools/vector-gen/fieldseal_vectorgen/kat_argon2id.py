@@ -1,0 +1,99 @@
+"""External known answers for the Argon2id primitive (docs/08 §7).
+
+Source: libsodium, test/default/pwhash_argon2id.c (the tv() table) and
+pwhash_argon2id.exp, branch `stable`, retrieved 2026-08-23 from
+https://github.com/jedisct1/libsodium. These are the seven cases libsodium's
+own test suite computes through crypto_pwhash() with the Argon2id 1.3
+algorithm; the eighth entry in that table is one libsodium refuses
+(memlimit too small) and has no answer.
+
+Why these and not RFC 9106 §5.3: the RFC vector sets Argon2's secret K and
+associated data X, both forbidden by spec §7.3 and unsuppliable from this
+stack. libsodium's crypto_pwhash cannot supply K or X either, so its answers
+are exactly the "empty K and X" known-answer source MANIFEST.held_out names
+as the unblocking condition for blind-index/argon2id.json.
+
+Two transcription details, both taken from the C test: the salt buffer is
+crypto_pwhash_SALTBYTES (16), so only the first 16 bytes of each 32-byte
+salt hex are used; memlimit is in bytes and crypto_pwhash passes
+memlimit / 1024 KiB to Argon2. Parallelism is libsodium's fixed 1.
+"""
+
+from __future__ import annotations
+
+KAT = [
+    {
+        'passwd': 'a347ae92bce9f80f6f595a4480fc9c2fe7e7d7148d371e9487d75f5c23008ffae065577a928febd9b1973a5a95073acdbeb6a030cfc0d79caa2dc5cd011cef02c08da232d76d52dfbca38ca8dcbd665b17d1665f7cf5fe59772ec909733b24de97d6f58d220b20c60d7c07ec1fd93c52c31020300c6c1facd77937a597c7a6',
+        'salt': '5541fbc995d5c197ba290346d2c559de',
+        'outlen': 155,
+        'opslimit': 5,
+        'memlimit_bytes': 7256678,
+        'expected': '18acec5d6507739f203d1f5d9f1d862f7c2cdac4f19d2bdff64487e60d969e3ced615337b9eec6ac4461c6ca07f0939741e57c24d0005c7ea171a0ee1e7348249d135b38f222e4dad7b9a033ed83f5ca27277393e316582033c74affe2566a2bea47f91f0fd9fe49ece7e1f79f3ad6e9b23e0277c8ecc4b313225748dd2a80f5679534a0700e246a79a49b3f74eb89ec6205fe1eeb941c73b1fcf1',
+    },
+    {
+        'passwd': 'e125cee61c8cb7778d9e5ad0a6f5d978ce9f84de213a8556d9ffe202020ab4a6ed9074a4eb3416f9b168f137510f3a30b70b96cbfa219ff99f6c6eaffb15c06b60e00cc2890277f0fd3c622115772f7048adaebed86e',
+        'salt': 'f1192dd5dc2368b9cd421338b2243345',
+        'outlen': 250,
+        'opslimit': 4,
+        'memlimit_bytes': 7849083,
+        'expected': '26bab5f101560e48c711da4f05e81f5a3802b7a93d5155b9cab153069cc42b8e9f910bfead747652a0708d70e4de0bada37218bd203a1201c36b42f9a269b675b1f30cfc36f35a3030e9c7f57dfba0d341a974c1886f708c3e8297efbfe411bb9d51375264bd7c70d57a8a56fc9de2c1c97c08776803ec2cd0140bba8e61dc0f4ad3d3d1a89b4b710af81bfe35a0eea193e18a6da0f5ec05542c9eefc4584458e1da715611ba09617384748bd43b9bf1f3a6df4ecd091d0875e08d6e2fd8a5c7ce08904b5160cd38167b76ec76ef2d310049055a564da23d4ebd2b87e421cc33c401e12d5cd8d936c9baf75ebdfb557d342d2858fc781da31860',
+    },
+    {
+        'passwd': '92263cbf6ac376499f68a4289d3bb59e5a22335eba63a32e6410249155b956b6a3b48d4a44906b18b897127300b375b8f834f1ceffc70880a885f47c33876717e392be57f7da3ae58da4fd1f43daa7e44bb82d3717af4319349c24cd31e46d295856b0441b6b289992a11ced1cc3bf3011604590244a3eb737ff221129215e4e4347f4915d41292b5173d196eb9add693be5319fdadc242906178bb6c0286c9b6ca6012746711f58c8c392016b2fdfc09c64f0f6b6ab7b',
+        'salt': '3b840e20e9555e9fb031c4ba1f1747ce',
+        'outlen': 249,
+        'opslimit': 3,
+        'memlimit_bytes': 7994791,
+        'expected': '6eb45e668582d63788ca8f6e930ca60b045a795fca987344f9a7a135aa3b5132b50a34a3864c26581f1f56dd0bcbfafbfa92cd9bff6b24a734cfe88f854aef4bda0a7983120f44936e8ff31d29728ac08ccce6f3f916b3c63962755c23a1fa9bb4e8823fc867bfd18f28980d94bc5874423ab7f96cc0ab78d8fa21fbd00cd3a1d96a73fa439ccc3fc4eab1590677b06cc78b0f674dfb680f23022fb902022dd8620803229c6ddf79a8156ccfce48bbd76c05ab670634f206e5b2e896230baa74a856964dbd8511acb71d75a1506766a125d8ce037f1db72086ebc3bccaefbd8cd9380167c2530386544ebfbeadbe237784d102bb92a10fd242',
+    },
+    {
+        'passwd': '4a857e2ee8aa9b6056f2424e84d24a72473378906ee04a46cb05311502d5250b82ad86b83c8f20a23dbb74f6da60b0b6ecffd67134d45946ac8ebfb3064294bc097d43ced68642bfb8bbbdd0f50b30118f5e',
+        'salt': '39d82eef32010b8b79cc5ba88ed539fb',
+        'outlen': 190,
+        'opslimit': 3,
+        'memlimit_bytes': 1432947,
+        'expected': '08d8cd330c57e1b4643241d05bb468ba4ee4e932cd0858816be9ef15360b27bbd06a87130ee92222be267a29b81f5ae8fe8613324cfc4832dc49387fd0602f1c57b4d0f3855db94fb7e12eb05f9a484aed4a4307abf586cd3d55c809bc081541e00b682772fb2066504ff935b8ebc551a2083882f874bc0fae68e56848ae34c91097c3bf0cca8e75c0797eef3efde3f75e005815018db3cf7c109a812264c4de69dcb22322dbbcfa447f5b00ecd1b04a7be1569c8e556adb7bba48adf81d',
+    },
+    {
+        'passwd': 'c7b09aec680e7b42fedd7fc792e78b2f6c1bea8f4a884320b648f81e8cf515e8ba9dcfb11d43c4aae114c1734aa69ca82d44998365db9c93744fa28b63fd16000e8261cbbe083e7e2da1e5f696bde0834fe53146d7e0e35e7de9920d041f5a5621aabe02da3e2b09b405b77937efef3197bd5772e41fdb73fb5294478e45208063b5f58e089dbeb6d6342a909c1307b3fff5fe2cf4da56bdae50848f',
+        'salt': '039c056d933b475032777edbaffac50f',
+        'outlen': 178,
+        'opslimit': 3,
+        'memlimit_bytes': 4886999,
+        'expected': 'd6e9d6cabd42fb9ba7162fe9b8e41d59d3c7034756cb460c9affe393308bd0225ce0371f2e6c3ca32aca2002bf2d3909c6b6e7dfc4a00e850ff4f570f8f749d4bb6f0091e554be67a9095ae1eefaa1a933316cbec3c2fd4a14a5b6941bda9b7eabd821d79abde2475a53af1a8571c7ee46460be415882e0b393f48c12f740a6a72cba9773000602e13b40d3dfa6ac1d4ec43a838b7e3e165fecad4b2498389e60a3ff9f0f8f4b9fca1126e64f49501e38690',
+    },
+    {
+        'passwd': 'b540beb016a5366524d4605156493f9874514a5aa58818cd0c6dfffaa9e90205f17b',
+        'salt': '44071f6d181561670bda728d43fb79b4',
+        'outlen': 231,
+        'opslimit': 1,
+        'memlimit_bytes': 1631659,
+        'expected': '7fb72409b0987f8190c3729710e98c3f80c5a8727d425fdcde7f3644d467fe973f5b5fee683bd3fce812cb9ae5e9921a2d06c2f1905e4e839692f2b934b682f11a2fe2b90482ea5dd234863516dba6f52dc0702d324ec77d860c2e181f84472bd7104fedce071ffa93c5309494ad51623d214447a7b2b1462dc7d5d55a1f6fd5b54ce024118d86f0c6489d16545aaa87b6689dad9f2fb47fda9894f8e12b87d978b483ccd4cc5fd9595cdc7a818452f915ce2f7df95ec12b1c72e3788d473441d884f9748eb14703c21b45d82fd667b85f5b2d98c13303b3fe76285531a826b6fc0fe8e3dddecf',
+    },
+    {
+        'passwd': 'a14975c26c088755a8b715ff2528d647cd343987fcf4aa25e7194a8417fb2b4b3f7268da9f3182b4cfb22d138b2749d673a47ecc7525dd15a0a3c66046971784bb63d7eae24cc84f2631712075a10e10a96b0e0ee67c43e01c423cb9c44e5371017e9c496956b632158da3fe12addecb88912e6759bc37f9af2f45af72c5cae3b179ffb676a697de6ebe45cd4c16d4a9d642d29ddc0186a0a48cb6cd62bfc3dd229d313b301560971e740e2cf1f99a9a090a5b283f35475057e96d7064e2e0fc81984591068d55a3b4169f22cccb0745a2689407ea1901a0a766eb99',
+        'salt': '3d968b2752b8838431165059319f3ff8',
+        'outlen': 167,
+        'opslimit': 3,
+        'memlimit_bytes': 1784128,
+        'expected': '4e702bc5f891df884c6ddaa243aa846ce3c087fe930fef0f36b3c2be34164ccc295db509254743f18f947159c813bcd5dd8d94a3aec93bbe57605d1fad1aef1112687c3d4ef1cb329d21f1632f626818d766915d886e8d819e4b0b9c9307f4b6afc081e13b0cf31db382ff1bf05a16aac7af696336d75e99f82163e0f371e1d25c4add808e215697ad3f779a51a462f8bf52610af21fc69dba6b072606f2dabca7d4ae1d91d919',
+    },
+]
+
+
+def check() -> int:
+    """Run the generator's Argon2id primitive against every known answer.
+    Raises on the first mismatch; returns the number checked."""
+    from argon2.low_level import Type, hash_secret_raw
+
+    for i, t in enumerate(KAT):
+        got = hash_secret_raw(
+            secret=bytes.fromhex(t["passwd"]), salt=bytes.fromhex(t["salt"]),
+            time_cost=t["opslimit"], memory_cost=t["memlimit_bytes"] // 1024,
+            parallelism=1, hash_len=t["outlen"], type=Type.ID, version=0x13,
+        ).hex()
+        if got != t["expected"]:
+            raise AssertionError(
+                f"Argon2id primitive disagrees with libsodium KAT #{i}: "
+                f"got {got[:32]}..., expected {t['expected'][:32]}...")
+    return len(KAT)

@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.1.0-provisional",
+  "vector_suite_version": "0.2.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "held-out",
@@ -10,110 +10,303 @@
       "description": "argon2id index over 'alice@example.com' truncated to 15 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
-      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
-      "index_id": "ssn-eq",
-      "plaintext_utf8": "alice@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
-      "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
-        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
-        "blind_index": "b0c0",
-        "stored": "b0c0",
-        "stored_bytes": 2,
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
         "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
       },
-      "argon2_params": {
-        "version": 19,
-        "t": 3,
-        "m_kib": 32768,
-        "p": 1,
-        "output_len": 64
-      }
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "index": "b0c0",
+        "stored": {
+          "binary": "b0c0",
+          "hex": "b0c0",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
     },
     {
       "id": "blind-index/argon2id/mixed-case-email-b15",
       "description": "argon2id index over 'Alice@Example.COM' truncated to 15 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
-      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
-      "index_id": "ssn-eq",
-      "plaintext_utf8": "Alice@Example.COM",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
-      "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
-        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
-        "blind_index": "b0c0",
-        "stored": "b0c0",
-        "stored_bytes": 2,
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
         "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
       },
-      "argon2_params": {
-        "version": 19,
-        "t": 3,
-        "m_kib": 32768,
-        "p": 1,
-        "output_len": 64
-      }
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "Alice@Example.COM",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "index": "b0c0",
+        "stored": {
+          "binary": "b0c0",
+          "hex": "b0c0",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
     },
     {
-      "id": "blind-index/argon2id/non-ascii-b15",
-      "description": "argon2id index over 'grüße@example.com' truncated to 15 bits",
+      "id": "blind-index/argon2id/non-ascii-b21",
+      "description": "argon2id index over 'grüße@example.com' truncated to 21 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
-      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
-      "index_id": "ssn-eq",
-      "plaintext_utf8": "grüße@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 15,
-      "expected": {
-        "normalized": "6772c3bc737365406578616d706c652e636f6d",
-        "raw": "987eb59564227b062334cfb95ee63076b663b22578ab7a6249b01e9a3321065a5830ee3e3af79d4c8b934406b87f19038ff8f1786112ac206fd6d4f1d3b55af6",
-        "blind_index": "987e",
-        "stored": "987e",
-        "stored_bytes": 2,
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
         "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
       },
-      "argon2_params": {
-        "version": 19,
-        "t": 3,
-        "m_kib": 32768,
-        "p": 1,
-        "output_len": 64
-      }
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "6772c3bc737365406578616d706c652e636f6d",
+      "plaintext_preimage": "grüße@example.com",
+      "truncate_bits": 21,
+      "expected": {
+        "raw": "987eb59564227b062334cfb95ee63076b663b22578ab7a6249b01e9a3321065a5830ee3e3af79d4c8b934406b87f19038ff8f1786112ac206fd6d4f1d3b55af6",
+        "index": "987eb0",
+        "stored": {
+          "binary": "987eb0",
+          "hex": "987eb0",
+          "octets": 3
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
     },
     {
       "id": "blind-index/argon2id/byte-aligned-16-b16",
       "description": "argon2id index over 'alice@example.com' truncated to 16 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
-      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
-      "index_id": "ssn-eq",
-      "plaintext_utf8": "alice@example.com",
-      "normalizer": "nfc-casefold",
-      "b_bits": 16,
-      "expected": {
-        "normalized": "616c696365406578616d706c652e636f6d",
-        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
-        "blind_index": "b0c0",
-        "stored": "b0c0",
-        "stored_bytes": 2,
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
         "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
       },
-      "argon2_params": {
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 16,
+      "expected": {
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "index": "b0c0",
+        "stored": {
+          "binary": "b0c0",
+          "hex": "b0c0",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/short-b12-b12",
+      "description": "argon2id index over 'alice@example.com' truncated to 12 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
         "version": 19,
-        "t": 3,
-        "m_kib": 32768,
-        "p": 1,
-        "output_len": 64
-      }
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 12,
+      "expected": {
+        "raw": "b0c058cd4bf917b204f8ac2b44753eee7538bcf7fb9d291bb4b4c6e0ed5080363063479fd086941315089206eb295db894586d54ba0e88477368ad4174b06a3b",
+        "index": "b0c0",
+        "stored": {
+          "binary": "b0c0",
+          "hex": "b0c0",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/b30-b30",
+      "description": "argon2id index over 'bob@example.org' truncated to 30 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "626f62406578616d706c652e6f7267",
+      "plaintext_preimage": "bob@example.org",
+      "truncate_bits": 30,
+      "expected": {
+        "raw": "e3a853fd0005fabfce123de018e30ed48465d8436edf075a46bfe014dd405507229091457abdf474212ca5b863dda28a856ca42357ead11faf21fffbc8590839",
+        "index": "e3a853fc",
+        "stored": {
+          "binary": "e3a853fc",
+          "hex": "e3a853fc",
+          "octets": 4
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/fold-not-nfc-stable-b15",
+      "description": "argon2id index over 'ǰ@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "6acc8c406578616d706c652e636f6d",
+      "plaintext_preimage": "ǰ@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "1bb410bd1adad8a35f875f9c09d783a24aa584afd8f957507a6ba6c1c3c1a9e57efd07398bd6bfe74188f6660ccf376d9973abdab599e9265c9f831449816d1b",
+        "index": "1bb4",
+        "stored": {
+          "binary": "1bb4",
+          "hex": "1bb4",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2",
+        "G15"
+      ]
     },
     {
       "id": "blind-index/argon2id/normalizer-collapses-case",
-      "description": "values differing only by case MUST produce the same index under the nfc-casefold normalizer",
+      "description": "values differing only by case MUST produce the same index under the nfc-casefold-v1 normalizer",
       "spec_ref": "§7.2",
       "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "alice@example.com",
+        "plaintext_preimage_b": "Alice@Example.COM",
+        "truncate_bits": 15
+      },
       "expected": {
         "index_a": "b0c0",
         "index_b": "b0c0",
@@ -122,6 +315,6 @@
     }
   ],
   "retired": [],
-  "held_out_reason": "The Argon2id primitive has not been checked against any external known-answer source. RFC 9106 §5.3's vector supplies a nonzero secret (K) and associated data (X), both forbidden by spec §7.3 and unsuppliable from Python, so it cannot serve as that check. These values are this generator's output and nothing has corroborated them.",
+  "held_out_reason": "Held pending a project decision (docs/18 D-15). The generator's Argon2id primitive is checked against libsodium's seven published known answers (empty K and X) at every run, and the TypeScript core reproduces these values through an independent backend; the original ground for the hold-out is met. Counting the family is the project's call, recorded in docs/07 §7 and MANIFEST.json, not the generator's.",
   "conformance": "MUST NOT be counted toward any conformance claim (docs/14 §4)."
 }
