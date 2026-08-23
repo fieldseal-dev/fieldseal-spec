@@ -226,6 +226,9 @@ export class Fieldseal {
 
     const cc = canonicalContext(resolved);
     const aad = buildAad(header.fmtVer, header.keyId, header.msgSeed, cc);
+    // The candidate `dek` buffers are deliberately NOT zeroized here: the §8
+    // interface gives this client no ownership of them, and a custom provider
+    // may return buffers it still needs (docs/11 §5 documented exception).
     for (const dek of candidates) {
       const recordKey = deriveRecordKey(env.suite, dek, header.keyId, header.msgSeed, cc);
       try {
