@@ -1,10 +1,14 @@
-"""Blind index derivation (spec §7.2, §7.3) and truncation."""
+"""Blind index derivation (spec §7.2, §7.3), normalizers (docs/09 §7) and
+truncation."""
 
 from __future__ import annotations
 
 import hmac
+import re
 import unicodedata
+from collections.abc import Callable
 
+from .errors import InvalidArgument
 from .kdf import hkdf_sha512
 
 ARGON2_SALT_INFO = b"fieldseal-argon2-salt-v1"
@@ -31,9 +35,60 @@ def truncate(raw: bytes, b_bits: int) -> bytes:
     return bytes(out)
 
 
-def normalize_nfc_casefold(value: str) -> bytes:
-    return unicodedata.normalize("NFC", value).casefold().encode("utf-8")
+# -- normalizers (docs/09 §7: a closed, versioned set; portability surface) ---
 
+def _as_text(value: str | bytes) -> str:
+    """A text normalizer over bytes decodes them as UTF-8, strictly. Decoding
+    with replacement characters would map distinct invalid inputs onto one
+    index value, so invalid UTF-8 is refused instead (docs/18 D-10(d))."""
+    if isinstance(value, str):
+        return value
+    try:
+        return bytes(value).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise InvalidArgument(
+            "value is not valid UTF-8; a text normalizer cannot index it "
+            "(use the `identity` normalizer for opaque bytes)") from exc
+
+
+def _as_bytes(value: str | bytes) -> bytes:
+    return value.encode("utf-8") if isinstance(value, str) else bytes(value)
+
+
+def normalize_identity(value: str | bytes) -> bytes:
+    """`identity` -- bytes unchanged; text is its UTF-8 encoding."""
+    return _as_bytes(value)
+
+
+def normalize_nfc_casefold(value: str | bytes) -> bytes:
+    """`nfc-casefold-v1` -- NFC, then full case folding (Unicode C+F via
+    `str.casefold`), then UTF-8 (docs/09 §7). No second normalization pass
+    after folding: the document says none, and docs/18 D-10(c) records that
+    this is a pin, not a settled point. The Unicode version is the
+    interpreter's (`unicodedata.unidata_version`), reported in the
+    conformance report's environment block."""
+    return unicodedata.normalize("NFC", _as_text(value)).casefold() \
+        .encode("utf-8")
+
+
+_NON_DIGIT = re.compile(rb"[^0-9]")
+
+
+def normalize_digits_only(value: str | bytes) -> bytes:
+    """`digits-only-v1` -- strip every byte that is not an ASCII digit
+    (docs/09 §7; phone/SSN-like values). Defined on bytes, so it needs no
+    decoding and cannot fail."""
+    return _NON_DIGIT.sub(b"", _as_bytes(value))
+
+
+NORMALIZERS: dict[str, Callable[[str | bytes], bytes]] = {
+    "identity": normalize_identity,
+    "nfc-casefold-v1": normalize_nfc_casefold,
+    "digits-only-v1": normalize_digits_only,
+}
+
+
+# -- IDFs (spec §7.3) ---------------------------------------------------------
 
 def idf_hmac_sha512(index_key: bytes, normalized: bytes) -> bytes:
     return hmac.new(index_key, normalized, "sha512").digest()
@@ -69,3 +124,9 @@ def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
         type=Type.ID,
         version=ARGON2_VERSION,
     )
+
+
+IDFS: dict[str, Callable[[bytes, bytes], bytes]] = {
+    "argon2id": idf_argon2id,
+    "hmac-sha512": idf_hmac_sha512,
+}

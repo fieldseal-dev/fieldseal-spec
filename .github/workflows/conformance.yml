@@ -82,8 +82,13 @@ jobs:
       - name: Run the suite
         run: python -m pytest core/python/tests -q
 
+      # docs/14 §4 JSON on stdout, prose on stderr. Exit status is non-zero on
+      # any failure or non-pass out-of-band entry. The parse step exists
+      # because this file once captured a prose summary under a .json name.
       - name: Emit the conformance report
-        run: python core/python/tests/run_vectors.py > conformance-python.json
+        run: |
+          python core/python/tests/run_vectors.py > conformance-python.json
+          python -c "import json; r = json.load(open('conformance-python.json')); print(r['summary'], sorted(r['pinned_decisions']))"
 
       # docs/14 §4: reports are uploaded as artifacts on every run.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
