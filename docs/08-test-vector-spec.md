@@ -70,7 +70,7 @@ vectors/
 | All binary values (keys, seeds, nonces, ciphertexts, contexts, UUID surrogates) | Lowercase hex, no `0x` prefix, even length | Matches `vectors/README.md`; unambiguous, diff-friendly |
 | `suite_id` | String `"0xFF01"` (`0x` prefix, four **uppercase** hex digits) | Matches the existing README example; visually distinct from binary blobs. Case is pinned because provisional identifiers (spec §4.8) contain letters and harnesses compare this field as a string |
 | `fmt_ver` | String `"0x01"` | Same convention as `suite_id` |
-| Absent optional value (`row_id`, `tenant_id`) | JSON `null` | Distinct from empty: `""` (hex) means *present with zero length*. See gap G4 in §9 — the spec must define whether zero-length and null are distinct on the wire before vectors covering that case are authored. |
+| Absent optional value (`row_id`, `tenant_id`) | JSON `null` | Distinct from empty: `""` (hex) means *present with zero length*. Distinct on the wire since the §6.2 presence bitmap was adopted provisionally under Gate 0a (G4, 2026-08-22); `context/canonical.json` pins both (`tenant-zero-length`, `absent-differs-from-zero-length`) and regenerates if Gate 0b changes the bit assignment. |
 | Text values (`purpose`, normalization names, error codes) | JSON string, ASCII | `purpose` is a protocol string, not user text |
 | Sizes/lengths | JSON integer, bytes unless the field name says `_bits` | Truncation length `b` is in bits per spec §7.4 |
 
@@ -167,7 +167,7 @@ Required cases: all fields present · `row_id` null (omitted entirely per §6.2)
 
 **Grammar refusals (G11, issue #11, resolved 2026-08-09):** spec §6.1 now constrains `index-id` to `[a-z0-9-]{1,32}`, so this family also carries negative *declarations* — `index:Exact` (uppercase), `index:é` (non-ASCII), `index:` (empty), and a 33-byte identifier. These pin a refusal at index-declaration time, not an error code: configuration validation sits outside the §9 taxonomy, so the vector asserts that the declaration is rejected and deliberately does not name a code (each core maps it to its own `ConfigurationError`, docs/09 §9). They belong here rather than in `errors/` for that reason.
 
-**Blocked case:** `tenant_id` null vs zero-length — see gap G4 (§9). Do not author until the spec defines the encoding.
+**Formerly blocked case, now authored:** `tenant_id` null vs zero-length was blocked on G4 until 2026-08-22; the provisional §6.2 presence bitmap made it authorable and the family carries `tenant-zero-length` plus the `absent-differs-from-zero-length` assertion. G4 itself stays open for the reviewers (Q4); a changed bit assignment regenerates these vectors.
 
 ### 4.4 `blind-index/`
 

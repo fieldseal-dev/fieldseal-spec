@@ -492,7 +492,7 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 *Justification.* If the index key leaks, an HMAC index over an enumerable domain is invertible by brute force in seconds. Paragonie's analysis of the chosen-plaintext case is direct: an attacker "can iterate every possible value as a user and then correlate with the resultant blind index value." `blind_index` defaults to Argon2id for this reason.
 
-**Honest cost, which MUST be documented:** Argon2id at 4 iterations / 32 MiB costs roughly 10–100 ms **per query term**. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
+**Honest cost, which MUST be documented:** Argon2id at the invocation below (`t = 3`, 32 MiB, `p = 1`) costs roughly 10–100 ms **per query term** — 34 ms with argon2-cffi and 41 ms with Node 24's `crypto.argon2Sync`, measured 2026-08-23 on one idle Zen 4 desktop core; contended or older hosts sit toward the top of the range. That is a hard ceiling on query rate and it is a product constraint, not a tuning detail.
 
 **Argon2id invocation (normative).** Where §7.3 selects Argon2id, `IDF(index_key, normalize(plaintext))` is exactly:
 

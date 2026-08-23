@@ -101,7 +101,7 @@ The construction that remains is close to what CipherSweet ships — Argon2id "w
 | **Proposal** | [issue #4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), incl. [#11](https://github.com/fieldseal-dev/fieldseal-spec/issues/11) |
 | **Provisional status** | Adopted; spec §6.2 carries a `[PROVISIONAL]` marker |
 
-`canonical_context` is used twice — as the KDF `info` parameter and inside the AEAD's AAD — so an aliasing collision is a key-reuse bug and an authentication bug simultaneously. The optional fields are where it is weak: `row_id` is "omitted entirely if null" while `tenant_id` has no stated null encoding at all, so an absent `tenant_id` and a present-but-zero-length one currently produce identical bytes. Proposed fix: a presence bitmap.
+`canonical_context` is used twice — as the KDF `info` parameter and inside the AEAD's AAD — so an aliasing collision is a key-reuse bug and an authentication bug simultaneously. The optional fields are where it is weak: `row_id` is "omitted entirely if null" while `tenant_id` has no stated null encoding at all, so under the original positional encoding an absent `tenant_id` and a present-but-zero-length one produced identical bytes. The fix — a presence bitmap — is in §6.2 provisionally under Gate 0a and is what the cores and vectors now use; the question for you is whether it is the right fix.
 
 **What closes it:** confirmation that the chosen encoding is injective over the current field set *and* over plausible future extensions — or a demonstrated aliasing. This is the cheapest question here and the one where a counterexample is most likely.
 

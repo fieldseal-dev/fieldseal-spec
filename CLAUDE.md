@@ -38,14 +38,17 @@ These commitments define what the spec will be judged on. When proposing changes
 
 ```
 spec/                     normative specification (moves here as versioned releases)
-vectors/                  machine-readable test vectors (planned layout; not yet written)
+vectors/                  machine-readable test vectors — five families pinned in MANIFEST.json;
+                          errors/ and cross/ not yet emitted (see vectors/README.md)
 core/
-  python/  typescript/  java/  dotnet/  go/  reference implementations (Phase 1+)
+  python/  typescript/    reference implementations — both built, both pass the pinned suite
+  java/  dotnet/  go/      README placeholders (Phase 1+)
 adapters/
   django/  sqlalchemy/  prisma/  hibernate/  efcore/  gorm/  typeorm/  (Phase 1+)
 tools/
-  leakage-estimator/      measures actual vs. assumed column distribution skew
-  backfill/               resumable migration tooling
+  vector-gen/             the vector generator (standalone; imports neither core)
+  leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
+  backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model
 docs/
   00-research-memo.md     prior art and gap analysis
@@ -213,7 +216,7 @@ When starting on this codebase:
 
 ## Code and the Split Gate (Phase 0 → Phase 1)
 
-This repository currently contains specification and documentation only, but that is now a statement about progress rather than about permission. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
+This repository contains the specification, its documentation, the vector generator, and two Phase 1 cores (`core/python`, `core/typescript`); adapters, tools, benchmarks and examples are not started. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
 
 - Core libraries will be in `core/{python,typescript,java,dotnet,go}` and MUST pass the shared test vectors in CI.
 - ORM adapters will be in `adapters/{django,sqlalchemy,...}` and MUST contain zero cryptographic code.
