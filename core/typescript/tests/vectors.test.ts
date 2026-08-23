@@ -41,6 +41,21 @@ describe("report invariants (docs/14 §4)", () => {
     expect(report.vector_suite_version.endsWith("-provisional")).toBe(true);
     expect(report.pinned_decisions["decrypt-order"]).toBeTruthy();
   });
+  it("carries every pinned_decisions key docs/14 §4 requires", () => {
+    for (const key of [
+      "decrypt-order",
+      "aad-mismatch",
+      "unknown-format-version-set",
+      "api-boundary-order",
+      "provisional-arming",
+      "unimplemented-registered-suite",
+      "commitment-construction",
+      "rotate-in-permissive",
+      "normalizer-text-over-bytes",
+    ]) {
+      expect(report.pinned_decisions[key], key).toBeTruthy();
+    }
+  });
   it("has no failures and no silent skips", () => {
     expect(report.summary.fail).toBe(0);
     for (const r of report.results) if (r.status === "skipped") expect(r.reason).toBeTruthy();
