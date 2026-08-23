@@ -85,6 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.stdlib_only:
         n = selfcheck_roundtrip()
         print(f"  self-check: {n} envelope vectors decrypt back to plaintext")
+        # docs/08 §7: the primitive layer is checked against an external
+        # known-answer source before anything it produces is trusted.
+        from .kat_argon2id import check as check_argon2id
+        k = check_argon2id()
+        print(f"  primitive check: Argon2id matches libsodium's {k} published "
+              "known answers (empty K and X)")
 
     manifest = args.out / "MANIFEST.json"
     payload = build_manifest(args.out, written)

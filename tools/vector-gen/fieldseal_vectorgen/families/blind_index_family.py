@@ -132,11 +132,12 @@ def generate_hmac() -> dict:
 
 
 ARGON2ID_HELD_OUT = (
-    "The Argon2id primitive has not been checked against any external "
-    "known-answer source. RFC 9106 §5.3's vector supplies a nonzero secret (K) "
-    "and associated data (X), both forbidden by spec §7.3 and unsuppliable "
-    "from Python, so it cannot serve as that check. These values are this "
-    "generator's output and nothing has corroborated them."
+    "Held pending a project decision (docs/18 D-15). The generator's Argon2id "
+    "primitive is checked against libsodium's seven published known answers "
+    "(empty K and X) at every run, and the TypeScript core reproduces these "
+    "values through an independent backend; the original ground for the "
+    "hold-out is met. Counting the family is the project's call, recorded in "
+    "docs/07 §7 and MANIFEST.json, not the generator's."
 )
 
 
