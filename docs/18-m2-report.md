@@ -99,3 +99,5 @@ Node buffer maxima (`docs/09` §4 **[VERIFY]**): `buffer.constants.MAX_LENGTH` i
 4. Pin `nfc-casefold-v1`'s post-fold normalization and invalid-UTF-8 behavior in `docs/09` §7 and add vectors for both (D-10).
 5. Decide whether D-15 satisfies `unblocks_when` for the Argon2id hold-out.
 6. Reserve `pinned_decisions` in `docs/14` §4 (D-19) and name the §4.8 environment variable in the spec (D-14).
+
+*Status, 2026-08-23.* Item 2's precondition is met — the Python report declares the same order (PR #47) — and the `errors/` family is now generator work. Item 4, item 6's second half, D-03 and D-13 are filed together as **G15** ([#48](https://github.com/fieldseal-dev/fieldseal-spec/issues/48), `docs/issues/G15`); item 6's first half is done (`docs/14` §4 reserves the keys).
