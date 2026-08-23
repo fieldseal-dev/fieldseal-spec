@@ -4,7 +4,10 @@
 
 Every implementation MUST run every vector for every conformance level it claims, in CI, and CI MUST fail on any divergence.
 
-## Layout (planned)
+## Layout
+
+*Status 2026-08-23.* `envelope/`, `kdf/`, `context/`, `blind-index/` and `commitment/` are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` (`blind-index/argon2id.json` is held out — see the manifest's `held_out` and `docs/07` §7). `errors/` and `cross/` are **not yet emitted**: both cores declare the same decrypt-path order in their conformance reports, which was the precondition for `errors/` (`docs/18` §7 item 2; the first cases are listed in `docs/issues/G15`), and `cross/` waits on the `docs/14` §3 N×N job. `schema/` is empty; each harness records that in its report's `harness_notes`.
+
 
 ```
 vectors/
@@ -20,7 +23,7 @@ vectors/
                      to be decrypted by every other implementation
 ```
 
-## Format (planned)
+## Format
 
 JSON, one file per vector group. Every binary value hex-encoded. Every vector carries a stable `id`, the full input state (no implicit defaults), the expected output, and a `spec_ref` pointing at the section it exercises.
 
