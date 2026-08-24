@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import secrets
 import warnings
+from collections.abc import Iterable
 
 from cryptography.hazmat.primitives import constant_time
 
@@ -269,6 +270,16 @@ class Fieldseal:
 
     def is_ciphertext(self, blob: object) -> bool:
         return is_ciphertext(blob)
+
+    async def warm(self, contexts: Iterable[FieldContext]) -> None:
+        """Spec §11.2 prefetch -- the only coroutine on the client (docs/10
+        §4). Delegates to the provider when it offers `warm`; a provider
+        without one makes this a no-op, so warming is never required for
+        correctness. All KMS/network I/O lives here; the value path stays
+        sync-only (spec §11.1)."""
+        w = getattr(self._provider, "warm", None)
+        if w is not None:
+            await w(contexts)
 
 
 __all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]
