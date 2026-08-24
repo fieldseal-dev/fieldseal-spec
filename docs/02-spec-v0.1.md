@@ -77,7 +77,7 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 
 | Field | Size | Description |
 |---|---|---|
-| `fmt_ver` | 1 B | Envelope format version. `0x01` for this specification. |
+| `fmt_ver` | 1 B | Envelope format version. `0x01` for this specification; `0x02` reserved (see below). |
 | `suite_id` | 2 B | Big-endian identifier of a complete cipher suite from the registry in §4. |
 | `key_id` | 16 B | Opaque identifier of the key material required to decrypt. Structure is defined by the `KeyProvider`; implementations MUST treat it as opaque bytes. |
 | `msg_seed` | 32 B | Random per-write key-derivation seed, freshly generated from a CSPRNG on **every** encryption operation, including UPDATEs. Feeds record-key derivation (§5.3), making every derived key single-use. Precedent: the AWS Encryption SDK v2 32-byte Message ID. |
@@ -85,7 +85,12 @@ Fields marked `*` have sizes determined by `suite_id`; the values shown are for 
 | `ciphertext` | variable | AEAD output. |
 | `tag` | suite-defined, ≥16 B | AEAD authentication tag. |
 | `commitment` | suite-defined, 0 or 32 B | Key-commitment value, present only for suites whose AEAD is not itself committing. The requirement is settled; the construction is adopted provisionally in §4.6 (gap G1), as is whether the mandatory suite needs one at all (§13.2). |
-### 3.2 Header authentication (normative)
+
+**Version byte assignment (normative).** `0x01` is this format. `0x02` is **reserved for the next version of this format** and MUST NOT be written by any implementation of this specification. `0x00` and `0x03`–`0xFF` are unassigned and MUST be treated as non-envelope input (§3.4).
+
+A future version of this format that uses `fmt_ver` `0x02` **MUST NOT define an envelope shorter than 111 bytes** — the smallest fixed overhead over the current registry, suite `0xFF01`'s 1 + 2 + 16 + 32 + 12 + 16 + 32.
+
+*Justification.* Reserving one value rather than a range keeps the false-positive surface of §3.4's recognition at one byte value in 256. The length floor is what makes that recognition sound rather than merely plausible: §3.4 refuses to treat a short `0x02`-prefixed value as a future envelope, and without this clause that refusal would rest on an unstated assumption about a format nobody has written — a v2 built on a natively committing AEAD would drop the 32-byte commitment and land at 79 bytes, and every such envelope would be passed through to the application as plaintext by §10.3. Constraining a successor's minimum length is a far weaker commitment than constraining its field layout (§3.4 declines the latter), and it is a commitment this project makes to itself.
 
 `fmt_ver`, `suite_id`, `key_id`, and `msg_seed` MUST be included in the AEAD's additional authenticated data (§6.2–§6.3). They MUST NOT be an unauthenticated prefix. (`msg_seed` is additionally self-authenticating: tampering with it changes the derived key and fails the tag check — §5.3.)
 
@@ -101,7 +106,21 @@ This envelope is deliberately heavier than Tink's 5-byte prefix. The extra bytes
 
 ### 3.4 Detection
 
-`is_ciphertext(bytes)` MUST return true only if the input is at least the minimum envelope length for a registered suite, `fmt_ver` is a recognized version, and `suite_id` is a **registered** suite. Recognition MUST be independent of the decrypt allow-list (§4.3): the allow-list governs *authorization to decrypt* (`SUITE_NOT_ALLOWED`), not *recognition*. If recognition consulted the allow-list, ciphertext under a retired suite would be misclassified as unmigrated plaintext in `permissive` read mode — returning ciphertext bytes as application data and, worse, *re-encrypting them* on the next write (double encryption, unrecoverable without forensics). `is_ciphertext` MUST NOT attempt to decrypt, and implementations MUST NOT infer the suite by trial decryption.
+Recognition has **three** outcomes, not two:
+
+| Outcome | Condition | `is_ciphertext` | `decrypt` |
+|---|---|---|---|
+| **Envelope** | `fmt_ver` = `0x01`, `suite_id` registered, length ≥ that suite's minimum | `true` | proceeds |
+| **Reserved-version input** | `fmt_ver` = `0x02` (§3.1) and length ≥ 111 B | `false` | raises `UNKNOWN_FORMAT_VERSION`, in **every** mode |
+| **Non-envelope** | anything else | `false` | §10.3: raises `NOT_CIPHERTEXT` in `strict`, returned as-is otherwise |
+
+`is_ciphertext(bytes)` MUST return true only for the first row. Recognition MUST be independent of the decrypt allow-list (§4.3): the allow-list governs *authorization to decrypt* (`SUITE_NOT_ALLOWED`), not *recognition*. If recognition consulted the allow-list, ciphertext under a retired suite would be misclassified as unmigrated plaintext in `permissive` read mode — returning ciphertext bytes as application data and, worse, *re-encrypting them* on the next write (double encryption, unrecoverable without forensics). `is_ciphertext` MUST NOT attempt to decrypt, and implementations MUST NOT infer the suite by trial decryption.
+
+**The asymmetry in the second row is deliberate**, and is stated rather than smoothed: an input that is "not ciphertext" to `is_ciphertext` and "ciphertext from a newer implementation" to `decrypt`. The two predicates guard different paths and the safe answer differs on each. The write path consults `is_ciphertext` to decide whether to encrypt; a true answer there means "already encrypted, skip", so a false positive leaves a value stored in the clear. The read path must not hand a future-format envelope to the application as though it were data.
+
+*Why this is decided the opposite way from the retired-suite case above.* For a retired suite, recognition can be trusted: `fmt_ver` and a registered `suite_id` are three bytes of evidence, giving a false-positive rate of 1/256 × (registered suites)/65 536. For `0x02` there is one byte, because a future version need not keep `suite_id` at bytes 1–2 — the check that makes recognition trustworthy cannot be performed at all. So the retired suite is recognized and refused at the allow-list, while reserved-version input is not recognized and is refused at `decrypt`. Making `is_ciphertext` true for reserved-version input would unify the predicates, and becomes defensible only under a format-evolution rule requiring every future `fmt_ver` to keep bytes 1–2 as a registry `suite_id`. That rule constrains a format that does not exist yet and is recorded for reviewers rather than adopted; §3.1's length floor is deliberately the weaker commitment.
+
+**Both directions cost something, and both are stated.** A genuine plaintext of ≥ 111 bytes beginning with `0x02` becomes unreadable through `decrypt` in every mode (§10.3). Conversely, a genuine v2 envelope answers `false` to `is_ciphertext`, so a backfill tool that consults it will encrypt the envelope — the double-encryption outcome this section's own justification ranks as the worse one. The trade is made on confidentiality grounds: a plaintext exposure has already happened by the time it is discovered, whereas a doubly-encrypted v2 envelope is recoverable by peeling the outer layer. Deployments running two format versions against one database are the case `permissive` exists for, and are the case to watch.
 
 ### 3.5 Plaintext length bound (normative)
 
@@ -223,7 +242,16 @@ An implementation MUST NOT support, and this specification will not register:
 
 The `0xFF00`–`0xFFFF` identifier range is permanently reserved for provisional and experimental suites, and no suite in that range will ever be promoted in place. A provisional suite that survives review is re-registered under a fresh low-range identifier and the provisional identifier is retired unused. An envelope is therefore never ambiguous about whether the construction that produced it had been reviewed, and the answer is one masked comparison on `suite_id` — available from bytes 1–2 of any stored envelope, without a key.
 
-**On encrypt.** An implementation MUST refuse to produce an envelope naming a provisional `suite_id` unless the deployment has explicitly armed provisional use. The arming mechanism MUST NOT default to armed, MUST be an affirmative out-of-band act (an environment variable or an explicit constructor argument), and MUST NOT be satisfiable by the ordinary configuration that carries `allowed_suites` and `write_suite` — an operator who arms a provisional suite is to have done so deliberately, not inherited it from a copied config. Refusal raises `SUITE_PROVISIONAL` (§9) at the API boundary, before key acquisition and before any cryptographic processing.
+**On encrypt.** An implementation MUST refuse to produce an envelope naming a provisional `suite_id` unless the deployment has explicitly armed provisional use. The arming mechanism MUST NOT default to armed, MUST be an affirmative out-of-band act, and MUST NOT be satisfiable by the ordinary configuration that carries `allowed_suites` and `write_suite` — an operator who arms a provisional suite is to have done so deliberately, not inherited it from a copied config. Refusal raises `SUITE_PROVISIONAL` (§9) at the API boundary, before key acquisition and before any cryptographic processing.
+
+**The mechanism (normative).** Arming is available two ways, and a client is armed if **either** arms it:
+
+1. **Environment variable `FIELDSEAL_ARM_PROVISIONAL_SUITES`**, which arms if and only if its value is exactly `1`. The comparison is byte-exact: no whitespace is trimmed, and `true`, `yes`, `TRUE` and the empty string do not arm.
+2. **An in-code form**, whose identifier each language binding chooses and records (`docs/10`, `docs/11`). Normatively it MUST be a distinct argument or call from the one carrying `allowed_suites` and `write_suite`, and MUST NOT be a field of that configuration.
+
+Both are read **when the client is constructed**, so a process cannot be armed after the fact by mutating its environment, and a client's arming state is a fact about the object.
+
+*Justification for each part.* The variable is named here because §9 requires the `SUITE_PROVISIONAL` message to name "the arming mechanism the deployment failed to set", which is unimplementable without a name, and because an operator running two cores would otherwise meet two names for one concept. The exact-`1` rule matches the `FIELDSEAL_TEST_MODE` gate this section mirrors (`docs/08-test-vector-spec.md` §6); a gate that also accepted `true` would be the first place the two diverged, and lenient boolean parsing buys nothing — nobody sets an environment variable to `yes` by accident. Byte-exactness is stated because it is otherwise the kind of detail two implementations agree on only by coincidence of both doing the naive thing: a value of `1\n` from a `.env` file or a ConfigMap does not arm, and an operator who believes otherwise gets a `SUITE_PROVISIONAL` they cannot explain. The either-arms rule is stated for the same reason — a deployment that passes the in-code form `false` while the variable is set is armed, and an implementation that treated the explicit `false` as a veto would be equally defensible and equally invisible. The in-code identifier is left to bindings on §11.1's reasoning: no cross-implementation test can observe a constructor's shape, and the surface that must agree is the operator-facing one.
 
 **On decrypt.** Provisional suites are subject only to the ordinary allow-list of §4.3 and require no arming. Reading data one has already written is not what the gate exists to prevent, and making recovery harder than writing would be exactly the wrong incentive.
 
@@ -233,7 +261,7 @@ The `0xFF00`–`0xFFFF` identifier range is permanently reserved for provisional
 
 *Justification.* The Phase 0 exit gate is split (PRD §8): Gate 0a permits implementation work, Gate 0b — independent cryptographic review — permits freezing. Between the two there is working code whose constructions may still change, which is a state this project had no vocabulary for. The failure this section prevents is an operator migrating production data behind a construction later found wrong, on the strength of a README paragraph nobody read; a normative, code-enforced refusal puts the warning where the operator will actually meet it. The reserved-range rule adds the recovery property: if a construction is overturned at Gate 0b, every row written under it is identifiable in bulk from the stored bytes alone, with no key and no application involvement.
 
-The arming mechanism deliberately mirrors the `FIELDSEAL_TEST_MODE` gate that arms determinism injection (`docs/08-test-vector-spec.md` §6) — same shape, same reasoning, one concept for an implementer to learn rather than two.
+The arming mechanism deliberately mirrors the `FIELDSEAL_TEST_MODE` gate that arms determinism injection (`docs/08-test-vector-spec.md` §6) — same shape, same value rule, one concept for an implementer to learn rather than two.
 
 *What this is not.* Arming a provisional suite does not make it reviewed, and nothing here licenses describing it as such. It records that the operator was told.
 
@@ -647,7 +675,7 @@ An implementation MUST distinguish at least these error types, and MUST NOT coll
 
 | Error | Meaning | Likely cause |
 |---|---|---|
-| `UNKNOWN_FORMAT_VERSION` | `fmt_ver` unrecognized | Data written by a newer implementation |
+| `UNKNOWN_FORMAT_VERSION` | `fmt_ver` is the reserved `0x02` at a plausible length (§3.1, §3.4) | Data written by a newer implementation |
 | `SUITE_NOT_ALLOWED` | `suite_id` not on the decrypt allow-list | A retired suite, or a downgrade attempt |
 | `KEY_UNAVAILABLE` | `key_id` not resolvable | Key destroyed, KMS unreachable, wrong tenant context |
 | `AAD_MISMATCH` | Context does not match | **Usually a data-migration bug**, occasionally tampering |
@@ -662,7 +690,9 @@ An implementation MUST distinguish at least these error types, and MUST NOT coll
 
 `LENGTH_EXCEEDED` is a distinct code rather than a reuse of `MODE_VIOLATION`, which is specifically about a configured mode forbidding an operation — a length rejection is neither mode-dependent nor configuration-dependent. On encrypt it is raised at the API boundary on the same terms as `MODE_VIOLATION`; on decrypt it is a function of the received byte count alone (§3.5).
 
-`SUITE_PROVISIONAL` is likewise raised at the API boundary before key acquisition, and is a property of the suite rather than of the configured mode, so it does not participate in the decrypt-path ordering either. Its message MUST name the provisional `suite_id` and the arming mechanism the deployment failed to set (§4.8) — an operator who meets this error needs to be told both that the construction is unreviewed and exactly what acknowledging that entails.
+`UNKNOWN_FORMAT_VERSION` is raised in every read mode, `permissive` and `readonly` included. §10.3's pass-through exists because unmigrated *plaintext* is expected in those windows; a future-format envelope is not unmigrated plaintext, and the pass-through rationale does not reach it. A `readonly` analytics job that received a v2 envelope as though it were a value would ingest opaque bytes as data.
+
+`SUITE_PROVISIONAL` is likewise raised at the API boundary before key acquisition, and is a property of the suite rather than of the configured mode, so it does not participate in the decrypt-path ordering either. Its message MUST name the provisional `suite_id` and the arming mechanism the deployment failed to set (§4.8) — an operator who meets this error needs to be told both that the construction is unreviewed and exactly what acknowledging that entails. Where the implementation also offers an in-code arming form, the message SHOULD name both.
 
 Error messages MUST NOT include plaintext, key material, or derived key values.
 
@@ -749,6 +779,8 @@ A mode fixes two independent behaviors: what a read does with non-envelope input
 | `permissive` | Returned as-is | Permitted | Migration only |
 | `readonly` | Returned as-is | Raise `MODE_VIOLATION` | Read replicas, analytics jobs, rollback windows |
 
+The first column governs **reads** — `decrypt` — and only reads. It does not reach `rotate`, whose operand is refused in every mode (§11.1), and it does not reach reserved-version input, which raises `UNKNOWN_FORMAT_VERSION` in every mode (§3.4, §9).
+
 In both `permissive` and `readonly`, implementations MUST warn when the mode is active and SHOULD emit a metric counting plaintext reads.
 
 The ciphertext-producing operations are `encrypt()` and `rotate()` (§11.1). `decrypt()`, `is_ciphertext()`, and `blind_index()` are permitted in every mode. `blind_index()` in particular MUST NOT be refused in `readonly`: an index value is required to *construct* a query, not to write one, and a mode that could not compute one would be unable to look anything up — which is the entire purpose of a read-only client.
@@ -772,6 +804,14 @@ rotate(ciphertext: bytes, ctx: FieldContext) -> bytes          [SYNC]
 ```
 
 Every implementation MUST expose all five operations synchronously, and none of them may perform network I/O.
+
+**`rotate` is a ciphertext-to-ciphertext operation (normative).** Its operand MUST be an envelope in every read mode: `rotate` of non-envelope input raises `NOT_CIPHERTEXT`, and of reserved-version input raises `UNKNOWN_FORMAT_VERSION` (§3.4), in `strict` and `permissive` alike. In `readonly` the mode gate fires first and the call raises `MODE_VIOLATION` before the operand is inspected at all (§9, §10.3).
+
+*Justification.* `rotate` is defined as a decrypt followed by an encrypt, and composing those two literally would make it *encrypt unmigrated plaintext* in `permissive`, where §10.3 returns non-envelope input unchanged, while raising on the same bytes in `strict`. The operation's domain would then depend on a read-mode setting that has nothing to do with rotation — two implementations could differ on a value every migration window contains, and no vector could say which was right. The §10.3 pass-through is a *read* behaviour; the decrypt inside `rotate` is not a read whose result reaches the application.
+
+Two consequences follow, and both are the point. `docs/15` already separates the jobs a literal composition would merge: the initial backfill checks `is_ciphertext` and calls `encrypt`; the re-encryption sweep parses the header and calls `rotate` only on envelopes whose `key_id` or `suite_id` is stale. And cutover to `strict` is gated on the plaintext-read metric reaching zero *after* a verified backfill — a `rotate` that quietly encrypted unmigrated rows would drive that metric to zero by a second, unverified path, retiring the operator's own check without anyone noticing.
+
+A caller that means "encrypt whatever this is" has `is_ciphertext` and `encrypt`, and needs the two cases distinguished anyway because they are counted differently.
 
 *Justification.* See L4 in §10. Django field hooks, SQLAlchemy type processors, TypeORM transformers, Hibernate converters, Rails `ActiveModel::Type`, and Sequelize getters are all synchronous by signature. A blocking KMS call inside any of them holds a pooled database connection inside an open transaction — a 20 ms round-trip during a flush of 1,000 rows holds the connection for 20 seconds and exhausts the pool under load.
 

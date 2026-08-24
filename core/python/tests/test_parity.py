@@ -123,12 +123,26 @@ def test_strict_does_not_warn():
                   allowed_suites={0xFF01}, write_suite=0xFF01)
 
 
-def test_rotate_in_permissive_encrypts_pass_through_plaintext():
-    """Literal composition (docs/18 D-13; pinned_decisions.rotate-in-permissive):
-    rotate of unmigrated plaintext in permissive mode is an encrypt."""
-    fs = _client("permissive")
-    out = fs.rotate(b"unmigrated", CTX)
-    assert is_ciphertext(out) and fs.decrypt(out, CTX) == b"unmigrated"
+@pytest.mark.parametrize("mode", ["strict", "permissive"])
+def test_rotate_refuses_non_envelope_input_in_every_mode(mode):
+    """spec §11.1 (G15 part B): `rotate` is ciphertext-to-ciphertext, so its
+    domain does not widen in `permissive`. The §10.3 pass-through is a read
+    behaviour and the decrypt inside `rotate` is not a read.
+
+    The point of the parametrisation is that both modes give the same answer:
+    an operation whose domain depended on the read mode would be a portability
+    hazard no vector could adjudicate."""
+    with pytest.raises(NotCiphertext):
+        _client(mode).rotate(b"unmigrated", CTX)
+
+
+def test_rotate_of_reserved_version_is_unknown_format_version():
+    """Recognition (spec §3.4) distinguishes a future-format envelope from
+    unmigrated plaintext, and `rotate` inherits that: a v2 envelope is not
+    plaintext and must not be reported as such."""
+    blob = bytes([0x02]) + _ff02_blob(MIN_ENVELOPE_LEN)[1:]
+    with pytest.raises(UnknownFormatVersion):
+        _client("permissive").rotate(blob, CTX)
 
 
 def test_rotate_in_readonly_refuses_before_reading():

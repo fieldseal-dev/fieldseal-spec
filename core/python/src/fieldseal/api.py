@@ -1,9 +1,12 @@
 """The Fieldseal client (spec §11.1, docs/10 §4).
 
-Every operation here is strictly synchronous and performs no I/O. That is not a
-style preference: Django field types, SQLAlchemy type processors, TypeORM
-transformers and the rest cannot await in the value path, and a core that
-required them to would be unusable in the place it is meant to be used.
+Every value-path operation here is strictly synchronous and performs no I/O.
+That is not a style preference: Django field types, SQLAlchemy type
+processors, TypeORM transformers and the rest cannot await in the value path,
+and a core that required them to would be unusable in the place it is meant to
+be used. The one exception is `warm`, the §11.2 prefetch and the only
+coroutine on the client (docs/10 §4): all KMS/network I/O lives there, off
+the value path.
 
 The decrypt path follows docs/09 §3.2 step for step. Spec §9 leaves the
 precedence among its error codes open (gap G5) and obliges a Gate 0a
@@ -18,6 +21,7 @@ from __future__ import annotations
 import os
 import secrets
 import warnings
+from collections.abc import Iterable
 
 from cryptography.hazmat.primitives import constant_time
 
@@ -258,17 +262,42 @@ class Fieldseal:
     def rotate(self, blob: bytes, ctx: FieldContext) -> bytes:
         """Re-encrypt under a fresh seed and nonce. Produces ciphertext, so it
         is a write for both the mode gate and the provisional gate, checked
-        before the decrypt runs (docs/09 §3.5).
+        before anything inspects the operand (spec §10.3, §4.8).
 
-        Literal composition, decrypt then encrypt: in `permissive` mode the
-        decrypt of non-envelope input passes through, so rotate *encrypts*
-        unmigrated plaintext. Whether that is intended is docs/18 D-13; the
-        report declares it (`pinned_decisions.rotate-in-permissive`)."""
+        `rotate` is ciphertext-to-ciphertext in every mode (spec §11.1).
+        The §10.3 pass-through is a *read* behavior -- its column is
+        "non-envelope input on read" -- and the decrypt inside `rotate` is
+        not a read whose result reaches the application. Composing the two
+        literally would make `rotate` encrypt unmigrated plaintext in
+        `permissive` and raise on the same bytes in `strict`, so the
+        operation's domain would depend on a mode setting that has nothing to
+        do with rotation; two cores could then disagree with no vector able
+        to say which was right.
+
+        A reserved future version byte still raises `UNKNOWN_FORMAT_VERSION`
+        rather than `NOT_CIPHERTEXT`: recognition (spec §3.4) runs first and
+        distinguishes the two, and a v2 envelope is emphatically not
+        unmigrated plaintext.
+        """
         self._write_boundary(b"", ctx)
+        if recognize(blob) is None:
+            raise NotCiphertext(
+                "rotate requires an envelope; this input is not one "
+                "(use encrypt() to migrate unencrypted values)")
         return self.encrypt(self.decrypt(blob, ctx), ctx)
 
     def is_ciphertext(self, blob: object) -> bool:
         return is_ciphertext(blob)
+
+    async def warm(self, contexts: Iterable[FieldContext]) -> None:
+        """Spec §11.2 prefetch -- the only coroutine on the client (docs/10
+        §4). Delegates to the provider when it offers `warm`; a provider
+        without one makes this a no-op, so warming is never required for
+        correctness. All KMS/network I/O lives here; the value path stays
+        sync-only (spec §11.1)."""
+        w = getattr(self._provider, "warm", None)
+        if w is not None:
+            await w(contexts)
 
 
 __all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]

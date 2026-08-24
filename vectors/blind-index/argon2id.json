@@ -252,7 +252,7 @@
       ]
     },
     {
-      "id": "blind-index/argon2id/fold-not-nfc-stable-b15",
+      "id": "blind-index/argon2id/fold-nfc-stable-b15",
       "description": "argon2id index over 'ǰ@example.com' truncated to 15 bits",
       "spec_ref": "§7.2, §7.3, §7.4, §7.11",
       "suite_id": "0xFF01",
@@ -276,21 +276,143 @@
         "purpose": "index:ssn-eq"
       },
       "normalize": "nfc-casefold-v1",
-      "plaintext": "6acc8c406578616d706c652e636f6d",
+      "plaintext": "c7b0406578616d706c652e636f6d",
       "plaintext_preimage": "ǰ@example.com",
       "truncate_bits": 15,
       "expected": {
-        "raw": "1bb410bd1adad8a35f875f9c09d783a24aa584afd8f957507a6ba6c1c3c1a9e57efd07398bd6bfe74188f6660ccf376d9973abdab599e9265c9f831449816d1b",
-        "index": "1bb4",
+        "raw": "f1c552a0f19c0f591df0cbe20b8a79d5cced713b8a5d53adc72054eb176c631647f5249fede9f7d1b08e6cc72725034e9f8b7a225cba54f2964855c6657062ec",
+        "index": "f1c4",
         "stored": {
-          "binary": "1bb4",
-          "hex": "1bb4",
+          "binary": "f1c4",
+          "hex": "f1c4",
           "octets": 2
         }
       },
       "provisional_on": [
-        "G2",
-        "G15"
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/folding-added-in-17-b15",
+      "description": "argon2id index over '\\ua7d2@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "ea9f93406578616d706c652e636f6d",
+      "plaintext_preimage": "꟒@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "40f6f32c3756e044cfc5691b9330c206934206f78d19f35d25d08fa0a401ae8c177875ef4bf5394f36495e7504089f3749786cd54a25c4e079ea0e96be6d71e4",
+        "index": "40f6",
+        "stored": {
+          "binary": "40f6",
+          "hex": "40f6",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/assigned-in-17-b15",
+      "description": "argon2id index over '\\U00016ea0@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "f096babb406578616d706c652e636f6d",
+      "plaintext_preimage": "𖺠@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "9055f472a16873ad0297b4bbc35cdc9e9ef322e8376ec1b70695c17d53e0726a9660f3d432519c0a54e83bcbc59738fe2f4fd18483a95222007a865114e89b5e",
+        "index": "9054",
+        "stored": {
+          "binary": "9054",
+          "hex": "9054",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/nfc-reordering-17-b15",
+      "description": "argon2id index over 'a\\u1ad9̖@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "61cc96e1ab99406578616d706c652e636f6d",
+      "plaintext_preimage": "a᫙̖@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "bdb069d7a8367427ed57afe603b0ce681406e33f1cbe5fffa186baac44d9ec58280d44e0bb0dc0dce5457ba0e02f01fdc869703be0ee2d6cc5ca653061459844",
+        "index": "bdb0",
+        "stored": {
+          "binary": "bdb0",
+          "hex": "bdb0",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
       ]
     },
     {
@@ -310,6 +432,86 @@
       "expected": {
         "index_a": "b0c0",
         "index_b": "b0c0",
+        "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-fold-nfc",
+      "description": "U+0390 and its uppercase spelling U+03AA U+0301 MUST produce the same index under the nfc-casefold-v1 normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "ΐ@example.com",
+        "plaintext_preimage_b": "Ϊ́@example.com",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index_a": "c064",
+        "index_b": "c064",
+        "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-fold-nfc-upsilon",
+      "description": "U+03B0 and its uppercase spelling U+03AB U+0301 MUST produce the same index under the nfc-casefold-v1 normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "ΰ@example.com",
+        "plaintext_preimage_b": "Ϋ́@example.com",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index_a": "74de",
+        "index_b": "74de",
+        "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-precomposed",
+      "description": "U+01F0 and the decomposed j + U+030C MUST produce the same index under the nfc-casefold-v1 normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "ǰ@example.com",
+        "plaintext_preimage_b": "ǰ@example.com",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index_a": "f1c4",
+        "index_b": "f1c4",
+        "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-sharp-s",
+      "description": "ß and SS under full case folding MUST produce the same index under the nfc-casefold-v1 normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "straße@example.com",
+        "plaintext_preimage_b": "STRASSE@example.com",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index_a": "90fa",
+        "index_b": "90fa",
         "must_be_equal": true
       }
     }

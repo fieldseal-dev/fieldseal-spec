@@ -7,12 +7,14 @@ on:
       - "core/**"
       - "vectors/**"
       - "tools/vector-gen/**"
+      - "tools/ucd-gen/**"
       - ".github/workflows/conformance.yml"
   pull_request:
     paths:
       - "core/**"
       - "vectors/**"
       - "tools/vector-gen/**"
+      - "tools/ucd-gen/**"
       - ".github/workflows/conformance.yml"
   workflow_dispatch:
   schedule:
@@ -130,6 +132,27 @@ jobs:
             exit 1
           fi
           echo "Committed vectors match a fresh generation."
+
+  unicode-tables:
+    name: Vendored Unicode tables match the published UCD
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # `nfc-casefold-v1` is pinned to one Unicode version (docs/09 §7.1) and
+      # both cores read vendored tables rather than their runtime's. Those
+      # tables are generated, so they must be provably the published UCD and
+      # not something hand-edited: a single wrong folding entry is a silent
+      # blind-index divergence, which is the failure mode the pin exists to
+      # remove. Fetches the UCD rather than vendoring it -- the three source
+      # files are larger than the tables they produce.
+      - name: Regenerate from unicode.org and diff
+        run: |
+          python tools/ucd-gen/generate.py --download --check
 
   suite-integrity:
     name: Suite integrity invariants

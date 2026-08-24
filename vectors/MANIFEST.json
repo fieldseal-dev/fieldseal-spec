@@ -6,8 +6,8 @@
   "files": [
     {
       "path": "blind-index/hmac-sha512.json",
-      "sha256": "ffd6648f049caeb1715c9d66008474508a0b035a070bf6fd95e8a48ff4d88721",
-      "bytes": 9555
+      "sha256": "79ac2887acdf5ee052026ef5afcefe03a37ebf93f46d57c89a293032b8f59b20",
+      "bytes": 16108
     },
     {
       "path": "commitment/ff01.json",
@@ -31,13 +31,13 @@
     },
     {
       "path": "errors/format.json",
-      "sha256": "681fe1b570ddd715bb0f8efea47f986577dd7aa37546570b3b574330396da6d1",
-      "bytes": 55943
+      "sha256": "9e44866201982eb296bd034204e4dce1ff6fb8904534e0ed947b5d2e203cd383",
+      "bytes": 55649
     },
     {
       "path": "errors/policy.json",
-      "sha256": "ddc26932d41ae537dc9fdf004dbcd73f99d2ddc7046ab110f2ff0318c0135d85",
-      "bytes": 17642
+      "sha256": "ff78959a010193ebd149ef8ff4b19e952e05063376767d358de106c10603134a",
+      "bytes": 20946
     },
     {
       "path": "kdf/index-key.json",
@@ -65,8 +65,8 @@
   "held_out": [
     {
       "path": "blind-index/argon2id.json",
-      "sha256": "9aa015181114c35e714d11cffadc226ba391e05efc969c6ae4b2d6d641f4f0b0",
-      "bytes": 11578,
+      "sha256": "b7036698a3cd4148ff7a89aa0613fb9bd0e241b9b8f35c01ec407bce56ee5d2d",
+      "bytes": 18804,
       "reason": "Held pending a project decision (docs/18 D-15). The original ground -- that the Argon2id primitive had never been checked against an external known-answer source -- no longer holds: since 2026-08-23 the generator checks argon2-cffi against libsodium's seven published crypto_pwhash answers (empty K and X, 16-byte salt, p = 1) at every run, and the TypeScript core's node:crypto backend reproduces RFC 9106 §5.3 and all four vectors in this file. What remains is the decision to count the family, which the project makes, not the generator.",
       "unblocks_when": "The project records the decision in docs/07 §7 and moves this path from held_out to files (tools/vector-gen manifest.HELD_OUT); both harnesses then run it. No expected value changes.",
       "tracking": "docs/08-test-vector-spec.md §7; gap G2"

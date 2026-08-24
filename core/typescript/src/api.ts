@@ -295,8 +295,28 @@ export class Fieldseal {
   // -------------------------------------------------------------------------
   // rotate (docs/09 §3.5)
 
+  /**
+   * `rotate` is ciphertext-to-ciphertext in every mode (spec §11.1).
+   *
+   * The §10.3 pass-through is a *read* behaviour -- its column is
+   * "non-envelope input on read" -- and the decrypt inside `rotate` is not a
+   * read whose result reaches the application. Composing the two literally
+   * would make `rotate` encrypt unmigrated plaintext in `permissive` and
+   * raise on the same bytes in `strict`: the operation's domain would depend
+   * on a mode setting that has nothing to do with rotation.
+   *
+   * A reserved future version byte still raises `UNKNOWN_FORMAT_VERSION`
+   * rather than `NOT_CIPHERTEXT` -- recognition (spec §3.4) distinguishes
+   * them, and a v2 envelope is not unmigrated plaintext.
+   */
   rotate(input: Uint8Array, ctx: FieldContext): Buffer {
     this.#apiBoundaryForWrite("rotate");
+    const rec = recognize(input);
+    if (rec.kind === "not-ciphertext") {
+      throw new NotCiphertextError(
+        `rotate requires an envelope; this input is not one (${rec.detail}) -- use encrypt() to migrate unencrypted values`,
+      );
+    }
     const plaintext = this.decrypt(input, ctx);
     try {
       return this.#encryptPipeline("rotate", plaintext, ctx, undefined, undefined);

@@ -184,8 +184,9 @@ def generate_format() -> dict:
 
     # fmt_ver. §3.4: an unrecognized version is not an envelope. Which bytes
     # are "reserved for a future version" rather than merely unrecognized is
-    # G15 part A; the {0x02} set and the 111-byte plausibility floor are what
-    # both cores declare.
+    # spec §3.1 assigns the version byte and floors a future format at 111
+    # bytes; §3.4 turns that into the three-way recognition below (G15 part A,
+    # closed 2026-08-24).
     for b in (0x00, 0x03, 0xFF):
         not_envelope(f"fmt-ver-{b:02x}",
                      f"fmt_ver = 0x{b:02x} on an otherwise valid envelope -- "
@@ -204,14 +205,13 @@ def generate_format() -> dict:
             spec_ref="§3.4, §9, §10.3", config=_config(mode),
             input_bytes=_with_first_byte(basic, 0x02), context=ctx,
             derived_from=ref, mutation="set byte 0 to 0x02",
-            expected={"error": "UNKNOWN_FORMAT_VERSION"},
-            provisional_on=["G15"]))
+            expected={"error": "UNKNOWN_FORMAT_VERSION"}))
     not_envelope("fmt-ver-02-under-minimum",
                  "fmt_ver = 0x02 on a 110-byte blob: below the plausibility "
                  "floor, so not 'a newer envelope' but non-envelope input",
                  _with_first_byte(basic[:MIN_FF01 - 1], 0x02), derived=ref,
                  mutation="truncate to 110 bytes, set byte 0 to 0x02",
-                 modes=("strict", "permissive"), provisional_on=["G15"])
+                 modes=("strict", "permissive"))
 
     # suite_id: unregistered, and reserved-but-unassigned (§4.2).
     not_envelope("suite-unregistered",
@@ -247,7 +247,7 @@ def generate_format() -> dict:
          "fmt_ver 0x02 at plausible length: false -- a future version need "
          "not keep suite_id at bytes 1-2, so the check that makes recognition "
          "trustworthy cannot run; decrypt raises UNKNOWN_FORMAT_VERSION "
-         "instead (G15 part A)", _with_first_byte(basic, 2), False, ["G15"]),
+         "instead (spec §3.4)", _with_first_byte(basic, 2), False, None),
         ("is-ciphertext-suite-unregistered", "suite 0x00FF",
          _with_suite(basic, 0x00FF), False, None),
         ("is-ciphertext-suite-ff02-plausible",
@@ -330,6 +330,30 @@ def generate_policy() -> dict:
         spec_ref="§9, §10.3", operation="rotate", config=ro,
         input_bytes=basic, context=ctx, derived_from=ref,
         expected={"error": "MODE_VIOLATION"}))
+    # G15 part B: rotate is ciphertext-to-ciphertext in every mode. The
+    # operand check is the same in strict and permissive; in readonly the
+    # mode gate fires first, which is why that case expects MODE_VIOLATION
+    # above rather than NOT_CIPHERTEXT.
+    for slug, cfg, why in [
+        ("rotate-non-envelope-strict", _config("strict"),
+         "strict: rotate() of unmigrated plaintext is NOT_CIPHERTEXT"),
+        ("rotate-non-envelope-permissive", _config("permissive"),
+         "permissive: rotate() of unmigrated plaintext is NOT_CIPHERTEXT too "
+         "-- the §10.3 pass-through is a read behaviour, and rotate is not a "
+         "read (spec §11.1). The operation's domain does not vary by mode"),
+    ]:
+        vectors.append(_vec(
+            "policy", slug, why, spec_ref="§9, §10.3, §11.1",
+            operation="rotate", config=cfg, input_bytes=b"123-45-6789",
+            context=ctx, expected={"error": "NOT_CIPHERTEXT"}))
+    vectors.append(_vec(
+        "policy", "rotate-reserved-fmt-ver",
+        "rotate() of reserved-version input is UNKNOWN_FORMAT_VERSION, not "
+        "NOT_CIPHERTEXT: recognition (spec §3.4) tells them apart, and a "
+        "future-format envelope is not unmigrated plaintext",
+        spec_ref="§3.4, §9, §11.1", operation="rotate", config=_config("permissive"),
+        input_bytes=bytes([0x02]) + basic[1:], context=ctx,
+        expected={"error": "UNKNOWN_FORMAT_VERSION"}))
     vectors.append(_vec(
         "policy", "decrypt-in-readonly",
         "decrypt() of a valid envelope on a readonly client succeeds -- the "
@@ -401,9 +425,6 @@ def generate_policy() -> dict:
     out = wrapper("errors", vectors)
     out["pinned_order"] = _PINNED_ORDER
     out["withheld"] = [
-        {"case": "rotate() on non-envelope input in permissive mode",
-         "why": "G15 part B: both cores encrypt it today; the issue proposes "
-                "NOT_CIPHERTEXT. Authored when the issue settles, either way"},
         {"case": "a client allow-listing a registered suite it cannot perform "
                  "(0xFF02)",
          "why": "construction-time CONFIGURATION_ERROR, outside the §9 "

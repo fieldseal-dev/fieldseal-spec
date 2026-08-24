@@ -5,27 +5,18 @@ File shape per docs/08 §4.4; normalizer identifiers per docs/09 §7.
 
 from __future__ import annotations
 
-import unicodedata
-
 from .. import inputs as I
 from ..blindindex import (ARGON2_MEMORY_KIB, ARGON2_OUTPUT_LEN,
                           ARGON2_PARALLELISM, ARGON2_TIME_COST, ARGON2_VERSION,
                           argon2_salt, idf_argon2id, idf_hmac)
 from ..context import FieldContext
 from ..keys import index_key
+from ..normalizer import normalize_nfc_casefold_v1
 from ..primitives import truncate
 from ._common import ctx_json, suite_str, wrapper
 
 SUITE = 0xFF01
 NORMALIZER = "nfc-casefold-v1"   # docs/09 §7's versioned identifier
-
-
-def normalize_nfc_casefold_v1(value: str) -> bytes:
-    """docs/09 §7: NFC, then full case folding, then UTF-8 -- read literally,
-    with no second normalization after the fold (G15 part D, item 4). The
-    fold is the interpreter's (CPython 3.14: Unicode 16.0); every case below
-    uses only characters whose folding is identical in 16.0 and 17.0."""
-    return unicodedata.normalize("NFC", value).casefold().encode("utf-8")
 
 
 # (slug, preimage, truncate_bits, provisional_on)
@@ -40,9 +31,36 @@ CASES = [
     ("short-b12", "alice@example.com", 12, None),
     ("b30", "bob@example.org", 30, None),
     # U+01F0 (LATIN SMALL LETTER J WITH CARON) folds to U+006A U+030C, which
-    # NFC would recompose to U+01F0 again. This pins that no second
-    # normalization follows the fold: the stored bytes are 6a cc 8c, not c7 b0.
-    ("fold-not-nfc-stable", "ǰ@example.com", 15, "G15"),
+    # the second NFC recomposes to U+01F0. Pins that a normalization DOES
+    # follow the fold: the stored bytes are c7 b0, not 6a cc 8c.
+    ("fold-nfc-stable", "ǰ@example.com", 15, None),
+    # U+A7D2 (LATIN CAPITAL LETTER DOUBLE THORN) gained its folding in
+    # Unicode 17.0.0; a core folding with 16.0 tables leaves it unchanged.
+    # Pins the version of the folding table.
+    ("folding-added-in-17", "꟒@example.com", 15, None),
+    # U+16EA0 is a Beria Erfe capital, assigned in 17.0.0. A core pinned to
+    # 16.0.0 would refuse it; one pinned to 17.0.0 must index it.
+    ("assigned-in-17", "\U00016ea0@example.com", 15, None),
+    # U+1AD9 is a combining mark assigned in 17.0.0 with a non-zero combining
+    # class, so it participates in canonical ordering. Pins NFC at 17.0.0.
+    ("nfc-reordering-17", "a᫙̖@example.com", 15, None),
+]
+
+# Inputs that MUST collide, or equality lookup does not work. The Greek pairs
+# are the reason `nfc-casefold-v1` normalizes again after folding: folding a
+# precomposed character can yield a decomposed sequence, so without the
+# second pass one letter in two cases lands on two index values.
+COLLISION_PAIRS = [
+    ("normalizer-collapses-case", "alice@example.com", "Alice@Example.COM",
+     "values differing only by case"),
+    ("normalizer-collapses-fold-nfc", "ΐ@example.com", "Ϊ́@example.com",
+     "U+0390 and its uppercase spelling U+03AA U+0301"),
+    ("normalizer-collapses-fold-nfc-upsilon", "ΰ@example.com", "Ϋ́@example.com",
+     "U+03B0 and its uppercase spelling U+03AB U+0301"),
+    ("normalizer-collapses-precomposed", "ǰ@example.com", "ǰ@example.com",
+     "U+01F0 and the decomposed j + U+030C"),
+    ("normalizer-collapses-sharp-s", "straße@example.com", "STRASSE@example.com",
+     "ß and SS under full case folding"),
 ]
 
 
@@ -100,30 +118,29 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             vec["provisional_on"] = vec.get("provisional_on", []) + [provisional_on]
         out.append(vec)
 
-    # Case folding is the point of declaring a normalizer: these two inputs
-    # must collide, or equality lookup does not work. Inputs carried (D-08).
-    pre_a, pre_b = "alice@example.com", "Alice@Example.COM"
-    a = truncate(idf(ik, normalize_nfc_casefold_v1(pre_a)), 15)
-    b = truncate(idf(ik, normalize_nfc_casefold_v1(pre_b)), 15)
-    assert a == b
-    out.append({
-        "id": f"blind-index/{idf_name}/normalizer-collapses-case",
-        "description": "values differing only by case MUST produce the same "
-                       f"index under the {NORMALIZER} normalizer",
-        "spec_ref": "§7.2",
-        "assertion": "equal",
-        "suite_id": suite_str(SUITE),
-        "inputs": {
-            "idf": idf_name,
-            "index_key": ik.hex(),
-            "normalize": NORMALIZER,
-            "plaintext_preimage_a": pre_a,
-            "plaintext_preimage_b": pre_b,
-            "truncate_bits": 15,
-        },
-        "expected": {"index_a": a.hex(), "index_b": b.hex(),
-                     "must_be_equal": True},
-    })
+    # Collision is the point of declaring a normalizer. Inputs carried (D-08).
+    for slug, pre_a, pre_b, why in COLLISION_PAIRS:
+        a = truncate(idf(ik, normalize_nfc_casefold_v1(pre_a)), 15)
+        b = truncate(idf(ik, normalize_nfc_casefold_v1(pre_b)), 15)
+        assert a == b, f"{slug}: {pre_a!r} and {pre_b!r} do not collide"
+        out.append({
+            "id": f"blind-index/{idf_name}/{slug}",
+            "description": f"{why} MUST produce the same index under the "
+                           f"{NORMALIZER} normalizer",
+            "spec_ref": "§7.2",
+            "assertion": "equal",
+            "suite_id": suite_str(SUITE),
+            "inputs": {
+                "idf": idf_name,
+                "index_key": ik.hex(),
+                "normalize": NORMALIZER,
+                "plaintext_preimage_a": pre_a,
+                "plaintext_preimage_b": pre_b,
+                "truncate_bits": 15,
+            },
+            "expected": {"index_a": a.hex(), "index_b": b.hex(),
+                         "must_be_equal": True},
+        })
     return out
 
 

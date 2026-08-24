@@ -200,12 +200,44 @@ IndexDeclaration {
 Normalizers are a **closed, versioned set** shipped by every core identically (they affect stored index values, so they are portability surface):
 
 - `identity` — bytes unchanged.
-- `nfc-casefold-v1` — Unicode NFC, then full case folding, then UTF-8 encode. For email-like text. **[Flag: "full case folding" must be pinned to a Unicode version and folding variant (C+F, no Turkish-i special case) before vectors freeze — cross-language Unicode-version drift silently breaks shared indexes. Candidate: pin to a fixed folding table vendored into each core rather than the platform's Unicode library.]**
-- `digits-only-v1` — strip ASCII non-digits (phone/SSN-like values).
+- `nfc-casefold-v1` — for email-like text. Defined completely below.
+- `digits-only-v1` — strip ASCII non-digits (phone/SSN-like values). ASCII-scoped and defined on bytes; it consults no Unicode table and needs no version pin.
 
-`index_id` is validated against the spec §6.1 `index-id` grammar at declaration time and rejected as a `ConfigurationError` if it fails — fail closed, before any derivation string is built. This is construction-time validation, so it has no §9 error code (docs/09 §9); the `context/` vector family pins the refusals (docs/08 §4.3).
+### 7.1 `nfc-casefold-v1` (normative)
+
+The identifier *is* the definition: two cores that compute different bytes for the same input under this name are not both conformant, and the difference is a silent lookup miss rather than an error. All five clauses below are part of what `nfc-casefold-v1` means.
+
+**1. Unicode version: 17.0.0**, for normalization and folding alike. Input containing any code point unassigned in Unicode 17.0.0 MUST be refused with `INVALID_ARGUMENT` — an argument error, not a §9 code (§9 below). A lone surrogate is refused on the same terms, having no UTF-8 encoding.
+
+*Why refuse rather than pass through.* The refusal is what makes the pin exact rather than aspirational. Unicode's Strong Normalization Stability policy (4.1+) guarantees that a string composed only of characters assigned in version *V* normalizes identically under every conforming implementation at *V* or later. Restricting input to 17.0.0-assigned characters therefore buys agreement with every future version, for free. Accepting an unassigned code point buys the opposite: its combining class and decomposition are not yet fixed, so a core built against a later UCD would order and compose it differently — and would do so silently. A visible refusal is the better failure.
+
+*The cost, stated.* A value containing a character encoded after Unicode 17.0.0 cannot be indexed until the pin moves, and moving the pin means a new identifier (`nfc-casefold-v2`) and a re-index, because stored values change. Refusal is scoped to index derivation: `encrypt` does not normalize, so such a value can still be stored — but an adapter that derives an index on every write will fail that write rather than store a row its own queries cannot find. **Which of those an adapter should do is a product decision this document does not make**; it is recorded in §12 of `docs/12` and `docs/13` as an adapter obligation to state explicitly.
+
+**2. Folding: `CaseFolding-17.0.0.txt`, statuses C and F only**, applied per code point. No `T` (Turkic) mappings: they make the result depend on the caller's locale, and a blind index has no locale. No `S`, which `F` supersedes wherever both exist. This is "full case folding" as UAX #44 defines it — `ß` folds to `ss`, not to `ß`.
+
+**3. Normalization: NFC at 17.0.0.** A core MAY take NFC from its platform **only if** the platform's Unicode version is at least 17.0.0 *and* the core demonstrates agreement with the pinned tables exhaustively in its own test suite. Otherwise it MUST vendor the normalization data.
+
+Refusing code points newer than the *platform's* version, as a way to use an older platform normalizer, is **not** a conformant route. It would make the set of accepted inputs a property of the deployment's runtime: one core would index a value that another refuses, both would pass the whole vector suite, and neither report would show it. "A accepts what B rejects" is an interoperability failure of the same kind this specification exists to prevent, and it is invisible to the vectors precisely because the vectors contain no such characters.
+
+Both reference cores vendor both tables rather than taking either from the platform. `tools/ucd-gen/generate.py` generates them from the published UCD; CI re-runs it with `--check`, so a hand-edited table fails the build.
+
+**4. A second normalization after folding.** The output of clause 2 is normalized to NFC again and then UTF-8 encoded. `nfc-casefold-v1` is therefore:
+
+```
+NFC( toCasefold( NFC( X ) ) )
+```
+
+*Why the second pass is not optional.* Without it this is a deterministic function that is not a caseless-matching one, and caseless matching is the entire reason the normalizer exists. Folding a precomposed character can produce a decomposed sequence, so one letter written in two cases lands on two index values: U+0390 (ΐ) folds to `U+03B9 U+0308 U+0301`, while the same letter spelled in uppercase as `U+03AA U+0301` folds to `U+03CA U+0301`. Those are canonically equivalent — one lookup to a user — and two different blind indexes to the database. Measured over UCD 16.0.0, dropping the second pass fails to collide 12 case/canonical variant pairs at the code-point level and 302 letter-plus-combining-mark strings in the BMP; restoring it fixes 8 and 294 of those respectively and breaks none.
+
+*This is not Unicode's canonical caseless match*, which is `NFD(toCasefold(NFD(X)))` and outputs NFD. Documents MUST NOT describe `nfc-casefold-v1` as canonical caseless matching. NFC is chosen for the final step because it is shorter as a stored value; over the BMP below U+2000 the NFC form is 7,467 UTF-16 units against NFD's 8,536.
+
+**5. Bytes input is decoded as strict UTF-8** before clause 1; a decoding failure is `INVALID_ARGUMENT`. Decoding with replacement characters would map distinct malformed inputs onto one index value, which is a false-match primitive rather than a leniency. A text-typed API (Python `str`, JavaScript `string`) reaches clause 1 directly.
+
+> **Where the refusal has to live.** A core whose index API accepts only bytes cannot enforce the lone-surrogate case: `TextEncoder` and its equivalents substitute U+FFFD rather than failing, and U+FFFD is an assigned character, so the core sees well-formed UTF-8 and two distinct lone surrogates reach the same index. The refusal belongs at whatever boundary accepts text. A core that accepts bytes only MUST expose the assigned-code-point check (the TypeScript core exports `firstUnassigned`) and an adapter encoding on the core's behalf MUST apply it before encoding.
 
 Custom normalizers are out: a deployment-defined normalizer is a portability break by definition. New normalizers go through the same process as suites (spec change + vectors).
+
+`index_id` is validated against the spec §6.1 `index-id` grammar at declaration time and rejected as a `ConfigurationError` if it fails — fail closed, before any derivation string is built. This is construction-time validation, so it has no §9 error code (docs/09 §9); the `context/` vector family pins the refusals (docs/08 §4.3).
 
 ## 8. Key providers and cache
 
