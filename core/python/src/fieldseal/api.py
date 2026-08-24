@@ -1,9 +1,12 @@
 """The Fieldseal client (spec §11.1, docs/10 §4).
 
-Every operation here is strictly synchronous and performs no I/O. That is not a
-style preference: Django field types, SQLAlchemy type processors, TypeORM
-transformers and the rest cannot await in the value path, and a core that
-required them to would be unusable in the place it is meant to be used.
+Every value-path operation here is strictly synchronous and performs no I/O.
+That is not a style preference: Django field types, SQLAlchemy type
+processors, TypeORM transformers and the rest cannot await in the value path,
+and a core that required them to would be unusable in the place it is meant to
+be used. The one exception is `warm`, the §11.2 prefetch and the only
+coroutine on the client (docs/10 §4): all KMS/network I/O lives there, off
+the value path.
 
 The decrypt path follows docs/09 §3.2 step for step. Spec §9 leaves the
 precedence among its error codes open (gap G5) and obliges a Gate 0a
@@ -18,6 +21,7 @@ from __future__ import annotations
 import os
 import secrets
 import warnings
+from collections.abc import Iterable
 
 from cryptography.hazmat.primitives import constant_time
 
@@ -269,6 +273,16 @@ class Fieldseal:
 
     def is_ciphertext(self, blob: object) -> bool:
         return is_ciphertext(blob)
+
+    async def warm(self, contexts: Iterable[FieldContext]) -> None:
+        """Spec §11.2 prefetch -- the only coroutine on the client (docs/10
+        §4). Delegates to the provider when it offers `warm`; a provider
+        without one makes this a no-op, so warming is never required for
+        correctness. All KMS/network I/O lives here; the value path stays
+        sync-only (spec §11.1)."""
+        w = getattr(self._provider, "warm", None)
+        if w is not None:
+            await w(contexts)
 
 
 __all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]
