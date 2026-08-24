@@ -42,9 +42,6 @@ SCOPE = b"tenant-0001"
 CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
                    purpose="encrypt", tenant_id=SCOPE)
 
-SECONDS = 1.0  # one clock tick; policies below use whole-second max_ages
-
-
 def _client(provider: object, **kw: object) -> Fieldseal:
     return Fieldseal(key_provider=provider,  # type: ignore[arg-type]
                      allowed_suites={0xFF01}, write_suite=0xFF01,
@@ -168,6 +165,21 @@ class TestDekCache:
         assert c.size == 0
         assert c.metrics.evictions["clear"] == 1
 
+    def test_on_evict_fires_outside_the_lock_and_may_read_the_cache(self):
+        """The lock is non-reentrant: a hook that fired while `_drop` held it
+        could not touch the cache at all -- even `size` or `has` would
+        deadlock the value path (PR #57 review, defect 2). Hooks fire after
+        the lock is released and observe post-operation state."""
+        seen: list[tuple[str, str, int, bool]] = []
+        c = DekCache(CachePolicy(max_age=timedelta(days=36500),
+                                 max_uses=2, capacity=10),
+                     on_evict=lambda k, cause: seen.append(
+                         (k, cause, c.size, c.has(k))))
+        c.put("k", bytes([1] * 32))
+        assert c.get("k") is not None   # use 1
+        assert c.get("k") is not None   # use 2 -> evicted on return
+        assert seen == [("k", "max-uses", 0, False)]
+
 
 # -- EnvelopeKeyProvider (docs/09 §8.2) ----------------------------------------
 
@@ -200,7 +212,7 @@ def _provider(max_uses: int = 1000) -> tuple[EnvelopeKeyProvider,
     wrapper = CountingXorWrapper()
     provider = EnvelopeKeyProvider(
         wrapper=wrapper, directory=DIRECTORY,
-        cache=CachePolicy(max_age=timedelta(seconds=60 * SECONDS),
+        cache=CachePolicy(max_age=timedelta(seconds=60),
                           max_uses=max_uses, capacity=16))
     return provider, wrapper
 
@@ -278,6 +290,57 @@ class TestEnvelopeKeyProvider:
         header = EnvelopeHeader(fmt_ver=1, suite_id=0xFF01,
                                 key_id=bytes(16), msg_seed=bytes(32))
         assert list(p.decryption_keys(header)) == []
+
+    def test_missing_index_key_is_not_reported_as_a_cache_miss(self):
+        """When the active version has no wrapped index key, no warm() can
+        ever fill the cache slot (`_unwrap_scope` skips it), so the error
+        must name the configuration instead of prescribing "call warm()
+        first" (PR #57 review; cf. StaticKeyProvider's message in the TS
+        core)."""
+        d = InMemoryKeyDirectory([WrappedKeySet(
+            scope=SCOPE, active_version=1,
+            versions=[WrappedKeyVersion(version=1, key_id=KEY_ID,
+                                        wrapped_dek=wrap(DEK))])])
+        p = EnvelopeKeyProvider(
+            wrapper=CountingXorWrapper(), directory=d,
+            cache=CachePolicy(max_age=timedelta(seconds=60),
+                              max_uses=1000, capacity=16))
+        _run(p.warm([CTX]))
+        with pytest.raises(KeyUnavailable, match="no wrapped index key"):
+            p.encryption_key(CTX.for_index("email"))
+        p.encryption_key(CTX)  # the DEK role is warmed and unaffected
+
+    def test_cancelled_warm_caller_does_not_break_the_single_flight(self):
+        """A caller cancelled while awaiting warm() (an asyncio.wait_for
+        timeout) must not remove the in-flight entry while the unwrap task is
+        still running: the next warm() joins that task instead of stampeding
+        the KMS with a second concurrent unwrap (docs/09 §8.3; PR #57
+        review, defect 1)."""
+        async def scenario() -> tuple[int, bytes]:
+            gate = asyncio.Event()
+            calls = [0]
+
+            class GatedWrapper:
+                async def unwrap(self, wrapped: bytes, scope: bytes) -> bytes:
+                    calls[0] += 1
+                    await gate.wait()
+                    return bytes(b ^ 0x55 for b in wrapped)
+
+            p = EnvelopeKeyProvider(
+                wrapper=GatedWrapper(), directory=DIRECTORY,
+                cache=CachePolicy(max_age=timedelta(seconds=60),
+                                  max_uses=1000, capacity=16))
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(p.warm([CTX]), 0.01)
+            second = asyncio.create_task(p.warm([CTX]))
+            await asyncio.sleep(0)  # the second warm reaches its join point
+            gate.set()
+            await second
+            return calls[0], p.encryption_key(CTX)[0]
+
+        calls, dek = asyncio.run(scenario())
+        assert calls == 2  # ONE unwrap task ran: dek + index key; no stampede
+        assert dek == DEK
 
 
 # -- construction-time refusals --------------------------------------------------

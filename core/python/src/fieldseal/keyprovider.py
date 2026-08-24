@@ -1,10 +1,12 @@
 """Key providers: spec §8, docs/09 §8.
 
-Three shipped providers:
+Two shipped providers:
 
   StaticKeyProvider    one key in memory; test/development only
   EnvelopeKeyProvider  KMS-wrapped DEKs; unwrap happens ONLY in warm();
                        the value path is cache-only
+
+(docs/10 §3 lists a third, DerivedKeyProvider; it is not yet ported.)
 
 The interface is spec §8's, by name: `encryption_key(ctx)` for a write and
 `decryption_keys(header)` for a read. Purpose routing matters in the first: an
@@ -94,8 +96,10 @@ class StaticKeyProvider:
 
 class Wrapper(Protocol):
     """The KMS integration seam (docs/09 §8.2): per-language, pluggable,
-    optional dependency. `unwrap` runs only inside `warm` -- never on the
-    value path."""
+    optional dependency. docs/09 names the seam `wrap(dek) / unwrap(blob)`;
+    `wrap` is deferred -- nothing in the Phase 1 core calls it (backfill
+    tooling will). `unwrap` runs only inside `warm` -- never on the value
+    path."""
 
     async def unwrap(self, wrapped: bytes, scope: bytes) -> bytes:
         """Unwraps a wrapped DEK or index key. MUST be async so that warm can
@@ -196,14 +200,25 @@ class EnvelopeKeyProvider:
         if degradation not in _DEGRADATION_MODES:
             raise ConfigurationError(
                 f"degradation must be one of {_DEGRADATION_MODES} (spec §8.1)")
-        self.cache = DekCache(cache)
-        self.degradation = degradation
+        self._cache = DekCache(cache)
+        self._degradation = degradation
         self._wrapper = wrapper
         self._directory = directory
         # Single-flight per scope, per event loop: concurrent warms share one
         # task instead of stampeding the KMS (docs/09 §8.3). The value path
         # never touches this.
         self._inflight: dict[str, asyncio.Task[None]] = {}
+
+    # Read-only: rebinding either mid-flight would quietly fork the security
+    # policy the provider was constructed under (PR #57 review, item 6).
+
+    @property
+    def cache(self) -> DekCache:
+        return self._cache
+
+    @property
+    def degradation(self) -> str:
+        return self._degradation
 
     # -- spec §8 interface ---------------------------------------------------
 
@@ -223,11 +238,23 @@ class EnvelopeKeyProvider:
                 "the key set registered for this scope declares no active "
                 "version")
         role = "index" if ctx.purpose != "encrypt" else "dek"
+        if role == "index" and active.wrapped_index_key is None:
+            # Not a cache miss: `_unwrap_scope` never fills this slot, so no
+            # number of warm() calls could satisfy it. Prescribing "call
+            # warm() first" here would be a remedy that cannot work (cf. the
+            # TS StaticKeyProvider's honest message).
+            raise KeyUnavailable(
+                f"key_id {active.key_id.hex()}: active version "
+                f"{active.version} has no wrapped index key registered for "
+                "this scope; warm() cannot provide one")
         key = self.cache.get(_cache_key(scope, active.version, role))
         if key is None:
+            # docs/09 §9: messages carry the key_id (public envelope
+            # content).
             raise KeyUnavailable(
-                f"{role} key for version {active.version} is not in the "
-                "cache (call warm() first; the value path never unwraps)")
+                f"{role} key for version {active.version} (key_id "
+                f"{active.key_id.hex()}) is not in the cache (call warm() "
+                "first; the value path never unwraps)")
         return key, active.key_id
 
     def decryption_keys(self, header: EnvelopeHeader) -> Sequence[bytes]:
@@ -276,18 +303,37 @@ class EnvelopeKeyProvider:
                 raise r
 
     async def _warm_scope(self, scope: bytes) -> None:
+        # Cancellation safety (PR #57 review, defect 1): awaiting a task
+        # directly hands the awaiter's cancellation TO the task --
+        # Task.cancel cancels the future the task is blocked on -- so an
+        # unshielded await here would kill the shared unwrap out from under
+        # every other awaiter, and the next warm() would hit the KMS with a
+        # fresh unwrap (docs/09 §8.3). Both joins therefore go through
+        # asyncio.shield, and cleanup is attached to the task rather than to
+        # any awaiter's try/finally, since with shields in place no
+        # awaiter's stack frame is guaranteed to survive to run it. The TS
+        # core has neither hazard: promises are not cancellable.
         key = scope.hex()
         existing = self._inflight.get(key)
         if existing is not None:
-            await existing
+            await asyncio.shield(existing)
             return
         task = asyncio.ensure_future(self._unwrap_scope(scope))
         self._inflight[key] = task
-        try:
-            await task
-        finally:
-            if self._inflight.get(key) is task:
-                del self._inflight[key]
+
+        def _cleanup(t: asyncio.Future[None], k: str = key) -> None:
+            # The identity guard covers the callback firing after a newer
+            # task has taken the slot.
+            if self._inflight.get(k) is t:
+                del self._inflight[k]
+            if not t.cancelled():
+                # An abandoned failure must not surface as "exception was
+                # never retrieved" noise; any surviving awaiter re-raises
+                # via its own `await`.
+                t.exception()
+
+        task.add_done_callback(_cleanup)
+        await asyncio.shield(task)
 
     async def _unwrap_scope(self, scope: bytes) -> None:
         s = self._directory.by_scope(scope)
@@ -302,6 +348,9 @@ class EnvelopeKeyProvider:
                 self.cache.put(_cache_key(scope, v.version, "index"), ik)
             # Zeroization honesty: `dek`/`ik` are typically immutable `bytes`
             # returned by the wrapper; CPython gives us nothing to overwrite.
-            # The long-lived copy is the cache's bytearray, zeroized on
-            # eviction (cache.py).
+            # A wrapper returning `bytearray` precisely to permit erasure is
+            # deliberately not erased here either (the TS warm path zeroizes
+            # its buffers); recording or closing that asymmetry is a
+            # cross-core follow-up on PR #57. The long-lived copy is the
+            # cache's bytearray, zeroized on eviction (cache.py).
 

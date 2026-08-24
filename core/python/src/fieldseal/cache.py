@@ -80,7 +80,11 @@ class _Entry:
 class DekCache:
     """Thread-safe DEK cache: one lock around metadata (docs/10 §5). The value
     path never blocks on another entry's refresh -- refresh lives in the
-    provider's `warm`, not here."""
+    provider's `warm`, not here.
+
+    The lock is non-reentrant, so `on_evict` hooks fire AFTER it is released
+    (a hook may safely read the cache; it observes post-operation state). The
+    injected `now` clock runs UNDER the lock and must not touch the cache."""
 
     def __init__(
         self,
@@ -91,13 +95,22 @@ class DekCache:
     ) -> None:
         # CachePolicy validates itself in __post_init__; construction of an
         # invalid one raises before we get here.
-        self.policy = policy
+        self._policy = policy
+        # Mutated only under the lock; read lock-free (safe for ints under
+        # the GIL -- do not "fix" reads into lock acquisitions, PR #57
+        # review, item 7).
         self.metrics = CacheMetrics()
         # Plain dict: insertion-ordered; re-inserting on access makes it an LRU.
         self._entries: dict[str, _Entry] = {}
         self._lock = threading.Lock()
         self._now: Callable[[], float] = now if now is not None else time.monotonic
         self._on_evict = on_evict
+
+    @property
+    def policy(self) -> CachePolicy:
+        # Read-only: rebinding the policy mid-flight would quietly fork the
+        # §5.5 security thresholds (PR #57 review, item 6).
+        return self._policy
 
     @property
     def size(self) -> int:
@@ -107,45 +120,54 @@ class DekCache:
     def put(self, key: str, material: bytes | bytearray) -> None:
         """Stores a private copy of `material`; the caller's buffer is never
         aliased."""
+        deferred: list[tuple[str, EvictionCause]] = []
         with self._lock:
             # TTL is a security parameter: expired material must not sit in
             # memory until someone happens to `get` its exact key, and it must
             # not consume capacity evictions owed to live entries. Sweeping
             # here keeps eviction off the value path (put runs from warm()).
-            self._sweep_expired()
+            self._sweep_expired(deferred)
             existing = self._entries.get(key)
             if existing is not None:
-                self._drop(key, existing, "explicit", count=False)
+                self._drop(key, existing, "explicit", count=False,
+                           deferred=deferred)
             while len(self._entries) >= self.policy.capacity:
                 oldest = next(iter(self._entries))
                 self._drop(oldest, self._entries[oldest], "capacity",
-                           count=True)
+                           count=True, deferred=deferred)
             self._entries[key] = _Entry(material=bytearray(material),
                                         inserted_at=self._now(), uses=0)
+        self._fire(deferred)
 
     def get(self, key: str) -> bytes | None:
         """Returns a copy of the cached material, or None. Counts one use; an
         entry reaching max_uses is returned this last time and then evicted,
         so the threshold is an exact count of returns."""
-        with self._lock:
-            e = self._entries.get(key)
-            if e is None:
-                self.metrics.misses += 1
-                return None
-            if self._expired(e):
-                self._drop(key, e, "max-age", count=True)
-                self.metrics.misses += 1
-                return None
-            self.metrics.hits += 1
-            out = bytes(e.material)
-            e.uses += 1
-            if e.uses >= self.policy.max_uses:
-                self._drop(key, e, "max-uses", count=True)
-            else:
-                # LRU touch.
-                del self._entries[key]
-                self._entries[key] = e
-            return out
+        deferred: list[tuple[str, EvictionCause]] = []
+        try:
+            with self._lock:
+                e = self._entries.get(key)
+                if e is None:
+                    self.metrics.misses += 1
+                    return None
+                if self._expired(e):
+                    self._drop(key, e, "max-age", count=True,
+                               deferred=deferred)
+                    self.metrics.misses += 1
+                    return None
+                self.metrics.hits += 1
+                out = bytes(e.material)
+                e.uses += 1
+                if e.uses >= self.policy.max_uses:
+                    self._drop(key, e, "max-uses", count=True,
+                               deferred=deferred)
+                else:
+                    # LRU touch.
+                    del self._entries[key]
+                    self._entries[key] = e
+                return out
+        finally:
+            self._fire(deferred)
 
     def peek(self, key: str) -> bytes | None:
         """Returns a copy without counting a §5.5 use. docs/09 §8.3: use
@@ -154,57 +176,73 @@ class DekCache:
         an expired key must never be served, counted or not -- and there is no
         LRU touch, so peeks do not keep an otherwise-idle entry alive past
         capacity pressure."""
-        with self._lock:
-            e = self._entries.get(key)
-            if e is None:
-                self.metrics.misses += 1
-                return None
-            if self._expired(e):
-                self._drop(key, e, "max-age", count=True)
-                self.metrics.misses += 1
-                return None
-            self.metrics.hits += 1
-            return bytes(e.material)
+        deferred: list[tuple[str, EvictionCause]] = []
+        try:
+            with self._lock:
+                e = self._entries.get(key)
+                if e is None:
+                    self.metrics.misses += 1
+                    return None
+                if self._expired(e):
+                    self._drop(key, e, "max-age", count=True,
+                               deferred=deferred)
+                    self.metrics.misses += 1
+                    return None
+                self.metrics.hits += 1
+                return bytes(e.material)
+        finally:
+            self._fire(deferred)
 
     def has(self, key: str) -> bool:
-        with self._lock:
-            e = self._entries.get(key)
-            if e is None:
-                return False
-            if self._expired(e):
-                # An expired entry is not "had"; saying otherwise would let a
-                # caller act on key material the TTL already retired.
-                self._drop(key, e, "max-age", count=True)
-                return False
-            return True
+        deferred: list[tuple[str, EvictionCause]] = []
+        try:
+            with self._lock:
+                e = self._entries.get(key)
+                if e is None:
+                    return False
+                if self._expired(e):
+                    # An expired entry is not "had"; saying otherwise would
+                    # let a caller act on key material the TTL already
+                    # retired.
+                    self._drop(key, e, "max-age", count=True,
+                               deferred=deferred)
+                    return False
+                return True
+        finally:
+            self._fire(deferred)
 
     def evict(self, key: str) -> None:
+        deferred: list[tuple[str, EvictionCause]] = []
         with self._lock:
             e = self._entries.get(key)
             if e is not None:
-                self._drop(key, e, "explicit", count=True)
+                self._drop(key, e, "explicit", count=True, deferred=deferred)
+        self._fire(deferred)
 
     def clear(self) -> None:
         """Evicts and zeroizes everything (e.g. before a fork, docs/09 §10)."""
+        deferred: list[tuple[str, EvictionCause]] = []
         with self._lock:
             for key, e in list(self._entries.items()):
-                self._drop(key, e, "clear", count=True)
+                self._drop(key, e, "clear", count=True, deferred=deferred)
+        self._fire(deferred)
 
     # -- internals ---------------------------------------------------------
 
     def _expired(self, e: _Entry) -> bool:
         return self._now() - e.inserted_at >= self.policy.max_age.total_seconds()
 
-    def _sweep_expired(self) -> None:
+    def _sweep_expired(
+            self, deferred: list[tuple[str, EvictionCause]]) -> None:
         # Entries are in LRU order (get re-inserts), not insertion-time order,
         # so a full walk is required; n is bounded by policy.capacity.
         now = self._now()
         for key, e in list(self._entries.items()):
             if now - e.inserted_at >= self.policy.max_age.total_seconds():
-                self._drop(key, e, "max-age", count=True)
+                self._drop(key, e, "max-age", count=True, deferred=deferred)
 
-    def _drop(self, key: str, e: _Entry, cause: EvictionCause, *,
-              count: bool) -> None:
+    def _drop(self, key: str, e: _Entry, cause: EvictionCause, *, count: bool,
+              deferred: list[tuple[str, EvictionCause]]) -> None:
         # Best-effort zeroization (docs/10 §5): overwrite the visible
         # allocation; nothing more is promiseable in CPython.
         e.material[:] = bytes(len(e.material))
@@ -212,4 +250,16 @@ class DekCache:
         if count:
             self.metrics.evictions[cause] += 1
             if self._on_evict is not None:
-                self._on_evict(key, cause)
+                deferred.append((key, cause))
+
+    def _fire(self, deferred: list[tuple[str, EvictionCause]]) -> None:
+        # Hooks fire OUTSIDE the non-reentrant lock (PR #57 review, defect
+        # 2): a hook that reads the cache -- `size`, `get`, even logging that
+        # touches metrics -- while `_drop` held the lock would deadlock the
+        # value path. Deferral also means a hook observes the cache after the
+        # operation that evicted the entry has completed.
+        hook = self._on_evict
+        if hook is None:
+            return
+        for key, cause in deferred:
+            hook(key, cause)
