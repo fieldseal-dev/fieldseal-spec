@@ -173,6 +173,102 @@
       }
     },
     {
+      "id": "errors/policy/rotate-non-envelope-strict",
+      "description": "strict: rotate() of unmigrated plaintext is NOT_CIPHERTEXT",
+      "spec_ref": "§9, §10.3, §11.1",
+      "suite_id": "0xFF01",
+      "operation": "rotate",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "strict",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/policy/rotate-non-envelope-permissive",
+      "description": "permissive: rotate() of unmigrated plaintext is NOT_CIPHERTEXT too -- the §10.3 pass-through is a read behaviour, and rotate is not a read (spec §11.1). The operation's domain does not vary by mode",
+      "spec_ref": "§9, §10.3, §11.1",
+      "suite_id": "0xFF01",
+      "operation": "rotate",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "3132332d34352d36373839",
+      "expected": {
+        "error": "NOT_CIPHERTEXT"
+      }
+    },
+    {
+      "id": "errors/policy/rotate-reserved-fmt-ver",
+      "description": "rotate() of reserved-version input is UNKNOWN_FORMAT_VERSION, not NOT_CIPHERTEXT: recognition (spec §3.4) tells them apart, and a future-format envelope is not unmigrated plaintext",
+      "spec_ref": "§3.4, §9, §11.1",
+      "suite_id": "0xFF01",
+      "operation": "rotate",
+      "config": {
+        "allowed_suites": [
+          "0xFF01"
+        ],
+        "write_suite": "0xFF01",
+        "read_mode": "permissive",
+        "registered_suites": [
+          "0xFF01",
+          "0xFF02"
+        ],
+        "arm_provisional_suites": true
+      },
+      "key_id": "0123456789abcdef0123456789abcdef",
+      "tenant_dek": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "encrypt"
+      },
+      "input": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613392ba4028bf202df12f7",
+      "expected": {
+        "error": "UNKNOWN_FORMAT_VERSION"
+      }
+    },
+    {
       "id": "errors/policy/decrypt-in-readonly",
       "description": "decrypt() of a valid envelope on a readonly client succeeds -- the mode refuses writes, not reads (positive control)",
       "spec_ref": "§10.3",
@@ -452,10 +548,6 @@
   "retired": [],
   "pinned_order": "Expected outcomes follow the decrypt-path order of docs/09 §3.2 as declared by both shipped cores (docs/14 §4 pinned_decisions.decrypt-order, 2026-08-23): recognition -> LENGTH_EXCEEDED -> SUITE_NOT_ALLOWED -> KEY_UNAVAILABLE -> per candidate: record key, constant-time commitment verify, AEAD open (TAG_INVALID) -> COMMITMENT_INVALID. Spec §9 marks the order [PROVISIONAL - G5]; vectors whose outcome depends on it carry provisional_on and regenerate if the order changes at Gate 0b.",
   "withheld": [
-    {
-      "case": "rotate() on non-envelope input in permissive mode",
-      "why": "G15 part B: both cores encrypt it today; the issue proposes NOT_CIPHERTEXT. Authored when the issue settles, either way"
-    },
     {
       "case": "a client allow-listing a registered suite it cannot perform (0xFF02)",
       "why": "construction-time CONFIGURATION_ERROR, outside the §9 taxonomy (docs/18 D-12; G7)"

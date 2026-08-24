@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO / "core" / "python" / "src"))
 
 import fieldseal  # noqa: E402
 from fieldseal import FieldContext, Fieldseal  # noqa: E402
-from fieldseal.api import PROVISIONAL_ENV  # noqa: E402
+from fieldseal import unicode as fs_unicode  # noqa: E402
 from fieldseal.blindindex import NORMALIZERS, idf_hmac_sha512, truncate  # noqa: E402
 from fieldseal.context import aad, canonical_context  # noqa: E402
 from fieldseal.envelope import MAX_PLAINTEXT, serialize_header  # noqa: E402
@@ -64,20 +64,10 @@ PINNED_DECISIONS = {
         "indistinguishable from key confusion at the commitment check (G5). "
         "The optional diagnostic re-derivation docs/09 §3.2 describes is not "
         "implemented.  [D-02]"),
-    "unknown-format-version-set": (
-        "reserved-known-future fmt_ver values = {0x02}; plausible length = "
-        "the global minimum registered envelope length (111 bytes); all other "
-        "non-0x01 first bytes are NOT_CIPHERTEXT (docs/09 §3.2 footnote; "
-        "docs/08 §4.6)  [D-03]"),
     "api-boundary-order": (
         "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED "
         "→ context validation (INVALID_ARGUMENT, non-§9); all before key "
         "acquisition  [D-04]"),
-    "provisional-arming": (
-        f"constructor argument arm_provisional_suites=True or environment "
-        f"variable {PROVISIONAL_ENV}=1; read at construction; a keyword on "
-        "the constructor because Python has no separate config object  "
-        "[D-14]"),
     "unimplemented-registered-suite": (
         "0xFF02 is registered (is_ciphertext → True) but refused at "
         "construction if allow-listed or set as write_suite "
@@ -88,15 +78,13 @@ PINNED_DECISIONS = {
         "\"fieldseal-commit-v1\", 32), verified constant-time before AEAD "
         "open -- spec §4.6's provisional construction (written 2026-08-23 "
         "from the G1 draft; G1 stays open)  [D-01]"),
-    "rotate-in-permissive": (
-        "rotate() on non-envelope input in permissive mode encrypts the "
-        "pass-through value (decrypt ∘ encrypt, literally composed)  [D-13]"),
-    "normalizer-text-over-bytes": (
-        "nfc-casefold-v1 over bytes decodes strict UTF-8 first; invalid UTF-8 "
-        "is refused with INVALID_ARGUMENT rather than folded through "
-        "replacement characters; no NFC pass after folding; Unicode version "
-        "is the interpreter's (environment.unicode_platform)  [D-10]"),
 }
+# Retired 2026-08-24 when issue #48 (G15) closed and the specification took
+# these over: `unknown-format-version-set` → spec §3.1/§3.4/§9/§10.3,
+# `rotate-in-permissive` → §11.1, `provisional-arming` → §4.8,
+# `normalizer-text-over-bytes` → docs/09 §7. A pinned decision records where
+# a core had to choose without text behind it; once the text exists there is
+# nothing left to declare.
 
 
 def _client(key_id: bytes, dek: bytes, index_key_material: bytes) -> Fieldseal:
@@ -467,9 +455,15 @@ def _environment() -> dict:
         "os": f"{sys.platform} {platform.machine()}",
         "crypto_backend": f"{ossl.openssl_version_text()} via "
                           f"pyca/cryptography {cryptography.__version__}",
-        "unicode_platform": f"CPython unicodedata {unicodedata.unidata_version}"
-                            " (NFC, str.casefold)",
-        "unicode_casefold_table": "interpreter's (not vendored)",
+        # Reported for information only: since the G15 closure
+        # `nfc-casefold-v1` reads vendored tables for both normalization and
+        # folding, so this core's index values do not depend on which Unicode
+        # the interpreter shipped with (docs/09 §7).
+        "unicode_platform": f"CPython unicodedata "
+                            f"{unicodedata.unidata_version} "
+                            "(not used for nfc-casefold-v1)",
+        "unicode_tables": f"vendored UCD {fs_unicode.UNICODE_VERSION} "
+                          "(NFC + CaseFolding C+F)",
     }
 
 

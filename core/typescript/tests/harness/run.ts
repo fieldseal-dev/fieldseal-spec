@@ -19,7 +19,7 @@ import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedCont
 import { FieldsealError } from "../../src/errors.ts";
 import { INDEX_KEY_SALT, deriveIndexKey, deriveRecordKey } from "../../src/kdf.ts";
 import { StaticKeyProvider } from "../../src/keyprovider.ts";
-import { CASEFOLD_UNICODE_VERSION, normalize, type NormalizerId } from "../../src/normalize.ts";
+import { UNICODE_VERSION, normalize, type NormalizerId } from "../../src/normalize.ts";
 import { FMT_VER, SUITE_FF01, getSuite, isProvisionalId } from "../../src/registry.ts";
 import { encrypt_with_materials } from "../../src/testing/index.ts";
 import { hex, hexOrNull, loadSuite, parseSuiteId } from "./suite.ts";
@@ -572,8 +572,12 @@ export function runSuite(opts: RunOptions = {}): Report {
         runtime: `Node ${process.versions.node}`,
         os: `${process.platform} ${process.arch}`,
         crypto_backend: `OpenSSL ${process.versions.openssl}`,
-        unicode_platform: `ICU ${process.versions.icu} / Unicode ${process.versions.unicode} (NFC)`,
-        unicode_casefold_table: `CaseFolding-${CASEFOLD_UNICODE_VERSION}.txt (vendored; C+F)`,
+        // The platform's Unicode is reported for information only: since the
+        // G15 closure `nfc-casefold-v1` reads vendored tables for both
+        // normalization and folding, so this core's index values do not
+        // depend on the runtime's ICU (docs/09 §7).
+        unicode_platform: `ICU ${process.versions.icu} / Unicode ${process.versions.unicode} (not used for nfc-casefold-v1)`,
+        unicode_tables: `vendored UCD ${UNICODE_VERSION} (NFC + CaseFolding C+F)`,
       },
       pinned_decisions: PINNED_DECISIONS,
       harness_notes: HARNESS_NOTES,
@@ -597,17 +601,16 @@ export const PINNED_DECISIONS: Record<string, string> = {
     "per candidate: HKDF record key, constant-time commitment verify, then AEAD open; open failure after a verified commitment → TAG_INVALID; " +
     "no candidate's commitment verifies → COMMITMENT_INVALID",
   "aad-mismatch": "AAD_MISMATCH is never raised on the 0xFF01 decrypt path: under §6.3 dual binding a context mismatch changes the record key and is indistinguishable from key confusion at the commitment check (G5). The optional diagnostic re-derivation docs/09 §3.2 describes is not implemented.",
-  "unknown-format-version-set": "reserved-known-future fmt_ver values = {0x02}; all other non-0x01 first bytes are NOT_CIPHERTEXT (docs/09 §3.2 footnote; docs/08 §4.6)",
   "api-boundary-order": "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED → context validation (INVALID_ARGUMENT, non-§9); all before key acquisition",
-  "provisional-arming": "second constructor argument { armProvisionalSuites: true } or environment variable FIELDSEAL_ARM_PROVISIONAL_SUITES=1; read at construction; never part of the config object",
   "unimplemented-registered-suite": "0xFF02 is registered (isCiphertext → true) but refused at construction if allow-listed or set as writeSuite (CONFIGURATION_ERROR naming G7); no §9 code is reachable for it because no client can be built that accepts it",
   "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- as spec §4.6 states under its [PROVISIONAL — G1] marker (since 2026-08-23); provisional until G1 closes',
-  "rotate-in-permissive": "rotate() on non-envelope input in permissive mode encrypts the pass-through value (decrypt ∘ encrypt, literally composed)",
-  "normalizer-text-over-bytes":
-    "blind_index accepts only bytes (Uint8Array; strings are never accepted); nfc-casefold-v1 decodes them as strict UTF-8 and refuses invalid UTF-8 with INVALID_ARGUMENT (never a replacement-character rendering); " +
-    "then platform NFC (ICU; version in environment.unicode_platform), then vendored CaseFolding-17.0.0.txt full folding (C+F, no Turkic special case), no second normalization after folding, then UTF-8 encode " +
-    "(docs/09 §7; docs/18 D-10; G15 part D)",
 };
+// Retired 2026-08-24 when issue #48 (G15) closed and the specification took
+// these over: `unknown-format-version-set` -> spec §3.1/§3.4/§9/§10.3,
+// `rotate-in-permissive` -> §11.1, `provisional-arming` -> §4.8,
+// `normalizer-text-over-bytes` -> docs/09 §7. A pinned decision records where
+// a core had to choose without text behind it; once the text exists there is
+// nothing left to declare.
 
 export const HARNESS_NOTES: string[] = [
   "docs/08 §5 item 2 (JSON-Schema validation) could not be performed: vectors/schema/ is empty in the checkout this harness ran against. The harness performs its own structural validation of every vector object before running it.",

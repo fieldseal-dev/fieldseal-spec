@@ -47,6 +47,9 @@ adapters/
   django/  sqlalchemy/  prisma/  hibernate/  efcore/  gorm/  typeorm/  (Phase 1+)
 tools/
   vector-gen/             the vector generator (standalone; imports neither core)
+  ucd-gen/                generates the vendored Unicode tables for both cores and
+                          the vector generator from the published UCD (docs/09 §7.1);
+                          CI re-runs it with --check, so a hand edit fails the build
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
   backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model

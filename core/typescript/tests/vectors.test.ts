@@ -45,15 +45,25 @@ describe("report invariants (docs/14 §4)", () => {
     for (const key of [
       "decrypt-order",
       "aad-mismatch",
-      "unknown-format-version-set",
       "api-boundary-order",
-      "provisional-arming",
       "unimplemented-registered-suite",
       "commitment-construction",
-      "rotate-in-permissive",
-      "normalizer-text-over-bytes",
     ]) {
       expect(report.pinned_decisions[key], key).toBeTruthy();
+    }
+  });
+  it("does not declare decisions the specification has since taken over", () => {
+    // Issue #48 (G15) closed these four into the text: a pinned decision
+    // records where a core had to choose with nothing behind it, so once the
+    // clause exists, continuing to declare it would misreport the core as
+    // having made a choice it no longer makes.
+    for (const key of [
+      "unknown-format-version-set", // → spec §3.1, §3.4, §9, §10.3
+      "provisional-arming", // → spec §4.8
+      "rotate-in-permissive", // → spec §11.1
+      "normalizer-text-over-bytes", // → docs/09 §7
+    ]) {
+      expect(report.pinned_decisions[key], key).toBeUndefined();
     }
   });
   it("has no failures and no silent skips", () => {

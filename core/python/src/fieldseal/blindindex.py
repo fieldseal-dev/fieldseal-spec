@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import hmac
 import re
-import unicodedata
 from collections.abc import Callable
 
+from . import unicode
 from .errors import InvalidArgument
 from .kdf import hkdf_sha512
 
@@ -61,14 +61,35 @@ def normalize_identity(value: str | bytes) -> bytes:
 
 
 def normalize_nfc_casefold(value: str | bytes) -> bytes:
-    """`nfc-casefold-v1` -- NFC, then full case folding (Unicode C+F via
-    `str.casefold`), then UTF-8 (docs/09 §7). No second normalization pass
-    after folding: the document says none, and docs/18 D-10(c) records that
-    this is a pin, not a settled point. The Unicode version is the
-    interpreter's (`unicodedata.unidata_version`), reported in the
-    conformance report's environment block."""
-    return unicodedata.normalize("NFC", _as_text(value)).casefold() \
-        .encode("utf-8")
+    """`nfc-casefold-v1` (docs/09 §7): NFC, full case folding, NFC again,
+    then UTF-8 -- all at the pinned Unicode version, from vendored tables.
+
+    The second NFC is what makes this a caseless-matching function rather
+    than merely a deterministic one. Folding a precomposed character can
+    yield a decomposed sequence, so without it the same letter in two cases
+    lands on two index values: U+0390 folds to U+03B9 U+0308 U+0301, while
+    its uppercase spelling U+03AA U+0301 folds to U+03CA U+0301. Those are
+    canonically equivalent and would be one lookup to a user, and two
+    different blind indexes to the database. Re-normalizing collapses them.
+
+    This is not Unicode's canonical caseless match, which is
+    NFD(toCasefold(NFD(X))) and outputs NFD; this outputs NFC, which is
+    shorter as a stored value.
+
+    Input containing a code point unassigned in the pinned version is
+    refused: its normalization is not yet fixed, so a core built against a
+    later UCD would index it differently. Refusing is visible; disagreeing
+    is not.
+    """
+    text = _as_text(value)
+    stray = unicode.first_unassigned(text)
+    if stray is not None:
+        raise InvalidArgument(
+            f"value contains U+{stray:04X}, which is not assigned in Unicode "
+            f"{unicode.UNICODE_VERSION}; `nfc-casefold-v1` is pinned to that "
+            "version and cannot index a character it does not define")
+    folded = unicode.casefold_full(unicode.nfc(text))
+    return unicode.nfc(folded).encode("utf-8")
 
 
 _NON_DIGIT = re.compile(rb"[^0-9]")

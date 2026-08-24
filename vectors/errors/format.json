@@ -839,10 +839,7 @@
       "mutation": "set byte 0 to 0x02",
       "expected": {
         "error": "UNKNOWN_FORMAT_VERSION"
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/fmt-ver-02-reserved-permissive",
@@ -876,10 +873,7 @@
       "mutation": "set byte 0 to 0x02",
       "expected": {
         "error": "UNKNOWN_FORMAT_VERSION"
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/fmt-ver-02-reserved-readonly",
@@ -913,10 +907,7 @@
       "mutation": "set byte 0 to 0x02",
       "expected": {
         "error": "UNKNOWN_FORMAT_VERSION"
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/fmt-ver-02-under-minimum",
@@ -950,10 +941,7 @@
       "mutation": "truncate to 110 bytes, set byte 0 to 0x02",
       "expected": {
         "error": "NOT_CIPHERTEXT"
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/fmt-ver-02-under-minimum-permissive",
@@ -987,10 +975,7 @@
       "mutation": "truncate to 110 bytes, set byte 0 to 0x02",
       "expected": {
         "value": "02ff010123456789abcdef0123456789abcdef167e9304b0fe2f2847039b007ae97c9047e5e006d1a7253ac119840b416429c814597d1ba90abefabc32ac603c3ffc432a3a2e626195086a1fbcfac1847017a55226ebaa8eae31e0a6154bbadb9a18ac2165020f865dbcc338a613"
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/suite-unregistered",
@@ -1248,7 +1233,7 @@
     },
     {
       "id": "errors/format/is-ciphertext-fmt-ver-02",
-      "description": "is_ciphertext over fmt_ver 0x02 at plausible length: false -- a future version need not keep suite_id at bytes 1-2, so the check that makes recognition trustworthy cannot run; decrypt raises UNKNOWN_FORMAT_VERSION instead (G15 part A)",
+      "description": "is_ciphertext over fmt_ver 0x02 at plausible length: false -- a future version need not keep suite_id at bytes 1-2, so the check that makes recognition trustworthy cannot run; decrypt raises UNKNOWN_FORMAT_VERSION instead (spec §3.4)",
       "spec_ref": "§3.4",
       "suite_id": "0xFF01",
       "operation": "is_ciphertext",
@@ -1270,10 +1255,7 @@
       "derived_from": "envelope/ff01/basic-roundtrip",
       "expected": {
         "is_ciphertext": false
-      },
-      "provisional_on": [
-        "G15"
-      ]
+      }
     },
     {
       "id": "errors/format/is-ciphertext-suite-unregistered",
