@@ -262,13 +262,28 @@ class Fieldseal:
     def rotate(self, blob: bytes, ctx: FieldContext) -> bytes:
         """Re-encrypt under a fresh seed and nonce. Produces ciphertext, so it
         is a write for both the mode gate and the provisional gate, checked
-        before the decrypt runs (docs/09 §3.5).
+        before anything inspects the operand (spec §10.3, §4.8).
 
-        Literal composition, decrypt then encrypt: in `permissive` mode the
-        decrypt of non-envelope input passes through, so rotate *encrypts*
-        unmigrated plaintext. Whether that is intended is docs/18 D-13; the
-        report declares it (`pinned_decisions.rotate-in-permissive`)."""
+        `rotate` is ciphertext-to-ciphertext in every mode (spec §11.1).
+        The §10.3 pass-through is a *read* behavior -- its column is
+        "non-envelope input on read" -- and the decrypt inside `rotate` is
+        not a read whose result reaches the application. Composing the two
+        literally would make `rotate` encrypt unmigrated plaintext in
+        `permissive` and raise on the same bytes in `strict`, so the
+        operation's domain would depend on a mode setting that has nothing to
+        do with rotation; two cores could then disagree with no vector able
+        to say which was right.
+
+        A reserved future version byte still raises `UNKNOWN_FORMAT_VERSION`
+        rather than `NOT_CIPHERTEXT`: recognition (spec §3.4) runs first and
+        distinguishes the two, and a v2 envelope is emphatically not
+        unmigrated plaintext.
+        """
         self._write_boundary(b"", ctx)
+        if recognize(blob) is None:
+            raise NotCiphertext(
+                "rotate requires an envelope; this input is not one "
+                "(use encrypt() to migrate unencrypted values)")
         return self.encrypt(self.decrypt(blob, ctx), ctx)
 
     def is_ciphertext(self, blob: object) -> bool:

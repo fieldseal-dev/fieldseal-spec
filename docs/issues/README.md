@@ -30,7 +30,9 @@ These are the specification gaps found while writing the Phase 1 tech-spec suite
 | G12 | [#12](https://github.com/fieldseal-dev/fieldseal-spec/issues/12) | [`G12-unique-constraint-contradiction.md`](G12-unique-constraint-contradiction.md) | §7.10, §7.4 | adapter DDL guidance | No |
 | G13 | [#13](https://github.com/fieldseal-dev/fieldseal-spec/issues/13) | [`G13-prisma-in-rewrite-vs-reject.md`](G13-prisma-in-rewrite-vs-reject.md) | §10.2, §7.10 | Prisma conformance wording | No |
 | G14 | [#43](https://github.com/fieldseal-dev/fieldseal-spec/issues/43) | [`G14-context-field-length-bound.md`](G14-context-field-length-bound.md) | §6.1, §6.2 (§5.3, §7.2) | one boundary behavior; max-context vectors in `context/`, `envelope/`, `kdf/` | No |
-| G15 | [#48](https://github.com/fieldseal-dev/fieldseal-spec/issues/48) | [`G15-core-pins-without-spec-text.md`](G15-core-pins-without-spec-text.md) | §9, §3.4, §10.3, §11.1, §4.8; docs/09 §7 | `errors/` `fmt_ver` and `rotate` cases; `nfc-casefold-v1` portability vectors | No |
+| G15 ✅ | [#48](https://github.com/fieldseal-dev/fieldseal-spec/issues/48) | [`G15-core-pins-without-spec-text.md`](G15-core-pins-without-spec-text.md) | §3.1, §3.4, §9, §10.3, §11.1, §4.8; docs/09 §7 | `errors/` `fmt_ver` and `rotate` cases; `nfc-casefold-v1` portability vectors | No |
+
+**G15 closed 2026-08-24.** Parts A, B and C as proposed plus three additions (§3.1's 111-byte floor on a future format version, and byte-exact comparison and the either-arms rule in §4.8); part D's item 4 closed the *other* way — `nfc-casefold-v1` gains a post-fold NFC, because the proposed composition was measured to leave eight assigned Greek code points failing to collide with their own uppercase spellings. Full reasoning and consequence sweep in `docs/07` §7.
 
 ## Provisional adoptions (Gate 0a, 2026-08-22)
 
