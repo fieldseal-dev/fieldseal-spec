@@ -13,13 +13,34 @@ from . import unicode
 from .errors import ConfigurationError, InvalidArgument
 from .kdf import hkdf_sha512
 
+# Spec §7.3's Argon2id invocation. `version`, `p`, `output_len` and the salt
+# derivation MUST NOT vary; `t` and `m` are stated there as *minima* a
+# deployment MAY raise, so they are named as minima here and are the only two
+# a declaration carries (see `Argon2Params`).
 ARGON2_SALT_INFO = b"fieldseal-argon2-salt-v1"
 ARGON2_SALT_LEN = 16
-ARGON2_TIME_COST = 3
-ARGON2_MEMORY_KIB = 32768
+ARGON2_MIN_T = 3
+ARGON2_MIN_M_KIB = 32768
 ARGON2_PARALLELISM = 1
 ARGON2_OUTPUT_LEN = 64
 ARGON2_VERSION = 0x13
+
+
+@dataclass(frozen=True, slots=True)
+class Argon2Params:
+    """The two Argon2id cost parameters spec §7.3 lets a deployment raise.
+
+    Everything else in that invocation -- version, parallelism, output length,
+    the salt derivation -- is fixed, and is deliberately absent here: a
+    parameter with no legal second value is a constant, and giving it a field
+    would invite an implementation to vary it.
+
+    Raising either parameter derives different index values for the same
+    plaintext, so a raised pair is a *new index* under spec §7.8, not a
+    reconfiguration of an existing one.
+    """
+    time_cost: int = ARGON2_MIN_T
+    memory_kib: int = ARGON2_MIN_M_KIB
 
 
 def truncate(raw: bytes, b_bits: int) -> bytes:
@@ -176,6 +197,13 @@ class IndexDeclaration:
     #: overridden (§7.6).
     projected_population: int
     index_id: str = "exact"
+    #: Argon2id cost for this column, for `idf="argon2id"` only. Absent means
+    #: the spec §7.3 minima. It is per-column and not a module constant
+    #: because §7.3 states the cost as a minimum a deployment MAY raise: a
+    #: core that could not express a raised value would derive under the
+    #: minimum instead -- silently, and only until a core that could express
+    #: it wrote the same column.
+    argon2: Argon2Params | None = None
     cardinality_override: CardinalityOverride | None = None
     #: Declares the column as heavily skewed (spec §7.6); gated like low
     #: cardinality.
@@ -198,6 +226,10 @@ class ValidatedIndex:
     key: str
     index_id: str
     idf: str
+    #: Resolved, never absent for `argon2id` (the minima are filled in at
+    #: validation, so no derivation path has to know a default); always
+    #: `None` for `hmac-sha512`, which has no cost parameters.
+    argon2: Argon2Params | None
     normalize: str
     truncate_bits: int
     projected_population: int
@@ -216,6 +248,11 @@ _INDEX_ID_RE = re.compile(r"\A[a-z0-9-]{1,32}\Z")
 def index_registry_key(table_uuid: bytes, column_uuid: bytes,
                        index_id: str) -> str:
     return f"{table_uuid.hex()}/{column_uuid.hex()}/{index_id}"
+
+
+def _int(v: object) -> bool:
+    """`bool` is an `int` in Python and is never a count here."""
+    return isinstance(v, int) and not isinstance(v, bool)
 
 
 def _recorded(o: CardinalityOverride | None) -> bool:
@@ -246,6 +283,27 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
         raise ConfigurationError(
             f"index declaration {index_id}: unknown idf {d.idf!r}; must be "
             f"one of {sorted(IDFS)} (spec §7.3)")
+    # Spec §7.3: t and m are minima. Resolving them here rather than at
+    # derivation time is what keeps a raised cost a property of the column --
+    # and refusing a value below the minimum at construction keeps a weakened
+    # index from ever being written.
+    argon2 = d.argon2
+    if d.idf == "argon2id":
+        if argon2 is None:
+            argon2 = Argon2Params()
+        if not _int(argon2.time_cost) or argon2.time_cost < ARGON2_MIN_T:
+            raise ConfigurationError(
+                f"index declaration {index_id}: argon2 time_cost must be an "
+                f"integer >= {ARGON2_MIN_T} (spec §7.3)")
+        if not _int(argon2.memory_kib) or argon2.memory_kib < ARGON2_MIN_M_KIB:
+            raise ConfigurationError(
+                f"index declaration {index_id}: argon2 memory_kib must be an "
+                f"integer >= {ARGON2_MIN_M_KIB} (spec §7.3)")
+    elif argon2 is not None:
+        # Accepting them silently would record a cost that nothing reads.
+        raise ConfigurationError(
+            f"index declaration {index_id}: argon2 parameters given for an "
+            f"{d.idf} index; only argon2id takes them (spec §7.3)")
     if d.normalize not in NORMALIZERS:
         raise ConfigurationError(
             f"index declaration {index_id}: unknown normalizer "
@@ -253,12 +311,12 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
             f"{sorted(NORMALIZERS)} (docs/09 §7). A custom normalizer is a "
             "portability break")
     p = d.projected_population
-    if not isinstance(p, int) or isinstance(p, bool) or p < 16:
+    if not _int(p) or p < 16:
         raise ConfigurationError(
             f"index declaration {index_id}: projected_population must be an "
             "integer >= 16 (spec §7.4)")
     b = d.truncate_bits
-    if not isinstance(b, int) or isinstance(b, bool) or b < 1 or b > _RAW_BITS:
+    if not _int(b) or b < 1 or b > _RAW_BITS:
         raise ConfigurationError(
             f"index declaration {index_id}: truncate_bits must be an integer "
             f"in 1..{_RAW_BITS}")
@@ -307,6 +365,7 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
         key=index_registry_key(d.table_uuid, d.column_uuid, index_id),
         index_id=index_id,
         idf=d.idf,
+        argon2=argon2,
         normalize=d.normalize,
         truncate_bits=b,
         projected_population=p,
@@ -326,8 +385,9 @@ def argon2_salt(index_key: bytes) -> bytes:
                        length=ARGON2_SALT_LEN)
 
 
-def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
-    """Spec §7.3.
+def idf_argon2id(index_key: bytes, normalized: bytes,
+                 params: Argon2Params | None = None) -> bytes:
+    """Spec §7.3, at `params` (the minima when absent).
 
     UNVALIDATED. The `blind-index/argon2id.json` vector family is held out of
     the pinned suite because this primitive has never been checked against an
@@ -338,14 +398,15 @@ def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
     """
     from argon2.low_level import Type, hash_secret_raw
 
+    cost = params if params is not None else Argon2Params()
     # `secret=` here is argon2-cffi's name for the PASSWORD. It is *not*
     # RFC 9106's secret value K, which §7.3 forbids and which this API cannot
     # supply anyway. Passing index_key here would be silently wrong.
     return hash_secret_raw(
         secret=normalized,
         salt=argon2_salt(index_key),
-        time_cost=ARGON2_TIME_COST,
-        memory_cost=ARGON2_MEMORY_KIB,
+        time_cost=cost.time_cost,
+        memory_cost=cost.memory_kib,
         parallelism=ARGON2_PARALLELISM,
         hash_len=ARGON2_OUTPUT_LEN,
         type=Type.ID,
@@ -353,7 +414,29 @@ def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
     )
 
 
-IDFS: dict[str, Callable[[bytes, bytes], bytes]] = {
-    "argon2id": idf_argon2id,
-    "hmac-sha512": idf_hmac_sha512,
-}
+def idf(which: str, index_key: bytes, normalized: bytes,
+        argon2: Argon2Params | None = None) -> bytes:
+    """`IDF(index_key, normalized)` per spec §7.3, for either IDF.
+
+    Dispatch is a function rather than a table of callables because the two
+    IDFs do not take the same arguments: Argon2id carries a per-column cost
+    and HMAC-SHA-512 has none. A table typed to the narrower signature is what
+    made a raised cost inexpressible here while the TypeScript core accepted
+    it -- the two cores agreeing on every shipped vector, which pins the
+    minima, and diverging the first time an operator raised the cost on one
+    of them (issue #62).
+    """
+    if which == "hmac-sha512":
+        return idf_hmac_sha512(index_key, normalized)
+    if which == "argon2id":
+        return idf_argon2id(index_key, normalized, argon2)
+    # Unreachable through a validated declaration; raised rather than
+    # returning a default, so a new IDF cannot silently derive under an old
+    # one (docs/09 §3.3 step 2, fail closed).
+    raise ConfigurationError(
+        f"unknown idf {which!r}; must be one of {sorted(IDFS)} (spec §7.3)")
+
+
+#: The IDF identifiers spec §7.3 defines. A frozen set, not a dispatch table:
+#: see `idf` above.
+IDFS: frozenset[str] = frozenset({"argon2id", "hmac-sha512"})

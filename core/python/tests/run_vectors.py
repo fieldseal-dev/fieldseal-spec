@@ -36,6 +36,7 @@ from fieldseal import FieldContext, Fieldseal  # noqa: E402
 from fieldseal import unicode as fs_unicode  # noqa: E402
 from fieldseal.blindindex import (  # noqa: E402
     NORMALIZERS,
+    Argon2Params,
     CardinalityOverride,
     IndexDeclaration,
     idf_hmac_sha512,
@@ -126,11 +127,27 @@ _HARNESS_OVERRIDE = CardinalityOverride(
     reason="vector harness", approved_by="vectors", date="2026-08-25")
 
 
+def _argon2_params(inp: dict) -> Argon2Params | None:
+    """docs/08 §4.4: an Argon2id vector states the cost it was generated at
+    in `idf_params`, and the harness derives at that cost rather than at this
+    core's default -- which is what lets a vector at a *raised* cost test the
+    core instead of the harness. Dropping the parameters would fail such a
+    vector against a correct core and point the failure at the primitive
+    (issue #62). Missing keys are a KeyError on purpose: a vector that omits
+    them is malformed, not a vector at the minimum."""
+    if inp["idf"] != "argon2id":
+        return None
+    params = inp["idf_params"]
+    return Argon2Params(time_cost=params["time_cost"],
+                        memory_kib=params["memory_kib"])
+
+
 def _index_decl(inp: dict, ctx: FieldContext,
                 on_unindexable: str = "refuse") -> IndexDeclaration:
     return IndexDeclaration(
         table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
         index_id=inp["index_id"], idf=inp["idf"],
+        argon2=_argon2_params(inp),
         normalize=inp["normalize"], truncate_bits=inp["truncate_bits"],
         projected_population=_population_for(inp["truncate_bits"]),
         on_unindexable=on_unindexable,
@@ -244,6 +261,10 @@ def run_commitment(doc: dict, results: list[dict]) -> None:
 def _blind_index_primitive(idf: str, index_key_bytes: bytes,
                            normalized: bytes, b_bits: int) -> tuple[bytes, bytes]:
     if idf != "hmac-sha512":
+        # blind-index/argon2id.json is held out (MANIFEST.held_out) pending
+        # G2, so no Argon2id vector reaches this harness. When one does, it
+        # dispatches through `blindindex.idf` with the declaration's cost --
+        # which `_argon2_params` now reads from the vector (#62).
         raise ValueError(f"harness runs hmac-sha512 only; got {idf}")
     raw = idf_hmac_sha512(index_key_bytes, normalized)
     return raw, truncate(raw, b_bits)
