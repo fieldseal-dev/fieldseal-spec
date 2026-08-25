@@ -115,9 +115,12 @@ jobs:
       fail-fast: false
       matrix:
         db: [sqlite, postgres]
+    # The service starts for both matrix legs -- Actions has no conditional
+    # `services` -- so a broken image pin fails the SQLite leg too. The digest
+    # below was resolved from the registry, not copied.
     services:
       postgres:
-        image: postgres:17@sha256:6efd0df010dc3cb40d5e33e3ef84acecc5e73161bd3df06029ee8698e5e12266
+        image: postgres:17@sha256:0b657ff48d7f76a1e907f381b1693eb4f2bf54c1d2df4feb6743d7dc601768dd
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: fieldseal_test
