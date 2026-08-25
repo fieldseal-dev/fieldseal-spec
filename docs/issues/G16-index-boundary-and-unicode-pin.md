@@ -4,7 +4,9 @@
 **Blocks:** the adapter obligation `docs/09` §7.1 already claims is written down and is not; the `on_unindexable` field of `IndexDeclaration`; the `blind-index/` vectors that would pin a text-typed boundary; the pin bump that is free now and expensive after freeze.
 **Found:** 2026-08-24 while closing G15 (issue [#48](https://github.com/fieldseal-dev/fieldseal-spec/issues/48)), written up in `internal/product-decision-indexing-edge-cases.md`. Neither finding is a defect in either core — both do exactly what `docs/09` §7.1 now says. Both are questions about what it should say next.
 
-**Status:** OPEN — tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60), posted 2026-08-25. **All four parts carry decided directions** (product owner, 2026-08-25); what remains is the normative edits, the vectors and one core change, not a decision. No spec or `docs/09` text carries a `[PROVISIONAL]` marker for any of this, and none is needed: nothing here waits on a reviewer.
+**Status:** OPEN — tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60), posted 2026-08-25. **All four parts carry decided directions** (product owner, 2026-08-25); what remains is the normative edits, the vectors and one core change, not a decision.
+
+> **Part C landed 2026-08-25**, ahead of A and B: `docs/09` §7.1 carries *Pin currency (normative)*, and `tools/ucd-gen` has the fetch guards plus `test_generate.py` in CI. The 18.0 bump itself is **not** done and cannot be until the release stops redirecting. Parts A, B and D remain, which is why this issue is open. See `docs/07` §7, 2026-08-25. No spec or `docs/09` text carries a `[PROVISIONAL]` marker for any of this, and none is needed: nothing here waits on a reviewer.
 
 ## Why one issue
 

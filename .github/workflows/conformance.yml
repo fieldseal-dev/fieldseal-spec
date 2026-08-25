@@ -150,6 +150,18 @@ jobs:
       # blind-index divergence, which is the failure mode the pin exists to
       # remove. Fetches the UCD rather than vendoring it -- the three source
       # files are larger than the tables they produce.
+      # The fetch guards, first (docs/09 §7.1). There is no published digest
+      # for the UCD files, so the transport and the URL are the only things
+      # authenticating them -- and unicode.org answers an unreleased version's
+      # path with a 302 to the moving draft, over plaintext http. Following
+      # that would generate tables from a draft, label them with a release
+      # number, and fail this job's diff a week later with nothing to explain
+      # it. Hermetic and offline, so a network flake cannot mask a real
+      # regression in the guards themselves.
+      - name: Guards on the UCD fetch
+        run: |
+          python tools/ucd-gen/test_generate.py
+
       - name: Regenerate from unicode.org and diff
         run: |
           python tools/ucd-gen/generate.py --download --check
