@@ -72,8 +72,16 @@ def to_bytes(field: Field[Any, Any], value: Any) -> bytes:
             f"{type(field).__name__}.get_prep_value returned None for a "
             f"non-None value of type {type(value).__name__}"
         )
-    # int, float, Decimal, date, datetime, UUID, bool all land here and all
-    # have a lossless str() under their prepared form.
+    # int, float, Decimal, date, datetime, UUID and bool all land here, and
+    # all have a lossless `str()` under their *prepared* form -- prepared,
+    # not raw, which is what makes the claim hold: `get_prep_value` has
+    # already turned a `date` into a date and a `Decimal` into a `Decimal`,
+    # so `str()` is rendering a normalized value rather than guessing at one.
+    #
+    # The assumption this leaves implicit, stated: `str()` for these types is
+    # stable across CPython versions. It is, and it has to be, because the
+    # bytes it produces are what another language's core will read back --
+    # a change here is a cross-implementation break, not a formatting change.
     return str(prepared).encode("utf-8")
 
 

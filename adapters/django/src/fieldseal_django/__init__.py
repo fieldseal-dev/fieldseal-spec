@@ -41,9 +41,6 @@ __all__ = [
 ]
 __version__ = "0.1.0.dev0"
 
-default_app_config = "fieldseal_django.apps.FieldsealConfig"
-
-
 def __getattr__(name: str) -> object:
     # `Encrypted` imports `django.db.models`, which requires settings to be
     # configured. Deferring keeps `import fieldseal_django` usable from

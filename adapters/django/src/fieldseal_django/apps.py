@@ -16,6 +16,7 @@ registry must match the model declarations exactly, or startup fails.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from django.apps import AppConfig
@@ -27,6 +28,12 @@ from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclara
 from .errors import FieldsealConfigurationError
 
 _client: Fieldseal | None = None
+# Two threads racing the first value-path call would otherwise each
+# build a client. Harmless -- the client is immutable after
+# construction (docs/09 §2) and one wins the assignment -- but it also
+# means running every construction-time gate twice and, with a real
+# provider, whatever work the provider does on init.
+_client_lock = threading.Lock()
 
 #: Only these keys are read. An unknown key is a typo that would otherwise
 #: change nothing and be discovered in production.
@@ -178,7 +185,9 @@ def get_client() -> Fieldseal:
     """
     global _client
     if _client is None:
-        _client = build_client()
+        with _client_lock:
+            if _client is None:
+                _client = build_client()
     return _client
 
 

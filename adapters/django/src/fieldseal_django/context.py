@@ -27,7 +27,8 @@ from .errors import FieldsealConfigurationError
 #: Set per request (middleware), per task (Celery), or per command. A
 #: ContextVar rather than thread-local so that async views and thread pools
 #: inherit it the way Django's own async plumbing expects.
-_tenant: ContextVar[bytes | None] = ContextVar("fieldseal_tenant", default=None)
+_tenant: ContextVar[bytes | None] = ContextVar(
+    "fieldseal_django_tenant", default=None)
 
 
 def set_tenant(tenant_id: bytes | str | None) -> Token[bytes | None]:

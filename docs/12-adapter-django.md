@@ -13,7 +13,7 @@
 Composition over Django's existing field types — the Rails `encrypts` shape that `docs/04` §8 says to adopt:
 
 ```python
-from fieldseal.django import Encrypted, BlindIndex, FieldsealMeta
+from fieldseal_django import Encrypted, BlindIndex, FieldsealMeta
 
 class Patient(models.Model):
     email = Encrypted(
@@ -43,7 +43,7 @@ class Patient(models.Model):
 
 The blind-index column is a real, explicit field (`Encrypted.index_column`), not a hidden auto-injected one, for two reasons:
 
-1. **Declaration-order safety.** `SQLInsertCompiler.as_sql` iterates fields in declaration order, and the index field's `pre_save` must run after the encrypted field's (`docs/04` §1, verified). With an explicit column the order is visible in source; system check **E001** asserts it at startup rather than trusting convention.
+1. **Declaration-order clarity.** With an explicit column the order is visible in source, and system check **E001** asserts it at startup. **Corrected at implementation (2026-08-25): the original reason given here was wrong.** This section claimed the index field's `pre_save` "must run after the encrypted field's" because `SQLInsertCompiler.as_sql` iterates in declaration order. Measured: a model with the sibling declared *first* produces the **byte-identical** index value, because `pre_save` reads the instance attribute, which Python set long before any field hook ran. Declaration order cannot affect the index today. E001 is kept for the reasons that are true — deterministic column order in migrations and DDL, readability, and the fact that L3-row binding would make the source's `pre_save` mutate the instance and turn order into a real dependency whose failure *would* be silent. Establishing it now is free; claiming a failure that cannot happen is not.
 2. **Migration transparency.** `makemigrations` emits the column with no magic; the operator sees exactly what DDL runs.
 
 `Encrypted.index_column("email")` returns a `BinaryField`-backed field whose `pre_save` reads the *sibling plaintext* off the instance (available — `pre_save` receives `model_instance`, `docs/04` §1) and calls `core.blind_index`. Storage: raw bytes, length `ceil(b/8)`, per spec §7.11 (G8 resolved) — normative now, not interim. The generated column is `BinaryField`, and the adapter's migration check MUST verify the column's collation is binary where the backend allows a text index column at all (§7.11); MySQL is the case that bites, since a `VARCHAR` index column under a `_ci` collation silently matches values the core treats as distinct.
@@ -56,7 +56,8 @@ The blind-index column is a real, explicit field (`Encrypted.index_column`), not
 | Write transform | Implemented in **`get_db_prep_value`**, not `get_prep_value` — the placement `docs/04` §1 verified as the one both the save path and the lookup path traverse. `pre_save` is used only by the index sibling and for `readonly`-mode write blocking |
 | Read transform | `from_db_value` → `core.decrypt` → inner field's `to_python`. Covers `.values()`, aggregates, and `raw()` results (Django decrypts raw *results* — `docs/04` §1, verified) |
 | Serialization to bytes | The inner field's value is serialized via a fixed, non-executing codec before encryption: text fields → UTF-8; `IntegerField`/`DecimalField`/`DateField` etc. → their `value_to_string` UTF-8 bytes. Never pickle (`docs/04` §8, the Rails `Marshal` RCE lesson) |
-| `value_to_string` | Overridden so `dumpdata` emits base64 ciphertext rather than misbehaving (`docs/04` §1 gotcha) |
+| `value_to_string` | Overridden so `dumpdata` emits base64 ciphertext rather than **plaintext** into a fixture file (`docs/04` §1 gotcha). It re-encrypts rather than emitting the stored bytes, so a dump is not byte-reproducible, and it needs the tenant context — `dumpdata` over a tenant-bound model outside a `tenant_scope` refuses |
+| `loaddata` | **Refused (v0).** Django's deserializer routes fixture values through `to_python`, which also sees user-typed plaintext, so a reloaded fixture's ciphertext is stored and encrypted *again* — the row then reads back as base64 instead of the value, silently. Measured 2026-08-25: text columns corrupted, an `IntegerField` column survived, so the damage is per-inner-type and invisible to a smoke test on the wrong column. `to_python` now refuses a value the core's §3.4 `is_ciphertext` recognizes, in the fail-closed direction only. Moving encrypted data between databases is `tools/backfill`'s job (`docs/15`) |
 | Expressions | `QuerySet.update(field=value)` encrypts (hits `get_db_prep_save` — `docs/04` §1 table). `update(field=F(...))`, arithmetic and database functions **raise `FieldsealNotSupported`** — `Field.get_db_prep_save` returns anything with `as_sql` untouched, so silence here would write garbage or plaintext. **Corrected at implementation (2026-08-25): "any expression RHS" is too wide and takes `bulk_update` down with it.** `bulk_update` builds a `Case/When` whose results are `Value(...)` literals, and `Value.as_sql` calls `output_field.get_db_prep_save` on the literal (`for_save=True`), which re-enters the field and encrypts. The refusal therefore tests the *written* expression, not its conditions: `Value` and `Case` trees of `Value`s are served, everything else with `as_sql` is refused. A `When` may reference any column it likes, because that decides which row is updated rather than what is stored in it |
 | `bulk_update` | Supported — routes through `Case/When` with `Value(attr, output_field=field)` which reaches `get_db_prep_save` (`docs/04` §1, verified). Covered by an integration test because the path is subtle |
 
@@ -97,7 +98,7 @@ On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isn
 
 | ID | Level | Condition |
 |---|---|---|
-| fieldseal.E001 | Error | Index sibling declared before its encrypted field (order rule, §1.2) |
+| fieldseal.E001 | Error | Index sibling declared before its encrypted field, or declared against a field with no `BlindIndex`, or a `BlindIndex` with no sibling column (§1.2 — note the corrected rationale there: this is column-order hygiene and future-proofing, not a live corruption) |
 | fieldseal.E002 | Error | `unique=True` on an encrypted column (unenforceable under a randomized suite, spec §7.10) — and **not** to be moved to the index column either: the §7.4 band mandates collisions, so a UNIQUE truncated index rejects legitimate distinct values. Normative as of §7.10 (G12 resolved 2026-08-09); the check's error text points the user at §7.10's application-level fallback and its race |
 | fieldseal.E003 | Error | Blind index declared without `projected_population`, or population below the §7.6 gate without a logged override — this surfaces the core's construction-time gate (docs/09 §2) as a system check at startup; the core remains the enforcing layer |
 | fieldseal.E004 | Error | Missing `table_uuid`/`column_uuid` |
@@ -105,7 +106,9 @@ On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isn
 | fieldseal.E006 | Error | A user-supplied `FIELDSEAL["CLIENT"]` whose index registry does not exactly match the model-declared indexes (§7) |
 | fieldseal.W001 | Warning | Encrypted field in `ModelAdmin.search_fields` (generates `icontains` → will raise at runtime; `docs/04` §1 gotcha) |
 | fieldseal.W002 | Warning | `db_index=True` on ciphertext column (pointless index bloat) |
+| fieldseal.E007 | Error | `FIELDSEAL` settings missing or unknown keys present, on a project that declares encrypted fields. **Added at implementation:** these were reported as E003 ("the core refused an index declaration"), which sends an operator who has simply not configured the adapter to look at models that are fine |
 | fieldseal.W003 | Warning | base64 storage selected (documented 33% overhead, spec §3.3) |
+| fieldseal.W004 | Warning | `FIELDSEAL["CLIENT"]` is set, so the index registry is **not** verified. **Added at implementation:** E006 above cannot be implemented against the core's public API — `Fieldseal` keeps its validated registry private and exposes no accessor, so the check would depend on internals. Filed against `docs/09` §8 |
 
 ## 6. Coverage matrix (the AD-2 normative deliverable)
 
@@ -117,12 +120,13 @@ Shipped in the package README, kept in sync with tests by generating both from o
 | `QuerySet.update(field=value)` | ✅ encrypts; ⚠️ index sibling must be passed explicitly (no `pre_save` on `.update()` — `docs/04` §1); check-time documentation + runtime error if index column omitted while encrypted column present |
 | `bulk_update()` | ✅ encrypts |
 | `update(field=F(...))`, expression RHS | 🛑 raises `FieldsealNotSupported` |
-| `filter(email=…)` / `In` | ✅ rewritten to index column when declared; 🛑 raises otherwise |
+| `filter(email=…)` / `In` | **(target)** ✅ rewritten to index column when declared; 🛑 raises otherwise. **Not implemented as of 2026-08-25** — both the encrypted column and the index sibling refuse, because serving either without §7.5 re-verification returns wrong rows (§7.4 mandates collisions). The index column is written correctly meanwhile, so enabling L2 needs no backfill |
 | Other lookups | 🛑 raise (§3.3) |
 | `.values()`, aggregates on other columns, `raw()` results | ✅ decrypts |
 | `.extra()`, `RawSQL()`, `cursor.execute()` params | 🛑 **cannot intercept** — documented plaintext hazard (`docs/04` §1: no ORM encrypts raw parameters); listed in README with remediation (use ORM paths or call the core directly) |
 | `django.core.cache` of model instances | ⚠️ holds plaintext (spec §10.2) — documented, with per-field `exclude_from_cache` guidance |
-| `dumpdata`/`loaddata` | ✅ ciphertext round-trip via `value_to_string` |
+| `dumpdata` | ✅ ciphertext, never plaintext, via `value_to_string` |
+| `loaddata` | 🛑 **refused (v0)** — would double-encrypt silently; see §2 |
 
 ## 7. Async, warm-up, and operations
 

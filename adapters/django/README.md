@@ -98,12 +98,14 @@ not the target matrix in `docs/12` §6.
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `test_two_writes_of_one_value_differ` |
 | `bulk_create()` | ✅ encrypts and indexes | `test_bulk_create_encrypts_and_indexes` |
 | `bulk_update()` | ✅ encrypts (Case/When carries literals) | `test_bulk_update_encrypts` |
-| `QuerySet.update(field=value)` | ✅ encrypts | covered by `bulk_update` path |
+| `QuerySet.update(field=value)` | ✅ encrypts | `test_plain_update_encrypts` |
 | `update(field=F(...))`, arithmetic, DB functions | 🛑 raises `FieldsealNotSupported` | `test_expression_rhs_is_refused` |
-| Reads: `get()`, `filter()` on other columns, `.values()` | ✅ decrypts | `test_save_then_read_returns_the_plaintext` |
+| Reads: `get()`, `filter()` on other columns | ✅ decrypts | `test_save_then_read_returns_the_plaintext` |
+| `.values()`, `values_list()`, `only()`, `raw()` results | ✅ decrypts | `TestReadPathsTheMatrixClaims` |
 | `NULL` | ✅ stays `NULL`, not an envelope | `test_null_stays_null` |
 | Non-text inner types (`IntegerField`, …) | ✅ round-trips as its own type | `test_non_text_inner_type_round_trips_as_its_own_type` |
-| `dumpdata` / `loaddata` | ✅ ciphertext, never plaintext, in fixtures | `test_dumpdata_emits_ciphertext_not_plaintext` |
+| `dumpdata` | ✅ ciphertext, never plaintext, in fixtures | `test_dumpdata_emits_ciphertext_not_plaintext` |
+| **`loaddata`** | 🛑 **refused — would double-encrypt silently** | `TestLoaddataIsRefused` |
 | Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `TestIndexSibling` |
 | Tampered ciphertext | ✅ raises; never returns garbage | `test_a_tampered_envelope_raises_rather_than_returning_garbage` |
 | Tenant-bound column, no tenant set | ✅ refuses the write | `test_writing_without_a_tenant_refuses_rather_than_falling_back` |
@@ -129,6 +131,25 @@ silently return wrong results, the adapter throws.
 The index column is written correctly in the meantime, so enabling L2 later
 needs no backfill.
 
+### Why `loaddata` is refused
+
+`dumpdata` writes base64 ciphertext, which is what stops fixtures leaking
+plaintext. Reloading one is the problem: Django's deserializer routes every
+fixture value through `to_python`, the same hook that sees plaintext a user
+typed, so the ciphertext is accepted as text, stored, and **encrypted a second
+time**. The row then reads back as base64 instead of the value, with no error
+anywhere. Measured: text columns corrupted while an `IntegerField` column
+survived, so the damage is per-inner-type and a smoke test on the wrong column
+reports success.
+
+The refusal keys on the core's `is_ciphertext`, which spec §3.4 defines as
+total over arbitrary input, and is used in the fail-closed direction only — the
+worst case is refusing a plaintext that happens to be valid base64 for a valid
+envelope. Supporting `loaddata` properly needs a way to tell fixture ciphertext
+from user plaintext at that hook, which is a design question, not an oversight.
+To move encrypted data between databases, use the backfill tooling (`docs/15`)
+or copy the ciphertext column directly.
+
 ### Raw SQL is a real hazard
 
 No ORM encrypts raw query parameters, and this adapter cannot either.
@@ -146,6 +167,16 @@ directly and pass the resulting envelope.
   naming the gap instead, and the missing accessor is a follow-up against
   `docs/09` §8.
 - **No `fieldseal_gen_uuids` management command yet**; error messages name it.
+- **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump
+  is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
+  tenant-bound model outside `tenant_scope(...)` refuses. Both are correct
+  (fail closed) and neither is obvious.
+- **The AD-1 CI grep is a tripwire, not a proof** — it matches `import`/`from`
+  lines and would not catch `importlib`.
+- **E001 is hygiene, not a live bug.** Declaration order does not affect the
+  index value today (measured); the check exists for column-order determinism
+  and because L3-row binding would make order load-bearing. `docs/12` §1.2
+  carries the correction.
 - **Postgres and SQLite both run in CI**, per `docs/12` §8. This earned
   itself immediately: `bulk_update` wraps each `Value` in a `Cast` on
   PostgreSQL (`requires_casted_case_in_updates`) and not on SQLite, so the

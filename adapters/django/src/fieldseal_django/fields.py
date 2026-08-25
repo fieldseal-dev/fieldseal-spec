@@ -91,8 +91,6 @@ class Encrypted(models.Field):
         self.index = index
         self.tenant_bound = tenant_bound
         self.storage = storage
-        #: Set by `contribute_to_class` on the sibling; see `index_column`.
-        self.fieldseal_index_field: EncryptedIndex | None = None
 
         # The inner field's own kwargs stay with the inner field. What this
         # field takes are the storage-level ones: a ciphertext column is
@@ -180,8 +178,6 @@ class Encrypted(models.Field):
         """
         if value is None:
             return None
-        if isinstance(value, _AlreadyCiphertext):
-            return value.blob if self.storage == "binary" else value.text
         blob = _client().encrypt(codec.to_bytes(self.inner, value),
                                  self.fieldseal_context())
         if self.storage == "base64":
@@ -242,6 +238,13 @@ class Encrypted(models.Field):
         if isinstance(expr, Value):
             return
         if isinstance(expr, Case):
+            # `case.condition` is deliberately NOT inspected. A `When`
+            # condition decides *which rows* are updated; only `result` and
+            # `default` decide *what is stored*. A condition may therefore
+            # reference any column, encrypted or not, without the database
+            # ever computing over ciphertext on the write side --
+            # `test_a_when_condition_may_reference_any_column` pins it, so the
+            # asymmetry is asserted rather than merely intended.
             for case in expr.cases:
                 self._assert_literal_expression(case.result)
             if expr.default is not None:
@@ -287,7 +290,60 @@ class Encrypted(models.Field):
     # -- forms and validation ----------------------------------------------
 
     def to_python(self, value: Any) -> Any:
+        """Coerce through the inner field -- but refuse a fixture round-trip.
+
+        `loaddata` is **not supported** and must not appear to be. Django's
+        deserializer routes every fixture value through this hook, and
+        `value_to_string` writes base64 ciphertext, so a fixture reloaded
+        through the ordinary path arrives here as the base64 of an envelope,
+        passes as ordinary text, is stored, and is encrypted **again** by
+        `get_db_prep_value`. The row then reads back as the base64 of the
+        original envelope instead of the plaintext, with no error at any
+        point -- the silent wrong answer spec §10.2 forbids, arriving through
+        the one path that looked safe because `dumpdata` was fixed.
+
+        Measured 2026-08-25: `email` and `note` both came back double
+        encrypted while an `IntegerField` column survived, so the corruption
+        is per-inner-type and a smoke test on the wrong column reports
+        success.
+
+        The detection below uses the core's `is_ciphertext`, which spec §3.4
+        defines as total over arbitrary input, rather than a pattern this
+        adapter invented: a value only trips it if it base64-decodes to
+        something carrying `fmt_ver` 0x01, a registered suite id and a
+        plausible length. **It is still a recognition heuristic**, and it is
+        used here in the fail-closed direction only -- the worst case is
+        refusing to accept a plaintext that a user typed and that happens to
+        be valid base64 for a valid envelope, which is a refusal rather than
+        a corruption. Supporting `loaddata` properly is harder than it looks,
+        because this same hook sees user-typed plaintext and fixture
+        ciphertext with nothing but the value to tell them apart; the
+        supported route for moving encrypted data is `tools/backfill`
+        (docs/15).
+        """
+        if isinstance(value, str) and self._looks_like_a_fixture_envelope(value):
+            raise FieldsealNotSupported(
+                f"{self.model.__name__}.{self.name}: this value is an "
+                "encrypted envelope, not a plaintext one. `loaddata` and "
+                "fixture loading are not supported for encrypted columns in "
+                "v0: the fixture holds ciphertext, this hook cannot tell it "
+                "apart from a plaintext a user typed, and storing it would "
+                "encrypt it a second time and return base64 instead of the "
+                "value on the next read -- silently. `dumpdata` still emits "
+                "ciphertext so fixtures never leak plaintext; to move "
+                "encrypted data between databases use the backfill tooling "
+                "(docs/15) or copy the ciphertext column directly."
+            )
         return self.inner.to_python(value)
+
+    def _looks_like_a_fixture_envelope(self, value: str) -> bool:
+        import binascii
+
+        try:
+            blob = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        return bool(_client().is_ciphertext(blob))
 
     def formfield(self, **kwargs: Any) -> Any:
         return self.inner.formfield(**kwargs)
@@ -403,16 +459,6 @@ def index_column(source: str, **kwargs: Any) -> EncryptedIndex:
 
 # Attached for the `Encrypted.index_column(...)` spelling docs/12 §1 uses.
 Encrypted.index_column = staticmethod(index_column)
-
-
-class _AlreadyCiphertext:
-    """Marker for values that must not be re-encrypted (backfill paths)."""
-
-    __slots__ = ("blob", "text")
-
-    def __init__(self, blob: bytes) -> None:
-        self.blob = blob
-        self.text = base64.b64encode(blob).decode("ascii")
 
 
 def _to_bytes_from_db(value: Any, storage: str) -> bytes:
