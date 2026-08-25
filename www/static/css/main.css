@@ -167,6 +167,11 @@ pre code { background: none; border: 0; padding: 0; }
 .sidebar a { color: var(--fg-muted); text-decoration: none; display: block; }
 .sidebar a:hover { color: var(--fg); text-decoration: underline; }
 .sidebar a[aria-current] { color: var(--fg); font-weight: 600; }
+.sidebar-sub {
+  margin: .45rem 0 .8rem; padding-left: .9rem;
+  border-left: 1px solid var(--rule);
+}
+.sidebar-sub li { margin-bottom: .35rem; }
 .toc ul { padding-left: 0; }
 .toc ul ul { padding-left: .9rem; margin-top: .35rem; }
 .toc li { margin-bottom: .35rem; line-height: 1.4; }

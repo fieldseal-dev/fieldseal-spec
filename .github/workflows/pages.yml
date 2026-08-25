@@ -7,6 +7,14 @@ on:
       - "www/**"
       - "docs/**"
       - ".github/workflows/pages.yml"
+  # Build and link-check on pull requests too, without deploying. A link that
+  # points at nothing should fail the PR that introduced it, not the deploy
+  # that follows the merge.
+  pull_request:
+    paths:
+      - "www/**"
+      - "docs/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -71,13 +79,22 @@ jobs:
             --minify \
             --gc
 
+      # Runs against the built HTML, so it sees the resolved href and the
+      # anchors each page actually has. Internal links only -- third parties
+      # 403 CI runners on bot suspicion and go down for their own reasons, and
+      # a deploy that fails for either is a deploy that gets ignored.
+      - name: Check internal links
+        run: python www/scripts/check-links.py www/public
+
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: ./www/public
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
