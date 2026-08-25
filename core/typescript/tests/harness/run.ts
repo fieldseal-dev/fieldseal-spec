@@ -795,6 +795,8 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "api-boundary-order": "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED → context validation (INVALID_ARGUMENT, non-§9); all before key acquisition",
   "unimplemented-registered-suite": "0xFF02 is registered (isCiphertext → true) but refused at construction if allow-listed or set as writeSuite (CONFIGURATION_ERROR naming G7); no §9 code is reachable for it because no client can be built that accepts it",
   "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- as spec §4.6 states under its [PROVISIONAL — G1] marker (since 2026-08-23); provisional until G1 closes',
+  "key-material-ownership":
+    "provider-owned (docs/09 §8.1): the core never mutates or erases what `encryptionKey` or `decryptionKeys` returned. `#encryptionKey` validates and copies (api.ts:182), so the encrypt and blind-index paths erase their own copy; the decrypt candidate loop borrows and erases nothing. Erasure steps performed: docs/09 §3.1 step 13 and §3.2 record_key (both, Uint8Array), the intermediate plaintext buffer, the untruncated IDF output, and §8.3 cache eviction. None skipped. Candidate reads do not count against max_uses.",
 };
 // Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 // these over: `unknown-format-version-set` -> spec §3.1/§3.4/§9/§10.3,

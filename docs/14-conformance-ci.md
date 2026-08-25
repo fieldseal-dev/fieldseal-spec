@@ -106,6 +106,7 @@ The second entry is the more interesting precedent. The first is excluded by *si
 | `api-boundary-order` | The order of `MODE_VIOLATION`, `SUITE_PROVISIONAL`, `LENGTH_EXCEEDED` and operand validation on `encrypt`/`rotate` | D-04 |
 | `unimplemented-registered-suite` | What a client configured with a registered suite it cannot perform does | G7; D-12 |
 | `commitment-construction` | The §4.6 formula implemented. §4.6 has stated it provisionally since 2026-08-23; the key stays until G1 closes, because a provisional formula is exactly the kind a report should keep naming | G1; D-01 |
+| `key-material-ownership` | Whether the core treats `KeyProvider` return values as provider-owned or core-owned, and which of docs/09 §3's erasure steps this binding actually performs. docs/09 §8.1 settles the first half normatively (provider-owned); the key remains because the **second** half is a per-binding fact that no vector can observe — an immutable key type makes an erasure step a no-op, and two cores can differ here with byte-identical reports otherwise | G17 (#67); docs/09 §3 preamble, §8.1, §8.3 |
 
 A core MAY add keys for pins of its own; it MUST NOT omit one above. When the specification settles a row, the row is removed here and the key retires.
 

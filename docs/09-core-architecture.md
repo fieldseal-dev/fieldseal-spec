@@ -57,6 +57,13 @@ Design rules:
 
 These pipelines are the reference sequence every implementation follows. Steps map 1:1 onto spec clauses; reordering is permitted only where observable behavior (including error codes and timing notes) is unchanged.
 
+**Erasure steps and what they apply to (normative).** Where a pipeline below says *zeroize*, it means best-effort erasure of a value **the core itself derived** — `record_key` and any intermediate plaintext buffer. It never licenses erasing key material a `KeyProvider` returned, which the core does not own (§8.1). Two preconditions bound these steps, and both are honesty obligations rather than escape hatches:
+
+- A binding whose type for the value is **immutable** cannot perform the step. Python's `bytes` is the shipped example. This is permitted, and the binding's language document MUST name the steps it cannot perform (§8.3 already requires each per-language spec to state exactly what its zeroization does and does not achieve; these steps are within that obligation, not outside it).
+- Erasure is best-effort everywhere. Spec §5.5 concedes that a garbage-collected runtime cannot guarantee that no copy survives, and no language document may claim more (§8.3).
+
+**None of this is observable through the vector suite.** A wiped buffer and a live one produce identical bytes and identical error codes, so no vector and no produce/consume run can distinguish a core that performs these steps from one that does not. That is why the choice is declared in the conformance report (`pinned_decisions.key-material-ownership`, docs/14 §4) rather than tested.
+
 ### 3.1 `encrypt(plaintext, ctx) → envelope`
 
 ```
@@ -75,7 +82,8 @@ These pipelines are the reference sequence every implementation follows. Steps m
 10. aad = AAD(fmt_ver, key_id, msg_seed, cc)               // §6.2
 11. ct, tag = suite.aead.seal(record_key, nonce, plaintext, aad)
 12. return fmt_ver ‖ suite_id ‖ key_id ‖ msg_seed ‖ nonce ‖ ct ‖ tag ‖ commitment
-13. best-effort zeroize record_key
+13. best-effort zeroize record_key                          // §3 preamble: derived here, so ours to erase;
+                                                           // `dek` from step 4 is NOT (§8.1)
 ```
 
 Steps 5–6 are the only entropy draws; `testing.encrypt_with_materials` replaces exactly these two steps and nothing else (docs/08 §6).
@@ -108,7 +116,7 @@ Proposed check order — **this order is an engineering proposal that must be pi
       record_key = HKDF(dek, key_id ‖ msg_seed, canonical_context(ctx))
       if commit_verify(record_key, commitment):   // constant-time compare
           ok = aead.open(record_key, nonce, ct, tag, aad)
-          ok                                      → return plaintext (+ zeroize record_key)
+          ok                                      → return plaintext (+ zeroize record_key, not the candidate)
           fail                                    → TAG_INVALID       // key+context proven right by commitment;
                                                                       // remaining causes: ct/tag corruption
 7.  no candidate's commitment verified            → COMMITMENT_INVALID-or-AAD_MISMATCH [G5]
@@ -216,7 +224,7 @@ The identifier *is* the definition: two cores that compute different bytes for t
 
 *Why refuse rather than pass through.* The refusal is what makes the pin exact rather than aspirational. Unicode's Strong Normalization Stability policy (4.1+) guarantees that a string composed only of characters assigned in version *V* normalizes identically under every conforming implementation at *V* or later. Restricting input to 17.0.0-assigned characters therefore buys agreement with every future version, for free. Accepting an unassigned code point buys the opposite: its combining class and decomposition are not yet fixed, so a core built against a later UCD would order and compose it differently — and would do so silently. A visible refusal is the better failure.
 
-*The cost, stated.* A value containing a character encoded after Unicode 17.0.0 cannot be indexed until the pin moves, and what moving the pin costs depends on when it happens — see *Pin currency* below. Refusal is scoped to index derivation: `encrypt` does not normalize, so such a value can still be stored — but an adapter that derives an index on every write will fail that write rather than store a row its own queries cannot find. **Which of those an adapter should do is a product decision this document does not make** — it is **G16** (`docs/issues/G16-index-boundary-and-unicode-pin.md`, part B), whose direction is a per-column `IndexDeclaration.on_unindexable` defaulting to refusal. Until G16 closes, neither `docs/12` nor `docs/13` carries the obligation: an earlier version of this paragraph cited "§12" of each, and no such section exists in either.
+*The cost, stated.* A value containing a character encoded after Unicode 17.0.0 cannot be indexed until the pin moves, and what moving the pin costs depends on when it happens — see *Pin currency* below. Refusal is scoped to index derivation: `encrypt` does not normalize, so such a value can still be stored — but an adapter that derives an index on every write will fail that write rather than store a row its own queries cannot find. **Which of those an adapter should do is a per-column decision, not a global one** — §7.2's `IndexDeclaration.on_unindexable`, defaulting to refusal (G16 part B, closed 2026-08-25). The adapter obligation is in `docs/12` §10 and `docs/13` §9; an earlier version of this paragraph pointed at "§12" of each, and no such section existed in either, which is part of what G16 was filed about.
 
 ***Pin currency (normative).*** Unicode publishes a version roughly every September, so a pin with no policy behind it drifts by default and the project ships one version behind on its own launch day. The rule has two regimes, divided by the format freeze (PRD §8, Gate 0b):
 
@@ -227,7 +235,7 @@ The cost of a bump therefore rises discontinuously at the freeze, not gradually 
 
 *A released version, not merely a numbered one.* A bump MUST be to a version unicode.org has **published**, and an implementation generating its tables MUST fail rather than fetch a version path that redirects. Measured 2026-08-25, `https://www.unicode.org/Public/18.0.0/ucd/` answered `302` to `http://www.unicode.org/Public/draft/ucd/` for all three consumed files — an unreleased version's path is served as the *moving* draft, and over plaintext HTTP at that. A generator following that redirect produces tables from a draft, labels them with a release number, and cannot reproduce them a week later. `tools/ucd-gen/generate.py` refuses redirects, refuses non-HTTPS hops, and verifies that the URL that answered is the URL requested; `tools/ucd-gen/test_generate.py` holds those guards and runs in CI. This is a build-integrity requirement rather than a portability one, but it fails the same way if ignored: a wrong table is a silent lookup miss.
 
-*Status.* The pin is 17.0.0, which is the current release. Unicode 18.0 is in draft with a stated September 2026 target; under the rule above it is adopted once released, in place, provided the freeze has not happened first. Recorded as G16 part C (`docs/issues/G16-index-boundary-and-unicode-pin.md`, tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60)).
+*Status.* The pin is 17.0.0, which is the current release. Unicode 18.0 is in draft with a stated September 2026 target; under the rule above it is adopted once released, in place, provided the freeze has not happened first. **No tracker issue carries the bump and none is needed** — the rule above is self-executing, and `tools/ucd-gen/` refuses to fetch an unreleased version at all: as of 2026-08-25 `Public/18.0.0/ucd/` 302-redirects to `Public/draft/ucd/` over plaintext HTTP, and the generator rejects the redirect, the protocol downgrade, and any served URL that is not the one requested. So the pin cannot move to a draft by accident, and the `unicode-tables` CI job fails if the vendored tables stop matching whatever version is pinned. G16 part C (tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60)) closed 2026-08-25 on the policy and the guards; the bump itself waits on the release.
 
 **2. Folding: `CaseFolding-17.0.0.txt`, statuses C and F only**, applied per code point. No `T` (Turkic) mappings: they make the result depend on the caller's locale, and a blind index has no locale. No `S`, which `F` supersedes wherever both exist. This is "full case folding" as UAX #44 defines it — `ß` folds to `ss`, not to `ß`.
 
@@ -317,6 +325,14 @@ KeyProvider:
 ```
 
 `key_id` structure is provider-defined and opaque to the core (spec §3.1). `EnvelopeKeyProvider`'s recommended layout — documented, not normative: 4 B provider tag ‖ 8 B tenant-key handle ‖ 4 B version. Rationale: `decryption_keys` must resolve versions from the header alone.
+
+**Ownership of returned key material (normative).** Key material returned by `encryption_key` and `decryption_keys` is **owned by the provider**. A core MUST NOT mutate or erase it, and MUST NOT retain a reference to it beyond the call that obtained it. A core that needs erasable material MUST copy first and erase its own copy.
+
+*Justification.* Without this rule the signature alone decides the question, and it cannot: a returned byte string may be a fresh copy or a reference into the provider's own cache, and the two are indistinguishable to the caller. A core that erases what it was handed silently destroys the second kind — the next derivation runs against zeroes and the failure surfaces as `COMMITMENT_INVALID` on a read of data written moments earlier, a decrypt-side error for a write-side memory bug with nothing pointing at the provider. The rule is stated in this direction, rather than as "the core owns and MUST erase", for three reasons. It is implementable in every target language, where the converse is not: a binding whose key material is an immutable type cannot erase anything, so a MUST to erase would be one a conformant core could not meet. It fails safe in both directions — a provider handing over a copy loses nothing under a borrow rule, while a provider handing over its cache is destroyed under an ownership rule. And it costs the core almost nothing: what it declines to erase is a per-call copy of material the cache holds anyway, and §8.3 already zeroizes on eviction.
+
+The corollary for providers is worth stating, because it is where the cost lands: a provider that wants its returned material erased MUST erase it itself, on its own schedule. Returning a copy remains the safe default and is what the three shipped providers do.
+
+**Candidate reads are not uses (normative).** `decryption_keys` MUST NOT count against §8.3's `max_uses`. §8.3 states use counting only from the write side — incremented per `encryption_key` return — and the read-path half has to be said rather than inferred: a decrypt resolving four candidate versions would otherwise spend four uses of a budget spec §5.5 defines as a limit on **encryptions** under one key, and a rotation sweep would evict the key it is reading with. The candidate list is a read of what the cache already holds.
 
 ### 8.2 The three shipped providers
 

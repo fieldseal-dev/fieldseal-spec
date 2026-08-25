@@ -89,6 +89,15 @@ PINNED_DECISIONS = {
         "\"fieldseal-commit-v1\", 32), verified constant-time before AEAD "
         "open -- spec §4.6's provisional construction (written 2026-08-23 "
         "from the G1 draft; G1 stays open)  [D-01]"),
+    "key-material-ownership": (
+        "provider-owned (docs/09 §8.1): the core never mutates what "
+        "`decryption_keys` or the encryption-key path returned, and cannot "
+        "-- both are `bytes`. Erasure steps performed: §8.3 cache eviction "
+        "only (the cache holds `bytearray`). **Not performed: docs/09 §3.1 "
+        "step 13 and §3.2 record_key**, because `kdf.record_key()` returns "
+        "immutable `bytes` and CPython offers nothing to overwrite (§3 "
+        "preamble; docs/10 §5). Candidate reads do not count against "
+        "max_uses."),
 }
 # Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 # these over: `unknown-format-version-set` → spec §3.1/§3.4/§9/§10.3,
