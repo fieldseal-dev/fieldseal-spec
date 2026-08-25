@@ -5,6 +5,7 @@ on:
     branches: [main, dev]
     paths:
       - "core/**"
+      - "adapters/**"
       - "vectors/**"
       - "tools/vector-gen/**"
       - "tools/ucd-gen/**"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "core/**"
+      - "adapters/**"
       - "vectors/**"
       - "tools/vector-gen/**"
       - "tools/ucd-gen/**"
@@ -102,6 +104,70 @@ jobs:
         with:
           name: conformance-python
           path: conformance-python.json
+
+  django-adapter:
+    name: Django adapter (L1) on SQLite and Postgres
+    runs-on: ubuntu-24.04
+    # Both backends, because docs/12 §8 requires it: binary-column behaviour
+    # differs between them, and a single-backend run hides exactly the class
+    # of bug an encrypted BinaryField is most likely to hit.
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:17@sha256:6efd0df010dc3cb40d5e33e3ef84acecc5e73161bd3df06029ee8698e5e12266
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fieldseal_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # The core comes from this checkout, not from an index: the adapter is
+      # verified against the core it ships beside, not against a release.
+      - name: Install the core and the adapter
+        run: |
+          python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
+          python -m pip install --disable-pip-version-check -e "./adapters/django[dev]"
+          python -m pip install --disable-pip-version-check psycopg[binary]
+
+      - name: Run the suite
+        working-directory: adapters/django
+        env:
+          FIELDSEAL_TEST_DB: ${{ matrix.db }}
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: fieldseal_test
+        run: python -m pytest tests -q
+
+      # AD-1 (spec §11.3): zero cryptography in an adapter. Asserted rather
+      # than asked for in review, because it is the kind of rule that decays
+      # one convenient import at a time.
+      - name: No cryptographic code in the adapter
+        working-directory: adapters/django
+        run: |
+          if grep -rnE "^\s*(import|from)\s+(cryptography|hashlib|hmac|secrets|argon2|nacl|Crypto)\b" src/; then
+            echo "AD-1 violation: an adapter must contain no cryptographic code (spec §11.3)."
+            exit 1
+          fi
+          echo "AD-1 holds: no cryptographic imports in adapters/django/src."
+
+      - name: ruff and mypy --strict
+        if: matrix.db == 'sqlite'
+        working-directory: adapters/django
+        run: |
+          python -m ruff check src tests
+          python -m mypy --strict src/fieldseal_django
 
   vectors-reproducible:
     name: Vectors match a fresh generation

@@ -1,0 +1,58 @@
+[project]
+name = "fieldseal-django"
+version = "0.1.0.dev0"
+description = "Transparent field-level encryption at rest for Django -- fieldseal adapter"
+requires-python = ">=3.12"
+# AD-1 (spec §11.3): zero cryptography in this package. The only calls into
+# `fieldseal` are the five sync operations plus `warm`, and the only reason
+# `cryptography` appears anywhere in this tree is transitively, through the
+# core. Adding a direct crypto dependency here is a conformance failure, not
+# a style question.
+dependencies = ["fieldseal>=0.1.0.dev0", "django>=5.2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-django>=4.9", "mypy>=1.8", "ruff>=0.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fieldseal_django"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/fieldseal_django/py.typed" = "fieldseal_django/py.typed"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.mypy]
+strict = true
+
+# Django ships no `py.typed`, so every `django.*` import is untyped and
+# `--strict` reports it. Silencing the import noise keeps strict checking
+# meaningful on *this* package's code, which is the code the rule is for.
+# `django-stubs` would be the alternative; it pins Django minor versions, and
+# pinning the framework to type-check the adapter is a worse trade than
+# stating the limitation here.
+[[tool.mypy.overrides]]
+module = ["django.*"]
+ignore_missing_imports = true
+
+# `@register(...)` and `@receiver(...)` are untyped for the same reason, and
+# a decorator Django owns is not something this package can annotate.
+[[tool.mypy.overrides]]
+module = ["fieldseal_django.checks", "fieldseal_django.apps", "fieldseal_django.fields"]
+disallow_untyped_decorators = false
+# Django's field and AppConfig base classes are `Any` for the same reason, so
+# subclassing them cannot be checked either.
+disallow_subclassing_any = false
+warn_return_any = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+DJANGO_SETTINGS_MODULE = "tests.settings"
