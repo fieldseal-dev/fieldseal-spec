@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type IdfId } from "../../src/blindindex.ts";
+import { argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
@@ -101,6 +101,23 @@ function mismatch(what: string, got: Uint8Array | string | number | undefined, w
 // ---------------------------------------------------------------------------
 // Family runners
 
+/**
+ * docs/08 §4.4: the Argon2id cost comes from the vector, never from this
+ * core's defaults. Spec §7.3 states `t` and `m` as minima a deployment may
+ * raise, so a vector at a raised cost is authorable (a G2 obligation), and
+ * only a harness that passes the stated cost through lets such a vector test
+ * the core rather than the harness — dropping it fails a correct core and
+ * points the failure at the primitive (#62).
+ */
+function argon2Of(v: Record<string, unknown>): Argon2Params | undefined {
+  if (v.idf !== "argon2id") return undefined;
+  const p = v.idf_params as Record<string, number> | undefined;
+  if (p?.time_cost === undefined || p.memory_kib === undefined) {
+    throw new Error("argon2id vector without idf_params.time_cost / .memory_kib");
+  }
+  return { timeCost: p.time_cost, memoryKib: p.memory_kib };
+}
+
 function runAssertion(v: Record<string, unknown>): Result {
   // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08
   // resolved), so each side is reproduced and then the relation is checked.
@@ -141,8 +158,9 @@ function runAssertion(v: Record<string, unknown>): Result {
       if (normId === undefined) throw new Error(`unknown normalizer ${String(inp.normalize)}`);
       const ik = hex(inp.index_key as string);
       const bits = inp.truncate_bits as number;
-      a = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_a as string))), bits);
-      b = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_b as string))), bits);
+      const cost = argon2Of(inp);
+      a = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_a as string)), cost), bits);
+      b = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_b as string)), cost), bits);
       [wantA, wantB] = [ex.index_a as string, ex.index_b as string];
     } else {
       throw new Error("no assertion runner for this family");
@@ -382,6 +400,7 @@ function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse"
           columnUuid: c.columnUuid,
           indexId: inp.index_id as string,
           idf: inp.idf as IdfId,
+          ...(argon2Of(inp) ? { argon2: argon2Of(inp) as Argon2Params } : {}),
           normalize: inp.normalize as NormalizerId,
           truncateBits: inp.truncate_bits as number,
           projectedPopulation: 65536,
@@ -407,7 +426,7 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
   const b = v.truncate_bits as number;
   const normId = NORMALIZERS[v.normalize as string];
   const params = v.idf_params as Record<string, number>;
-  const argon2 = which === "argon2id" ? { timeCost: params.time_cost!, memoryKib: params.memory_kib! } : undefined;
+  const argon2 = argon2Of(v);
   const results: Result[] = [];
   const problems: string[] = [];
   try {

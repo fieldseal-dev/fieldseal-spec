@@ -27,11 +27,11 @@ from cryptography.hazmat.primitives import constant_time
 
 from .aead.gcm import GcmBackend
 from .blindindex import (
-    IDFS,
     NORMALIZERS,
     UNINDEXABLE_PREIMAGE,
     IndexDeclaration,
     ValidatedIndex,
+    idf,
     index_registry_key,
     truncate,
     validate_index_declaration,
@@ -330,7 +330,10 @@ class Fieldseal:
         bound = ctx.for_index(decl.index_id).with_suite(self._write_suite)
         tenant_index_key, _ = self._provider.encryption_key(bound)
         ik = index_key(tenant_index_key, bound, decl.index_id)
-        return truncate(IDFS[decl.idf](ik, normalized), decl.truncate_bits)
+        # Every IDF parameter comes from the declaration, the Argon2id cost
+        # included (spec §7.3 states t and m as minima a deployment may raise).
+        raw = idf(decl.idf, ik, normalized, decl.argon2)
+        return truncate(raw, decl.truncate_bits)
 
     def rotate(self, blob: bytes, ctx: FieldContext) -> bytes:
         """Re-encrypt under a fresh seed and nonce. Produces ciphertext, so it

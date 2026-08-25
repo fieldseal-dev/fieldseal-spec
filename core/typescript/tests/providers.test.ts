@@ -300,6 +300,24 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
     expect(messageOf(() => makeClient({ indexes: [{ ...idx, argon2: { timeCost: 3, memoryKib: 32768 } }] }))).toMatch(/hmac-sha512/);
   });
 
+  it("argon2 cost reaches the derivation: a raised cost is a different index (#62)", () => {
+    // The parity half of the gate above. A core that read t and m from a
+    // module constant would return the minimum’s value for all three of
+    // these and still agree with every shipped vector — the vectors pin the
+    // minima — then disagree with this core the first time an operator raised
+    // the cost, same column, two index values, lookup finds nothing. This
+    // asserts only that the declared parameters are what the primitive is
+    // invoked with; whether the primitive agrees with another core’s at a
+    // raised cost is a vector obligation on the held-out G2 family.
+    const at = (argon2?: { timeCost: number; memoryKib: number }): string =>
+      makeClient({ indexes: [{ ...idx, idf: "argon2id" as const, ...(argon2 ? { argon2 } : {}) }] })
+        .blindIndex(PT, { ...CTX, purpose: "index:exact" })
+        .toString("hex");
+    const minimum = at();
+    expect(at({ timeCost: 3, memoryKib: 32768 })).toBe(minimum); // absent means the §7.3 minima
+    expect(at({ timeCost: 4, memoryKib: 32768 })).not.toBe(minimum);
+  });
+
   it("custom normalizers are refused; duplicate declarations are refused", () => {
     expect(messageOf(() => makeClient({ indexes: [{ ...idx, normalize: "my-normalizer" as never }] }))).toMatch(/portability/);
     expect(messageOf(() => makeClient({ indexes: [idx, idx] }))).toMatch(/duplicate/);

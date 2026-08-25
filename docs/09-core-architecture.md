@@ -189,7 +189,8 @@ Index configuration is **declared to the client at construction**, not passed pe
 IndexDeclaration {
     table_uuid, column_uuid, index_id           // "exact" default; [a-z0-9-]{1,32} per spec §6.1 (G11)
     idf              : argon2id | hmac-sha512   // per §7.3 domain classes
-    idf_params                                  // argon2id only; pending G2
+    argon2           : { time_cost, memory_kib } | absent
+                                                // argon2id only; absent = the §7.3 minima
     normalize        : normalizer id
     truncate_bits    : b                        // §7.4 band; both b and projected P recorded
     projected_population : P                    // ≥ 16; recorded per SP-10
@@ -198,6 +199,8 @@ IndexDeclaration {
     unindexable_override : { reason, approved_by, date } | absent   // required for `bucket`
 }
 ```
+
+**The Argon2id cost is per-column, and §7.3 states it as a minimum rather than a value.** That section fixes `version`, `p`, `output_len` and the salt derivation, and permits a deployment to raise `t` and `m` — a raised pair being a *new index* under §7.8, not a reconfiguration of an existing one. A core that reads the cost from a constant is not merely less configurable than one that takes it per column: the two agree on every shipped vector, because the vectors pin the minima, and they diverge the first time an operator raises the cost on the core that can express it. The column then holds two index values for the same plaintext, and the cross-implementation lookup returns **nothing** rather than raising — the central claim failing in the one place the vector suite cannot see it. Every core therefore MUST take `t` and `m` from the declaration, default them to the §7.3 minima, and refuse at construction (`CONFIGURATION_ERROR`) both a value below either minimum and any value at all on an `hmac-sha512` index, which has no cost parameters. The vector schema carries the pair as `idf_params` (`docs/08` §4.4); the cores name the declaration field `argon2`, Argon2id being the only IDF that has parameters. Recorded as [#62](https://github.com/fieldseal-dev/fieldseal-spec/issues/62) — found in the Python core, which read the cost from a module constant while the TypeScript core took it per column.
 
 Normalizers are a **closed, versioned set** shipped by every core identically (they affect stored index values, so they are portability surface):
 
@@ -352,6 +355,7 @@ On async: the five operations are synchronous in every core, and that is not neg
 |---|---|
 | Public operation names | `encrypt`, `decrypt`, `blind_index`, `unindexable_marker`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
 | Index parameters | supplied by the `IndexDeclaration` given at construction (§7), never as arguments to `blind_index`. The §7.4 band and the §7.6 cardinality gate are properties of a column, so they are checked once, where the column is declared, and a declaration that fails never reaches a key derivation |
+| Argon2id cost | `t` and `m` come from that declaration and default to the spec §7.3 minima; below either minimum, or present at all on an `hmac-sha512` index, is refused at construction. `version`, `p`, `output_len` and the salt derivation are fixed by §7.3 and are fields on nothing |
 | Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · future cores: idiomatic byte type |
 | FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
 | Error codes | identical strings to §9, exposed as a machine-readable `code` property |

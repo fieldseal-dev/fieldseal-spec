@@ -19,10 +19,16 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from fieldseal import (  # noqa: E402
+    Argon2Params,
     CardinalityOverride,
     FieldContext,
     Fieldseal,
     IndexDeclaration,
+)
+from fieldseal.blindindex import (  # noqa: E402
+    ARGON2_MIN_M_KIB,
+    ARGON2_MIN_T,
+    validate_index_declaration,
 )
 from fieldseal.envelope import is_ciphertext  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
@@ -367,6 +373,82 @@ def test_bucket_override_must_be_complete(bad):
     with pytest.raises(ConfigurationError):
         _client(indexes=[_decl(on_unindexable="bucket",
                                unindexable_override=bad)])
+
+
+# -- spec §7.3, the Argon2id cost is a minimum, not a constant (#62) ----------
+
+def test_argon2_cost_defaults_to_the_spec_minimum():
+    """Absent parameters mean the §7.3 minima, resolved at validation so no
+    derivation path carries a default of its own."""
+    v = validate_index_declaration(_decl(idf="argon2id"))
+    assert v.argon2 == Argon2Params(time_cost=ARGON2_MIN_T,
+                                    memory_kib=ARGON2_MIN_M_KIB)
+    assert validate_index_declaration(_decl()).argon2 is None
+
+
+@pytest.mark.parametrize("params,field", [
+    (Argon2Params(time_cost=ARGON2_MIN_T - 1, memory_kib=ARGON2_MIN_M_KIB),
+     "time_cost"),
+    (Argon2Params(time_cost=ARGON2_MIN_T, memory_kib=ARGON2_MIN_M_KIB - 1),
+     "memory_kib"),
+    (Argon2Params(time_cost=True, memory_kib=ARGON2_MIN_M_KIB), "time_cost"),
+    (Argon2Params(time_cost=3.5, memory_kib=ARGON2_MIN_M_KIB), "time_cost"),
+    (Argon2Params(time_cost=ARGON2_MIN_T, memory_kib=32768.0), "memory_kib"),
+])
+def test_argon2_cost_below_the_minimum_is_refused(params, field):
+    """§7.3 states t and m as minima. Below either one the index is weaker
+    than the specification allows, and it is refused where a column is
+    declared rather than where a value is indexed -- a weakened index that
+    reached one write is already in the database."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="argon2id", argon2=params)])
+    assert field in str(e.value)
+    assert "§7.3" in str(e.value)
+
+
+def test_argon2_params_of_the_wrong_type_are_a_configuration_error():
+    """A mapping with the right keys is the plausible mistake. Reading its
+    attributes would raise `AttributeError`, which is untyped and outside the
+    taxonomy docs/09 §9 permits; the TypeScript core refuses the same shape as
+    a configuration error by finding no integer where it needs one."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="argon2id",
+                               argon2={"time_cost": 4, "memory_kib": 32768})])
+    assert "Argon2Params" in str(e.value)
+
+
+def test_argon2_params_are_refused_on_an_hmac_index():
+    """HMAC-SHA-512 has no cost parameters, so accepting them would record a
+    configuration nothing reads -- an operator would believe a column was
+    hardened that was not."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(argon2=Argon2Params())])
+    assert "hmac-sha512" in str(e.value)
+
+
+def test_a_raised_argon2_cost_reaches_the_derivation():
+    """The point of the field (#62): a deployment that raises the cost gets
+    index values derived at the raised cost, and a core that read the cost
+    from a module constant would silently return the minimum's instead --
+    same column, two index values, and a cross-implementation lookup that
+    finds nothing.
+
+    This asserts that the declared parameters are what the primitive is
+    invoked with. It asserts nothing about whether that primitive matches
+    another core's: the Argon2id family is held out pending G2, and
+    cross-core agreement at a raised cost is a vector obligation recorded
+    there.
+    """
+    pytest.importorskip("argon2.low_level",
+                        reason="the argon2 extra is not installed")
+    minimum = _client(indexes=[_decl(idf="argon2id")])
+    explicit = _client(indexes=[_decl(idf="argon2id", argon2=Argon2Params())])
+    raised = _client(indexes=[_decl(
+        idf="argon2id",
+        argon2=Argon2Params(time_cost=ARGON2_MIN_T + 1))])
+    at_min = minimum.blind_index("alice@example.com", IDX_CTX)
+    assert explicit.blind_index("alice@example.com", IDX_CTX) == at_min
+    assert raised.blind_index("alice@example.com", IDX_CTX) != at_min
 
 
 # -- spec §7.4 band and §7.6 cardinality gate ---------------------------------
