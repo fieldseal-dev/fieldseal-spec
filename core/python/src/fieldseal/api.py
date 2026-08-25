@@ -29,9 +29,12 @@ from .aead.gcm import GcmBackend
 from .blindindex import (
     IDFS,
     NORMALIZERS,
-    REFUSING_NORMALIZERS,
     UNINDEXABLE_PREIMAGE,
+    IndexDeclaration,
+    ValidatedIndex,
+    index_registry_key,
     truncate,
+    validate_index_declaration,
 )
 from .context import FieldContext, aad
 from .envelope import (
@@ -94,6 +97,7 @@ def _backend(suite_id: int) -> GcmBackend:
 class Fieldseal:
     def __init__(self, *, key_provider: KeyProvider, allowed_suites: set[int],
                  write_suite: int, read_mode: str = "strict",
+                 indexes: Iterable[IndexDeclaration] = (),
                  arm_provisional_suites: bool = False) -> None:
         if write_suite not in allowed_suites:
             raise ConfigurationError("write_suite must be in allowed_suites")
@@ -116,6 +120,15 @@ class Fieldseal:
         self._allowed = frozenset(allowed_suites)
         self._write_suite = write_suite
         self._read_mode = read_mode
+        # docs/09 §7: indexes are declared here, so the §7.4 band and the §7.6
+        # cardinality gate run once, on the column, before any key derivation.
+        self._indexes: dict[str, ValidatedIndex] = {}
+        for decl in indexes:
+            v = validate_index_declaration(decl)
+            if v.key in self._indexes:
+                raise ConfigurationError(
+                    f"duplicate index declaration {v.key}")
+            self._indexes[v.key] = v
         # Spec §4.8: arming is an affirmative out-of-band act. It is a separate
         # constructor argument or an environment variable, deliberately not a
         # member of the configuration carrying allowed_suites/write_suite, so
@@ -238,69 +251,62 @@ class Fieldseal:
             "key commitment check failed for every candidate key: wrong key, "
             "wrong context, or a partitioning-oracle attempt")
 
-    def blind_index(self, value: str | bytes, ctx: FieldContext, *,
-                    index_id: str, b_bits: int, idf: str = "argon2id",
-                    normalizer: str = "nfc-casefold-v1",
-                    on_unindexable: str = "refuse") -> bytes:
+    def _declaration(self, ctx: FieldContext) -> ValidatedIndex:
+        """Resolve the index this context names (docs/09 §7, spec §7.8).
+
+        The index-id travels in `ctx.purpose`, not in a keyword argument:
+        `purpose` is already the field that distinguishes one index on a
+        column from another (spec §6.1), and it is what the key derivation
+        reads. Taking it from anywhere else would let a caller derive under
+        one index-id while the declaration checked belonged to another.
+        """
+        index_id = ctx.index_id
+        if index_id is None:
+            raise InvalidArgument(
+                "blind_index requires ctx.purpose = 'index:<index-id>' "
+                "(spec §7.2); call ctx.for_index(...) first")
+        try:
+            return self._indexes[
+                index_registry_key(ctx.table_uuid, ctx.column_uuid, index_id)]
+        except KeyError:
+            raise ConfigurationError(
+                f"no blind index {index_id!r} is declared for this "
+                "table/column; indexes are declared at construction "
+                "(spec §7.8)") from None
+
+    def blind_index(self, value: str | bytes, ctx: FieldContext) -> bytes:
         """Derive the blind index for `value` (spec §7.2, §7.3).
+
+        Every parameter of the index -- IDF, normalizer, truncation length,
+        `on_unindexable` -- comes from the declaration made at construction,
+        never from this call. That is what lets the §7.4 band and the §7.6
+        cardinality gate be enforced at all: they are questions about a
+        column, and they are answered once, before any value is indexed.
 
         Takes `str` as well as `bytes`, and `str` is the preferred form:
         docs/09 §7.1 requires an index API to accept text, because the
         encoding step can destroy the difference between two values before
         the core is ever entered. Every other operation on this client takes
         bytes; normalization is a text operation and encryption is not.
-
-        `on_unindexable` (docs/09 §7.2) decides what happens to a value the
-        normalizer refuses -- one containing a code point the pinned Unicode
-        version does not define. `refuse` (default) propagates the
-        `InvalidArgument`. `bucket` returns this declaration's reserved
-        marker instead, so the row stays findable: the same marker is derived
-        on lookup, and spec §7.5 re-verification narrows the candidates. See
-        `unindexable_marker`.
         """
         # An index computed for a WHERE clause is not a write, so readonly
         # permits it (spec §10.3, per G6) and the provisional gate does not
         # apply either -- no ciphertext is produced.
-        # Declaration checks fail closed (docs/09 §3.3 step 2): an unknown
-        # IDF or normalizer is a configuration error, never a default.
+        decl = self._declaration(ctx)
         try:
-            derive = IDFS[idf]
-        except KeyError:
-            raise ConfigurationError(f"unknown idf {idf!r}") from None
-        try:
-            normalize = NORMALIZERS[normalizer]
-        except KeyError:
-            raise ConfigurationError(
-                f"unknown normalizer {normalizer!r}") from None
-        if not isinstance(b_bits, int) or b_bits <= 0:
-            raise ConfigurationError("b_bits must be a positive integer")
-        if on_unindexable not in ("refuse", "bucket"):
-            raise ConfigurationError(
-                f"on_unindexable must be 'refuse' or 'bucket', not "
-                f"{on_unindexable!r}")
-        if on_unindexable == "bucket" and normalizer not in REFUSING_NORMALIZERS:
-            # The setting could never take effect, and accepting it silently
-            # would misrepresent the column as protected (docs/09 §7.2).
-            raise ConfigurationError(
-                f"on_unindexable='bucket' is meaningless for normalizer "
-                f"{normalizer!r}, which never refuses a value; only "
-                f"{sorted(REFUSING_NORMALIZERS)} can")
-        # Spec §7.2: the index context is the field's with purpose retargeted
-        # and row_id dropped; spec §8: a provider handed that purpose returns
-        # the tenant INDEX key, never the DEK.
-        bound = ctx.for_index(index_id).with_suite(self._write_suite)
-        tenant_index_key, _ = self._provider.encryption_key(bound)
-        ik = index_key(tenant_index_key, bound, index_id)
-        try:
-            normalized = normalize(value)
+            normalized = NORMALIZERS[decl.normalize](value)
         except InvalidArgument:
-            if on_unindexable != "bucket":
+            # docs/09 §7.2: a value the normalizer refuses either fails here
+            # or lands in the column's reserved bucket. Storing no index at
+            # all is not on the menu -- that is the silent missing row spec
+            # §10.2 forbids, and it is why `bucket` derives a marker rather
+            # than returning nothing.
+            if decl.on_unindexable != "bucket":
                 raise
             normalized = UNINDEXABLE_PREIMAGE
-        return truncate(derive(ik, normalized), b_bits)
+        return self._derive_index(decl, normalized, ctx)
 
-    def unindexable_marker(self, ctx: FieldContext, *, index_id: str,
-                           b_bits: int, idf: str = "argon2id") -> bytes:
+    def unindexable_marker(self, ctx: FieldContext) -> bytes:
         """This column's reserved index value for unindexable rows
         (docs/09 §7.2), so an adapter can name the bucket without holding a
         value that lands in it -- for a migration sweep, or to count how many
@@ -311,14 +317,20 @@ class Fieldseal:
         pin does not define to anyone who can read the column without any
         key at all.
         """
-        try:
-            derive = IDFS[idf]
-        except KeyError:
-            raise ConfigurationError(f"unknown idf {idf!r}") from None
-        bound = ctx.for_index(index_id).with_suite(self._write_suite)
+        # The reserved preimage is not valid UTF-8 by construction, so it
+        # bypasses normalization rather than being passed through it.
+        return self._derive_index(self._declaration(ctx),
+                                  UNINDEXABLE_PREIMAGE, ctx)
+
+    def _derive_index(self, decl: ValidatedIndex, normalized: bytes,
+                      ctx: FieldContext) -> bytes:
+        # Spec §7.2: the index context is the field's with purpose retargeted
+        # and row_id dropped; spec §8: a provider handed that purpose returns
+        # the tenant INDEX key, never the DEK.
+        bound = ctx.for_index(decl.index_id).with_suite(self._write_suite)
         tenant_index_key, _ = self._provider.encryption_key(bound)
-        ik = index_key(tenant_index_key, bound, index_id)
-        return truncate(derive(ik, UNINDEXABLE_PREIMAGE), b_bits)
+        ik = index_key(tenant_index_key, bound, decl.index_id)
+        return truncate(IDFS[decl.idf](ik, normalized), decl.truncate_bits)
 
     def rotate(self, blob: bytes, ctx: FieldContext) -> bytes:
         """Re-encrypt under a fresh seed and nonce. Produces ciphertext, so it

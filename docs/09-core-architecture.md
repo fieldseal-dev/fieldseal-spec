@@ -350,7 +350,8 @@ On async: the five operations are synchronous in every core, and that is not neg
 
 | Concern | Rule |
 |---|---|
-| Public operation names | `encrypt`, `decrypt`, `blind_index`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
+| Public operation names | `encrypt`, `decrypt`, `blind_index`, `unindexable_marker`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
+| Index parameters | supplied by the `IndexDeclaration` given at construction (§7), never as arguments to `blind_index`. The §7.4 band and the §7.6 cardinality gate are properties of a column, so they are checked once, where the column is declared, and a declaration that fails never reaches a key derivation |
 | Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · future cores: idiomatic byte type |
 | FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
 | Error codes | identical strings to §9, exposed as a machine-readable `code` property |

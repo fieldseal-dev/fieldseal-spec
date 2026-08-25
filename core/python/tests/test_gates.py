@@ -18,7 +18,12 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal import (  # noqa: E402
+    CardinalityOverride,
+    FieldContext,
+    Fieldseal,
+    IndexDeclaration,
+)
 from fieldseal.envelope import is_ciphertext  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
     CommitmentInvalid,
@@ -36,6 +41,20 @@ DEK = bytes(range(32))
 INDEX_KEY = bytes(range(32, 64))
 CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
                    purpose="encrypt", tenant_id=b"t1")
+IDX_CTX = CTX.for_index("email-eq")
+
+OVERRIDE = CardinalityOverride(reason="test", approved_by="tests",
+                               date="2026-08-25")
+
+
+def _decl(**kw) -> IndexDeclaration:
+    """A declaration on CTX's column, inside the §7.4 band for b=15."""
+    d = dict(table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+             index_id="email-eq", idf="hmac-sha512",
+             normalize="nfc-casefold-v1", truncate_bits=15,
+             projected_population=65536)
+    d.update(kw)
+    return IndexDeclaration(**d)
 
 
 def _client(**kw) -> Fieldseal:
@@ -92,9 +111,8 @@ def test_readonly_refuses_writes():
 
 def test_readonly_permits_blind_index():
     """An index computed for a WHERE clause is not a write (spec §10.3)."""
-    fs = _client(read_mode="readonly")
-    assert fs.blind_index("alice@example.com", CTX, index_id="email-eq",
-                          b_bits=15, idf="hmac-sha512")
+    fs = _client(read_mode="readonly", indexes=[_decl()])
+    assert fs.blind_index("alice@example.com", IDX_CTX)
 
 
 # -- spec §3.1/§4.4, no caller-supplied randomness ----------------------------
@@ -241,17 +259,15 @@ def test_backend_lookup_never_raises_an_untyped_error():
 # "a character the pin does not define" without waiting for 18.0.
 UNPINNED = "a͸b"
 OTHER_UNPINNED = "z͸z"
-IDX_KW = dict(index_id="email-eq", b_bits=15, idf="hmac-sha512",
-              normalizer="nfc-casefold-v1")
 
 
 def test_blind_index_takes_text_and_bytes_alike():
     """docs/09 §7.1: an index API must accept text, and widening the type
     must not fork the function."""
-    fs = _client()
+    fs = _client(indexes=[_decl()])
     for s in ("alice@example.com", "ALICE@example.com", "grüße", ""):
-        assert fs.blind_index(s, CTX, **IDX_KW) == \
-            fs.blind_index(s.encode("utf-8"), CTX, **IDX_KW)
+        assert fs.blind_index(s, IDX_CTX) == \
+            fs.blind_index(s.encode("utf-8"), IDX_CTX)
 
 
 def test_lone_surrogate_is_refused_distinguishably():
@@ -259,29 +275,43 @@ def test_lone_surrogate_is_refused_distinguishably():
     the messages name different code points -- an identical diagnosis would
     leave the two values indistinguishable, which is the property the refusal
     denies them."""
-    fs = _client()
+    fs = _client(indexes=[_decl()])
     msgs = []
     for s in ("a\ud800b", "a\udc00b"):
         with pytest.raises(InvalidArgument) as e:
-            fs.blind_index(s, CTX, **IDX_KW)
+            fs.blind_index(s, IDX_CTX)
         msgs.append(str(e.value))
     assert "D800" in msgs[0] and "DC00" in msgs[1]
     assert msgs[0] != msgs[1]
 
 
+def test_identity_normalizer_refuses_lone_surrogates_as_invalid_argument():
+    """The same refusal on the byte-transparent path, and typed the same way.
+
+    `identity` reaches the encoder rather than the Unicode tables, so the
+    failure arrives as a `UnicodeEncodeError` unless the normalizer converts
+    it. Untyped, it would escape the §9 taxonomy and diverge from the
+    TypeScript core, which raises INVALID_ARGUMENT here.
+    """
+    fs = _client(indexes=[_decl(normalize="identity")])
+    for s in ("a\ud800b", "a\udc00b"):
+        with pytest.raises(InvalidArgument):
+            fs.blind_index(s, IDX_CTX)
+
+
 def test_on_unindexable_refuse_is_the_default():
-    fs = _client()
+    fs = _client(indexes=[_decl()])
     with pytest.raises(InvalidArgument):
-        fs.blind_index(UNPINNED, CTX, **IDX_KW)
+        fs.blind_index(UNPINNED, IDX_CTX)
 
 
 def test_on_unindexable_bucket_keeps_the_row_findable():
     """docs/09 §7.2: `bucket` derives a reserved marker rather than storing no
     index -- an absent index is the silent missing row spec §10.2 forbids."""
-    fs = _client()
-    marker = fs.unindexable_marker(CTX, index_id="email-eq", b_bits=15,
-                                   idf="hmac-sha512")
-    got = fs.blind_index(UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
+    fs = _client(indexes=[_decl(on_unindexable="bucket",
+                                unindexable_override=OVERRIDE)])
+    marker = fs.unindexable_marker(IDX_CTX)
+    got = fs.blind_index(UNPINNED, IDX_CTX)
     assert got == marker
     assert len(marker) == 2          # ceil(15/8)
     assert marker != b"\x00\x00"     # derived, not a constant
@@ -292,11 +322,11 @@ def test_bucket_is_one_collision_class_that_lookup_reaches_naturally():
     for an unindexable value derives the marker and matches those rows; §7.5
     re-verification narrows the candidates. An indexable value never lands
     there."""
-    fs = _client()
-    a = fs.blind_index(UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
-    b = fs.blind_index(OTHER_UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
-    normal = fs.blind_index("alice@example.com", CTX,
-                            on_unindexable="bucket", **IDX_KW)
+    fs = _client(indexes=[_decl(on_unindexable="bucket",
+                                unindexable_override=OVERRIDE)])
+    a = fs.blind_index(UNPINNED, IDX_CTX)
+    b = fs.blind_index(OTHER_UNPINNED, IDX_CTX)
+    normal = fs.blind_index("alice@example.com", IDX_CTX)
     assert a == b
     assert normal != a
 
@@ -304,15 +334,112 @@ def test_bucket_is_one_collision_class_that_lookup_reaches_naturally():
 def test_bucket_is_refused_where_it_could_never_fire():
     """`identity` consults no Unicode table and never refuses, so a bucket for
     it would misrepresent the column as protected."""
-    fs = _client()
     with pytest.raises(ConfigurationError) as e:
-        fs.blind_index("x", CTX, index_id="email-eq", b_bits=15,
-                       idf="hmac-sha512", normalizer="identity",
-                       on_unindexable="bucket")
+        _client(indexes=[_decl(normalize="identity", on_unindexable="bucket",
+                               unindexable_override=OVERRIDE)])
     assert "never refuses" in str(e.value)
 
 
 def test_unknown_on_unindexable_is_a_configuration_error():
-    fs = _client()
     with pytest.raises(ConfigurationError):
-        fs.blind_index("x", CTX, on_unindexable="skip", **IDX_KW)
+        _client(indexes=[_decl(on_unindexable="skip")])
+
+
+# -- docs/09 §7.2, the bucket ceremony ----------------------------------------
+
+def test_bucket_requires_a_recorded_override():
+    """Relaxing a default-deny rule is a reviewed, recorded act -- the same
+    ceremony §7.6 requires for the cardinality gate, so that `bucket` cannot
+    become a setting copied between columns. Without it the column is a
+    configuration error, not a quiet default."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(on_unindexable="bucket")])
+    assert "unindexable_override" in str(e.value)
+
+
+@pytest.mark.parametrize("bad", [
+    CardinalityOverride(reason="", approved_by="a", date="2026-08-25"),
+    CardinalityOverride(reason="r", approved_by="", date="2026-08-25"),
+    CardinalityOverride(reason="r", approved_by="a", date=""),
+])
+def test_bucket_override_must_be_complete(bad):
+    """A present-but-empty field records nothing, so it is not an approval."""
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(on_unindexable="bucket",
+                               unindexable_override=bad)])
+
+
+# -- spec §7.4 band and §7.6 cardinality gate ---------------------------------
+
+def test_truncation_outside_the_7_4_band_is_refused():
+    """Spec §7.4: 2 <= P*2^-b < sqrt(P). Too few bits floods every query with
+    candidates; too many make the index a near-unique fingerprint of the
+    value, which is the correlation §7.4 exists to bound."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(truncate_bits=4)])       # P*2^-b = 4096, > sqrt
+    assert "§7.4" in str(e.value)
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(truncate_bits=40)])      # P*2^-b far below 2
+
+
+def test_low_cardinality_is_refused_by_default():
+    """Spec §7.6 is default-deny: a column with few distinct values leaks its
+    distribution to anyone who can read the index."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(projected_population=256, truncate_bits=5)])
+    assert "§7.6" in str(e.value)
+
+
+def test_low_cardinality_passes_with_a_recorded_override():
+    fs = _client(indexes=[_decl(projected_population=256, truncate_bits=5,
+                                cardinality_override=OVERRIDE)])
+    assert fs.blind_index("alice@example.com", IDX_CTX)
+
+
+def test_declared_skew_is_gated_like_low_cardinality():
+    """Spec §7.6: a large but heavily skewed column leaks the same way."""
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(skewed=True)])
+    assert _client(indexes=[_decl(skewed=True,
+                                  cardinality_override=OVERRIDE)])
+
+
+# -- docs/09 §7, declarations are resolved, not described at the call ---------
+
+def test_undeclared_index_is_a_configuration_error():
+    """Spec §7.8: an index the client was never told about cannot be derived
+    on demand -- that would be a column whose gates nobody ran."""
+    fs = _client(indexes=[_decl()])
+    with pytest.raises(ConfigurationError) as e:
+        fs.blind_index("x", CTX.for_index("never-declared"))
+    assert "declared at construction" in str(e.value)
+
+
+def test_blind_index_requires_an_index_purpose():
+    fs = _client(indexes=[_decl()])
+    with pytest.raises(InvalidArgument) as e:
+        fs.blind_index("x", CTX)
+    assert "for_index" in str(e.value)
+
+
+def test_duplicate_declarations_are_refused():
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(), _decl()])
+    assert "duplicate" in str(e.value)
+
+
+def test_unknown_idf_or_normalizer_is_refused_at_declaration():
+    """Fails closed at construction (docs/09 §3.3 step 2), naming the field
+    that is actually wrong rather than a downstream symptom."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="md5")])
+    assert "idf" in str(e.value)
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(normalize="nope")])
+    assert "normalizer" in str(e.value)
+
+
+def test_index_id_grammar_is_checked_at_declaration():
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(index_id="Email_EQ")])
+    assert "§6.1" in str(e.value)

@@ -34,7 +34,13 @@ sys.path.insert(0, str(REPO / "core" / "python" / "src"))
 import fieldseal  # noqa: E402
 from fieldseal import FieldContext, Fieldseal  # noqa: E402
 from fieldseal import unicode as fs_unicode  # noqa: E402
-from fieldseal.blindindex import NORMALIZERS, idf_hmac_sha512, truncate  # noqa: E402
+from fieldseal.blindindex import (  # noqa: E402
+    NORMALIZERS,
+    CardinalityOverride,
+    IndexDeclaration,
+    idf_hmac_sha512,
+    truncate,
+)
 from fieldseal.context import aad, canonical_context  # noqa: E402
 from fieldseal.envelope import MAX_PLAINTEXT, serialize_header  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
@@ -91,10 +97,11 @@ PINNED_DECISIONS = {
 # nothing left to declare.
 
 
-def _client(key_id: bytes, dek: bytes, index_key_material: bytes) -> Fieldseal:
+def _client(key_id: bytes, dek: bytes, index_key_material: bytes,
+            indexes: tuple[IndexDeclaration, ...] = ()) -> Fieldseal:
     return Fieldseal(
         key_provider=StaticKeyProvider(key_id, dek, index_key_material),
-        allowed_suites={0xFF01}, write_suite=0xFF01,
+        allowed_suites={0xFF01}, write_suite=0xFF01, indexes=indexes,
         # Spec §4.8: the suite is provisional, so even a harness must say so
         # explicitly to write. A harness that did not need to would be evidence
         # the gate does not work -- and `encrypt_with_materials` runs the
@@ -105,6 +112,30 @@ def _client(key_id: bytes, dek: bytes, index_key_material: bytes) -> Fieldseal:
 
 def _ctx(v: dict, suite_id: int) -> FieldContext:
     return _ctx_from(v["context"], suite_id)
+
+
+# The vectors pin an index's IDF, normalizer and truncation length, but carry
+# no projected population -- P is a property of the deployment, not of the
+# derivation the vector fixes. The harness supplies one inside the §7.4 band
+# for any b >= 2: P*2^-b == 2 exactly, and sqrt(P) > 2.
+def _population_for(b_bits: int) -> int:
+    return 2 ** (b_bits + 1)
+
+
+_HARNESS_OVERRIDE = CardinalityOverride(
+    reason="vector harness", approved_by="vectors", date="2026-08-25")
+
+
+def _index_decl(inp: dict, ctx: FieldContext,
+                on_unindexable: str = "refuse") -> IndexDeclaration:
+    return IndexDeclaration(
+        table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+        index_id=inp["index_id"], idf=inp["idf"],
+        normalize=inp["normalize"], truncate_bits=inp["truncate_bits"],
+        projected_population=_population_for(inp["truncate_bits"]),
+        on_unindexable=on_unindexable,
+        unindexable_override=(_HARNESS_OVERRIDE
+                              if on_unindexable == "bucket" else None))
 
 
 def _record(results: list[dict], vid: str, ok: bool, reason: str = "",
@@ -245,13 +276,12 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
                                             H(i["reserved_preimage"]),
                                             i["truncate_bits"])
             ctx = _ctx_from(i["context"], sid)
-            caller = FieldContext(table_uuid=ctx.table_uuid,
-                                  column_uuid=ctx.column_uuid,
-                                  purpose="encrypt", tenant_id=ctx.tenant_id)
-            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]))
-            api = fs.unindexable_marker(caller, index_id=i["index_id"],
-                                        b_bits=i["truncate_bits"],
-                                        idf=i["idf"])
+            caller = FieldContext(
+                table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+                purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
+            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]),
+                         (_index_decl(i, ctx, "bucket"),))
+            api = fs.unindexable_marker(caller)
             _record(results, v["id"],
                     got.hex() == v["expected"]["index"] and api == got,
                     f"primitive {got.hex()}, api {api.hex()}, "
@@ -264,16 +294,19 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
             # silent policy change.
             i = v["inputs"]
             ctx = _ctx_from(i["context"], sid)
-            caller = FieldContext(table_uuid=ctx.table_uuid,
-                                  column_uuid=ctx.column_uuid,
-                                  purpose="encrypt", tenant_id=ctx.tenant_id)
-            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]))
-            kw = dict(index_id=i["index_id"], b_bits=i["truncate_bits"],
-                      idf=i["idf"], normalizer=i["normalize"])
-            bucketed = fs.blind_index(i["plaintext_preimage"], caller,
-                                      on_unindexable="bucket", **kw)
+            caller = FieldContext(
+                table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+                purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
+            key = H(i["tenant_index_key"])
+            # `on_unindexable` is a property of the column (docs/09 §7.2), so
+            # the two policies are two declarations, not two calls.
+            bucket_fs = _client(bytes(16), b"\x22" * 32, key,
+                                (_index_decl(i, ctx, "bucket"),))
+            refuse_fs = _client(bytes(16), b"\x22" * 32, key,
+                                (_index_decl(i, ctx, "refuse"),))
+            bucketed = bucket_fs.blind_index(i["plaintext_preimage"], caller)
             try:
-                fs.blind_index(i["plaintext_preimage"], caller, **kw)
+                refuse_fs.blind_index(i["plaintext_preimage"], caller)
                 refused = "NONE"
             except InvalidArgument:
                 refused = "INVALID_ARGUMENT"
@@ -307,13 +340,13 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
         ctx = _ctx(v, sid)
         caller_ctx = FieldContext(
             table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
-            purpose="encrypt", tenant_id=ctx.tenant_id, row_id=None)
-        fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]))
-        kw = dict(index_id=v["index_id"], b_bits=v["truncate_bits"],
-                  idf=v["idf"], normalizer=v["normalize"])
-        got = fs.blind_index(v["plaintext_preimage"], caller_ctx, **kw)
+            purpose=f"index:{v['index_id']}", tenant_id=ctx.tenant_id,
+            row_id=None)
+        fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]),
+                     (_index_decl(v, ctx),))
+        got = fs.blind_index(v["plaintext_preimage"], caller_ctx)
         got_b = fs.blind_index(v["plaintext_preimage"].encode("utf-8"),
-                               caller_ctx, **kw)
+                               caller_ctx)
         _record(results, v["id"] + "#pipeline",
                 got.hex() == exp["stored"]["binary"] and got == got_b,
                 f"got {got.hex()} (bytes-in {got_b.hex()})")
@@ -359,6 +392,15 @@ def run_envelope(doc: dict, results: list[dict]) -> None:
 
 def _errors_client(v: dict) -> Fieldseal:
     c = v["config"]
+    indexes: tuple[IndexDeclaration, ...] = ()
+    if "index_declaration" in v:
+        d = v["index_declaration"]
+        ctx = _ctx(v, _suite_id(v))
+        indexes = (IndexDeclaration(
+            table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
+            truncate_bits=d["truncate_bits"],
+            projected_population=_population_for(d["truncate_bits"])),)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")     # §10.3 warns in permissive/readonly
         return Fieldseal(
@@ -368,7 +410,7 @@ def _errors_client(v: dict) -> Fieldseal:
                 else b"\x22" * 32),
             allowed_suites={int(x, 16) for x in c["allowed_suites"]},
             write_suite=int(c["write_suite"], 16),
-            read_mode=c["read_mode"],
+            read_mode=c["read_mode"], indexes=indexes,
             arm_provisional_suites=c["arm_provisional_suites"],
         )
 
@@ -393,9 +435,7 @@ def run_errors(doc: dict, results: list[dict]) -> None:
                 got = fs.is_ciphertext(data)
             elif op == "blind_index":
                 d = v["index_declaration"]
-                got = fs.blind_index(data, ctx, index_id=d["index_id"],
-                                     b_bits=d["truncate_bits"], idf=d["idf"],
-                                     normalizer=d["normalize"])
+                got = fs.blind_index(data, ctx.for_index(d["index_id"]))
             else:
                 raise ValueError(f"unknown operation {op!r}")
         except FieldsealError as exc:
@@ -494,15 +534,16 @@ def run_out_of_band() -> list[dict]:
     # and Rust's `String` is UTF-8 by invariant, so two of the five target
     # languages cannot carry the operand at all. A core in either records
     # `not-run` here rather than `pass`.
-    idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32)
+    idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32, (IndexDeclaration(
+        table_uuid=bytes(16), column_uuid=bytes(16), index_id="exact",
+        idf="hmac-sha512", normalize="nfc-casefold-v1", truncate_bits=15,
+        projected_population=_population_for(15)),))
     idx_ctx = FieldContext(table_uuid=bytes(16), column_uuid=bytes(16),
-                           purpose="encrypt")
-    idx_kw = dict(index_id="exact", b_bits=15, idf="hmac-sha512",
-                  normalizer="nfc-casefold-v1")
+                           purpose="index:exact")
 
     def refuse(value: str) -> tuple[str, str]:
         try:
-            idx_fs.blind_index(value, idx_ctx, **idx_kw)
+            idx_fs.blind_index(value, idx_ctx)
         except InvalidArgument as exc:
             return "INVALID_ARGUMENT", str(exc)
         except Exception as exc:  # noqa: BLE001
