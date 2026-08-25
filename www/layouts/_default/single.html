@@ -3,9 +3,22 @@
   <aside class="sidebar" aria-label="Documents">
     <nav>
       <p class="sidebar-title">Documents</p>
+      {{/* .Pages on the docs section gives the numbered documents plus the
+           adr/ and issues/ section pages -- not their contents, which would
+           put 22 more entries on every page. A sub-section expands only while
+           the reader is inside it. */}}
       <ul>
-        {{ range (where site.RegularPages "Section" "docs").ByWeight }}
-          <li><a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+        {{ range (site.GetPage "/docs").Pages.ByWeight }}
+          <li>
+            <a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a>
+            {{ if and .IsSection (eq . $.CurrentSection) }}
+              <ul class="sidebar-sub">
+                {{ range .Pages.ByWeight }}
+                  <li><a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a></li>
+                {{ end }}
+              </ul>
+            {{ end }}
+          </li>
         {{ end }}
       </ul>
     </nav>
