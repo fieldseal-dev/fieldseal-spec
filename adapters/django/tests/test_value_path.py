@@ -197,3 +197,41 @@ class TestEqualityIsRefusedUntilItCanReVerify:
         assert "§7.4" in msg and "§7.5" in msg
         # The operator needs to know the stored data is fine.
         assert "backfill" in msg
+
+
+class TestBackendDivergence:
+    """`bulk_update` builds a different expression tree per backend.
+
+    PostgreSQL sets `requires_casted_case_in_updates`, so each `Value` is
+    wrapped in a `Cast`; SQLite does not. A refusal that only knew `Value`
+    and `Case` passed here and failed on Postgres -- which is why `docs/12`
+    §8 requires both backends in CI rather than treating one as
+    representative.
+    """
+
+    def test_a_cast_wrapping_a_literal_is_accepted(self):
+        from django.db.models import TextField, Value
+        from django.db.models.functions import Cast
+
+        field = Patient._meta.get_field("note")
+        field._assert_literal_expression(
+            Cast(Value("after"), output_field=TextField()))
+
+    def test_a_cast_wrapping_a_column_reference_is_still_refused(self):
+        from django.db.models import F, TextField
+        from django.db.models.functions import Cast
+
+        field = Patient._meta.get_field("note")
+        with pytest.raises(FieldsealNotSupported):
+            field._assert_literal_expression(
+                Cast(F("email"), output_field=TextField()))
+
+    def test_a_function_over_a_literal_is_refused(self):
+        """`Upper(Value(...))` would compile `UPPER(%s)` over the ciphertext:
+        the allow-list is closed, not a heuristic about literals."""
+        from django.db.models import Value
+        from django.db.models.functions import Upper
+
+        field = Patient._meta.get_field("note")
+        with pytest.raises(FieldsealNotSupported):
+            field._assert_literal_expression(Upper(Value("x")))

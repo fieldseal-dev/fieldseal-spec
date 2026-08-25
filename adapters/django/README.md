@@ -146,9 +146,12 @@ directly and pass the resulting envelope.
   naming the gap instead, and the missing accessor is a follow-up against
   `docs/09` §8.
 - **No `fieldseal_gen_uuids` management command yet**; error messages name it.
-- **No Postgres run in CI yet.** The suite runs on SQLite by default and
-  supports Postgres via `FIELDSEAL_TEST_DB=postgres`; `docs/12` §8 requires
-  both, because binary-column behaviour differs.
+- **Postgres and SQLite both run in CI**, per `docs/12` §8. This earned
+  itself immediately: `bulk_update` wraps each `Value` in a `Cast` on
+  PostgreSQL (`requires_casted_case_in_updates`) and not on SQLite, so the
+  same call builds a different expression tree per backend and the
+  expression refusal passed on one and failed on the other. Run Postgres
+  locally with `FIELDSEAL_TEST_DB=postgres`.
 - **`docs/12` §1 writes `from fieldseal.django import ...`.** The import path
   is `fieldseal_django`. `fieldseal.django` would require making the core a
   namespace package or shipping adapter code inside the core distribution,

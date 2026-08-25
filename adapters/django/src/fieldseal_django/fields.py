@@ -215,7 +215,29 @@ class Encrypted(models.Field):
         return super().get_db_prep_save(value, connection)
 
     def _assert_literal_expression(self, expr: Any) -> None:
+        """Allow expressions that only *carry* literals; refuse the rest.
+
+        `Cast` is on the list because Django puts it there itself:
+        `bulk_update` wraps each `Value` in a `Cast` when the backend sets
+        `requires_casted_case_in_updates`, which **PostgreSQL does and SQLite
+        does not** (`django/db/backends/postgresql/features.py`). The same
+        `bulk_update()` call therefore builds a different expression tree per
+        backend, and a walker that only knew `Value` and `Case` passed on
+        SQLite and refused on Postgres. That divergence is exactly what
+        `docs/12` §8 requires a two-backend CI run to catch, and it is what
+        caught this.
+
+        A cast is safe here for a specific reason, not by analogy: it coerces
+        the *representation* of a parameter the database already received as
+        an opaque blob, and the inner `Value.as_sql` has already routed that
+        parameter through `get_db_prep_value` and encrypted it. A general
+        `Func` is not safe -- `Upper(Value("x"))` would compile `UPPER(%s)`
+        over the ciphertext -- so the allow-list stays closed, and a `Cast`
+        whose source is an `F()` still refuses, because the recursion finds a
+        column reference rather than a literal.
+        """
         from django.db.models.expressions import Case, Value
+        from django.db.models.functions import Cast
 
         if isinstance(expr, Value):
             return
@@ -224,6 +246,10 @@ class Encrypted(models.Field):
                 self._assert_literal_expression(case.result)
             if expr.default is not None:
                 self._assert_literal_expression(expr.default)
+            return
+        if isinstance(expr, Cast):
+            for source in expr.get_source_expressions():
+                self._assert_literal_expression(source)
             return
         raise FieldsealNotSupported(
             f"{self.model.__name__}.{self.name} is encrypted, so "
