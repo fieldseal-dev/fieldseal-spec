@@ -23,6 +23,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal.blindindex import IndexDeclaration  # noqa: E402
 from fieldseal.cache import CachePolicy, DekCache  # noqa: E402
 from fieldseal.envelope import EnvelopeHeader  # noqa: E402
 from fieldseal.errors import ConfigurationError, KeyUnavailable  # noqa: E402
@@ -348,3 +349,84 @@ class TestEnvelopeKeyProvider:
 def test_static_provider_still_enforces_the_sibling_rule():
     with pytest.raises(ConfigurationError):
         StaticKeyProvider(KEY_ID, DEK, DEK)
+
+# -- key-material ownership (docs/09 §8.1; G17, issue #67) ---------------------
+
+class TestKeyMaterialOwnership:
+    """docs/09 §8.1: material a provider returns is the provider's. The core
+    may not mutate or erase it, and copies first if it wants something to
+    erase.
+
+    The Python core cannot violate this on the shipped path -- `bytes` is
+    immutable -- but the interface does not require `bytes`, and a provider is
+    free to hand back a `bytearray` precisely so that it *could* be erased.
+    These tests drive exactly that provider, so the rule is pinned against the
+    one shape in which this binding could break it. They mirror
+    `providers.test.ts` ("key-material ownership"), where the corresponding
+    risk is real because every key is a mutable `Uint8Array`.
+    """
+
+    class Borrowing:
+        """Hands out references to its own mutable buffers, never copies."""
+
+        def __init__(self) -> None:
+            self.dek = bytearray(DEK)
+            self.index_key = bytearray(INDEX_KEY)
+            self.key_id = bytes(KEY_ID)
+
+        def encryption_key(self, ctx):
+            # The bytearray itself, not a copy -- otherwise this provider
+            # could not detect the core mutating what it was handed, which is
+            # the only thing these tests are for.
+            material = (self.dek if ctx.purpose == "encrypt"
+                        else self.index_key)
+            return material, self.key_id
+
+        def decryption_keys(self, header):
+            return [self.dek]
+
+    def test_encrypt_leaves_the_provider_material_intact(self):
+        p = self.Borrowing()
+        _client(p).encrypt(PT, CTX)
+        assert bytes(p.dek) == DEK
+        assert p.key_id == KEY_ID
+
+    def test_a_second_write_still_round_trips(self):
+        # The damage would not be visible on the write that caused it.
+        p = self.Borrowing()
+        c = _client(p)
+        c.encrypt(PT, CTX)
+        assert c.decrypt(c.encrypt(PT, CTX), CTX) == PT
+
+    def test_decrypt_leaves_the_candidates_intact(self):
+        p = self.Borrowing()
+        c = _client(p)
+        blob = c.encrypt(PT, CTX)
+        assert c.decrypt(blob, CTX) == PT
+        assert bytes(p.dek) == DEK
+        # ... and the same envelope reads again, which it could not if the
+        # first read had consumed the key it borrowed.
+        assert c.decrypt(blob, CTX) == PT
+
+    def test_blind_index_leaves_the_index_key_intact(self):
+        p = self.Borrowing()
+        decl = IndexDeclaration(
+            table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+            index_id="exact", idf="hmac-sha512", normalize="identity",
+            truncate_bits=15, projected_population=65536)
+        c = _client(p, indexes=(decl,))
+        ictx = CTX.for_index("exact")
+        first = c.blind_index(PT, ictx)
+        assert bytes(p.index_key) == INDEX_KEY
+        assert c.blind_index(PT, ictx) == first
+
+    def test_record_key_erasure_is_a_no_op_here_and_is_declared(self):
+        """docs/09 §3 preamble: a binding whose type is immutable cannot
+        perform the erasure steps, MUST say so in its language document, and
+        declares it in the report. This asserts the declaration rather than
+        the (unobservable) erasure, which is the whole point of G17."""
+        from run_vectors import PINNED_DECISIONS
+        decl = PINNED_DECISIONS["key-material-ownership"]
+        assert "provider-owned" in decl
+        assert "Not performed" in decl
+        assert "record_key" in decl

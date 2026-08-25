@@ -48,6 +48,7 @@ describe("report invariants (docs/14 §4)", () => {
       "api-boundary-order",
       "unimplemented-registered-suite",
       "commitment-construction",
+      "key-material-ownership",
     ]) {
       expect(report.pinned_decisions[key], key).toBeTruthy();
     }

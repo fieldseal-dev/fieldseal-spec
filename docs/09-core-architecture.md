@@ -57,6 +57,13 @@ Design rules:
 
 These pipelines are the reference sequence every implementation follows. Steps map 1:1 onto spec clauses; reordering is permitted only where observable behavior (including error codes and timing notes) is unchanged.
 
+**Erasure steps and what they apply to (normative).** Where a pipeline below says *zeroize*, it means best-effort erasure of a value **the core itself derived** — `record_key` and any intermediate plaintext buffer. It never licenses erasing key material a `KeyProvider` returned, which the core does not own (§8.1). Two preconditions bound these steps, and both are honesty obligations rather than escape hatches:
+
+- A binding whose type for the value is **immutable** cannot perform the step. Python's `bytes` is the shipped example. This is permitted, and the binding's language document MUST name the steps it cannot perform (§8.3 already requires each per-language spec to state exactly what its zeroization does and does not achieve; these steps are within that obligation, not outside it).
+- Erasure is best-effort everywhere. Spec §5.5 concedes that a garbage-collected runtime cannot guarantee that no copy survives, and no language document may claim more (§8.3).
+
+**None of this is observable through the vector suite.** A wiped buffer and a live one produce identical bytes and identical error codes, so no vector and no produce/consume run can distinguish a core that performs these steps from one that does not. That is why the choice is declared in the conformance report (`pinned_decisions.key-material-ownership`, docs/14 §4) rather than tested.
+
 ### 3.1 `encrypt(plaintext, ctx) → envelope`
 
 ```
@@ -75,7 +82,8 @@ These pipelines are the reference sequence every implementation follows. Steps m
 10. aad = AAD(fmt_ver, key_id, msg_seed, cc)               // §6.2
 11. ct, tag = suite.aead.seal(record_key, nonce, plaintext, aad)
 12. return fmt_ver ‖ suite_id ‖ key_id ‖ msg_seed ‖ nonce ‖ ct ‖ tag ‖ commitment
-13. best-effort zeroize record_key
+13. best-effort zeroize record_key                          // §3 preamble: derived here, so ours to erase;
+                                                           // `dek` from step 4 is NOT (§8.1)
 ```
 
 Steps 5–6 are the only entropy draws; `testing.encrypt_with_materials` replaces exactly these two steps and nothing else (docs/08 §6).
@@ -108,7 +116,7 @@ Proposed check order — **this order is an engineering proposal that must be pi
       record_key = HKDF(dek, key_id ‖ msg_seed, canonical_context(ctx))
       if commit_verify(record_key, commitment):   // constant-time compare
           ok = aead.open(record_key, nonce, ct, tag, aad)
-          ok                                      → return plaintext (+ zeroize record_key)
+          ok                                      → return plaintext (+ zeroize record_key, not the candidate)
           fail                                    → TAG_INVALID       // key+context proven right by commitment;
                                                                       // remaining causes: ct/tag corruption
 7.  no candidate's commitment verified            → COMMITMENT_INVALID-or-AAD_MISMATCH [G5]
@@ -317,6 +325,14 @@ KeyProvider:
 ```
 
 `key_id` structure is provider-defined and opaque to the core (spec §3.1). `EnvelopeKeyProvider`'s recommended layout — documented, not normative: 4 B provider tag ‖ 8 B tenant-key handle ‖ 4 B version. Rationale: `decryption_keys` must resolve versions from the header alone.
+
+**Ownership of returned key material (normative).** Key material returned by `encryption_key` and `decryption_keys` is **owned by the provider**. A core MUST NOT mutate or erase it, and MUST NOT retain a reference to it beyond the call that obtained it. A core that needs erasable material MUST copy first and erase its own copy.
+
+*Justification.* Without this rule the signature alone decides the question, and it cannot: a returned byte string may be a fresh copy or a reference into the provider's own cache, and the two are indistinguishable to the caller. A core that erases what it was handed silently destroys the second kind — the next derivation runs against zeroes and the failure surfaces as `COMMITMENT_INVALID` on a read of data written moments earlier, a decrypt-side error for a write-side memory bug with nothing pointing at the provider. The rule is stated in this direction, rather than as "the core owns and MUST erase", for three reasons. It is implementable in every target language, where the converse is not: a binding whose key material is an immutable type cannot erase anything, so a MUST to erase would be one a conformant core could not meet. It fails safe in both directions — a provider handing over a copy loses nothing under a borrow rule, while a provider handing over its cache is destroyed under an ownership rule. And it costs the core almost nothing: what it declines to erase is a per-call copy of material the cache holds anyway, and §8.3 already zeroizes on eviction.
+
+The corollary for providers is worth stating, because it is where the cost lands: a provider that wants its returned material erased MUST erase it itself, on its own schedule. Returning a copy remains the safe default and is what the three shipped providers do.
+
+**Candidate reads are not uses (normative).** `decryption_keys` MUST NOT count against §8.3's `max_uses`. §8.3 states use counting only from the write side — incremented per `encryption_key` return — and the read-path half has to be said rather than inferred: a decrypt resolving four candidate versions would otherwise spend four uses of a budget spec §5.5 defines as a limit on **encryptions** under one key, and a rotation sweep would evict the key it is reading with. The candidate list is a read of what the cache already holds.
 
 ### 8.2 The three shipped providers
 
