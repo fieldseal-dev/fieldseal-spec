@@ -291,6 +291,16 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
     if d.idf == "argon2id":
         if argon2 is None:
             argon2 = Argon2Params()
+        if not isinstance(argon2, Argon2Params):
+            # A mapping with the right keys is the plausible mistake, and
+            # reading its attributes would raise `AttributeError` -- untyped,
+            # and outside the taxonomy docs/09 §9 permits. The TypeScript core
+            # reaches the same refusal by finding no integer where it needs
+            # one, so both cores refuse a malformed declaration as a
+            # configuration error rather than as a crash.
+            raise ConfigurationError(
+                f"index declaration {index_id}: argon2 must be an "
+                f"Argon2Params, not {type(argon2).__name__} (spec §7.3)")
         if not _int(argon2.time_cost) or argon2.time_cost < ARGON2_MIN_T:
             raise ConfigurationError(
                 f"index declaration {index_id}: argon2 time_cost must be an "

@@ -406,6 +406,17 @@ def test_argon2_cost_below_the_minimum_is_refused(params, field):
     assert "§7.3" in str(e.value)
 
 
+def test_argon2_params_of_the_wrong_type_are_a_configuration_error():
+    """A mapping with the right keys is the plausible mistake. Reading its
+    attributes would raise `AttributeError`, which is untyped and outside the
+    taxonomy docs/09 §9 permits; the TypeScript core refuses the same shape as
+    a configuration error by finding no integer where it needs one."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="argon2id",
+                               argon2={"time_cost": 4, "memory_kib": 32768})])
+    assert "Argon2Params" in str(e.value)
+
+
 def test_argon2_params_are_refused_on_an_hmac_index():
     """HMAC-SHA-512 has no cost parameters, so accepting them would record a
     configuration nothing reads -- an operator would believe a column was
