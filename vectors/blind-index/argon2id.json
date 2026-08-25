@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.2.0-provisional",
+  "vector_suite_version": "0.3.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "held-out",
@@ -416,6 +416,47 @@
       ]
     },
     {
+      "id": "blind-index/argon2id/replacement-char-is-text-b15",
+      "description": "argon2id index over 'a�b@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 3,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "61efbfbd62406578616d706c652e636f6d",
+      "plaintext_preimage": "a�b@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "00335e86d0b437faca173f083c3a7a4f6ae44570284c3bb5cf65bb4fdf07964100af70a094af935a324303af258755eaae6178e4bff20567e3312da7e3fa955f",
+        "index": "0032",
+        "stored": {
+          "binary": "0032",
+          "hex": "0032",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
       "id": "blind-index/argon2id/normalizer-collapses-case",
       "description": "values differing only by case MUST produce the same index under the nfc-casefold-v1 normalizer",
       "spec_ref": "§7.2",
@@ -513,6 +554,67 @@
         "index_a": "90fa",
         "index_b": "90fa",
         "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/unindexable-marker-b15",
+      "description": "the docs/09 §7.2 reserved marker: truncate(IDF(index_key, 0xFF||'fieldseal-unindexable-v1'), 15)",
+      "spec_ref": "§7.2, §7.5; docs/09 §7.2",
+      "assertion": "unindexable-marker",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "ssn-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:ssn-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "reserved_preimage": "ff6669656c647365616c2d756e696e64657861626c652d7631",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "f974",
+        "stored": {
+          "binary": "f974",
+          "hex": "f974",
+          "octets": 2
+        }
+      }
+    },
+    {
+      "id": "blind-index/argon2id/unindexable-bucketed-b15",
+      "description": "under on_unindexable=bucket, a value containing a code point the pin does not define derives the reserved marker instead of raising INVALID_ARGUMENT",
+      "spec_ref": "§7.2, §7.5, §10.2; docs/09 §7.2",
+      "assertion": "unindexable-bucket",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "ssn-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:ssn-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "on_unindexable": "bucket",
+        "plaintext_preimage": "a͸b@example.com",
+        "unassigned_code_point": "U+0378",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "f974",
+        "equals_marker": true,
+        "on_unindexable_refuse": "INVALID_ARGUMENT"
       }
     }
   ],

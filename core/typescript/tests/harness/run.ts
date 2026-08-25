@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { argon2Salt, idf, truncateBits, type IdfId } from "../../src/blindindex.ts";
+import { argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
@@ -101,6 +101,23 @@ function mismatch(what: string, got: Uint8Array | string | number | undefined, w
 // ---------------------------------------------------------------------------
 // Family runners
 
+/**
+ * docs/08 §4.4: the Argon2id cost comes from the vector, never from this
+ * core's defaults. Spec §7.3 states `t` and `m` as minima a deployment may
+ * raise, so a vector at a raised cost is authorable (a G2 obligation), and
+ * only a harness that passes the stated cost through lets such a vector test
+ * the core rather than the harness — dropping it fails a correct core and
+ * points the failure at the primitive (#62).
+ */
+function argon2Of(v: Record<string, unknown>): Argon2Params | undefined {
+  if (v.idf !== "argon2id") return undefined;
+  const p = v.idf_params as Record<string, number> | undefined;
+  if (p?.time_cost === undefined || p.memory_kib === undefined) {
+    throw new Error("argon2id vector without idf_params.time_cost / .memory_kib");
+  }
+  return { timeCost: p.time_cost, memoryKib: p.memory_kib };
+}
+
 function runAssertion(v: Record<string, unknown>): Result {
   // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08
   // resolved), so each side is reproduced and then the relation is checked.
@@ -141,8 +158,9 @@ function runAssertion(v: Record<string, unknown>): Result {
       if (normId === undefined) throw new Error(`unknown normalizer ${String(inp.normalize)}`);
       const ik = hex(inp.index_key as string);
       const bits = inp.truncate_bits as number;
-      a = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_a as string))), bits);
-      b = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_b as string))), bits);
+      const cost = argon2Of(inp);
+      a = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_a as string)), cost), bits);
+      b = truncateBits(idf(which, ik, normalize(normId, new TextEncoder().encode(inp.plaintext_preimage_b as string)), cost), bits);
       [wantA, wantB] = [ex.index_a as string, ex.index_b as string];
     } else {
       throw new Error("no assertion runner for this family");
@@ -304,8 +322,102 @@ function runCommitment(v: Record<string, unknown>): Result {
   return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
+/**
+ * docs/09 §7.2, the `on_unindexable` shapes. Kept out of `runAssertion`
+ * because these are not two-sided relations: one pins the reserved marker's
+ * bytes, the other pins that a refused value lands on them while the default
+ * still refuses.
+ *
+ * The marker's bytes matter as much as its behaviour. Two cores that derived
+ * different markers would put their unindexable rows in two different
+ * buckets, and a lookup across them would silently return nothing — the exact
+ * failure `on_unindexable` exists to prevent, reintroduced by the fix.
+ */
+function runUnindexable(v: Record<string, unknown>): Result {
+  const id = v.id as string;
+  const ex = v.expected as Record<string, unknown>;
+  const inp = v.inputs as Record<string, unknown>;
+  const problems: string[] = [];
+  try {
+    const which = inp.idf as IdfId;
+    const ik = hex(inp.index_key as string);
+    const bits = inp.truncate_bits as number;
+    const want = hex(ex.index as string);
+    const marker = truncateBits(idf(which, ik, UNINDEXABLE_PREIMAGE), bits);
+
+    if (v.assertion === "unindexable-marker") {
+      if (!eq(hex(inp.reserved_preimage as string), UNINDEXABLE_PREIMAGE)) {
+        problems.push(mismatch("reserved preimage", UNINDEXABLE_PREIMAGE, hex(inp.reserved_preimage as string)));
+      }
+      if (!eq(marker, want)) problems.push(mismatch("marker", marker, want));
+      // ...and that the public API agrees with the primitive.
+      const fs = unindexableClient(inp, "bucket");
+      const api = fs.unindexableMarker(indexCtx(inp));
+      if (!eq(api, want)) problems.push(mismatch("unindexableMarker()", api, want));
+    } else {
+      const value = inp.plaintext_preimage as string;
+      const bucketed = unindexableClient(inp, "bucket").blindIndex(value, indexCtx(inp));
+      if (!eq(bucketed, want)) problems.push(mismatch("bucketed index", bucketed, want));
+      // Both halves matter: a `bucket` that never fires is useless, and a
+      // `refuse` that stopped refusing would be a silent policy change.
+      let refused = "NONE";
+      try {
+        unindexableClient(inp, "refuse").blindIndex(value, indexCtx(inp));
+      } catch (e) {
+        refused = errCode(e);
+      }
+      const wantRefused = ex.on_unindexable_refuse as string;
+      if (refused !== wantRefused) problems.push(`on_unindexable="refuse" gave ${refused}, want ${wantRefused}`);
+    }
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  return problems.length === 0
+    ? { id, status: "pass" }
+    : { id, status: "fail", reason: problems.join("; ") };
+}
+
+function indexCtx(inp: Record<string, unknown>): FieldContext {
+  const c = ctxFromVector(inp.context as Record<string, unknown>);
+  return { ...c, purpose: `index:${inp.index_id as string}` };
+}
+
+function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse" | "bucket"): Fieldseal {
+  const c = ctxFromVector(inp.context as Record<string, unknown>);
+  return new Fieldseal(
+    {
+      keyProvider: new StaticKeyProvider({
+        dek: new Uint8Array(32).fill(0xaa),
+        keyId: new Uint8Array(16),
+        indexKey: hex(inp.tenant_index_key as string),
+      }),
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
+      readMode: "strict",
+      indexes: [
+        {
+          tableUuid: c.tableUuid,
+          columnUuid: c.columnUuid,
+          indexId: inp.index_id as string,
+          idf: inp.idf as IdfId,
+          ...(argon2Of(inp) ? { argon2: argon2Of(inp) as Argon2Params } : {}),
+          normalize: inp.normalize as NormalizerId,
+          truncateBits: inp.truncate_bits as number,
+          projectedPopulation: 65536,
+          onUnindexable,
+          ...(onUnindexable === "bucket"
+            ? { unindexableOverride: { reason: "vector harness", approvedBy: "vectors", date: "2026-08-25" } }
+            : {}),
+        },
+      ],
+    },
+    { armProvisionalSuites: true },
+  );
+}
+
 function runBlindIndex(v: Record<string, unknown>): Result[] {
   const id = v.id as string;
+  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [runUnindexable(v)];
   if (v.assertion !== undefined) return [runAssertion(v)];
   const ex = v.expected as Record<string, unknown>;
   const stored = ex.stored as Record<string, string | number>;
@@ -314,7 +426,7 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
   const b = v.truncate_bits as number;
   const normId = NORMALIZERS[v.normalize as string];
   const params = v.idf_params as Record<string, number>;
-  const argon2 = which === "argon2id" ? { timeCost: params.time_cost!, memoryKib: params.memory_kib! } : undefined;
+  const argon2 = argon2Of(v);
   const results: Result[] = [];
   const problems: string[] = [];
   try {
@@ -464,6 +576,85 @@ function runErrors(v: Record<string, unknown>): Result {
 // ---------------------------------------------------------------------------
 // Out-of-band: spec §3.5 length bound (docs/08 §5 item 8)
 
+/**
+ * docs/09 §7.1: the index boundary takes text, and refuses an unpaired
+ * surrogate *distinguishably* (G16 part A).
+ *
+ * This has no vector and cannot have one. The `blind-index/` family keys its
+ * input as hex bytes, and an unpaired surrogate has no UTF-8 encoding, so the
+ * case is inexpressible in the family's own shape. Widening the field to text
+ * would not fix it either: Go string literals may not hold a surrogate value
+ * and rune conversion substitutes U+FFFD, and Rust's `String` is UTF-8 by
+ * invariant — so two of the five target languages cannot carry the operand at
+ * all, and a core in either would report `not-run` rather than `pass`.
+ *
+ * That is exactly what `out_of_band` is for (docs/14 §4, the G10 precedent):
+ * a normative requirement verified by a test the report would otherwise never
+ * mention is indistinguishable from one nobody checked.
+ */
+function runIndexBoundary(): OutOfBand[] {
+  const id = "docs/09/7.1/lone-surrogate-refusal";
+  const method =
+    "unit test: two distinct unpaired surrogates passed as text to blindIndex are both refused, with messages that name different code points";
+  const fs = new Fieldseal(
+    {
+      // An index key is required here: without one, key acquisition fails
+      // before normalization runs and this check would pass or fail for
+      // reasons that have nothing to do with what it is asserting.
+      keyProvider: new StaticKeyProvider({
+        dek: new Uint8Array(32).fill(0xaa),
+        keyId: new Uint8Array(16),
+        indexKey: new Uint8Array(32).fill(0xbb),
+      }),
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
+      readMode: "strict",
+      indexes: [
+        {
+          tableUuid: new Uint8Array(16),
+          columnUuid: new Uint8Array(16),
+          idf: "hmac-sha512",
+          normalize: "nfc-casefold-v1",
+          truncateBits: 15,
+          projectedPopulation: 65536,
+        },
+      ],
+    },
+    { armProvisionalSuites: true },
+  );
+  const ctx: FieldContext = {
+    tableUuid: new Uint8Array(16),
+    columnUuid: new Uint8Array(16),
+    tenantId: null,
+    rowId: null,
+    purpose: "index:exact",
+  };
+  const refuse = (s: string): { code: string; message: string } => {
+    try {
+      fs.blindIndex(s, ctx);
+      return { code: "NONE", message: "" };
+    } catch (e) {
+      return { code: errCode(e), message: (e as Error).message };
+    }
+  };
+
+  const high = refuse("a\uD800b");
+  const low = refuse("a\uDC00b");
+  let status: OutOfBand["status"] = "pass";
+  let reason: string | undefined;
+  if (high.code !== "INVALID_ARGUMENT" || low.code !== "INVALID_ARGUMENT") {
+    status = "fail";
+    reason = `expected INVALID_ARGUMENT for both, got ${high.code} and ${low.code}`;
+  } else if (high.message === low.message) {
+    // Same outcome is not enough. If the diagnosis is identical the two values
+    // are indistinguishable to the caller, which is the property the refusal
+    // exists to deny them.
+    status = "fail";
+    reason = "both surrogates produced the same message; the refusal does not distinguish them";
+  }
+  return [{ id, status, method, ...(reason ? { reason } : {}) }];
+}
+
 function runLengthBound(): OutOfBand[] {
   const out: OutOfBand[] = [];
   const fs = client(new Uint8Array(32), new Uint8Array(16));
@@ -547,7 +738,7 @@ export function runSuite(opts: RunOptions = {}): Report {
         }
       }
     }
-    const outOfBand = runLengthBound();
+    const outOfBand = [...runLengthBound(), ...runIndexBoundary()];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
     const summary = {
       pass: results.filter((r) => r.status === "pass").length,

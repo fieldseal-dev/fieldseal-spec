@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from . import errors
 from .api import Fieldseal
+from .blindindex import Argon2Params, CardinalityOverride, IndexDeclaration
 from .context import FieldContext
 from .registry import SUITES, is_provisional
 
-__all__ = ["Fieldseal", "FieldContext", "errors", "SUITES", "is_provisional"]
+__all__ = ["Fieldseal", "FieldContext", "IndexDeclaration",
+           "Argon2Params", "CardinalityOverride", "errors", "SUITES",
+           "is_provisional"]
 __version__ = "0.1.0.dev0"

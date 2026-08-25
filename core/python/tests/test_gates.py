@@ -18,13 +18,25 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal import (  # noqa: E402
+    Argon2Params,
+    CardinalityOverride,
+    FieldContext,
+    Fieldseal,
+    IndexDeclaration,
+)
+from fieldseal.blindindex import (  # noqa: E402
+    ARGON2_MIN_M_KIB,
+    ARGON2_MIN_T,
+    validate_index_declaration,
+)
 from fieldseal.envelope import is_ciphertext  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
     CommitmentInvalid,
     ConfigurationError,
     FieldsealError,
     FieldsealWarning,
+    InvalidArgument,
     ModeViolation,
     SuiteProvisional,
 )
@@ -35,6 +47,20 @@ DEK = bytes(range(32))
 INDEX_KEY = bytes(range(32, 64))
 CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
                    purpose="encrypt", tenant_id=b"t1")
+IDX_CTX = CTX.for_index("email-eq")
+
+OVERRIDE = CardinalityOverride(reason="test", approved_by="tests",
+                               date="2026-08-25")
+
+
+def _decl(**kw) -> IndexDeclaration:
+    """A declaration on CTX's column, inside the §7.4 band for b=15."""
+    d = dict(table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+             index_id="email-eq", idf="hmac-sha512",
+             normalize="nfc-casefold-v1", truncate_bits=15,
+             projected_population=65536)
+    d.update(kw)
+    return IndexDeclaration(**d)
 
 
 def _client(**kw) -> Fieldseal:
@@ -91,9 +117,8 @@ def test_readonly_refuses_writes():
 
 def test_readonly_permits_blind_index():
     """An index computed for a WHERE clause is not a write (spec §10.3)."""
-    fs = _client(read_mode="readonly")
-    assert fs.blind_index("alice@example.com", CTX, index_id="email-eq",
-                          b_bits=15, idf="hmac-sha512")
+    fs = _client(read_mode="readonly", indexes=[_decl()])
+    assert fs.blind_index("alice@example.com", IDX_CTX)
 
 
 # -- spec §3.1/§4.4, no caller-supplied randomness ----------------------------
@@ -232,3 +257,271 @@ def test_backend_lookup_never_raises_an_untyped_error():
     from fieldseal.errors import SuiteNotAllowed
     with pytest.raises(SuiteNotAllowed):
         _backend(0x0001)
+
+
+# -- docs/09 §7.1 / §7.2, the index boundary ----------------------------------
+
+# U+0378 is unassigned in every Unicode version so far, so it stands in for
+# "a character the pin does not define" without waiting for 18.0.
+UNPINNED = "a͸b"
+OTHER_UNPINNED = "z͸z"
+
+
+def test_blind_index_takes_text_and_bytes_alike():
+    """docs/09 §7.1: an index API must accept text, and widening the type
+    must not fork the function."""
+    fs = _client(indexes=[_decl()])
+    for s in ("alice@example.com", "ALICE@example.com", "grüße", ""):
+        assert fs.blind_index(s, IDX_CTX) == \
+            fs.blind_index(s.encode("utf-8"), IDX_CTX)
+
+
+def test_lone_surrogate_is_refused_distinguishably():
+    """The false match the text path exists to close. Both are refused, and
+    the messages name different code points -- an identical diagnosis would
+    leave the two values indistinguishable, which is the property the refusal
+    denies them."""
+    fs = _client(indexes=[_decl()])
+    msgs = []
+    for s in ("a\ud800b", "a\udc00b"):
+        with pytest.raises(InvalidArgument) as e:
+            fs.blind_index(s, IDX_CTX)
+        msgs.append(str(e.value))
+    assert "D800" in msgs[0] and "DC00" in msgs[1]
+    assert msgs[0] != msgs[1]
+
+
+def test_identity_normalizer_refuses_lone_surrogates_as_invalid_argument():
+    """The same refusal on the byte-transparent path, and typed the same way.
+
+    `identity` reaches the encoder rather than the Unicode tables, so the
+    failure arrives as a `UnicodeEncodeError` unless the normalizer converts
+    it. Untyped, it would escape the §9 taxonomy and diverge from the
+    TypeScript core, which raises INVALID_ARGUMENT here.
+    """
+    fs = _client(indexes=[_decl(normalize="identity")])
+    for s in ("a\ud800b", "a\udc00b"):
+        with pytest.raises(InvalidArgument):
+            fs.blind_index(s, IDX_CTX)
+
+
+def test_on_unindexable_refuse_is_the_default():
+    fs = _client(indexes=[_decl()])
+    with pytest.raises(InvalidArgument):
+        fs.blind_index(UNPINNED, IDX_CTX)
+
+
+def test_on_unindexable_bucket_keeps_the_row_findable():
+    """docs/09 §7.2: `bucket` derives a reserved marker rather than storing no
+    index -- an absent index is the silent missing row spec §10.2 forbids."""
+    fs = _client(indexes=[_decl(on_unindexable="bucket",
+                                unindexable_override=OVERRIDE)])
+    marker = fs.unindexable_marker(IDX_CTX)
+    got = fs.blind_index(UNPINNED, IDX_CTX)
+    assert got == marker
+    assert len(marker) == 2          # ceil(15/8)
+    assert marker != b"\x00\x00"     # derived, not a constant
+
+
+def test_bucket_is_one_collision_class_that_lookup_reaches_naturally():
+    """The same value normalizes the same way in both directions, so a query
+    for an unindexable value derives the marker and matches those rows; §7.5
+    re-verification narrows the candidates. An indexable value never lands
+    there."""
+    fs = _client(indexes=[_decl(on_unindexable="bucket",
+                                unindexable_override=OVERRIDE)])
+    a = fs.blind_index(UNPINNED, IDX_CTX)
+    b = fs.blind_index(OTHER_UNPINNED, IDX_CTX)
+    normal = fs.blind_index("alice@example.com", IDX_CTX)
+    assert a == b
+    assert normal != a
+
+
+def test_bucket_is_refused_where_it_could_never_fire():
+    """`identity` consults no Unicode table and never refuses, so a bucket for
+    it would misrepresent the column as protected."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(normalize="identity", on_unindexable="bucket",
+                               unindexable_override=OVERRIDE)])
+    assert "never refuses" in str(e.value)
+
+
+def test_unknown_on_unindexable_is_a_configuration_error():
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(on_unindexable="skip")])
+
+
+# -- docs/09 §7.2, the bucket ceremony ----------------------------------------
+
+def test_bucket_requires_a_recorded_override():
+    """Relaxing a default-deny rule is a reviewed, recorded act -- the same
+    ceremony §7.6 requires for the cardinality gate, so that `bucket` cannot
+    become a setting copied between columns. Without it the column is a
+    configuration error, not a quiet default."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(on_unindexable="bucket")])
+    assert "unindexable_override" in str(e.value)
+
+
+@pytest.mark.parametrize("bad", [
+    CardinalityOverride(reason="", approved_by="a", date="2026-08-25"),
+    CardinalityOverride(reason="r", approved_by="", date="2026-08-25"),
+    CardinalityOverride(reason="r", approved_by="a", date=""),
+])
+def test_bucket_override_must_be_complete(bad):
+    """A present-but-empty field records nothing, so it is not an approval."""
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(on_unindexable="bucket",
+                               unindexable_override=bad)])
+
+
+# -- spec §7.3, the Argon2id cost is a minimum, not a constant (#62) ----------
+
+def test_argon2_cost_defaults_to_the_spec_minimum():
+    """Absent parameters mean the §7.3 minima, resolved at validation so no
+    derivation path carries a default of its own."""
+    v = validate_index_declaration(_decl(idf="argon2id"))
+    assert v.argon2 == Argon2Params(time_cost=ARGON2_MIN_T,
+                                    memory_kib=ARGON2_MIN_M_KIB)
+    assert validate_index_declaration(_decl()).argon2 is None
+
+
+@pytest.mark.parametrize("params,field", [
+    (Argon2Params(time_cost=ARGON2_MIN_T - 1, memory_kib=ARGON2_MIN_M_KIB),
+     "time_cost"),
+    (Argon2Params(time_cost=ARGON2_MIN_T, memory_kib=ARGON2_MIN_M_KIB - 1),
+     "memory_kib"),
+    (Argon2Params(time_cost=True, memory_kib=ARGON2_MIN_M_KIB), "time_cost"),
+    (Argon2Params(time_cost=3.5, memory_kib=ARGON2_MIN_M_KIB), "time_cost"),
+    (Argon2Params(time_cost=ARGON2_MIN_T, memory_kib=32768.0), "memory_kib"),
+])
+def test_argon2_cost_below_the_minimum_is_refused(params, field):
+    """§7.3 states t and m as minima. Below either one the index is weaker
+    than the specification allows, and it is refused where a column is
+    declared rather than where a value is indexed -- a weakened index that
+    reached one write is already in the database."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="argon2id", argon2=params)])
+    assert field in str(e.value)
+    assert "§7.3" in str(e.value)
+
+
+def test_argon2_params_of_the_wrong_type_are_a_configuration_error():
+    """A mapping with the right keys is the plausible mistake. Reading its
+    attributes would raise `AttributeError`, which is untyped and outside the
+    taxonomy docs/09 §9 permits; the TypeScript core refuses the same shape as
+    a configuration error by finding no integer where it needs one."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="argon2id",
+                               argon2={"time_cost": 4, "memory_kib": 32768})])
+    assert "Argon2Params" in str(e.value)
+
+
+def test_argon2_params_are_refused_on_an_hmac_index():
+    """HMAC-SHA-512 has no cost parameters, so accepting them would record a
+    configuration nothing reads -- an operator would believe a column was
+    hardened that was not."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(argon2=Argon2Params())])
+    assert "hmac-sha512" in str(e.value)
+
+
+def test_a_raised_argon2_cost_reaches_the_derivation():
+    """The point of the field (#62): a deployment that raises the cost gets
+    index values derived at the raised cost, and a core that read the cost
+    from a module constant would silently return the minimum's instead --
+    same column, two index values, and a cross-implementation lookup that
+    finds nothing.
+
+    This asserts that the declared parameters are what the primitive is
+    invoked with. It asserts nothing about whether that primitive matches
+    another core's: the Argon2id family is held out pending G2, and
+    cross-core agreement at a raised cost is a vector obligation recorded
+    there.
+    """
+    pytest.importorskip("argon2.low_level",
+                        reason="the argon2 extra is not installed")
+    minimum = _client(indexes=[_decl(idf="argon2id")])
+    explicit = _client(indexes=[_decl(idf="argon2id", argon2=Argon2Params())])
+    raised = _client(indexes=[_decl(
+        idf="argon2id",
+        argon2=Argon2Params(time_cost=ARGON2_MIN_T + 1))])
+    at_min = minimum.blind_index("alice@example.com", IDX_CTX)
+    assert explicit.blind_index("alice@example.com", IDX_CTX) == at_min
+    assert raised.blind_index("alice@example.com", IDX_CTX) != at_min
+
+
+# -- spec §7.4 band and §7.6 cardinality gate ---------------------------------
+
+def test_truncation_outside_the_7_4_band_is_refused():
+    """Spec §7.4: 2 <= P*2^-b < sqrt(P). Too few bits floods every query with
+    candidates; too many make the index a near-unique fingerprint of the
+    value, which is the correlation §7.4 exists to bound."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(truncate_bits=4)])       # P*2^-b = 4096, > sqrt
+    assert "§7.4" in str(e.value)
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(truncate_bits=40)])      # P*2^-b far below 2
+
+
+def test_low_cardinality_is_refused_by_default():
+    """Spec §7.6 is default-deny: a column with few distinct values leaks its
+    distribution to anyone who can read the index."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(projected_population=256, truncate_bits=5)])
+    assert "§7.6" in str(e.value)
+
+
+def test_low_cardinality_passes_with_a_recorded_override():
+    fs = _client(indexes=[_decl(projected_population=256, truncate_bits=5,
+                                cardinality_override=OVERRIDE)])
+    assert fs.blind_index("alice@example.com", IDX_CTX)
+
+
+def test_declared_skew_is_gated_like_low_cardinality():
+    """Spec §7.6: a large but heavily skewed column leaks the same way."""
+    with pytest.raises(ConfigurationError):
+        _client(indexes=[_decl(skewed=True)])
+    assert _client(indexes=[_decl(skewed=True,
+                                  cardinality_override=OVERRIDE)])
+
+
+# -- docs/09 §7, declarations are resolved, not described at the call ---------
+
+def test_undeclared_index_is_a_configuration_error():
+    """Spec §7.8: an index the client was never told about cannot be derived
+    on demand -- that would be a column whose gates nobody ran."""
+    fs = _client(indexes=[_decl()])
+    with pytest.raises(ConfigurationError) as e:
+        fs.blind_index("x", CTX.for_index("never-declared"))
+    assert "declared at construction" in str(e.value)
+
+
+def test_blind_index_requires_an_index_purpose():
+    fs = _client(indexes=[_decl()])
+    with pytest.raises(InvalidArgument) as e:
+        fs.blind_index("x", CTX)
+    assert "for_index" in str(e.value)
+
+
+def test_duplicate_declarations_are_refused():
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(), _decl()])
+    assert "duplicate" in str(e.value)
+
+
+def test_unknown_idf_or_normalizer_is_refused_at_declaration():
+    """Fails closed at construction (docs/09 §3.3 step 2), naming the field
+    that is actually wrong rather than a downstream symptom."""
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(idf="md5")])
+    assert "idf" in str(e.value)
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(normalize="nope")])
+    assert "normalizer" in str(e.value)
+
+
+def test_index_id_grammar_is_checked_at_declaration():
+    with pytest.raises(ConfigurationError) as e:
+        _client(indexes=[_decl(index_id="Email_EQ")])
+    assert "§6.1" in str(e.value)

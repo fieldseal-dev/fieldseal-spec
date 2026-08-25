@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.2.0-provisional",
+  "vector_suite_version": "0.3.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -316,6 +316,37 @@
       }
     },
     {
+      "id": "blind-index/hmac-sha512/replacement-char-is-text-b15",
+      "description": "hmac-sha512 index over 'a�b@example.com' truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "hmac-sha512",
+      "idf_params": {},
+      "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "61efbfbd62406578616d706c652e636f6d",
+      "plaintext_preimage": "a�b@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "65ae9fa46c4f144befdad254fbb24794a5741468324e3edd1ad6032d0640ed0272e3392c3f52c905f20a4e0c7b547156443710baa51c7d602eb11ebf0e18211f",
+        "index": "65ae",
+        "stored": {
+          "binary": "65ae",
+          "hex": "65ae",
+          "octets": 2
+        }
+      }
+    },
+    {
       "id": "blind-index/hmac-sha512/normalizer-collapses-case",
       "description": "values differing only by case MUST produce the same index under the nfc-casefold-v1 normalizer",
       "spec_ref": "§7.2",
@@ -413,6 +444,67 @@
         "index_a": "96aa",
         "index_b": "96aa",
         "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/unindexable-marker-b15",
+      "description": "the docs/09 §7.2 reserved marker: truncate(IDF(index_key, 0xFF||'fieldseal-unindexable-v1'), 15)",
+      "spec_ref": "§7.2, §7.5; docs/09 §7.2",
+      "assertion": "unindexable-marker",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "hmac-sha512",
+        "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "email-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:email-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "reserved_preimage": "ff6669656c647365616c2d756e696e64657861626c652d7631",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "80a4",
+        "stored": {
+          "binary": "80a4",
+          "hex": "80a4",
+          "octets": 2
+        }
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/unindexable-bucketed-b15",
+      "description": "under on_unindexable=bucket, a value containing a code point the pin does not define derives the reserved marker instead of raising INVALID_ARGUMENT",
+      "spec_ref": "§7.2, §7.5, §10.2; docs/09 §7.2",
+      "assertion": "unindexable-bucket",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "hmac-sha512",
+        "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "email-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:email-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "on_unindexable": "bucket",
+        "plaintext_preimage": "a͸b@example.com",
+        "unassigned_code_point": "U+0378",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "80a4",
+        "equals_marker": true,
+        "on_unindexable_refuse": "INVALID_ARGUMENT"
       }
     }
   ],

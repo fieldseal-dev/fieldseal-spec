@@ -50,6 +50,17 @@ class FieldContext:
         return replace(self, purpose=f"index:{index_id}", row_id=None)
 
     @property
+    def index_id(self) -> str | None:
+        """The index-id this context names, or None for any other purpose.
+
+        `__post_init__` has already checked `purpose` against the §6.1
+        grammar, so anything carrying the prefix carries a well-formed id."""
+        prefix = "index:"
+        if not self.purpose.startswith(prefix):
+            return None
+        return self.purpose[len(prefix):]
+
+    @property
     def presence(self) -> int:
         bits = 0
         if self.tenant_id is not None:

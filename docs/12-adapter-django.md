@@ -142,3 +142,47 @@ Shipped in the package README, kept in sync with tests by generating both from o
 ## 9. Deliberate non-goals
 
 No transparent `row_id` binding (v0), no query support beyond `exact`/`in`/`isnull`, no admin search integration, no automatic tenant inference from the request (explicit contextvar only), no support for `Encrypted` on relational fields (`ForeignKey` stays plaintext — spec §7.10), no Django < 5.2 support.
+
+## 10. Unindexable values (docs/09 §7.2 — normative for this adapter)
+
+`encrypt` does not normalize and `blind_index` does, so a value containing a code point the pinned Unicode version does not define **stores but cannot be fingerprinted**. Every `Encrypted*` field carrying an index therefore declares `on_unindexable`, and the adapter's behaviour follows from it. This section is the obligation `docs/09` §7.1 refers to; it is normative for this adapter, and it is the reason `refuse` is a default rather than the only option.
+
+### 10.1 What the adapter does
+
+| `on_unindexable` | Write path | Query path |
+|---|---|---|
+| `refuse` (default) | `blind_index` raises `INVALID_ARGUMENT`; the field raises `ValidationError` from `to_python`/`get_prep_value` so the failure arrives as a **form error on that field**, not a 500 | A lookup for such a value raises the same `ValidationError` — never returns an empty queryset |
+| `bucket` | The sibling index column receives the column's reserved marker; the row saves | A lookup derives the same marker, matches the bucket, and §7.5 re-verification narrows — no adapter special-casing |
+
+`refuse` MUST surface as a field-level `ValidationError`, not as a generic 500 or a silently dropped index. A `ModelForm` then renders it beside the offending input, which is the only place the person who typed the value can act on it.
+
+### 10.2 The message (normative in shape, not in wording)
+
+"Unsupported character" fails every part of this. The message MUST:
+
+1. **Name the specific character and where it is.** The user cannot act on "somewhere in this field".
+2. **Put the fault on the system.** The value is not invalid — it is a name, and the system's tables are out of date. Wording that implies the user made a mistake is wrong on the facts.
+3. **Offer a route that ends with the real value stored.** A refusal with no escape hatch is a dead end for the person on the other side of it, which is why `refuse` and `bucket` are specified as a pair: `bucket` is the operator-applied escape hatch, not an alternative philosophy.
+
+```
+We can't save this name yet. Our systems don't recognise the character 𠮷
+(3rd character). This is a gap on our side, not a problem with your name —
+it's a recently added character we haven't added support for yet.
+
+[Save with a different spelling]   [Contact support — we can enter it manually]
+```
+
+The support path has to be real. "Contact support" is only honest if support can actually store the value, which means an operator can move that column to `bucket`, or store the row through a path that does not derive the index.
+
+### 10.3 Choosing per column
+
+The answer differs by column and a single rule is wrong somewhere:
+
+- **A login email** — `refuse`. An account that exists and cannot be found by its own login is worse than a rejected signup, and the value is machine-shaped: a character outside the pin in an email address almost always means something upstream is broken.
+- **A legal or display name** — `bucket`. Refusing a person's name is a hard failure for that person, and names are exactly where rare characters legitimately appear.
+
+`bucket` requires `unindexable_override={"reason": ..., "approved_by": ..., "date": ...}`, refused at model-definition time (E-series check) if absent — the same ceremony spec §7.6 requires to relax the cardinality gate, and for the same reason: it is a per-column relaxation of a default-deny rule, so it should be a recorded act rather than a setting that gets copied.
+
+### 10.4 What `bucket` costs, stated
+
+The marker is a real index value derived under the column's own index key, so it is not distinguishable *as* the marker without that key. But the bucket is an equivalence class that can grow far past §7.4's expected `P × 2^(−b)`, so it is **distinguishable by frequency**: an observer who can read the index column sees one unusually popular value and can infer that those rows share "contains a character outside the pin". The class is also **growable by anyone who can write to the column**, which makes lookups against it progressively more expensive — bounded by re-verification cost, not by anything cryptographic. A column where either is unacceptable keeps `refuse`. The adapter documents both in its README rather than only here.

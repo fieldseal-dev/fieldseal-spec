@@ -86,6 +86,14 @@ describe("decrypt is total over arbitrary bytes", () => {
       expect(decryptCode(bad as unknown as Uint8Array)).toBe("INVALID_ARGUMENT");
       expect(codeOf(() => c.encrypt(bad as unknown as Uint8Array, CTX))).toBe("INVALID_ARGUMENT");
       expect(codeOf(() => c.isCiphertext(bad as unknown as Uint8Array))).toBe("INVALID_ARGUMENT");
+    }
+    // `blindIndex` is the exception, deliberately: it takes text as well as
+    // bytes (docs/09 §7.1; G16 part A), because it is the one entry point
+    // where the difference between a string and its encoding is observable —
+    // `TextEncoder` would have already collapsed an unpaired surrogate to
+    // U+FFFD by the time bytes arrive. So a string is a *valid* input here,
+    // and only the values that are neither text nor bytes are argument errors.
+    for (const bad of [42, null, undefined, {}, [1, 2, 3]]) {
       expect(codeOf(() => c.blindIndex(bad as unknown as Uint8Array, { ...CTX, purpose: "index:exact" }))).toBe("INVALID_ARGUMENT");
     }
   });
