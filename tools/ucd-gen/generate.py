@@ -26,11 +26,25 @@ than the input.
 exiting non-zero if they differ; that is what CI runs so a hand-edited
 table cannot survive.
 
-Bumping the pin (17.0.0 -> 18.0.0) means: download the new UCD, change
-VERSION below, re-run, and re-run both cores' vector suites. The stored
-index values change for any input containing a code point whose folding or
-decomposition changed, which is why the pin is part of the normalizer id
-and a bump needs a new id (`nfc-casefold-v2`) rather than a silent update.
+Bumping the pin (17.0.0 -> 18.0.0) means: change VERSION below, re-run with
+`--download`, and re-run both cores' vector suites. The stored index values
+change for any input containing a code point whose folding or decomposition
+changed, which is why the pin is part of the normalizer id.
+
+Two things about a bump, both from docs/09 §7.1:
+
+*The version must be released, not merely numbered.* unicode.org answers the
+path of an unreleased version with a redirect to the moving draft, and
+downgrades to plaintext http on the way. `--download` refuses redirects for
+that reason, so a premature bump fails loudly here instead of quietly
+producing draft-derived tables labelled with a release number. If the fetch
+refuses with `UnsafeFetch`, the version is not out yet.
+
+*Whether the bump needs a new normalizer id depends on the freeze.* Before
+the format is frozen there are no stored values to preserve, so the pin moves
+by redefining `nfc-casefold-v1` in place. Afterwards the same move costs a new
+id (`nfc-casefold-v2`) and a planned re-index, because the id is the
+definition and every stored index value changes.
 """
 
 from __future__ import annotations
@@ -268,19 +282,82 @@ UCD_FILES = ("CaseFolding.txt", "UnicodeData.txt", "DerivedNormalizationProps.tx
 UCD_URL = "https://www.unicode.org/Public/%s/ucd/%s"
 
 
-def download(dest: str) -> str:
-    """Fetch the pinned version's UCD files. Used by CI so the repository can
-    carry the generated tables rather than the larger sources."""
+class UnsafeFetch(Exception):
+    """A UCD fetch that would not be reproducible, or would not be authenticated.
+
+    Raised rather than warned about. These three files decide every blind
+    index value both cores produce; a table built from the wrong bytes is a
+    silent lookup divergence, which is precisely the failure the pin exists
+    to remove (docs/09 §7.1).
+    """
+
+
+def _refuse_redirects():
+    """An opener that treats any redirect as a failed fetch.
+
+    unicode.org serves the path of a version that is *not yet released* as a
+    redirect to the draft. Measured 2026-08-25, all three files:
+
+        https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt
+            -> 302 -> http://www.unicode.org/Public/draft/ucd/UnicodeData.txt
+
+    `urllib` follows both the redirect and the `https` -> `http` downgrade by
+    default. So bumping VERSION before the release would fetch a draft that
+    is still moving, generate tables from it, label them with the release
+    number, and -- because the old code printed the URL it *asked* for -- log
+    a fetch that never happened. The next draft revision would then fail
+    `--check` in CI with nothing to explain why.
+
+    A redirect here therefore has exactly one meaning worth acting on: the
+    pinned version is not published yet. Refusing says so.
+    """
     import urllib.request
+
+    class _Handler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise UnsafeFetch(
+                "%s redirected (HTTP %s) to %s -- unicode.org redirects the path of a "
+                "version it has not released yet to the draft, which is a moving "
+                "target. The pin must name a published version; if %s has since been "
+                "released this will stop redirecting."
+                % (req.full_url, code, newurl, VERSION))
+
+    return urllib.request.build_opener(_Handler)
+
+
+def download(dest: str, opener=None) -> str:
+    """Fetch the pinned version's UCD files, refusing any fetch whose result
+    would not be reproducible. Used by CI so the repository can carry the
+    generated tables rather than the larger sources.
+
+    `opener` is injectable so the guards can be tested without the network.
+    """
+    if opener is None:
+        opener = _refuse_redirects()
 
     os.makedirs(dest, exist_ok=True)
     for name in UCD_FILES:
         url = UCD_URL % (VERSION, name)
-        with urllib.request.urlopen(url, timeout=120) as r:  # noqa: S310
+        if not url.startswith("https://"):
+            raise UnsafeFetch(
+                "refusing to fetch %s: the UCD must come over HTTPS. There is no "
+                "published digest to check these files against, so the transport is "
+                "the only thing authenticating them." % url)
+        with opener.open(url, timeout=120) as r:  # noqa: S310
+            served = r.url
             body = r.read()
+        # Belt and braces. The handler above should have refused already; this
+        # catches a redirect that reached us by some other route, and it is the
+        # reason the line below can print the URL the bytes actually came from
+        # rather than the one we asked for.
+        if served != url:
+            raise UnsafeFetch(
+                "asked for %s but the response came from %s; refusing to generate "
+                "tables from bytes that are not at the pinned version's URL."
+                % (url, served))
         with open(os.path.join(dest, name), "wb") as fh:
             fh.write(body)
-        print("fetched %s (%d bytes)" % (url, len(body)))
+        print("fetched %s (%d bytes)" % (served, len(body)))
     return dest
 
 

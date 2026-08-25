@@ -24,7 +24,8 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("FIELDSEAL_TEST_MODE", "1")
 
-from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal import FieldContext, Fieldseal, IndexDeclaration  # noqa: E402
+from fieldseal.blindindex import NORMALIZERS  # noqa: E402
 from fieldseal.envelope import (  # noqa: E402
     MAX_PLAINTEXT,
     MIN_ENVELOPE_LEN,
@@ -55,6 +56,16 @@ DEK = bytes(range(32))
 INDEX_KEY = bytes(range(32, 64))
 CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
                    purpose="encrypt", tenant_id=b"t1")
+
+
+def _decl(index_id: str = "email-eq", normalize: str = "nfc-casefold-v1",
+          truncate_bits: int = 15, **kw) -> IndexDeclaration:
+    d = dict(table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+             index_id=index_id, idf="hmac-sha512", normalize=normalize,
+             truncate_bits=truncate_bits,
+             projected_population=2 ** (truncate_bits + 1))
+    d.update(kw)
+    return IndexDeclaration(**d)
 
 
 def _client(read_mode: str = "strict", provider=None, **kw) -> Fieldseal:
@@ -369,39 +380,46 @@ def test_testing_seam_runs_the_same_boundary(monkeypatch):
 # -- blind indexes: normalizers are portability surface (docs/09 §7) ------------
 
 def test_bytes_in_equals_text_in_for_the_text_normalizer():
-    fs = _client()
-    kw = dict(index_id="email-eq", b_bits=15, idf="hmac-sha512")
-    assert (fs.blind_index("Alice@Example.com", CTX, **kw)
-            == fs.blind_index(b"Alice@Example.com", CTX, **kw)
-            == fs.blind_index("alice@example.com", CTX, **kw))
+    fs = _client(indexes=[_decl()])
+    ctx = CTX.for_index("email-eq")
+    assert (fs.blind_index("Alice@Example.com", ctx)
+            == fs.blind_index(b"Alice@Example.com", ctx)
+            == fs.blind_index("alice@example.com", ctx))
 
 
 def test_invalid_utf8_is_refused_not_folded():
     """Replacement characters would map distinct invalid inputs onto one index
     value (docs/18 D-10(d))."""
+    fs = _client(indexes=[_decl()])
     with pytest.raises(InvalidArgument):
-        _client().blind_index(b"\xff\xfe", CTX, index_id="email-eq",
-                              b_bits=15, idf="hmac-sha512")
+        fs.blind_index(b"\xff\xfe", CTX.for_index("email-eq"))
 
 
 def test_identity_and_digits_only_normalizers():
-    fs = _client()
-    kw = dict(index_id="ssn-eq", b_bits=16, idf="hmac-sha512")
-    assert (fs.blind_index("123-45-6789", CTX, normalizer="digits-only-v1", **kw)
-            == fs.blind_index(b"123456789", CTX, normalizer="identity", **kw))
+    """`digits-only-v1` strips to exactly what `identity` would see for the
+    same digits. Asserted on the normalizers themselves: two declarations on
+    one column need distinct index-ids, and the index key is derived from the
+    index-id (spec §7.2), so the same preimage under two declarations no
+    longer produces the same index value -- by design."""
+    assert (NORMALIZERS["digits-only-v1"]("123-45-6789")
+            == NORMALIZERS["identity"](b"123456789") == b"123456789")
+    fs = _client(indexes=[_decl("ssn-digits", "digits-only-v1", 16),
+                          _decl("ssn-raw", "identity", 16)])
+    assert fs.blind_index("123-45-6789", CTX.for_index("ssn-digits"))
     # identity never decodes, so invalid UTF-8 is fine there.
-    assert fs.blind_index(b"\xff\xfe", CTX, normalizer="identity", **kw)
+    assert fs.blind_index(b"\xff\xfe", CTX.for_index("ssn-raw"))
 
 
 def test_unknown_idf_or_normalizer_fails_closed():
-    fs = _client()
+    """docs/09 §3.3 step 2: refused where the index is declared, so a column
+    the spec cannot express never reaches a key derivation."""
     with pytest.raises(ConfigurationError):
-        fs.blind_index("x", CTX, index_id="e", b_bits=8, idf="md5")
+        _client(indexes=[_decl(idf="md5")])
     with pytest.raises(ConfigurationError):
-        fs.blind_index("x", CTX, index_id="e", b_bits=8, idf="hmac-sha512",
-                       normalizer="nfc-casefold")  # the unversioned name
+        # the unversioned name
+        _client(indexes=[_decl(normalize="nfc-casefold")])
     with pytest.raises(ConfigurationError):
-        fs.blind_index("x", CTX, index_id="e", b_bits=0, idf="hmac-sha512")
+        _client(indexes=[_decl(truncate_bits=0)])
 
 
 def test_index_derivation_never_sees_the_dek():
@@ -413,11 +431,10 @@ def test_index_derivation_never_sees_the_dek():
         def decryption_keys(self, header):
             return []
 
-    fs = _client(provider=Strict())
+    fs = _client(provider=Strict(), indexes=[_decl()])
     ctx = FieldContext(bytes(16), bytes(range(16)), tenant_id=b"t1",
                        row_id=b"row-7")
-    assert fs.blind_index("a", ctx, index_id="email-eq", b_bits=8,
-                          idf="hmac-sha512")
+    assert fs.blind_index("a", ctx.for_index("email-eq"))
 
 
 # -- totality (docs/08 §4.6 first row; docs/18 D-02) ------------------------------

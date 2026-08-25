@@ -67,12 +67,43 @@ Required UCD files: `CaseFolding.txt`, `UnicodeData.txt`,
 ## Bumping the pin
 
 Changing the Unicode version changes stored index values for any input
-containing a character whose folding or decomposition changed. That is a
-breaking change to a normalizer, so it needs **a new normalizer id**
-(`nfc-casefold-v2`) and a re-index, not a silent table update — see
-`docs/09` §7.1 clause 1.
+containing a character whose folding or decomposition changed. What that
+costs depends on **when** — `docs/09` §7.1's *Pin currency* rule has two
+regimes, split by the format freeze:
 
-The steps: download the new UCD, change `VERSION` in `generate.py`, re-run,
-add the new id to the normalizer set in both cores and the generator, and
-regenerate the vector suite. Keep the old id working for as long as stored
+**Before freeze (where the project is now).** `nfc-casefold-v1` tracks the
+most recent *released* Unicode version and the pin moves **in place**. There
+are no stored values to preserve and the vector suite is provisional, so the
+whole cost is a regenerated `blind-index/` family. Steps: change `VERSION`
+below, run with `--download`, re-run both cores' vector suites, regenerate
+the vector suite. No new id, no migration.
+
+**After freeze.** The same move needs **a new normalizer id**
+(`nfc-casefold-v2`) and a planned re-index, because the id *is* the
+definition. Additional steps: add the new id to the normalizer set in both
+cores and the generator, and keep the old id working for as long as stored
 values under it exist.
+
+The cost jumps at the freeze rather than rising with stored rows, so a bump
+that is nearly free today is not deferrable cheaply.
+
+### The version has to be released, not just numbered
+
+unicode.org serves the path of an **unreleased** version as a redirect to the
+moving draft, and downgrades to plaintext HTTP doing it. Measured 2026-08-25:
+
+```
+https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt   200
+https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt   302
+    -> http://www.unicode.org/Public/draft/ucd/UnicodeData.txt
+```
+
+`--download` refuses redirects, refuses non-HTTPS hops, and checks that the
+URL that answered is the URL asked for. So a premature bump fails loudly with
+`UnsafeFetch` instead of quietly generating draft-derived tables labelled with
+a release number — which would reproduce differently on the next draft
+revision and fail `--check` in CI with nothing to explain it. **If the fetch
+refuses, the version is not out yet.**
+
+`test_generate.py` holds those guards and runs offline; CI runs it before the
+regeneration step.

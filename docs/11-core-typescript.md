@@ -69,13 +69,15 @@ const fs = new Fieldseal({
 
 fs.encrypt(pt: Uint8Array, ctx: FieldContext): Buffer      // sync
 fs.decrypt(ct: Uint8Array, ctx: FieldContext): Buffer      // sync
-fs.blindIndex(pt: Uint8Array, ctx: FieldContext): Buffer   // sync
+fs.blindIndex(v: string | Uint8Array, ctx: FieldContext): Buffer  // sync; text OR bytes
 fs.isCiphertext(v: Uint8Array): boolean                    // sync
 fs.rotate(ct: Uint8Array, ctx: FieldContext): Buffer       // sync
 await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async method
 ```
 
-- Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are never accepted** — encoding is the adapter's job (docs/09 §5), and an implicit `utf8` coercion here is exactly the kind of cross-language divergence the vectors exist to catch.
+- Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are not accepted — except by `blindIndex`, which requires them** (docs/09 §7.1; G16 part A). An implicit `utf8` coercion on the *envelope* operations would be exactly the cross-language divergence the vectors exist to catch, and that reasoning still holds for `encrypt`, `decrypt`, `rotate` and `isCiphertext`. It does not hold for index derivation, and inverting there was the point of G16 part A: `TextEncoder` substitutes U+FFFD for an unpaired surrogate rather than failing, so a caller who encodes first has already collapsed two distinct values into one before this core is entered. Passing the string keeps the refusal where the information still exists. This core previously refused strings with a message directing callers to encode themselves, which named the lossy conversion as the supported route.
+- **The `encrypt`/`blindIndex` asymmetry is intended.** Normalization is a text operation; encryption is not. Index derivation is the only operation whose answer depends on the difference between a string and its encoding, so it is the only one that needs to see the string. The Python core has had the same asymmetry (`encrypt(plaintext: bytes)` against `blind_index(value: str | bytes)`) since it was written; this core now matches it rather than diverging from it.
+- Well-formed text and its own encoding must produce the same index — the widening must not fork the function. `tests/index-boundary.test.ts` pins that, together with the distinguishable refusal of two different unpaired surrogates.
 - Deviation from docs/09 §2's config sketch: there is **no client-level `cache` field**. The §5.5 cache policy is `EnvelopeKeyProvider`'s own required `cache` option (docs/09 §2's "required for EnvelopeKeyProvider", enforced at provider construction); a `cache` key present in the client config is refused with a `ConfigurationError` rather than accepted and ignored.
 - Errors: `FieldsealError` subclasses, each with `code` matching the §9 strings (`"TAG_INVALID"`, …) for the vector harness mapping.
 - Method naming is the docs/09 §12 casing rule applied: `blindIndex`/`isCiphertext` are the camelCase renderings of the fixed operation names.

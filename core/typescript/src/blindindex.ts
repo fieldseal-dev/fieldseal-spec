@@ -129,7 +129,37 @@ export interface IndexDeclaration {
   readonly cardinalityOverride?: CardinalityOverride;
   /** Declares the column as heavily skewed (spec §7.6); gated like low cardinality. */
   readonly skewed?: boolean;
+  /**
+   * What happens to a value the normalizer refuses — one containing a code
+   * point the pinned Unicode version does not define (docs/09 §7.2).
+   *
+   * `"refuse"` (default) propagates `InvalidArgumentError`, so an adapter
+   * deriving an index on write fails the write. `"bucket"` returns this
+   * column's reserved marker instead, keeping the row findable: the same
+   * marker is derived on lookup, and spec §7.5 re-verification narrows the
+   * candidates. Storing *no* index is not an option — that is the silent
+   * missing row spec §10.2 forbids.
+   */
+  readonly onUnindexable?: OnUnindexable;
+  /** Required when `onUnindexable` is `"bucket"`; same shape §7.6 requires. */
+  readonly unindexableOverride?: CardinalityOverride;
 }
+
+export type OnUnindexable = "refuse" | "bucket";
+
+/**
+ * Normalizers that can refuse an otherwise-storable value (docs/09 §7.2).
+ * Only these make `onUnindexable` meaningful: `identity` and `digits-only-v1`
+ * consult no Unicode table and have nothing to refuse.
+ */
+export const REFUSING_NORMALIZERS: ReadonlySet<NormalizerId> = new Set<NormalizerId>(["nfc-casefold-v1"]);
+
+/**
+ * docs/09 §7.2. The leading 0xFF can never appear in UTF-8, so no input
+ * `nfc-casefold-v1` accepts can normalize to this preimage: the marker cannot
+ * collide with a real value by construction rather than by luck.
+ */
+export const UNINDEXABLE_PREIMAGE: Uint8Array = new Uint8Array([0xff, ...Buffer.from("fieldseal-unindexable-v1", "ascii")]);
 
 export interface ValidatedIndex {
   readonly key: string;
@@ -140,6 +170,7 @@ export interface ValidatedIndex {
   readonly truncateBits: number;
   readonly projectedPopulation: number;
   readonly overridden: boolean;
+  readonly onUnindexable: OnUnindexable;
 }
 
 export const CARDINALITY_GATE = 1 << 10;
@@ -218,6 +249,30 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
     }
     overridden = true;
   }
+  // docs/09 §7.2. Relaxing a default-deny rule on a column is a reviewed,
+  // recorded act — deliberately the same ceremony §7.6 requires above, so
+  // that `bucket` cannot become a setting copied between columns.
+  const onUnindexable: OnUnindexable = d.onUnindexable ?? "refuse";
+  if (onUnindexable !== "refuse" && onUnindexable !== "bucket") {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: onUnindexable must be "refuse" or "bucket", got ${JSON.stringify(onUnindexable)}`,
+    );
+  }
+  if (onUnindexable === "bucket") {
+    if (!REFUSING_NORMALIZERS.has(d.normalize)) {
+      // The setting could never take effect, and accepting it silently would
+      // misrepresent the column as protected.
+      throw new ConfigurationError(
+        `index declaration ${indexId}: onUnindexable="bucket" is meaningless for normalizer "${d.normalize}", which never refuses a value; only ${[...REFUSING_NORMALIZERS].join(", ")} can`,
+      );
+    }
+    const u = d.unindexableOverride;
+    if (u === undefined || !u.reason || !u.approvedBy || !u.date) {
+      throw new ConfigurationError(
+        `index declaration ${indexId}: onUnindexable="bucket" stores unindexable rows under a reserved marker that is distinguishable by frequency (docs/09 §7.2); an explicit unindexableOverride {reason, approvedBy, date} is required`,
+      );
+    }
+  }
   return {
     key: indexRegistryKey(d.tableUuid, d.columnUuid, indexId),
     indexId,
@@ -227,5 +282,6 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
     truncateBits: b,
     projectedPopulation: P,
     overridden,
+    onUnindexable,
   };
 }

@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/context/v1",
-  "vector_suite_version": "0.2.0-provisional",
+  "vector_suite_version": "0.3.0-provisional",
   "group": "context",
   "spec_version": "0.1-draft",
   "status": "pinned",

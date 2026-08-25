@@ -194,6 +194,8 @@ IndexDeclaration {
     truncate_bits    : b                        // §7.4 band; both b and projected P recorded
     projected_population : P                    // ≥ 16; recorded per SP-10
     cardinality_override : { reason, approved_by, date } | absent   // §7.6 logged override
+    on_unindexable   : refuse | bucket          // §7.2; default `refuse`
+    unindexable_override : { reason, approved_by, date } | absent   // required for `bucket`
 }
 ```
 
@@ -211,7 +213,18 @@ The identifier *is* the definition: two cores that compute different bytes for t
 
 *Why refuse rather than pass through.* The refusal is what makes the pin exact rather than aspirational. Unicode's Strong Normalization Stability policy (4.1+) guarantees that a string composed only of characters assigned in version *V* normalizes identically under every conforming implementation at *V* or later. Restricting input to 17.0.0-assigned characters therefore buys agreement with every future version, for free. Accepting an unassigned code point buys the opposite: its combining class and decomposition are not yet fixed, so a core built against a later UCD would order and compose it differently — and would do so silently. A visible refusal is the better failure.
 
-*The cost, stated.* A value containing a character encoded after Unicode 17.0.0 cannot be indexed until the pin moves, and moving the pin means a new identifier (`nfc-casefold-v2`) and a re-index, because stored values change. Refusal is scoped to index derivation: `encrypt` does not normalize, so such a value can still be stored — but an adapter that derives an index on every write will fail that write rather than store a row its own queries cannot find. **Which of those an adapter should do is a product decision this document does not make**; it is recorded in §12 of `docs/12` and `docs/13` as an adapter obligation to state explicitly.
+*The cost, stated.* A value containing a character encoded after Unicode 17.0.0 cannot be indexed until the pin moves, and what moving the pin costs depends on when it happens — see *Pin currency* below. Refusal is scoped to index derivation: `encrypt` does not normalize, so such a value can still be stored — but an adapter that derives an index on every write will fail that write rather than store a row its own queries cannot find. **Which of those an adapter should do is a product decision this document does not make** — it is **G16** (`docs/issues/G16-index-boundary-and-unicode-pin.md`, part B), whose direction is a per-column `IndexDeclaration.on_unindexable` defaulting to refusal. Until G16 closes, neither `docs/12` nor `docs/13` carries the obligation: an earlier version of this paragraph cited "§12" of each, and no such section exists in either.
+
+***Pin currency (normative).*** Unicode publishes a version roughly every September, so a pin with no policy behind it drifts by default and the project ships one version behind on its own launch day. The rule has two regimes, divided by the format freeze (PRD §8, Gate 0b):
+
+- **Before freeze**, `nfc-casefold-v1` **tracks the most recent *released* Unicode version**, and the pin moves by **redefining `v1` in place**. This is legitimate only here: there are no stored index values to preserve, no frozen suite identifier naming the construction, and the vector suite is provisional, so a redefinition costs a regenerated `blind-index/` family and nothing else. A pin bump before freeze SHOULD therefore happen as soon as a release is available.
+- **After freeze**, the same move MUST mint a new identifier (`nfc-casefold-v2`) and MUST be accompanied by a planned re-index. The identifier *is* the definition (§7 preamble), so redefining `v1` in place would silently change what every existing stored value means — two cores at different versions would agree on the name and disagree on the bytes, which is the precise failure this section exists to prevent.
+
+The cost of a bump therefore rises discontinuously at the freeze, not gradually with stored data. **Deferring a bump past the freeze is a decision to keep the older pin permanently, or to pay for a new identifier and a migration later.**
+
+*A released version, not merely a numbered one.* A bump MUST be to a version unicode.org has **published**, and an implementation generating its tables MUST fail rather than fetch a version path that redirects. Measured 2026-08-25, `https://www.unicode.org/Public/18.0.0/ucd/` answered `302` to `http://www.unicode.org/Public/draft/ucd/` for all three consumed files — an unreleased version's path is served as the *moving* draft, and over plaintext HTTP at that. A generator following that redirect produces tables from a draft, labels them with a release number, and cannot reproduce them a week later. `tools/ucd-gen/generate.py` refuses redirects, refuses non-HTTPS hops, and verifies that the URL that answered is the URL requested; `tools/ucd-gen/test_generate.py` holds those guards and runs in CI. This is a build-integrity requirement rather than a portability one, but it fails the same way if ignored: a wrong table is a silent lookup miss.
+
+*Status.* The pin is 17.0.0, which is the current release. Unicode 18.0 is in draft with a stated September 2026 target; under the rule above it is adopted once released, in place, provided the freeze has not happened first. Recorded as G16 part C (`docs/issues/G16-index-boundary-and-unicode-pin.md`, tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60)).
 
 **2. Folding: `CaseFolding-17.0.0.txt`, statuses C and F only**, applied per code point. No `T` (Turkic) mappings: they make the result depend on the caller's locale, and a blind index has no locale. No `S`, which `F` supersedes wherever both exist. This is "full case folding" as UAX #44 defines it — `ß` folds to `ss`, not to `ß`.
 
@@ -233,11 +246,58 @@ NFC( toCasefold( NFC( X ) ) )
 
 **5. Bytes input is decoded as strict UTF-8** before clause 1; a decoding failure is `INVALID_ARGUMENT`. Decoding with replacement characters would map distinct malformed inputs onto one index value, which is a false-match primitive rather than a leniency. A text-typed API (Python `str`, JavaScript `string`) reaches clause 1 directly.
 
-> **Where the refusal has to live.** A core whose index API accepts only bytes cannot enforce the lone-surrogate case: `TextEncoder` and its equivalents substitute U+FFFD rather than failing, and U+FFFD is an assigned character, so the core sees well-formed UTF-8 and two distinct lone surrogates reach the same index. The refusal belongs at whatever boundary accepts text. A core that accepts bytes only MUST expose the assigned-code-point check (the TypeScript core exports `firstUnassigned`) and an adapter encoding on the core's behalf MUST apply it before encoding.
+> **Where the refusal has to live (normative).** **An index-derivation API MUST accept the language's text type**, not bytes alone — Python `str`, JavaScript `string`, Java `String`, .NET `string`, Go `string`. A caller MAY still pass bytes, which clause 5 decodes strictly.
+>
+> The reason is that the encoding step is lossy in one direction only, and in the direction that matters. `TextEncoder` and its equivalents substitute U+FFFD for an unpaired surrogate rather than failing (WHATWG Encoding requires it), and U+FFFD is an assigned character, so a core that receives only bytes sees well-formed UTF-8 and cannot tell. Two distinct malformed values reach one index. That is a false match manufactured inside the construction whose purpose is to prevent them, and it is invisible to the vectors and to the conformance report, because the collision happens before the core is called.
+>
+> An earlier version of this section put the obligation on the caller instead — "a core that accepts bytes only MUST expose the assigned-code-point check, and an adapter encoding on the core's behalf MUST apply it before encoding." That is unenforceable: it is advice to a frame the core cannot inspect, a missed call raises no error and fails no test, and integrations the project does not write are outside its reach. It was also actively countermanded in one core, whose refusal message told callers that encoding was the adapter's job and thereby named the substituting conversion as the way in. Accepting text does not merely add a backstop behind that path; it removes the trap, because the safe call becomes the obvious one.
+>
+> Cores MUST still export the assigned-code-point check (`first_unassigned` / `firstUnassigned`) for adapters that hold the text earlier and can give a better-sited error, and clause 5's strict decode still governs the bytes path. Neither is the mechanism any longer.
+>
+> *A note on the resulting asymmetry.* `encrypt` remains bytes-only while `blind_index` takes text. This is deliberate and is not to be tidied away: normalization is a text operation and encryption is not, so index derivation is the only place where the difference between a string and its encoding changes the answer. The Python core has had exactly this asymmetry since it was written.
+>
+> *Rejecting U+FFFD outright was considered and declined.* It is an assigned character that legitimately occurs in text; refusing it would convert this false match into an unindexable row, which is the failure mode of `on_unindexable` below. It would also catch only one symptom of one cause — the same naive truncation can cut between a base character and its combining marks, or mid-grapheme in a legitimately composed name, producing text that is valid and merely wrong. It remains available as an opt-in per-column data-quality check, and is not part of the normalizer.
 
 Custom normalizers are out: a deployment-defined normalizer is a portability break by definition. New normalizers go through the same process as suites (spec change + vectors).
 
 `index_id` is validated against the spec §6.1 `index-id` grammar at declaration time and rejected as a `ConfigurationError` if it fails — fail closed, before any derivation string is built. This is construction-time validation, so it has no §9 error code (docs/09 §9); the `context/` vector family pins the refusals (docs/08 §4.3).
+
+### 7.2 Unindexable values: `on_unindexable` (normative)
+
+`encrypt` does not normalize and `blind_index` does, so the two operations disagree about what they can accept. A value containing a code point the pin does not define **encrypts perfectly well and cannot be fingerprinted** (§7.1 clause 1). That leaves an adapter with a choice no earlier version of this document made: fail the write, or store a row that its own queries can never find.
+
+Neither horn is acceptable as a global default. A required, searched-on column — a login email — is worse unfindable than un-writable. A column holding a person's name is the opposite: refusing it is a hard failure for that person, and "your name is unsupported" is not a message any product wants to send. **`on_unindexable` is therefore declared per column**, because the right answer differs per column and a single rule is wrong somewhere.
+
+```
+on_unindexable = refuse   (default)
+    Index derivation raises INVALID_ARGUMENT (§7.1 clause 1, unchanged).
+    An adapter deriving an index on write fails the write.
+
+on_unindexable = bucket
+    Index derivation returns the declaration's `unindexable_marker`
+    instead of raising. The row is stored and remains findable.
+```
+
+**The marker (normative).** `bucket` MUST NOT store *no* index — an absent index value is the silent-missing-row failure this whole section exists to prevent, and spec §10.2 forbids it by name. Instead the value is derived, exactly like any other index value:
+
+```
+RESERVED_PREIMAGE  = 0xFF || "fieldseal-unindexable-v1"      (25 bytes)
+unindexable_marker = truncate(IDF(index_key, RESERVED_PREIMAGE), b)
+```
+
+Two properties do the work. The leading `0xFF` **can never appear in UTF-8**, so no input `nfc-casefold-v1` accepts can normalize to this preimage: the marker cannot collide with a real value by construction rather than by luck. And because it is derived under the column's own `index_key`, it is a per-column, per-tenant value that **looks like every other index value** to anyone reading the column. A fixed constant — all-zero bytes, say — would announce to an observer with no key exactly which rows hold a character the pin does not define.
+
+**Why this needs nothing from the query path.** The marker is returned on *lookup* as well as on write, because the same value normalizes the same way whichever direction it is travelling. So a query for an unindexable value derives the marker, matches the bucketed rows, and spec §7.5 re-verification — already mandatory and unconditional for every index hit — decrypts the candidates and keeps the ones that actually match. A query for an *indexable* value derives an ordinary index value and never touches the bucket, since a bucketed row by definition contains a character no accepted value can contain.
+
+> This is a correction to how the mechanism was first described in G16 part B, which had every indexed lookup additionally probe the marker. That is unnecessary and strictly worse: it doubles every query's candidate set to no purpose and widens the leak below. Equality lookup already works, because the bucket is not a special case in the query path — it is one more collision class in an index that spec §7.4 *mandates* collisions in.
+
+**The cost, stated.** The bucket is an equivalence class that can grow far larger than §7.4's expected `P × 2^(−b)`, so it is **distinguishable by frequency**: an observer who can read the index column sees one value that is unusually popular, and can infer that those rows share the property "contains a character outside the pin". That observer cannot tell *which* character, cannot compute the marker without the index key, and learns nothing about any other column. The class is also **growable by anyone who can write to the column**, so a hostile writer can inflate it and make lookups against it progressively more expensive — bounded by §7.5 re-verification cost, not by anything cryptographic. A column where either property is unacceptable keeps `refuse`.
+
+**Declaring `bucket` requires the §7.6 ceremony.** `unindexable_override` MUST carry `{ reason, approved_by, date }`, refused as a `ConfigurationError` if absent. This is deliberately the same shape spec §7.6 already requires to relax the cardinality gate: relaxing a default-deny rule on a column is a reviewed, recorded act, not a configuration default that gets copied between columns. A declaration whose normalizer can never refuse (`identity`, `digits-only-v1` — neither consults a Unicode table) is also a `ConfigurationError` under `bucket`: the setting could never take effect, and silently accepting it would misrepresent the column as protected.
+
+**What `refuse` obliges the adapter to do.** A refusal is only humane if the value can still be stored by *someone*, so `refuse` and `bucket` are specified as a pair: `bucket` is the escape hatch behind the refusal, applied per column by an operator, not a dead end. `docs/12` §10 and `docs/13` §9 carry the resulting adapter obligation and the shape of the message — including the three rules a refusal message must satisfy: name the character and its position, put the fault on the system, and offer a route that ends with the real value stored.
+
+**Vectors.** The marker's *bytes* are pinned, not merely its behaviour: two cores deriving different markers would put their unindexable rows in two different buckets, and a lookup across them would silently return nothing — the failure this setting exists to prevent, reintroduced by the fix. `blind-index/` carries `unindexable-marker-b15` (the derivation) and `unindexable-bucketed-b15` (that a refused value lands on it, and that `refuse` still refuses), from suite `0.3.0-provisional`.
 
 ## 8. Key providers and cache
 
@@ -290,7 +350,8 @@ On async: the five operations are synchronous in every core, and that is not neg
 
 | Concern | Rule |
 |---|---|
-| Public operation names | `encrypt`, `decrypt`, `blind_index`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
+| Public operation names | `encrypt`, `decrypt`, `blind_index`, `unindexable_marker`, `is_ciphertext`, `rotate`, `warm` — snake_case or the language's casing of the same words; no synonyms |
+| Index parameters | supplied by the `IndexDeclaration` given at construction (§7), never as arguments to `blind_index`. The §7.4 band and the §7.6 cardinality gate are properties of a column, so they are checked once, where the column is declared, and a declaration that fails never reaches a key derivation |
 | Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · future cores: idiomatic byte type |
 | FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
 | Error codes | identical strings to §9, exposed as a machine-readable `code` property |

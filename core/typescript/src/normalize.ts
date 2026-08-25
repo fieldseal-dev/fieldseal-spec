@@ -29,15 +29,58 @@ export function isNormalizerId(s: string): s is NormalizerId {
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const utf8Encoder = new TextEncoder();
 
-export function normalizeNfcCasefoldV1(input: Uint8Array): Uint8Array {
+/**
+ * UTF-8 encode, refusing an unpaired surrogate instead of substituting for it.
+ *
+ * `TextEncoder` is required by WHATWG Encoding to emit U+FFFD for an unpaired
+ * surrogate rather than to fail, so `encode("a\uD800b")` and `encode("a\uDC00b")`
+ * are the same three code points and the same five bytes. Two distinct values,
+ * one index: a false-match primitive in the feature built to prevent false
+ * matches (docs/09 §7.1, G16 part A).
+ *
+ * The realistic source is not an attacker. It is fixed-length truncation of a
+ * JavaScript string, whose naive form splits surrogate pairs — which is most
+ * emoji and every supplementary-plane script.
+ */
+export function encodeUtf8Strict(text: string): Uint8Array {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = text.charCodeAt(i + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) {
+        throw new InvalidArgumentError(
+          `value contains an unpaired high surrogate U+${unit.toString(16).toUpperCase()} at index ${i}; ` +
+            "it has no UTF-8 encoding, and encoding it as U+FFFD would give distinct values the same index",
+        );
+      }
+      i++; // a well-formed pair; skip its low half
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new InvalidArgumentError(
+        `value contains an unpaired low surrogate U+${unit.toString(16).toUpperCase()} at index ${i}; ` +
+          "it has no UTF-8 encoding, and encoding it as U+FFFD would give distinct values the same index",
+      );
+    }
+  }
+  return utf8Encoder.encode(text);
+}
+
+export function normalizeNfcCasefoldV1(input: string | Uint8Array): Uint8Array {
   let text: string;
-  try {
-    text = utf8Decoder.decode(input);
-  } catch {
-    // Decoding with replacement characters would map distinct malformed
-    // inputs onto one index value, which is a false-match primitive rather
-    // than a leniency (docs/09 §7).
-    throw new InvalidArgumentError("nfc-casefold-v1 requires valid UTF-8 input; refusing to normalize undecodable bytes");
+  if (typeof input === "string") {
+    // A text-typed input reaches clause 1 directly (docs/09 §7.1 clause 5).
+    // Nothing has been lost yet, so the lone-surrogate case is still visible:
+    // `firstUnassigned` counts surrogates as unassigned, and reports *which*
+    // one, so two distinct malformed values stay distinguishable.
+    text = input;
+  } else {
+    try {
+      text = utf8Decoder.decode(input);
+    } catch {
+      // Decoding with replacement characters would map distinct malformed
+      // inputs onto one index value, which is a false-match primitive rather
+      // than a leniency (docs/09 §7).
+      throw new InvalidArgumentError("nfc-casefold-v1 requires valid UTF-8 input; refusing to normalize undecodable bytes");
+    }
   }
   const stray = firstUnassigned(text);
   if (stray !== undefined) {
@@ -65,19 +108,23 @@ export function normalizeNfcCasefoldV1(input: Uint8Array): Uint8Array {
   return utf8Encoder.encode(nfc(caseFoldFull(nfc(text))));
 }
 
-export function normalizeDigitsOnlyV1(input: Uint8Array): Uint8Array {
+export function normalizeDigitsOnlyV1(input: string | Uint8Array): Uint8Array {
+  const bytes = typeof input === "string" ? encodeUtf8Strict(input) : input;
   let n = 0;
-  for (const b of input) if (b >= 0x30 && b <= 0x39) n++;
+  for (const b of bytes) if (b >= 0x30 && b <= 0x39) n++;
   const out = new Uint8Array(n);
   let o = 0;
-  for (const b of input) if (b >= 0x30 && b <= 0x39) out[o++] = b;
+  for (const b of bytes) if (b >= 0x30 && b <= 0x39) out[o++] = b;
   return out;
 }
 
-export function normalize(id: NormalizerId, input: Uint8Array): Uint8Array {
+export function normalize(id: NormalizerId, input: string | Uint8Array): Uint8Array {
   switch (id) {
     case "identity":
-      return input;
+      // `identity` is byte-transparent, so text is simply its UTF-8 encoding —
+      // but strictly, since substituting for an unpaired surrogate here would
+      // reintroduce the collision `nfc-casefold-v1` refuses (docs/09 §7.1).
+      return typeof input === "string" ? encodeUtf8Strict(input) : input;
     case "nfc-casefold-v1":
       return normalizeNfcCasefoldV1(input);
     case "digits-only-v1":

@@ -10,7 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { gcmOpen, gcmSeal } from "./aead/gcm.ts";
-import { idf, truncateBits, type ValidatedIndex } from "./blindindex.ts";
+import { idf, truncateBits, UNINDEXABLE_PREIMAGE, type ValidatedIndex } from "./blindindex.ts";
 import {
   ARMING_MECHANISM_DESCRIPTION,
   validateConfig,
@@ -248,10 +248,28 @@ export class Fieldseal {
   // -------------------------------------------------------------------------
   // blind_index (docs/09 §3.3)
 
-  blindIndex(plaintext: Uint8Array, ctx: FieldContext): Buffer {
+  /**
+   * Derive the blind index for a value (docs/09 §3.3).
+   *
+   * Accepts **text as well as bytes**, deliberately, and unlike `encrypt`
+   * (docs/09 §7.1; G16 part A). Normalization is a text operation and
+   * encryption is not, so the asymmetry is the honest shape rather than an
+   * inconsistency: this is the only entry point where the difference between
+   * a string and its encoding is observable.
+   *
+   * It matters because the encoding step is lossy in exactly the wrong way.
+   * `TextEncoder` substitutes U+FFFD for an unpaired surrogate rather than
+   * failing, so a caller who encodes first hands over bytes in which two
+   * distinct values have already become one — invisibly, since U+FFFD is a
+   * perfectly ordinary character. Passing the string lets the refusal happen
+   * where the information still exists. An earlier version of this method
+   * refused strings outright and told callers that encoding was the adapter's
+   * job, which pointed them at precisely the conversion that loses the value.
+   */
+  blindIndex(plaintext: string | Uint8Array, ctx: FieldContext): Buffer {
     // Permitted in every mode, including readonly (spec §10.3).
-    if (!(plaintext instanceof Uint8Array)) {
-      throw new InvalidArgumentError("plaintext must be a Uint8Array (strings are never accepted; encoding is the adapter's job)");
+    if (typeof plaintext !== "string" && !(plaintext instanceof Uint8Array)) {
+      throw new InvalidArgumentError("value must be a string or a Uint8Array");
     }
     validateFieldContext(ctx, "index");
     const indexId = indexIdOf(ctx.purpose) as string;
@@ -263,14 +281,47 @@ export class Fieldseal {
     return this.#index(decl, plaintext, ctx);
   }
 
-  #index(decl: ValidatedIndex, plaintext: Uint8Array, ctx: FieldContext): Buffer {
+  /**
+   * This column's reserved index value for unindexable rows (docs/09 §7.2),
+   * so an adapter can name the bucket without holding a value that lands in
+   * it — for a migration sweep, or to count how many rows are in it before
+   * relaxing a column.
+   *
+   * Derived under the column's own index key rather than being a fixed
+   * constant: a constant would announce which rows hold a character the pin
+   * does not define to anyone able to read the column, with no key at all.
+   */
+  unindexableMarker(ctx: FieldContext): Buffer {
+    validateFieldContext(ctx, "index");
+    const indexId = indexIdOf(ctx.purpose) as string;
+    const decl = this.#cfg.indexes.get(indexRegistryKey(ctx.tableUuid, ctx.columnUuid, indexId));
+    if (decl === undefined) {
+      throw new ConfigurationError(`no blind index '${indexId}' is declared for this table/column; indexes are declared at construction (spec §7.8)`);
+    }
+    return this.#index(decl, UNINDEXABLE_PREIMAGE, ctx, true);
+  }
+
+  #index(decl: ValidatedIndex, plaintext: string | Uint8Array, ctx: FieldContext, preNormalized = false): Buffer {
     const suite = getSuite(this.#cfg.writeSuite) as Suite;
     const resolved: ResolvedContext = { ...ctx, suiteId: suite.id };
     const material = this.#encryptionKey(resolved, 32); // the tenant INDEX key (spec §8)
     try {
       const indexKey = deriveIndexKey(material.key, resolved);
       try {
-        const normalized = normalize(decl.normalize, plaintext);
+        let normalized: Uint8Array;
+        try {
+          // `unindexableMarker` passes the reserved preimage, which is not
+          // valid UTF-8 by construction and so must bypass normalization.
+          normalized = preNormalized ? (plaintext as Uint8Array) : normalize(decl.normalize, plaintext);
+        } catch (e) {
+          // docs/09 §7.2: a value the normalizer refuses either fails here or
+          // lands in the column's reserved bucket. Storing no index at all is
+          // not on the menu — that is the silent missing row spec §10.2
+          // forbids, and it is why `bucket` derives a marker rather than
+          // returning nothing.
+          if (decl.onUnindexable !== "bucket" || !(e instanceof InvalidArgumentError)) throw e;
+          normalized = UNINDEXABLE_PREIMAGE;
+        }
         const raw = idf(decl.idf, indexKey, normalized, decl.argon2);
         try {
           return copyOut(truncateBits(raw, decl.truncateBits));
