@@ -134,3 +134,18 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 ## 8. Deliberate non-goals
 
 No `row_id` binding (extension runs before the query; DB-generated IDs don't exist yet — `docs/04` PK table), no MongoDB connector support, no `middleware` (`$use`) compatibility (deprecated), no transparent support for `select`ing decrypted values into raw SQL, no Prisma < 7 support commitment until tested.
+
+## 9. Unindexable values (docs/09 §7.2 — normative for this adapter)
+
+`encrypt` does not normalize and `blindIndex` does, so a value containing a code point the pinned Unicode version does not define **stores but cannot be fingerprinted**. Each indexed field declares `on_unindexable` in its `///` annotation (§1); the extension's behaviour follows from it. This is the obligation `docs/09` §7.1 refers to.
+
+| `on_unindexable` | Write path | Query path |
+|---|---|---|
+| `refuse` (default) | `blindIndex` throws `INVALID_ARGUMENT`; the extension lets it propagate out of the operation, so the caller sees a rejected write | A `where` on such a value throws the same error — it MUST NOT be rewritten into a query that returns zero rows |
+| `bucket` | The index column receives the field's reserved marker; the write succeeds | The same marker is derived for the operand, the bucket matches, and §7.5 re-verification narrows — the visitor needs no special case |
+
+The query-path row is the one that matters here, and it is the §10.2 rule this adapter already lives under. This adapter's whole reason for existing is that `prisma-field-encryption` encrypts filter operands and silently returns nothing; swallowing an unindexable-value error and returning `[]` would be the same failure with a different cause. Under `refuse` the operation throws. Under `bucket` it returns the right rows.
+
+**The message.** The extension throws; it does not render. But the thrown error MUST carry what a UI needs to build the message in `docs/12` §10.2 — the offending code point and its offset — because an error that says only "invalid input" forces the application to either show that to a person or guess. The three rules are the same: name the character and its position, put the fault on the system, and offer a route that ends with the real value stored.
+
+**`bucket` requires the ceremony and carries the cost.** `unindexableOverride: { reason, approvedBy, date }` is required at extension construction, refused otherwise — the same shape spec §7.6 requires for a cardinality override. The bucket is an equivalence class distinguishable by frequency and growable by any writer; both are documented in the adapter README, not only here. See `docs/12` §10.4, which states the cost in full and applies verbatim.

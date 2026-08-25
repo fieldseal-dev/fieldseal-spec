@@ -30,7 +30,14 @@ from ._ucd_tables import (
 )
 
 __all__ = ["UNICODE_VERSION", "normalize_nfc_casefold_v1", "nfc",
-           "casefold_full", "first_unassigned", "UnassignedCodePoint"]
+           "casefold_full", "first_unassigned", "UnassignedCodePoint",
+           "UNINDEXABLE_PREIMAGE"]
+
+# docs/09 §7.2: the reserved preimage behind `on_unindexable = bucket`.
+# The leading 0xFF can never appear in UTF-8, so no input this
+# normalizer accepts can produce it -- the marker cannot collide with a
+# real value by construction rather than by luck.
+UNINDEXABLE_PREIMAGE = bytes([0xFF]) + b"fieldseal-unindexable-v1"
 
 S_BASE, L_BASE, V_BASE, T_BASE = 0xAC00, 0x1100, 0x1161, 0x11A7
 L_COUNT, V_COUNT, T_COUNT = 19, 21, 28

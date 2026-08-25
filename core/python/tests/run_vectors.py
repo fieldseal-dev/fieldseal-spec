@@ -235,6 +235,54 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
                   and (a == b) == v["expected"]["must_be_equal"])
             _record(results, v["id"], ok)
             continue
+        if v.get("assertion") == "unindexable-marker":
+            # docs/09 §7.2: the reserved marker's bytes, not merely its
+            # behaviour. Two cores that disagree on this value put their
+            # unindexable rows in two different buckets, and a lookup across
+            # them silently returns nothing.
+            i = v["inputs"]
+            _, got = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                            H(i["reserved_preimage"]),
+                                            i["truncate_bits"])
+            ctx = _ctx_from(i["context"], sid)
+            caller = FieldContext(table_uuid=ctx.table_uuid,
+                                  column_uuid=ctx.column_uuid,
+                                  purpose="encrypt", tenant_id=ctx.tenant_id)
+            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]))
+            api = fs.unindexable_marker(caller, index_id=i["index_id"],
+                                        b_bits=i["truncate_bits"],
+                                        idf=i["idf"])
+            _record(results, v["id"],
+                    got.hex() == v["expected"]["index"] and api == got,
+                    f"primitive {got.hex()}, api {api.hex()}, "
+                    f"want {v['expected']['index']}")
+            continue
+        if v.get("assertion") == "unindexable-bucket":
+            # ...and that a refused value actually lands in it, while the
+            # default still refuses. Both halves matter: `bucket` that never
+            # fires is useless, and `refuse` that stopped refusing would be a
+            # silent policy change.
+            i = v["inputs"]
+            ctx = _ctx_from(i["context"], sid)
+            caller = FieldContext(table_uuid=ctx.table_uuid,
+                                  column_uuid=ctx.column_uuid,
+                                  purpose="encrypt", tenant_id=ctx.tenant_id)
+            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]))
+            kw = dict(index_id=i["index_id"], b_bits=i["truncate_bits"],
+                      idf=i["idf"], normalizer=i["normalize"])
+            bucketed = fs.blind_index(i["plaintext_preimage"], caller,
+                                      on_unindexable="bucket", **kw)
+            try:
+                fs.blind_index(i["plaintext_preimage"], caller, **kw)
+                refused = "NONE"
+            except InvalidArgument:
+                refused = "INVALID_ARGUMENT"
+            _record(results, v["id"],
+                    bucketed.hex() == v["expected"]["index"]
+                    and refused == v["expected"]["on_unindexable_refuse"],
+                    f"bucketed {bucketed.hex()} want {v['expected']['index']}; "
+                    f"refuse gave {refused}")
+            continue
         # Primitive level: the vector's normalized plaintext is the normative
         # input (docs/08 §4.4); the preimage checks the shipped normalizer.
         normalized = NORMALIZERS[v["normalize"]](v["plaintext_preimage"])

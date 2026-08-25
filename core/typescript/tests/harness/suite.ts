@@ -136,10 +136,20 @@ function validateShape(path: string, doc: VectorFile): void {
     if (!isObj(v.expected)) throw new SuiteIntegrityError(`${path} ${id}: expected is not an object`);
     const ex = v.expected;
     if (v.assertion !== undefined) {
-      if (v.assertion !== "distinct" && v.assertion !== "equal") throw new SuiteIntegrityError(`${path} ${id}: unknown assertion ${String(v.assertion)}`);
-      req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
+      // Suite 0.3.0 adds the two docs/09 §7.2 shapes. Kept fail-closed: an
+      // unrecognised assertion is an error, never a skip, or a core could
+      // silently ignore a whole class of requirement and still report green.
+      const ASSERTIONS = ["distinct", "equal", "unindexable-marker", "unindexable-bucket"];
+      if (typeof v.assertion !== "string" || !ASSERTIONS.includes(v.assertion)) {
+        throw new SuiteIntegrityError(`${path} ${id}: unknown assertion ${String(v.assertion)}`);
+      }
       // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08).
       req(path, id, v, "inputs", isObj, "an object");
+      if (v.assertion === "distinct" || v.assertion === "equal") {
+        req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
+      } else {
+        req(path, id, ex, "index", isHex, "hex");
+      }
       continue;
     }
     req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");

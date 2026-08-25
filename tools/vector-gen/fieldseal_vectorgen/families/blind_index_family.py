@@ -11,7 +11,7 @@ from ..blindindex import (ARGON2_MEMORY_KIB, ARGON2_OUTPUT_LEN,
                           argon2_salt, idf_argon2id, idf_hmac)
 from ..context import FieldContext
 from ..keys import index_key
-from ..normalizer import normalize_nfc_casefold_v1
+from ..normalizer import UNINDEXABLE_PREIMAGE, normalize_nfc_casefold_v1
 from ..primitives import truncate
 from ._common import ctx_json, suite_str, wrapper
 
@@ -44,6 +44,12 @@ CASES = [
     # U+1AD9 is a combining mark assigned in 17.0.0 with a non-zero combining
     # class, so it participates in canonical ordering. Pins NFC at 17.0.0.
     ("nfc-reordering-17", "a᫙̖@example.com", 15, None),
+    # U+FFFD is an ordinary assigned character and MUST index normally. This
+    # pins the alternative declined in G16 part A: a core that rejected the
+    # replacement character as a data-quality signal would refuse a value
+    # every other core indexes, which is a silent cross-implementation split
+    # in the direction of the unfindable row.
+    ("replacement-char-is-text", "a�b@example.com", 15, None),
 ]
 
 # Inputs that MUST collide, or equality lookup does not work. The Greek pairs
@@ -141,6 +147,63 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             "expected": {"index_a": a.hex(), "index_b": b.hex(),
                          "must_be_equal": True},
         })
+
+    # docs/09 §7.2: the `on_unindexable = bucket` marker. Two cores that
+    # disagree on this value put "unindexable" rows in two different buckets,
+    # and a lookup across them silently returns nothing -- the exact failure
+    # the setting exists to prevent, reintroduced by the fix. So the bytes are
+    # pinned, not merely the behaviour.
+    marker = truncate(idf(ik, UNINDEXABLE_PREIMAGE), 15)
+    out.append({
+        "id": f"blind-index/{idf_name}/unindexable-marker-b15",
+        "description": "the docs/09 §7.2 reserved marker: "
+                       "truncate(IDF(index_key, 0xFF||'fieldseal-unindexable-v1'), 15)",
+        "spec_ref": "§7.2, §7.5; docs/09 §7.2",
+        "assertion": "unindexable-marker",
+        "suite_id": suite_str(SUITE),
+        "inputs": {
+            "idf": idf_name,
+            "index_key": ik.hex(),
+            "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+            "index_id": index_id,
+            "context": ctx_json(ctx.for_index(index_id)),
+            "normalize": NORMALIZER,
+            # Carried as hex because it is deliberately not valid UTF-8 and
+            # therefore has no text form a JSON string could hold.
+            "reserved_preimage": UNINDEXABLE_PREIMAGE.hex(),
+            "truncate_bits": 15,
+        },
+        "expected": {"index": marker.hex(),
+                     "stored": {"binary": marker.hex(), "hex": marker.hex(),
+                                "octets": len(marker)}},
+    })
+
+    # ...and that a value the pin refuses actually lands in it. U+0378 is
+    # unassigned in every Unicode version so far and encodes cleanly as UTF-8,
+    # so unlike a lone surrogate it can be carried as a text preimage.
+    out.append({
+        "id": f"blind-index/{idf_name}/unindexable-bucketed-b15",
+        "description": "under on_unindexable=bucket, a value containing a code "
+                       "point the pin does not define derives the reserved "
+                       "marker instead of raising INVALID_ARGUMENT",
+        "spec_ref": "§7.2, §7.5, §10.2; docs/09 §7.2",
+        "assertion": "unindexable-bucket",
+        "suite_id": suite_str(SUITE),
+        "inputs": {
+            "idf": idf_name,
+            "index_key": ik.hex(),
+            "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+            "index_id": index_id,
+            "context": ctx_json(ctx.for_index(index_id)),
+            "normalize": NORMALIZER,
+            "on_unindexable": "bucket",
+            "plaintext_preimage": "a͸b@example.com",
+            "unassigned_code_point": "U+0378",
+            "truncate_bits": 15,
+        },
+        "expected": {"index": marker.hex(), "equals_marker": True,
+                     "on_unindexable_refuse": "INVALID_ARGUMENT"},
+    })
     return out
 
 

@@ -108,6 +108,16 @@ NORMALIZERS: dict[str, Callable[[str | bytes], bytes]] = {
     "digits-only-v1": normalize_digits_only,
 }
 
+# Normalizers that can refuse an otherwise-storable value (docs/09 §7.2).
+# Only these make `on_unindexable` meaningful: `identity` and `digits-only-v1`
+# consult no Unicode table and have nothing to refuse.
+REFUSING_NORMALIZERS = frozenset({"nfc-casefold-v1"})
+
+# docs/09 §7.2. The leading 0xFF can never appear in UTF-8, so no input
+# `nfc-casefold-v1` accepts can normalize to this preimage -- the marker
+# cannot collide with a real value by construction rather than by luck.
+UNINDEXABLE_PREIMAGE = b"\xff" + b"fieldseal-unindexable-v1"
+
 
 # -- IDFs (spec §7.3) ---------------------------------------------------------
 

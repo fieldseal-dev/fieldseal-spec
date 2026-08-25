@@ -25,6 +25,7 @@ from fieldseal.errors import (  # noqa: E402
     ConfigurationError,
     FieldsealError,
     FieldsealWarning,
+    InvalidArgument,
     ModeViolation,
     SuiteProvisional,
 )
@@ -232,3 +233,86 @@ def test_backend_lookup_never_raises_an_untyped_error():
     from fieldseal.errors import SuiteNotAllowed
     with pytest.raises(SuiteNotAllowed):
         _backend(0x0001)
+
+
+# -- docs/09 §7.1 / §7.2, the index boundary ----------------------------------
+
+# U+0378 is unassigned in every Unicode version so far, so it stands in for
+# "a character the pin does not define" without waiting for 18.0.
+UNPINNED = "a͸b"
+OTHER_UNPINNED = "z͸z"
+IDX_KW = dict(index_id="email-eq", b_bits=15, idf="hmac-sha512",
+              normalizer="nfc-casefold-v1")
+
+
+def test_blind_index_takes_text_and_bytes_alike():
+    """docs/09 §7.1: an index API must accept text, and widening the type
+    must not fork the function."""
+    fs = _client()
+    for s in ("alice@example.com", "ALICE@example.com", "grüße", ""):
+        assert fs.blind_index(s, CTX, **IDX_KW) == \
+            fs.blind_index(s.encode("utf-8"), CTX, **IDX_KW)
+
+
+def test_lone_surrogate_is_refused_distinguishably():
+    """The false match the text path exists to close. Both are refused, and
+    the messages name different code points -- an identical diagnosis would
+    leave the two values indistinguishable, which is the property the refusal
+    denies them."""
+    fs = _client()
+    msgs = []
+    for s in ("a\ud800b", "a\udc00b"):
+        with pytest.raises(InvalidArgument) as e:
+            fs.blind_index(s, CTX, **IDX_KW)
+        msgs.append(str(e.value))
+    assert "D800" in msgs[0] and "DC00" in msgs[1]
+    assert msgs[0] != msgs[1]
+
+
+def test_on_unindexable_refuse_is_the_default():
+    fs = _client()
+    with pytest.raises(InvalidArgument):
+        fs.blind_index(UNPINNED, CTX, **IDX_KW)
+
+
+def test_on_unindexable_bucket_keeps_the_row_findable():
+    """docs/09 §7.2: `bucket` derives a reserved marker rather than storing no
+    index -- an absent index is the silent missing row spec §10.2 forbids."""
+    fs = _client()
+    marker = fs.unindexable_marker(CTX, index_id="email-eq", b_bits=15,
+                                   idf="hmac-sha512")
+    got = fs.blind_index(UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
+    assert got == marker
+    assert len(marker) == 2          # ceil(15/8)
+    assert marker != b"\x00\x00"     # derived, not a constant
+
+
+def test_bucket_is_one_collision_class_that_lookup_reaches_naturally():
+    """The same value normalizes the same way in both directions, so a query
+    for an unindexable value derives the marker and matches those rows; §7.5
+    re-verification narrows the candidates. An indexable value never lands
+    there."""
+    fs = _client()
+    a = fs.blind_index(UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
+    b = fs.blind_index(OTHER_UNPINNED, CTX, on_unindexable="bucket", **IDX_KW)
+    normal = fs.blind_index("alice@example.com", CTX,
+                            on_unindexable="bucket", **IDX_KW)
+    assert a == b
+    assert normal != a
+
+
+def test_bucket_is_refused_where_it_could_never_fire():
+    """`identity` consults no Unicode table and never refuses, so a bucket for
+    it would misrepresent the column as protected."""
+    fs = _client()
+    with pytest.raises(ConfigurationError) as e:
+        fs.blind_index("x", CTX, index_id="email-eq", b_bits=15,
+                       idf="hmac-sha512", normalizer="identity",
+                       on_unindexable="bucket")
+    assert "never refuses" in str(e.value)
+
+
+def test_unknown_on_unindexable_is_a_configuration_error():
+    fs = _client()
+    with pytest.raises(ConfigurationError):
+        fs.blind_index("x", CTX, on_unindexable="skip", **IDX_KW)

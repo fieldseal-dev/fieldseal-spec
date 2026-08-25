@@ -100,6 +100,73 @@ describe("the false match the text path exists to close", () => {
   });
 });
 
+describe("on_unindexable (docs/09 §7.2)", () => {
+  // U+0378 is unassigned in every Unicode version so far, so it stands in for
+  // "a character the pin does not define" without waiting for 18.0.
+  const UNPINNED = "a͸b";
+  const OTHER_UNPINNED = "z͸z";
+  const OVERRIDE = { reason: "legal name column; refusing a customer's name is worse", approvedBy: "test", date: "2026-08-25" };
+
+  it("refuse is the default, and it refuses", () => {
+    expect(codeOf(() => c.blindIndex(UNPINNED, IDX_CTX))).toBe("INVALID_ARGUMENT");
+  });
+
+  it("bucket keeps the row findable instead of raising", () => {
+    const b = makeClient({ indexes: [{ ...IDX, onUnindexable: "bucket", unindexableOverride: OVERRIDE }] });
+    const marker = Buffer.from(b.unindexableMarker(IDX_CTX)).toString("hex");
+    expect(Buffer.from(b.blindIndex(UNPINNED, IDX_CTX)).toString("hex")).toBe(marker);
+    // Derived, not constant: it has the shape of any other index value.
+    expect(marker.length).toBe(4); // ceil(15/8) bytes, hex
+  });
+
+  it("lookup lands in the bucket without the query path knowing about it", () => {
+    // The property that makes this work with no change to query construction:
+    // the same value normalizes the same way in both directions, so a query
+    // for an unindexable value derives the marker and matches those rows.
+    // Spec §7.5 re-verification — already mandatory — narrows the candidates.
+    const b = makeClient({ indexes: [{ ...IDX, onUnindexable: "bucket", unindexableOverride: OVERRIDE }] });
+    const idx = (v: string): string => Buffer.from(b.blindIndex(v, IDX_CTX)).toString("hex");
+    expect(idx(UNPINNED)).toBe(idx(OTHER_UNPINNED)); // one bucket, deliberately
+    expect(idx("alice@example.com")).not.toBe(idx(UNPINNED)); // indexable values never touch it
+  });
+
+  it("the marker is per-column, not a global constant", () => {
+    // A fixed value would tell anyone who can read the column which rows hold
+    // a character outside the pin, with no key at all.
+    const b1 = makeClient({ indexes: [{ ...IDX, onUnindexable: "bucket", unindexableOverride: OVERRIDE }] });
+    const b2 = makeClient({
+      indexes: [{ ...IDX, indexId: "other", onUnindexable: "bucket", unindexableOverride: OVERRIDE }],
+    });
+    const m1 = Buffer.from(b1.unindexableMarker(IDX_CTX)).toString("hex");
+    const m2 = Buffer.from(b2.unindexableMarker({ ...CTX, purpose: "index:other" })).toString("hex");
+    expect(m1).not.toBe(m2);
+    expect(m1).not.toBe("0000");
+  });
+
+  it("bucket requires the §7.6-shaped override", () => {
+    expect(() => makeClient({ indexes: [{ ...IDX, onUnindexable: "bucket" }] })).toThrow(/unindexableOverride/);
+    expect(() =>
+      makeClient({ indexes: [{ ...IDX, onUnindexable: "bucket", unindexableOverride: { ...OVERRIDE, reason: "" } }] }),
+    ).toThrow(/unindexableOverride/);
+  });
+
+  it("bucket is refused where it could never fire", () => {
+    // `identity` consults no Unicode table and never refuses, so declaring a
+    // bucket for it would misrepresent the column as protected.
+    expect(() =>
+      makeClient({
+        indexes: [{ ...IDX, normalize: "identity", onUnindexable: "bucket", unindexableOverride: OVERRIDE }],
+      }),
+    ).toThrow(/never refuses/);
+  });
+
+  it("an unknown setting is a configuration error, not a default", () => {
+    expect(() =>
+      makeClient({ indexes: [{ ...IDX, onUnindexable: "skip" as unknown as "bucket" }] }),
+    ).toThrow(/onUnindexable/);
+  });
+});
+
 describe("encrypt stays bytes-only, deliberately", () => {
   it("a string is an argument error there", () => {
     // The asymmetry is the point, not an oversight: normalization is a text

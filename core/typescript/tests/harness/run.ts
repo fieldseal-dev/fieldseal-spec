@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { argon2Salt, idf, truncateBits, type IdfId } from "../../src/blindindex.ts";
+import { argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
@@ -304,8 +304,101 @@ function runCommitment(v: Record<string, unknown>): Result {
   return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
+/**
+ * docs/09 §7.2, the `on_unindexable` shapes. Kept out of `runAssertion`
+ * because these are not two-sided relations: one pins the reserved marker's
+ * bytes, the other pins that a refused value lands on them while the default
+ * still refuses.
+ *
+ * The marker's bytes matter as much as its behaviour. Two cores that derived
+ * different markers would put their unindexable rows in two different
+ * buckets, and a lookup across them would silently return nothing — the exact
+ * failure `on_unindexable` exists to prevent, reintroduced by the fix.
+ */
+function runUnindexable(v: Record<string, unknown>): Result {
+  const id = v.id as string;
+  const ex = v.expected as Record<string, unknown>;
+  const inp = v.inputs as Record<string, unknown>;
+  const problems: string[] = [];
+  try {
+    const which = inp.idf as IdfId;
+    const ik = hex(inp.index_key as string);
+    const bits = inp.truncate_bits as number;
+    const want = hex(ex.index as string);
+    const marker = truncateBits(idf(which, ik, UNINDEXABLE_PREIMAGE), bits);
+
+    if (v.assertion === "unindexable-marker") {
+      if (!eq(hex(inp.reserved_preimage as string), UNINDEXABLE_PREIMAGE)) {
+        problems.push(mismatch("reserved preimage", UNINDEXABLE_PREIMAGE, hex(inp.reserved_preimage as string)));
+      }
+      if (!eq(marker, want)) problems.push(mismatch("marker", marker, want));
+      // ...and that the public API agrees with the primitive.
+      const fs = unindexableClient(inp, "bucket");
+      const api = fs.unindexableMarker(indexCtx(inp));
+      if (!eq(api, want)) problems.push(mismatch("unindexableMarker()", api, want));
+    } else {
+      const value = inp.plaintext_preimage as string;
+      const bucketed = unindexableClient(inp, "bucket").blindIndex(value, indexCtx(inp));
+      if (!eq(bucketed, want)) problems.push(mismatch("bucketed index", bucketed, want));
+      // Both halves matter: a `bucket` that never fires is useless, and a
+      // `refuse` that stopped refusing would be a silent policy change.
+      let refused = "NONE";
+      try {
+        unindexableClient(inp, "refuse").blindIndex(value, indexCtx(inp));
+      } catch (e) {
+        refused = errCode(e);
+      }
+      const wantRefused = ex.on_unindexable_refuse as string;
+      if (refused !== wantRefused) problems.push(`on_unindexable="refuse" gave ${refused}, want ${wantRefused}`);
+    }
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  return problems.length === 0
+    ? { id, status: "pass" }
+    : { id, status: "fail", reason: problems.join("; ") };
+}
+
+function indexCtx(inp: Record<string, unknown>): FieldContext {
+  const c = ctxFromVector(inp.context as Record<string, unknown>);
+  return { ...c, purpose: `index:${inp.index_id as string}` };
+}
+
+function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse" | "bucket"): Fieldseal {
+  const c = ctxFromVector(inp.context as Record<string, unknown>);
+  return new Fieldseal(
+    {
+      keyProvider: new StaticKeyProvider({
+        dek: new Uint8Array(32).fill(0xaa),
+        keyId: new Uint8Array(16),
+        indexKey: hex(inp.tenant_index_key as string),
+      }),
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
+      readMode: "strict",
+      indexes: [
+        {
+          tableUuid: c.tableUuid,
+          columnUuid: c.columnUuid,
+          indexId: inp.index_id as string,
+          idf: inp.idf as IdfId,
+          normalize: inp.normalize as NormalizerId,
+          truncateBits: inp.truncate_bits as number,
+          projectedPopulation: 65536,
+          onUnindexable,
+          ...(onUnindexable === "bucket"
+            ? { unindexableOverride: { reason: "vector harness", approvedBy: "vectors", date: "2026-08-25" } }
+            : {}),
+        },
+      ],
+    },
+    { armProvisionalSuites: true },
+  );
+}
+
 function runBlindIndex(v: Record<string, unknown>): Result[] {
   const id = v.id as string;
+  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [runUnindexable(v)];
   if (v.assertion !== undefined) return [runAssertion(v)];
   const ex = v.expected as Record<string, unknown>;
   const stored = ex.stored as Record<string, string | number>;

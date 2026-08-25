@@ -194,6 +194,8 @@ IndexDeclaration {
     truncate_bits    : b                        // §7.4 band; both b and projected P recorded
     projected_population : P                    // ≥ 16; recorded per SP-10
     cardinality_override : { reason, approved_by, date } | absent   // §7.6 logged override
+    on_unindexable   : refuse | bucket          // §7.2; default `refuse`
+    unindexable_override : { reason, approved_by, date } | absent   // required for `bucket`
 }
 ```
 
@@ -259,6 +261,43 @@ NFC( toCasefold( NFC( X ) ) )
 Custom normalizers are out: a deployment-defined normalizer is a portability break by definition. New normalizers go through the same process as suites (spec change + vectors).
 
 `index_id` is validated against the spec §6.1 `index-id` grammar at declaration time and rejected as a `ConfigurationError` if it fails — fail closed, before any derivation string is built. This is construction-time validation, so it has no §9 error code (docs/09 §9); the `context/` vector family pins the refusals (docs/08 §4.3).
+
+### 7.2 Unindexable values: `on_unindexable` (normative)
+
+`encrypt` does not normalize and `blind_index` does, so the two operations disagree about what they can accept. A value containing a code point the pin does not define **encrypts perfectly well and cannot be fingerprinted** (§7.1 clause 1). That leaves an adapter with a choice no earlier version of this document made: fail the write, or store a row that its own queries can never find.
+
+Neither horn is acceptable as a global default. A required, searched-on column — a login email — is worse unfindable than un-writable. A column holding a person's name is the opposite: refusing it is a hard failure for that person, and "your name is unsupported" is not a message any product wants to send. **`on_unindexable` is therefore declared per column**, because the right answer differs per column and a single rule is wrong somewhere.
+
+```
+on_unindexable = refuse   (default)
+    Index derivation raises INVALID_ARGUMENT (§7.1 clause 1, unchanged).
+    An adapter deriving an index on write fails the write.
+
+on_unindexable = bucket
+    Index derivation returns the declaration's `unindexable_marker`
+    instead of raising. The row is stored and remains findable.
+```
+
+**The marker (normative).** `bucket` MUST NOT store *no* index — an absent index value is the silent-missing-row failure this whole section exists to prevent, and spec §10.2 forbids it by name. Instead the value is derived, exactly like any other index value:
+
+```
+RESERVED_PREIMAGE  = 0xFF || "fieldseal-unindexable-v1"      (25 bytes)
+unindexable_marker = truncate(IDF(index_key, RESERVED_PREIMAGE), b)
+```
+
+Two properties do the work. The leading `0xFF` **can never appear in UTF-8**, so no input `nfc-casefold-v1` accepts can normalize to this preimage: the marker cannot collide with a real value by construction rather than by luck. And because it is derived under the column's own `index_key`, it is a per-column, per-tenant value that **looks like every other index value** to anyone reading the column. A fixed constant — all-zero bytes, say — would announce to an observer with no key exactly which rows hold a character the pin does not define.
+
+**Why this needs nothing from the query path.** The marker is returned on *lookup* as well as on write, because the same value normalizes the same way whichever direction it is travelling. So a query for an unindexable value derives the marker, matches the bucketed rows, and spec §7.5 re-verification — already mandatory and unconditional for every index hit — decrypts the candidates and keeps the ones that actually match. A query for an *indexable* value derives an ordinary index value and never touches the bucket, since a bucketed row by definition contains a character no accepted value can contain.
+
+> This is a correction to how the mechanism was first described in G16 part B, which had every indexed lookup additionally probe the marker. That is unnecessary and strictly worse: it doubles every query's candidate set to no purpose and widens the leak below. Equality lookup already works, because the bucket is not a special case in the query path — it is one more collision class in an index that spec §7.4 *mandates* collisions in.
+
+**The cost, stated.** The bucket is an equivalence class that can grow far larger than §7.4's expected `P × 2^(−b)`, so it is **distinguishable by frequency**: an observer who can read the index column sees one value that is unusually popular, and can infer that those rows share the property "contains a character outside the pin". That observer cannot tell *which* character, cannot compute the marker without the index key, and learns nothing about any other column. The class is also **growable by anyone who can write to the column**, so a hostile writer can inflate it and make lookups against it progressively more expensive — bounded by §7.5 re-verification cost, not by anything cryptographic. A column where either property is unacceptable keeps `refuse`.
+
+**Declaring `bucket` requires the §7.6 ceremony.** `unindexable_override` MUST carry `{ reason, approved_by, date }`, refused as a `ConfigurationError` if absent. This is deliberately the same shape spec §7.6 already requires to relax the cardinality gate: relaxing a default-deny rule on a column is a reviewed, recorded act, not a configuration default that gets copied between columns. A declaration whose normalizer can never refuse (`identity`, `digits-only-v1` — neither consults a Unicode table) is also a `ConfigurationError` under `bucket`: the setting could never take effect, and silently accepting it would misrepresent the column as protected.
+
+**What `refuse` obliges the adapter to do.** A refusal is only humane if the value can still be stored by *someone*, so `refuse` and `bucket` are specified as a pair: `bucket` is the escape hatch behind the refusal, applied per column by an operator, not a dead end. `docs/12` §10 and `docs/13` §9 carry the resulting adapter obligation and the shape of the message — including the three rules a refusal message must satisfy: name the character and its position, put the fault on the system, and offer a route that ends with the real value stored.
+
+**Vectors.** The marker's *bytes* are pinned, not merely its behaviour: two cores deriving different markers would put their unindexable rows in two different buckets, and a lookup across them would silently return nothing — the failure this setting exists to prevent, reintroduced by the fix. `blind-index/` carries `unindexable-marker-b15` (the derivation) and `unindexable-bucketed-b15` (that a refused value lands on it, and that `refuse` still refuses), from suite `0.3.0-provisional`.
 
 ## 8. Key providers and cache
 

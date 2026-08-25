@@ -26,7 +26,13 @@ from collections.abc import Iterable
 from cryptography.hazmat.primitives import constant_time
 
 from .aead.gcm import GcmBackend
-from .blindindex import IDFS, NORMALIZERS, truncate
+from .blindindex import (
+    IDFS,
+    NORMALIZERS,
+    REFUSING_NORMALIZERS,
+    UNINDEXABLE_PREIMAGE,
+    truncate,
+)
 from .context import FieldContext, aad
 from .envelope import (
     FMT_VER,
@@ -234,7 +240,24 @@ class Fieldseal:
 
     def blind_index(self, value: str | bytes, ctx: FieldContext, *,
                     index_id: str, b_bits: int, idf: str = "argon2id",
-                    normalizer: str = "nfc-casefold-v1") -> bytes:
+                    normalizer: str = "nfc-casefold-v1",
+                    on_unindexable: str = "refuse") -> bytes:
+        """Derive the blind index for `value` (spec §7.2, §7.3).
+
+        Takes `str` as well as `bytes`, and `str` is the preferred form:
+        docs/09 §7.1 requires an index API to accept text, because the
+        encoding step can destroy the difference between two values before
+        the core is ever entered. Every other operation on this client takes
+        bytes; normalization is a text operation and encryption is not.
+
+        `on_unindexable` (docs/09 §7.2) decides what happens to a value the
+        normalizer refuses -- one containing a code point the pinned Unicode
+        version does not define. `refuse` (default) propagates the
+        `InvalidArgument`. `bucket` returns this declaration's reserved
+        marker instead, so the row stays findable: the same marker is derived
+        on lookup, and spec §7.5 re-verification narrows the candidates. See
+        `unindexable_marker`.
+        """
         # An index computed for a WHERE clause is not a write, so readonly
         # permits it (spec §10.3, per G6) and the provisional gate does not
         # apply either -- no ciphertext is produced.
@@ -251,13 +274,51 @@ class Fieldseal:
                 f"unknown normalizer {normalizer!r}") from None
         if not isinstance(b_bits, int) or b_bits <= 0:
             raise ConfigurationError("b_bits must be a positive integer")
+        if on_unindexable not in ("refuse", "bucket"):
+            raise ConfigurationError(
+                f"on_unindexable must be 'refuse' or 'bucket', not "
+                f"{on_unindexable!r}")
+        if on_unindexable == "bucket" and normalizer not in REFUSING_NORMALIZERS:
+            # The setting could never take effect, and accepting it silently
+            # would misrepresent the column as protected (docs/09 §7.2).
+            raise ConfigurationError(
+                f"on_unindexable='bucket' is meaningless for normalizer "
+                f"{normalizer!r}, which never refuses a value; only "
+                f"{sorted(REFUSING_NORMALIZERS)} can")
         # Spec §7.2: the index context is the field's with purpose retargeted
         # and row_id dropped; spec §8: a provider handed that purpose returns
         # the tenant INDEX key, never the DEK.
         bound = ctx.for_index(index_id).with_suite(self._write_suite)
         tenant_index_key, _ = self._provider.encryption_key(bound)
         ik = index_key(tenant_index_key, bound, index_id)
-        return truncate(derive(ik, normalize(value)), b_bits)
+        try:
+            normalized = normalize(value)
+        except InvalidArgument:
+            if on_unindexable != "bucket":
+                raise
+            normalized = UNINDEXABLE_PREIMAGE
+        return truncate(derive(ik, normalized), b_bits)
+
+    def unindexable_marker(self, ctx: FieldContext, *, index_id: str,
+                           b_bits: int, idf: str = "argon2id") -> bytes:
+        """This column's reserved index value for unindexable rows
+        (docs/09 §7.2), so an adapter can name the bucket without holding a
+        value that lands in it -- for a migration sweep, or to count how many
+        rows are in it before relaxing a column.
+
+        Derived under the column's own index key rather than being a fixed
+        constant: a constant would announce which rows hold a character the
+        pin does not define to anyone who can read the column without any
+        key at all.
+        """
+        try:
+            derive = IDFS[idf]
+        except KeyError:
+            raise ConfigurationError(f"unknown idf {idf!r}") from None
+        bound = ctx.for_index(index_id).with_suite(self._write_suite)
+        tenant_index_key, _ = self._provider.encryption_key(bound)
+        ik = index_key(tenant_index_key, bound, index_id)
+        return truncate(derive(ik, UNINDEXABLE_PREIMAGE), b_bits)
 
     def rotate(self, blob: bytes, ctx: FieldContext) -> bytes:
         """Re-encrypt under a fresh seed and nonce. Produces ciphertext, so it
