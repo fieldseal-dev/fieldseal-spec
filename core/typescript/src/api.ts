@@ -248,10 +248,28 @@ export class Fieldseal {
   // -------------------------------------------------------------------------
   // blind_index (docs/09 §3.3)
 
-  blindIndex(plaintext: Uint8Array, ctx: FieldContext): Buffer {
+  /**
+   * Derive the blind index for a value (docs/09 §3.3).
+   *
+   * Accepts **text as well as bytes**, deliberately, and unlike `encrypt`
+   * (docs/09 §7.1; G16 part A). Normalization is a text operation and
+   * encryption is not, so the asymmetry is the honest shape rather than an
+   * inconsistency: this is the only entry point where the difference between
+   * a string and its encoding is observable.
+   *
+   * It matters because the encoding step is lossy in exactly the wrong way.
+   * `TextEncoder` substitutes U+FFFD for an unpaired surrogate rather than
+   * failing, so a caller who encodes first hands over bytes in which two
+   * distinct values have already become one — invisibly, since U+FFFD is a
+   * perfectly ordinary character. Passing the string lets the refusal happen
+   * where the information still exists. An earlier version of this method
+   * refused strings outright and told callers that encoding was the adapter's
+   * job, which pointed them at precisely the conversion that loses the value.
+   */
+  blindIndex(plaintext: string | Uint8Array, ctx: FieldContext): Buffer {
     // Permitted in every mode, including readonly (spec §10.3).
-    if (!(plaintext instanceof Uint8Array)) {
-      throw new InvalidArgumentError("plaintext must be a Uint8Array (strings are never accepted; encoding is the adapter's job)");
+    if (typeof plaintext !== "string" && !(plaintext instanceof Uint8Array)) {
+      throw new InvalidArgumentError("value must be a string or a Uint8Array");
     }
     validateFieldContext(ctx, "index");
     const indexId = indexIdOf(ctx.purpose) as string;
@@ -263,7 +281,7 @@ export class Fieldseal {
     return this.#index(decl, plaintext, ctx);
   }
 
-  #index(decl: ValidatedIndex, plaintext: Uint8Array, ctx: FieldContext): Buffer {
+  #index(decl: ValidatedIndex, plaintext: string | Uint8Array, ctx: FieldContext): Buffer {
     const suite = getSuite(this.#cfg.writeSuite) as Suite;
     const resolved: ResolvedContext = { ...ctx, suiteId: suite.id };
     const material = this.#encryptionKey(resolved, 32); // the tenant INDEX key (spec §8)

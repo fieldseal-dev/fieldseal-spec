@@ -464,6 +464,85 @@ function runErrors(v: Record<string, unknown>): Result {
 // ---------------------------------------------------------------------------
 // Out-of-band: spec §3.5 length bound (docs/08 §5 item 8)
 
+/**
+ * docs/09 §7.1: the index boundary takes text, and refuses an unpaired
+ * surrogate *distinguishably* (G16 part A).
+ *
+ * This has no vector and cannot have one. The `blind-index/` family keys its
+ * input as hex bytes, and an unpaired surrogate has no UTF-8 encoding, so the
+ * case is inexpressible in the family's own shape. Widening the field to text
+ * would not fix it either: Go string literals may not hold a surrogate value
+ * and rune conversion substitutes U+FFFD, and Rust's `String` is UTF-8 by
+ * invariant — so two of the five target languages cannot carry the operand at
+ * all, and a core in either would report `not-run` rather than `pass`.
+ *
+ * That is exactly what `out_of_band` is for (docs/14 §4, the G10 precedent):
+ * a normative requirement verified by a test the report would otherwise never
+ * mention is indistinguishable from one nobody checked.
+ */
+function runIndexBoundary(): OutOfBand[] {
+  const id = "docs/09/7.1/lone-surrogate-refusal";
+  const method =
+    "unit test: two distinct unpaired surrogates passed as text to blindIndex are both refused, with messages that name different code points";
+  const fs = new Fieldseal(
+    {
+      // An index key is required here: without one, key acquisition fails
+      // before normalization runs and this check would pass or fail for
+      // reasons that have nothing to do with what it is asserting.
+      keyProvider: new StaticKeyProvider({
+        dek: new Uint8Array(32).fill(0xaa),
+        keyId: new Uint8Array(16),
+        indexKey: new Uint8Array(32).fill(0xbb),
+      }),
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
+      readMode: "strict",
+      indexes: [
+        {
+          tableUuid: new Uint8Array(16),
+          columnUuid: new Uint8Array(16),
+          idf: "hmac-sha512",
+          normalize: "nfc-casefold-v1",
+          truncateBits: 15,
+          projectedPopulation: 65536,
+        },
+      ],
+    },
+    { armProvisionalSuites: true },
+  );
+  const ctx: FieldContext = {
+    tableUuid: new Uint8Array(16),
+    columnUuid: new Uint8Array(16),
+    tenantId: null,
+    rowId: null,
+    purpose: "index:exact",
+  };
+  const refuse = (s: string): { code: string; message: string } => {
+    try {
+      fs.blindIndex(s, ctx);
+      return { code: "NONE", message: "" };
+    } catch (e) {
+      return { code: errCode(e), message: (e as Error).message };
+    }
+  };
+
+  const high = refuse("a\uD800b");
+  const low = refuse("a\uDC00b");
+  let status: OutOfBand["status"] = "pass";
+  let reason: string | undefined;
+  if (high.code !== "INVALID_ARGUMENT" || low.code !== "INVALID_ARGUMENT") {
+    status = "fail";
+    reason = `expected INVALID_ARGUMENT for both, got ${high.code} and ${low.code}`;
+  } else if (high.message === low.message) {
+    // Same outcome is not enough. If the diagnosis is identical the two values
+    // are indistinguishable to the caller, which is the property the refusal
+    // exists to deny them.
+    status = "fail";
+    reason = "both surrogates produced the same message; the refusal does not distinguish them";
+  }
+  return [{ id, status, method, ...(reason ? { reason } : {}) }];
+}
+
 function runLengthBound(): OutOfBand[] {
   const out: OutOfBand[] = [];
   const fs = client(new Uint8Array(32), new Uint8Array(16));
@@ -547,7 +626,7 @@ export function runSuite(opts: RunOptions = {}): Report {
         }
       }
     }
-    const outOfBand = runLengthBound();
+    const outOfBand = [...runLengthBound(), ...runIndexBoundary()];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
     const summary = {
       pass: results.filter((r) => r.status === "pass").length,

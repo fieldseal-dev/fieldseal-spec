@@ -29,7 +29,10 @@ import { InvalidArgumentError } from "../src/errors.ts";
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
+/** Through the bytes path: the caller encodes, which is the lossy route. */
 const N = (s: string): string => dec.decode(normalize("nfc-casefold-v1", enc.encode(s)));
+/** Through the text path: the normalizer sees the string (docs/09 §7.1 clause 5). */
+const NT = (s: string): string => dec.decode(normalize("nfc-casefold-v1", s));
 const hex = (s: string): string =>
   [...s].map((c) => "U+" + c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")).join(" ");
 
@@ -106,19 +109,45 @@ describe("nfc-casefold-v1 collides case variants", () => {
     expect(() => N("͸")).toThrow(InvalidArgumentError);
   });
 
-  it("cannot see a lone surrogate through the bytes API, which is the caller's problem", () => {
-    // This core's `blindIndex` takes bytes, so a JavaScript string is encoded
-    // by the caller. `TextEncoder` substitutes U+FFFD for a lone surrogate
-    // rather than failing, and U+FFFD is an assigned character, so the core
-    // sees well-formed UTF-8 and cannot tell. Two different lone surrogates
-    // therefore reach the same index -- the collision docs/09 §7 refuses
-    // invalid UTF-8 to avoid, reintroduced one layer up.
-    //
-    // The refusal belongs at whatever boundary accepts text: `firstUnassigned`
-    // implements it for any caller that has the string, and an adapter that
-    // encodes on the core's behalf MUST use it before encoding.
-    expect(new TextEncoder().encode("a\uD800")).toEqual(new TextEncoder().encode("a�"));
+  it("the bytes path still cannot see a lone surrogate -- the platform destroys it first", () => {
+    // Unchanged platform fact, and the whole reason the text path exists.
+    // WHATWG Encoding requires `TextEncoder` to substitute U+FFFD for an
+    // unpaired surrogate rather than to fail, and U+FFFD is an assigned
+    // character, so a caller who encodes first hands over well-formed UTF-8
+    // in which two distinct values have already become one.
+    expect(enc.encode("a\uD800b")).toEqual(enc.encode("a�b"));
+    expect(enc.encode("a\uD800b")).toEqual(enc.encode("a\uDC00b"));
+    // ...and the normalizer, seeing only those bytes, has nothing to object to.
+    expect(N("a\uD800b")).toBe(N("a\uDC00b"));
+  });
+
+  it("the text path refuses lone surrogates, and refuses them distinguishably", () => {
+    // docs/09 §7.1 clause 5 / G16 part A: the refusal has to happen where the
+    // information still exists. Both are rejected -- and, the point of the
+    // pair, they are rejected as *different* code points, so no two distinct
+    // malformed values can share an index.
+    expect(() => NT("a\uD800b")).toThrow(InvalidArgumentError);
+    expect(() => NT("a\uDC00b")).toThrow(InvalidArgumentError);
     expect(firstUnassigned("a\uD800b")).toBe(0xd800);
+    expect(firstUnassigned("a\uDC00b")).toBe(0xdc00);
+    expect(firstUnassigned("a\uD800b")).not.toBe(firstUnassigned("a\uDC00b"));
+  });
+
+  it("a legitimate U+FFFD is ordinary text, not an error", () => {
+    // The alternative considered and declined in G16 part A was rejecting
+    // U+FFFD outright. It is an assigned character; refusing it would turn a
+    // false match into an unindexable row, which is the other failure mode.
+    expect(NT("a�b")).toBe("a�b");
+    expect(NT("a�b")).toBe(N("a�b"));
+  });
+
+  it("text and bytes agree wherever both are well formed", () => {
+    // Widening the input type must not fork the function. Anything encodable
+    // has to normalize identically down either path, or the boundary itself
+    // becomes a portability seam.
+    for (const s of ["ALICE@example.com", "José", "grüße", "ǰ", "ΐ", "İstanbul", "😀 mixed", ""]) {
+      expect(NT(s), s).toBe(N(s));
+    }
   });
 });
 

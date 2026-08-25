@@ -75,12 +75,13 @@ fs = Fieldseal(
 
 ct: bytes  = fs.encrypt(b"...", ctx)
 pt: bytes  = fs.decrypt(ct, ctx)
-bx: bytes  = fs.blind_index(b"...", ctx)
+bx: bytes  = fs.blind_index("...", ctx)   # str or bytes; str is the preferred form
 ok: bool   = fs.is_ciphertext(ct)
 ct2: bytes = fs.rotate(ct, ctx)
 await fs.warm([ctx, ...])          # the only coroutine on the client
 ```
 
+- **`blind_index` takes `str | bytes`; every other operation takes `bytes`.** This asymmetry predates G16 and is now the normative shape (docs/09 §7.1): normalization is a text operation, encryption is not, so index derivation is the only place where the difference between a string and its encoding changes the answer. Passing `str` is the preferred form because it is the only one that cannot have lost information already — this core's `bytes` path is safe too (`str.encode("utf-8")` raises `UnicodeEncodeError` on a lone surrogate rather than substituting, unlike JavaScript's `TextEncoder`), but that is a property of CPython rather than of the API.
 - `FieldContext` is a frozen dataclass with `__slots__`; adapters build one per column at model-definition time and pass it per call (docs/09 §12). Adapters never set `suite_id` — the core fills that member itself: `config.write_suite` on encrypt, and the parsed envelope header on decrypt (docs/09 §3.2 step 4 — a client whose write suite is 0xFF02 must still derive the correct key for a 0xFF01 envelope during mixed-suite reads and rotation).
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
 - Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `SuiteProvisional` (code `SUITE_PROVISIONAL`, spec §4.8), and two implementation-local codes docs/09 §9 permits outside §9: `ConfigurationError` (construction time) and `InvalidArgument` (an operand refused at the API boundary — an index purpose handed to `encrypt`, invalid UTF-8 handed to a text normalizer). Each carries `.code: str` equal to the vector-suite string (docs/09 §9). `FieldsealWarning` is the spec §10.3 warning for the pass-through modes.

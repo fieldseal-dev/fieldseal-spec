@@ -37,7 +37,11 @@ from fieldseal import unicode as fs_unicode  # noqa: E402
 from fieldseal.blindindex import NORMALIZERS, idf_hmac_sha512, truncate  # noqa: E402
 from fieldseal.context import aad, canonical_context  # noqa: E402
 from fieldseal.envelope import MAX_PLAINTEXT, serialize_header  # noqa: E402
-from fieldseal.errors import FieldsealError, LengthExceeded  # noqa: E402
+from fieldseal.errors import (  # noqa: E402
+    FieldsealError,
+    InvalidArgument,
+    LengthExceeded,
+)
 from fieldseal.kdf import commitment, index_key, record_key  # noqa: E402
 from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
 from fieldseal.testing import encrypt_with_materials  # noqa: E402
@@ -249,7 +253,9 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
         _record(results, v["id"], all(checks.values()),
                 " ".join(f"{k}={ok}" for k, ok in checks.items()))
         # End to end through the public API with the tenant index key the
-        # vector carries, text-in and bytes-in (the core is bytes-in/out).
+        # vector carries, text-in and bytes-in. Both are accepted at this
+        # boundary and must agree: docs/09 §7.1 requires an index API to take
+        # text, and widening the type must not fork the function.
         ctx = _ctx(v, sid)
         caller_ctx = FieldContext(
             table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
@@ -429,6 +435,51 @@ def run_out_of_band() -> list[dict]:
             "an envelope whose implied plaintext length is 2^31 bytes is "
             "refused with LENGTH_EXCEEDED before allocation or key lookup",
             oversize_decrypt)
+
+    # docs/09 §7.1 (G16 part A): the index boundary takes text, and refuses an
+    # unpaired surrogate *distinguishably*.
+    #
+    # This cannot be a vector. `blind-index/` keys its input as hex bytes and
+    # an unpaired surrogate has no UTF-8 encoding, so the case is
+    # inexpressible in the family's shape; widening that field to text would
+    # not help either, since Go string literals may not hold a surrogate value
+    # and Rust's `String` is UTF-8 by invariant, so two of the five target
+    # languages cannot carry the operand at all. A core in either records
+    # `not-run` here rather than `pass`.
+    idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32)
+    idx_ctx = FieldContext(table_uuid=bytes(16), column_uuid=bytes(16),
+                           purpose="encrypt")
+    idx_kw = dict(index_id="exact", b_bits=15, idf="hmac-sha512",
+                  normalizer="nfc-casefold-v1")
+
+    def refuse(value: str) -> tuple[str, str]:
+        try:
+            idx_fs.blind_index(value, idx_ctx, **idx_kw)
+        except InvalidArgument as exc:
+            return "INVALID_ARGUMENT", str(exc)
+        except Exception as exc:  # noqa: BLE001
+            return type(exc).__name__, str(exc)
+        return "NONE", ""
+
+    oob_id = "docs/09/7.1/lone-surrogate-refusal"
+    oob_method = ("two distinct unpaired surrogates passed as text to "
+                  "blind_index are both refused, with messages that name "
+                  "different code points")
+    high_code, high_msg = refuse("a\ud800b")
+    low_code, low_msg = refuse("a\udc00b")
+    if high_code != "INVALID_ARGUMENT" or low_code != "INVALID_ARGUMENT":
+        out.append({"id": oob_id, "status": "fail", "method": oob_method,
+                    "reason": f"expected INVALID_ARGUMENT for both, got "
+                              f"{high_code} and {low_code}"})
+    elif high_msg == low_msg:
+        # Same outcome is not enough: an identical diagnosis leaves the two
+        # values indistinguishable to the caller, which is the property the
+        # refusal exists to deny them.
+        out.append({"id": oob_id, "status": "fail", "method": oob_method,
+                    "reason": "both surrogates produced the same message; "
+                              "the refusal does not distinguish them"})
+    else:
+        out.append({"id": oob_id, "status": "pass", "method": oob_method})
     return out
 
 

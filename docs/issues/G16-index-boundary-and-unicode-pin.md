@@ -6,7 +6,11 @@
 
 **Status:** OPEN — tracker [#60](https://github.com/fieldseal-dev/fieldseal-spec/issues/60), posted 2026-08-25. **All four parts carry decided directions** (product owner, 2026-08-25); what remains is the normative edits, the vectors and one core change, not a decision.
 
-> **Part C landed 2026-08-25**, ahead of A and B: `docs/09` §7.1 carries *Pin currency (normative)*, and `tools/ucd-gen` has the fetch guards plus `test_generate.py` in CI. The 18.0 bump itself is **not** done and cannot be until the release stops redirecting. Parts A, B and D remain, which is why this issue is open. See `docs/07` §7, 2026-08-25. No spec or `docs/09` text carries a `[PROVISIONAL]` marker for any of this, and none is needed: nothing here waits on a reviewer.
+> **Part C landed 2026-08-25**, ahead of A and B: `docs/09` §7.1 carries *Pin currency (normative)*, and `tools/ucd-gen` has the fetch guards plus `test_generate.py` in CI. The 18.0 bump itself is **not** done and cannot be until the release stops redirecting.
+>
+> **Part A landed 2026-08-25.** `blindIndex` takes `string | Uint8Array`; §7.1's note is normative on an index API accepting text; `docs/10` and `docs/11` record the deliberate `encrypt`/`blind_index` asymmetry. **One vector obligation below could not be met and was rerouted** — see *Vector obligations*: the lone-surrogate case is not portably expressible, so it is an `out_of_band` entry in both cores' reports instead.
+>
+> Part B remains, which is why this issue is open. See `docs/07` §7, 2026-08-25. No spec or `docs/09` text carries a `[PROVISIONAL]` marker for any of this, and none is needed: nothing here waits on a reviewer.
 
 ## Why one issue
 
@@ -168,7 +172,7 @@ Nothing stored, under any part — there are no deployments, and no part changes
 
 ## Vector obligations
 
-- `blind-index/`, for **A**: a lone high surrogate and a lone low surrogate as text input, each asserting `INVALID_ARGUMENT` and — the point of the pair — asserting they are *distinguishable*, which the current TypeScript path cannot express; a value containing a legitimate U+FFFD, asserting it indexes normally and is not refused.
+- ~~`blind-index/`, for **A**: a lone high surrogate and a lone low surrogate as text input, each asserting `INVALID_ARGUMENT` and — the point of the pair — asserting they are *distinguishable*.~~ **Not expressible; rerouted 2026-08-25.** `blind-index/` keys its input as hex bytes and an unpaired surrogate has no UTF-8 encoding, so the case cannot be written in the family's shape. Widening that field to text would not rescue it either: **Go string literals may not hold a surrogate value and Rust's `String` is UTF-8 by invariant**, so two of the five target languages cannot carry the operand at all. It is now the `out_of_band` entry `docs/09/7.1/lone-surrogate-refusal` in both cores' conformance reports (docs/14 §4, on the G10 precedent), asserting both the refusal and its distinguishability, and a core in a language that cannot represent the operand records `not-run` rather than `pass`. The remaining part of this obligation — a value containing a legitimate U+FFFD, asserting it indexes normally and is not refused — *is* expressible and lands with **B**'s vectors in one suite bump.
 - `blind-index/`, for **B**: a value containing a code point unassigned in the pin under `on_unindexable = refuse`, asserting `INVALID_ARGUMENT`; the same value under `bucket`, asserting the reserved index constant. The reserved constant must be pinned by a vector, since two cores disagreeing on it is a silent cross-implementation miss of exactly the kind the suite exists to catch.
 - **C** has no new vector; the whole `blind-index/` family regenerates when the pin moves, which is the cost the policy makes explicit. The generator guard is covered by a unit test in `tools/ucd-gen`, not by a vector.
 - `docs/14` §4: until A and B close, each core's report declares `pinned_decisions.index-input-type` and `.on-unindexable`; both keys retire on closure.
