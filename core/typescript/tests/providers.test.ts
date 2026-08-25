@@ -6,7 +6,9 @@
 
 import { describe, expect, it } from "vitest";
 import { DekCache } from "../src/cache.ts";
-import { DerivedKeyProvider, EnvelopeKeyProvider, InMemoryKeyDirectory, StaticKeyProvider, type Wrapper } from "../src/keyprovider.ts";
+import { DerivedKeyProvider, EnvelopeKeyProvider, InMemoryKeyDirectory, StaticKeyProvider, type EncryptionKey, type KeyProvider, type Wrapper } from "../src/keyprovider.ts";
+import type { ResolvedContext } from "../src/context.ts";
+import type { EnvelopeHeader } from "../src/envelope.ts";
 import { Fieldseal, SUITE_FF01, type Warning } from "../src/index.ts";
 import { bytes, codeOf, COLUMN, CTX, DEK, INDEX_KEY, KEY_ID, makeClient, messageOf, TABLE, withEnv } from "./helpers.ts";
 
@@ -368,5 +370,85 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
       expect(out.buffer.byteLength).toBe(out.length);
       expect(out.byteOffset).toBe(0);
     }
+  });
+});
+
+describe("key-material ownership (docs/09 §8.1; G17, issue #67)", () => {
+  const IDX_CTX = { ...CTX, purpose: "index:exact" };
+  const INDEX = {
+    tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid,
+    idf: "hmac-sha512" as const, normalize: "identity" as const,
+    truncateBits: 15, projectedPopulation: 65536,
+  };
+
+  /**
+   * A provider that hands out references to its own buffers instead of copies.
+   * §8.1 permits this -- the three shipped providers return copies, but nothing
+   * obliges a custom one to, and returning a reference is the obvious efficient
+   * implementation for a provider backed by a key cache it already has.
+   *
+   * If the core erased what a provider returned, every assertion below would
+   * fail against 32 zero bytes, and in a real deployment the damage would
+   * surface one operation later as COMMITMENT_INVALID on a read of data
+   * written moments earlier -- a decrypt-side error for a write-side memory
+   * bug. That is the regression this block exists to hold.
+   */
+  class BorrowingProvider implements KeyProvider {
+    readonly dek = new Uint8Array(DEK);
+    readonly indexKey = new Uint8Array(INDEX_KEY);
+    readonly keyId = new Uint8Array(KEY_ID);
+    encryptionKey(ctx: ResolvedContext): EncryptionKey {
+      return { key: ctx.purpose === "encrypt" ? this.dek : this.indexKey, keyId: this.keyId };
+    }
+    decryptionKeys(_header: EnvelopeHeader): Uint8Array[] {
+      return [this.dek];
+    }
+  }
+
+  it("encrypt() leaves the material encryptionKey returned intact", () => {
+    const p = new BorrowingProvider();
+    makeClient({ keyProvider: p }).encrypt(PT, CTX);
+    expect(p.dek).toEqual(DEK);
+    expect(p.keyId).toEqual(KEY_ID);
+  });
+
+  it("a second write under the same provider still round-trips", () => {
+    // The failure mode is not visible on the write that does the damage.
+    const p = new BorrowingProvider();
+    const c = makeClient({ keyProvider: p });
+    c.encrypt(PT, CTX);
+    expect(Buffer.from(c.decrypt(c.encrypt(PT, CTX), CTX)).equals(Buffer.from(PT))).toBe(true);
+  });
+
+  it("decrypt() leaves the candidates decryptionKeys returned intact", () => {
+    const p = new BorrowingProvider();
+    const c = makeClient({ keyProvider: p });
+    const env = c.encrypt(PT, CTX);
+    expect(Buffer.from(c.decrypt(env, CTX)).equals(Buffer.from(PT))).toBe(true);
+    expect(p.dek).toEqual(DEK);
+    // ... and the same envelope decrypts again, which it could not if the
+    // first read had consumed the key it borrowed.
+    expect(Buffer.from(c.decrypt(env, CTX)).equals(Buffer.from(PT))).toBe(true);
+  });
+
+  it("blindIndex() leaves the index key intact, and stays deterministic", () => {
+    const p = new BorrowingProvider();
+    const c = makeClient({ keyProvider: p, indexes: [INDEX] });
+    const first = c.blindIndex(PT, IDX_CTX);
+    expect(p.indexKey).toEqual(INDEX_KEY);
+    expect(c.blindIndex(PT, IDX_CTX)).toEqual(first);
+  });
+
+  it("the shipped providers return copies, so a caller's own buffer is never aliased", () => {
+    // Not required by §8.1 -- a provider MAY return a reference. It is the
+    // reason the pre-G17 `ek.key.fill(0)` never showed up in this suite, and
+    // asserting it keeps that accident from being reintroduced as a silent
+    // dependency of some other test.
+    const p = new StaticKeyProvider({ dek: DEK, keyId: KEY_ID, indexKey: INDEX_KEY });
+    const a = p.encryptionKey({ ...CTX, suiteId: SUITE_FF01 });
+    expect(a.key).toEqual(DEK);
+    expect(a.key).not.toBe(DEK);
+    a.key.fill(0);
+    expect(DEK).toEqual(new Uint8Array(32).map((_, i) => i));
   });
 });

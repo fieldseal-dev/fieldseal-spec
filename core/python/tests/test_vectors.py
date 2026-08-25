@@ -45,3 +45,21 @@ def test_no_two_vectors_share_an_expected_envelope():
         env = v["expected"]["envelope"]
         assert env not in seen, f"{v['id']} duplicates {seen.get(env)}"
         seen[env] = v["id"]
+
+def test_carries_every_pinned_decision_key_docs14_requires():
+    """docs/14 §4 fixes the key set so two reports can be diffed key by key.
+    The TypeScript harness has asserted this since G15; the Python one did
+    not, which is how a report could have drifted a key without any test
+    noticing (G17, issue #67)."""
+    for key in ("decrypt-order", "aad-mismatch", "api-boundary-order",
+                "unimplemented-registered-suite", "commitment-construction",
+                "key-material-ownership"):
+        assert REPORT["pinned_decisions"].get(key), key
+
+
+def test_does_not_declare_decisions_the_spec_has_taken_over():
+    """G15 (#48) closed these four into the text; a report still declaring one
+    would misreport the core as making a choice it no longer makes."""
+    for key in ("unknown-format-version-set", "provisional-arming",
+                "rotate-in-permissive", "normalizer-text-over-bytes"):
+        assert key not in REPORT["pinned_decisions"], key
