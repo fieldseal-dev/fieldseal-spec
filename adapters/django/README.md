@@ -135,6 +135,8 @@ not the target matrix in `docs/12` §6.
 | `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
 | `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
 | `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
+| A row written here, read by the TypeScript core | ✅ CI cross matrix; `django` is a producer | `tests/test_cross_produce.py` |
+| A blind index written here, derived by another core | ❌ next cross-language increment | — |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 
 ### Equality, and the part that is not the rewrite

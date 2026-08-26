@@ -164,7 +164,13 @@ Shipped in the package README, kept in sync with tests by generating both from o
 - **Ordering regression:** a model with index-before-encrypted declaration must fail E001; a model without the check bypassed must produce correct sibling values under `bulk_create`.
 - **Candidate re-verification:** seed two plaintexts that collide at the configured truncation length (construct via brute force at small `b` in the test), assert the collision row is filtered out.
 - **Permissive-mode metric:** plaintext read increments the signal exactly once per value.
-- **Cross-language sharing test (the point of the project):** a Postgres row written by this adapter is decrypted by the TypeScript core, and vice versa, using the `cross/` key material — this is the adapter-level echo of the CI cross job.
+- **Cross-language sharing test (the point of the project) — implemented 2026-08-26.** `adapters/django/tests/cross_produce.py` writes rows through the **real ORM path** (real `save()`, runtime CSPRNG, no test-mode injection), reads the raw column back through a database cursor, and emits a standard `fieldseal-vectors/cross/v1` document. **Every existing consumer reads it unmodified**, so the adapter joins the N×N matrix as one more producer — `django` is now a third value of the `cross-produce` matrix, and both core consumers take `cross-django.json` alongside the others.
+
+  **What this covers that no core test can.** Three decisions between an application value and the stored column belong to the adapter: the **codec's rendering** (`IntegerField(45)` becoming `b"45"` is a choice, and a consumer expecting an integer encoding would decrypt successfully and read the wrong value), the **storage form** (`binary` versus `base64`), and **context assembly** from model declarations plus the tenant contextvar (a consumer reconstructing it differently gets `COMMITMENT_INVALID` — a decrypt-side error for a write-side configuration mismatch). A core round trip sees none of them.
+
+  The local suite runs the producer and decrypts it with a client built **independently** from `vectors/keys/`, so a case passes only if the stored bytes are readable from the shared key material alone. The true cross-language leg needs Node and therefore runs in CI. Two runs must also disagree on every envelope, since a producer that had drifted onto the injection seam would otherwise pass everything (spec §4.4).
+
+  **Still to do:** the *index* half — a blind index written by Django, derived identically by the TypeScript core. It is the more valuable assertion of the two, because a mismatched index is a silent lookup miss rather than an error, and it needs the `cross/v1` schema to carry the index declaration. Tracked as the next cross-language increment rather than half-done here.
 
 ## 9. Deliberate non-goals
 
