@@ -127,6 +127,46 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                  "be a silent change to behaviour you specified.",
             obj=model, id="fieldseal.E008"))
 
+    # E009 -- Meta.ordering / Meta.get_latest_by naming an encrypted column
+    # (G20). The queryset's order_by() refusal cannot see either: the SQL
+    # compiler applies Meta.ordering directly, so a declaration here makes
+    # every unordered query on the model silently sort by envelope bytes --
+    # a stable-looking order that means nothing.
+    for model in {m for m, _ in pairs}:
+        meta = model._meta
+        for entry in tuple(meta.ordering or ()):
+            field = _encrypted_ordering_ref(model, entry)
+            if field is None:
+                continue
+            issues.append(Error(
+                f"{model._meta.label} declares Meta.ordering over the "
+                f"encrypted column {field.name!r}.",
+                hint="The column stores a randomized envelope, so every "
+                     "query on this model would silently sort by envelope "
+                     "bytes -- and the queryset-level refusal cannot see "
+                     "Meta.ordering, which the SQL compiler applies "
+                     "directly (spec §7.10 lists ORDER BY over ciphertext "
+                     "as unsupported; §10.2 requires refusing over "
+                     "degrading, G20). Order by a plaintext column, or drop "
+                     "the declaration and sort in Python after decryption.",
+                obj=model, id="fieldseal.E009"))
+        latest_by = getattr(meta, "get_latest_by", None)
+        entries = (tuple(latest_by) if isinstance(latest_by, (list, tuple))
+                   else (latest_by,) if latest_by else ())
+        for entry in entries:
+            field = _encrypted_ordering_ref(model, entry)
+            if field is None:
+                continue
+            issues.append(Error(
+                f"{model._meta.label} declares Meta.get_latest_by over the "
+                f"encrypted column {field.name!r}.",
+                hint="earliest()/latest() would order by envelope bytes and "
+                     "return an arbitrary row presented as the extreme; the "
+                     "queryset refuses at call time (G20), so every "
+                     "earliest()/latest() on this model raises. Point "
+                     "get_latest_by at a plaintext column.",
+                obj=model, id="fieldseal.E009"))
+
     # E001 -- declaration order. `SQLInsertCompiler.as_sql` iterates fields in
     # declaration order, so an index sibling declared before its source reads
     # a plaintext attribute that has not been set yet.
@@ -183,6 +223,13 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
     # §9 makes admin search a non-goal; this is the warning that tells people
     # so at startup rather than on the first search.
     issues.extend(_check_admin_search_fields(pairs, admin_registry))
+
+    # W005 -- an encrypted column the admin changelist would order by (G20):
+    # `ModelAdmin.ordering`, or a sortable changelist column. Either path
+    # emits order_by() over the encrypted column, which the queryset now
+    # refuses -- so the failure is loud, but it arrives as a 500 on a page
+    # view (or a header click) instead of at startup.
+    issues.extend(_check_admin_ordering(pairs, admin_registry))
 
     # E003 -- surface the core's construction-time gates at startup.
     #
@@ -383,6 +430,107 @@ def _names_in_expressions(expressions: Any, name: str) -> bool:
     return False
 
 
+def _resolve_admin_registry(admin_registry: Any) -> Any:
+    """The admin site registry, or None when admin is absent or not ready.
+
+    `django.contrib.admin` is optional, and merely importing it is not
+    enough to touch its registry: reading `site._registry` calls
+    `apps.get_app_config("admin")`, which raises `LookupError` when the app
+    is not installed. Ask the app registry first.
+    """
+    if admin_registry is not None:
+        return admin_registry
+    from django.apps import apps as django_apps
+
+    if not django_apps.is_installed("django.contrib.admin"):
+        return None
+    try:
+        from django.contrib import admin
+
+        return admin.sites.site._registry
+    except Exception:  # noqa: BLE001 - admin present but not ready
+        return None
+
+
+def _encrypted_ordering_ref(model: Any, entry: Any) -> Any:
+    """The `Encrypted` field an ordering entry resolves to, or None.
+
+    Uses the queryset module's own walkers, so a declaration passes this
+    check exactly when the queryset would accept it at runtime -- a second
+    walker that drifted would bless a declaration the runtime refuses.
+    """
+    from .fields import Encrypted
+    from .query import iter_reference_names, resolve_path
+
+    for name in iter_reference_names(entry):
+        field, _, _ = resolve_path(model, name)
+        if isinstance(field, Encrypted):
+            return field
+    return None
+
+
+def _check_admin_ordering(pairs: list[Any],
+                          admin_registry: Any = None) -> list[Any]:
+    """W005: an encrypted column the admin changelist would order by (G20).
+
+    Two doors: `ModelAdmin.ordering` (every changelist request) and a
+    sortable changelist column (a header click). Both emit `order_by()` on
+    the encrypted column, which the queryset refuses -- a 500 where the
+    person expected a sorted page. A `list_display` entry is sortable when
+    it is a model field, or a callable/attribute carrying
+    `admin_order_field`, unless `sortable_by` excludes it.
+    """
+    admin_registry = _resolve_admin_registry(admin_registry)
+    if not admin_registry:
+        return []
+
+    encrypted_models = {model for model, _ in pairs}
+    issues: list[Any] = []
+    for model, model_admin in admin_registry.items():
+        if model not in encrypted_models:
+            continue
+        for entry in getattr(model_admin, "ordering", ()) or ():
+            field = _encrypted_ordering_ref(model, entry)
+            if field is None:
+                continue
+            issues.append(Warning(
+                f"{type(model_admin).__name__}.ordering names the encrypted "
+                f"column {model._meta.label}.{field.name}.",
+                hint="Every changelist request orders by it, and ordering "
+                     "over ciphertext is refused (G20) -- so the page "
+                     "raises instead of rendering. Order by a plaintext "
+                     "column.",
+                obj=model_admin, id="fieldseal.W005"))
+        sortable_by = getattr(model_admin, "sortable_by", None)
+        for entry in getattr(model_admin, "list_display", ()) or ():
+            if sortable_by is not None and entry not in sortable_by:
+                continue
+            target = None
+            if isinstance(entry, str):
+                attr = getattr(model_admin, entry, None)
+                if attr is None:
+                    attr = getattr(model, entry, None)
+                order_field = getattr(attr, "admin_order_field", None)
+                target = order_field if order_field is not None else entry
+            elif callable(entry):
+                target = getattr(entry, "admin_order_field", None)
+            if target is None:
+                continue
+            field = _encrypted_ordering_ref(model, target)
+            if field is None:
+                continue
+            issues.append(Warning(
+                f"{model._meta.label}.{field.name} is encrypted and "
+                f"sortable in {type(model_admin).__name__}'s changelist "
+                f"(via {entry!r}).",
+                hint="Clicking the column header emits order_by() over the "
+                     "encrypted column, which is refused (G20) -- a 500 on "
+                     "a click. Exclude the column with sortable_by, or "
+                     "point admin_order_field at a plaintext column.",
+                obj=model_admin, id="fieldseal.W005"))
+    return issues
+
+
 def _check_admin_search_fields(pairs: list[Any],
                                admin_registry: Any = None) -> list[Any]:
     """W001: an encrypted field in `ModelAdmin.search_fields`.
@@ -393,21 +541,7 @@ def _check_admin_search_fields(pairs: list[Any],
     `docs/12` §9 lists admin search integration as a non-goal; this is the
     warning that says so where someone will read it.
     """
-    if admin_registry is None:
-        # `django.contrib.admin` is optional, and merely importing it is not
-        # enough to touch its registry: reading `site._registry` calls
-        # `apps.get_app_config("admin")`, which raises `LookupError` when the
-        # app is not installed. Ask the app registry first.
-        from django.apps import apps as django_apps
-
-        if not django_apps.is_installed("django.contrib.admin"):
-            return []
-        try:
-            from django.contrib import admin
-
-            admin_registry = admin.sites.site._registry
-        except Exception:  # noqa: BLE001 - admin present but not ready
-            return []
+    admin_registry = _resolve_admin_registry(admin_registry)
     if not admin_registry:
         return []
 

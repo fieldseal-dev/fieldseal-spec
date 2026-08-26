@@ -4,7 +4,7 @@
 **Blocks:** No stored byte, no derived value, no vector in any family. Django adapter correctness: the surface has shipped silent since L1 (#73) and through L2 (#79).
 **Found:** 2026-08-26, in the PR #79 review round — the sweep asked "what does the database answer from bytes the adapter never showed it?" of every `LIMIT` path; this is the same question asked of `ORDER BY`, `GROUP BY` and `DISTINCT`, recorded then as a follow-up.
 
-**Status:** OPEN — tracker [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80), posted 2026-08-26.
+**Status:** CLOSED 2026-08-26, the day it was filed — tracker [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80). Closed as filed plus one addition: aggregate and function expressions over a ciphertext column joined the refusal set after `aggregate(Min("age"))` over `{30, 40}` was measured returning `40` — the byte-wise minimum *envelope* decrypts cleanly to an arbitrary row's value, presented as the minimum, with nothing raised. See the closure note in `docs/issues/README.md` and the `docs/07` §7 log entry.
 
 ## Gap
 

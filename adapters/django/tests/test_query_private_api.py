@@ -179,6 +179,45 @@ def test_async_methods_still_delegate_to_the_sync_overrides():
         )
 
 
+def test_meta_ordering_is_still_applied_inside_the_compiler():
+    """E009 exists because `Meta.ordering` never passes through
+    `QuerySet.order_by()` -- the compiler reads it directly, so the
+    queryset-level G20 refusal cannot see it. If Django reroutes it, E009
+    may become redundant and the runtime refusal sufficient."""
+    from django.db.models.sql.compiler import SQLCompiler
+
+    assert "meta.ordering" in inspect.getsource(SQLCompiler._order_by_pairs), (
+        "SQLCompiler._order_by_pairs no longer reads meta.ordering; "
+        "re-verify how Meta.ordering reaches the SQL and whether "
+        "fieldseal.E009 still covers the only unguarded door."
+    )
+
+
+def test_earliest_still_reads_get_latest_by():
+    """The earliest()/latest() overrides mirror Django's fallback to
+    `Meta.get_latest_by` when no fields are passed; if Django stops reading
+    it, the mirror should stop too."""
+    assert "get_latest_by" in inspect.getsource(QuerySet._earliest)
+
+
+def test_values_select_and_distinct_are_where_the_grouping_checks_look():
+    """The G20 grouping/DISTINCT refusals read `query.values_select` (what a
+    values() projection groups by) and `query.distinct`. Both are internal
+    Query attributes; this pins that they still mean what the checks
+    assume."""
+    qs = Patient.objects.all().values("created")
+    assert qs.query.values_select == ("created",), (
+        "values() no longer records its projection in query.values_select; "
+        "the GROUP BY-over-ciphertext refusal in fieldseal_django.query is "
+        "reading the wrong place."
+    )
+    assert Patient.objects.all().query.distinct is False
+    assert Patient.objects.all().distinct().query.distinct is True, (
+        "distinct() no longer sets query.distinct; the DISTINCT-over-"
+        "ciphertext refusal is reading the wrong place."
+    )
+
+
 def test_exact_none_is_still_rewritten_to_isnull():
     """`filter(field=None)` records no obligation because Django itself
     rewrites `exact=None` to `isnull`, which compiles to a *precise*

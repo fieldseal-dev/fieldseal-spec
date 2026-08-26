@@ -31,6 +31,13 @@ inherit a wrong answer. The dividing line throughout: a predicate is
 `__isnull` or `filter(field=None)` -- is answered exactly by the envelope
 column itself (NULL plaintext is stored as NULL, never as an encrypted
 placeholder), so it is served with no obligation, in any combination.
+
+**A second refusal family, G20 ([#80]), is orthogonal to verification:** SQL
+that *computes on envelope bytes* -- `ORDER BY`, `GROUP BY`, `DISTINCT`,
+aggregate and function expressions -- is meaningless on every queryset,
+obligations or none, and `.candidates()` does not lift it. See the section
+comment above `order_by` for what was measured before those refusals were
+written.
 """
 
 from __future__ import annotations
@@ -91,6 +98,63 @@ def _normalize_or_none(normalizer: str, value: bytes) -> bytes | None:
         return None
 
 
+def resolve_path(model: Any, key: str) -> tuple[Any, str, bool]:
+    """Resolve `key` to `(terminal field, lookup name, crossed a relation)`.
+
+    `email__in` is `(email, "in", False)`; `patient__email` walks the
+    relation (forward or reverse) and is `(email, "exact", True)`. A part
+    that is not a field on the model reached so far ends the walk and names
+    the lookup; an unresolvable first part (an annotation, `pk`) returns no
+    field and the path is not ours to judge. Module-level because the system
+    checks (E009, W005) walk `Meta.ordering` and admin declarations with the
+    same rules -- a second walker that drifted would let a declaration
+    through that the queryset refuses at runtime.
+    """
+    parts = key.split("__")
+    field: Any = None
+    traversed = False
+    i = 0
+    while i < len(parts):
+        try:
+            f = model._meta.get_field(parts[i])
+        except Exception:  # noqa: BLE001 - FieldDoesNotExist and friends
+            break
+        field = f
+        i += 1
+        if f.is_relation and f.related_model is not None and i < len(parts):
+            model = f.related_model
+            traversed = True
+            continue
+        break
+    lookup = parts[i] if i < len(parts) else "exact"
+    return field, lookup, traversed
+
+
+def iter_reference_names(item: Any) -> Any:
+    """The column paths an ordering or annotation item refers to.
+
+    A name string yields itself with any `-`/`+` ordering prefix stripped
+    (`"?"` -- random order -- refers to nothing); an expression yields the
+    name of every `F(...)` leaf in its tree, which covers `F("email")`,
+    `F("email").asc()`, `Lower("email")`, `Sum("age")` and their nestings.
+    """
+    from django.db.models import F
+
+    if isinstance(item, str):
+        if item != "?":
+            yield item.lstrip("-+")
+        return
+    stack = [item]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, F):
+            yield node.name
+            continue
+        getter = getattr(node, "get_source_expressions", None)
+        if getter is not None:
+            stack.extend(getter())
+
+
 class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     """A queryset that re-verifies blind-index candidates (spec §7.5)."""
 
@@ -128,13 +192,17 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         truncated index, so some rows will not hold the value asked for. The
         caller takes on §7.5.
 
-        Every refusal below is lifted, including the filter-time ones
-        (`exclude`, `Q` under OR or negation): the SQL semantics they refuse
-        are exactly what this method hands over. The one thing it cannot lift
-        is a relation traversal onto another model's encrypted column, which
-        is refused at compile time for every queryset -- the opt-in there is
+        Every *verification* refusal below is lifted, including the
+        filter-time ones (`exclude`, `Q` under OR or negation): the SQL
+        semantics they refuse are exactly what this method hands over. Two
+        families are not lifted, because there is nothing meaningful to
+        accept: a relation traversal onto another model's encrypted column
+        (refused at compile time for every queryset -- the opt-in there is
         the owning model's own `.candidates()`, embedded:
-        `filter(rel__in=Owner.objects.filter(col=v).candidates())`.
+        `filter(rel__in=Owner.objects.filter(col=v).candidates())`), and the
+        G20 family -- ordering, grouping, DISTINCT or aggregation over
+        ciphertext -- where the database would be computing on bytes that
+        carry no order or identity at all.
         """
         clone: FieldsealQuerySet = self._chain()
         clone._fieldseal_verify = False
@@ -211,33 +279,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         return self._obligation(field, lookup, value, key)
 
     def _resolve(self, key: str) -> tuple[Any, str, bool]:
-        """Resolve `key` to `(terminal field, lookup name, crossed a relation)`.
-
-        `email__in` is `(email, "in", False)`; `patient__email` walks the
-        relation (forward or reverse) and is `(email, "exact", True)`. A part
-        that is not a field on the model reached so far ends the walk and
-        names the lookup; an unresolvable first part (an annotation, `pk`)
-        returns no field and the predicate is not ours to judge.
-        """
-        parts = key.split("__")
-        model = self.model
-        field: Any = None
-        traversed = False
-        i = 0
-        while i < len(parts):
-            try:
-                f = model._meta.get_field(parts[i])
-            except Exception:  # noqa: BLE001 - FieldDoesNotExist and friends
-                break
-            field = f
-            i += 1
-            if f.is_relation and f.related_model is not None and i < len(parts):
-                model = f.related_model
-                traversed = True
-                continue
-            break
-        lookup = parts[i] if i < len(parts) else "exact"
-        return field, lookup, traversed
+        return resolve_path(self.model, key)
 
     def _refuse_traversal(self, key: str, field: Any) -> None:
         owner = field.model.__name__
@@ -529,6 +571,10 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     def aggregate(self, *args: Any, **kwargs: Any) -> Any:
         if self._verifying:
             self._refuse_sql_answered("aggregate")
+        for expr in (*args, *kwargs.values()):
+            hit = self._encrypted_ref(expr)
+            if hit is not None:
+                self._refuse_ciphertext_compute(hit, "aggregate")
         return super().aggregate(*args, **kwargs)
 
     def update(self, **kwargs: Any) -> int:
@@ -545,11 +591,13 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     def earliest(self, *fields: Any) -> Any:
         if self._verifying:
             self._refuse_limit_one("earliest")
+        self._refuse_encrypted_get_latest("earliest", fields)
         return super().earliest(*fields)
 
     def latest(self, *fields: Any) -> Any:
         if self._verifying:
             self._refuse_limit_one("latest")
+        self._refuse_encrypted_get_latest("latest", fields)
         return super().latest(*fields)
 
     def _refuse_limit_one(self, method: str) -> None:
@@ -560,6 +608,193 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             "failure first() exists to avoid, behind a different name. Use "
             ".order_by(field).first() (or .last()), which scan verified "
             "rows, or .candidates() for bucket semantics."
+        )
+
+    # -- ordering, grouping and computation over ciphertext (G20, #80) -----
+    #
+    # A different refusal family from the ones above. Those protect §7.5
+    # re-verification, apply only while `_verifying`, and are lifted by
+    # `.candidates()`. These refuse SQL that *computes on envelope bytes* --
+    # sorting, grouping, deduplicating, aggregating -- which is meaningless
+    # on every queryset, obligations or none, and `.candidates()` does not
+    # lift them: bucket semantics are a meaningful thing to accept for a
+    # filter; ciphertext order has no semantics to accept. Measured before
+    # the refusals were written: MIN() over ciphertext returns whichever
+    # envelope sorts first (decrypted cleanly, presented as the minimum),
+    # GROUP BY returns one group per row under keys that print identically,
+    # ORDER BY produces a stable-looking order with no meaning.
+
+    def order_by(self, *field_names: Any) -> Any:
+        """Refuses ordering that would sort envelope bytes.
+
+        Spec §7.10 lists ORDER BY over ciphertext as unsupported; §10.2
+        requires refusing over degrading. The index *sibling* stays
+        orderable -- deterministic, documented as meaningless, occasionally
+        useful as a stable tiebreaker. What this method cannot see is
+        `Meta.ordering`, which the SQL compiler applies directly without
+        calling it -- system check E009 covers the declaration.
+        """
+        for item in field_names:
+            hit = self._encrypted_ref(item)
+            if hit is not None:
+                self._refuse_ciphertext_order(hit, "order_by")
+        return super().order_by(*field_names)
+
+    def distinct(self, *field_names: Any) -> Any:
+        for item in field_names:
+            hit = self._encrypted_ref(item)
+            if hit is not None:
+                self._refuse_distinct_over_ciphertext(hit[1])
+        if not field_names:
+            name = self._encrypted_values_select()
+            if name is not None:
+                self._refuse_distinct_over_ciphertext(name)
+        return super().distinct(*field_names)
+
+    def annotate(self, *args: Any, **kwargs: Any) -> Any:
+        self._refuse_ciphertext_computation(args, kwargs, "annotate")
+        return super().annotate(*args, **kwargs)
+
+    def alias(self, *args: Any, **kwargs: Any) -> Any:
+        self._refuse_ciphertext_computation(args, kwargs, "alias")
+        return super().alias(*args, **kwargs)
+
+    def _refuse_ciphertext_computation(self, args: Any, kwargs: Any,
+                                       method: str) -> None:
+        """Two hazards: an expression computing over an encrypted column,
+        and an aggregate grouping by one (`values("email").annotate(...)`
+        makes the values projection the GROUP BY)."""
+        from django.db.models import F
+
+        exprs = [*args, *kwargs.values()]
+        for expr in exprs:
+            if isinstance(expr, F):
+                # A bare column reference only selects the column, and the
+                # converter decrypts what comes back -- exact, so allowed.
+                continue
+            hit = self._encrypted_ref(expr)
+            if hit is not None:
+                self._refuse_ciphertext_compute(hit, method)
+        if any(getattr(e, "contains_aggregate", False) for e in exprs):
+            name = self._encrypted_values_select()
+            if name is not None:
+                self._refuse_ciphertext_grouping(name, method)
+
+    def _refuse_projection_hazards(self, method: str,
+                                   items: tuple[Any, ...]) -> None:
+        """values()/values_list() hazards beyond projection itself.
+
+        The projection alone is legitimate: the column comes back and the
+        converter decrypts it. Refused here are (a) an expression argument
+        that computes over the ciphertext, and (b) a projection under
+        DISTINCT, where dedup runs on envelope bytes and removes nothing.
+        """
+        from django.db.models import F
+
+        from .fields import Encrypted
+
+        for item in items:
+            if not isinstance(item, (str, F)):
+                hit = self._encrypted_ref(item)
+                if hit is not None:
+                    self._refuse_ciphertext_compute(hit, method)
+        if not self.query.distinct:
+            return
+        names = [i for i in items if isinstance(i, str)]
+        names += [i.name for i in items if isinstance(i, F)]
+        if not items:
+            names = [f.name for f in self.model._meta.concrete_fields]
+        for name in names:
+            field, _, _ = resolve_path(self.model, name)
+            if isinstance(field, Encrypted):
+                self._refuse_distinct_over_ciphertext(name)
+
+    def _encrypted_ref(self, item: Any) -> tuple[Any, str] | None:
+        """The `(Encrypted field, path)` an ordering or expression item
+        references, or None."""
+        from .fields import Encrypted
+
+        for name in iter_reference_names(item):
+            field, _, _ = resolve_path(self.model, name)
+            if isinstance(field, Encrypted):
+                return field, name
+        return None
+
+    def _encrypted_values_select(self) -> str | None:
+        from .fields import Encrypted
+
+        for name in getattr(self.query, "values_select", ()) or ():
+            field, _, _ = resolve_path(self.model, str(name))
+            if isinstance(field, Encrypted):
+                return str(name)
+        return None
+
+    def _refuse_encrypted_get_latest(self, method: str,
+                                     fields: tuple[Any, ...]) -> None:
+        names: tuple[Any, ...] = fields
+        if not names:
+            latest_by = getattr(self.model._meta, "get_latest_by", None)
+            if not latest_by:
+                return
+            names = (tuple(latest_by)
+                     if isinstance(latest_by, (list, tuple))
+                     else (latest_by,))
+        for item in names:
+            hit = self._encrypted_ref(item)
+            if hit is not None:
+                self._refuse_ciphertext_order(hit, method)
+
+    def _refuse_ciphertext_order(self, hit: tuple[Any, str],
+                                 method: str) -> None:
+        field, name = hit
+        raise FieldsealNotSupported(
+            f"`{method}({name!r})` is not available: "
+            f"{field.model.__name__}.{field.name} stores a randomized "
+            "envelope, so the database would sort by envelope bytes -- an "
+            "order that is stable per row and means nothing, which is worse "
+            "than failing because it looks deliberate. Spec §7.10 lists "
+            "ORDER BY over ciphertext as unsupported; §10.2 requires "
+            "refusing over degrading (G20). Materialize and sort in Python "
+            "after decryption -- sorted(qs, key=...) -- order by a "
+            "plaintext column, or order by the index sibling for a "
+            "deterministic (and documented meaningless) tiebreaker."
+        )
+
+    def _refuse_ciphertext_compute(self, hit: tuple[Any, str],
+                                   method: str) -> None:
+        field, name = hit
+        raise FieldsealNotSupported(
+            f"`{method}()` references the encrypted column "
+            f"{field.model.__name__}.{field.name} inside an expression, so "
+            "the database would compute over envelope bytes. Measured, not "
+            "hypothetical: MIN() returns whichever envelope sorts first -- "
+            "it decrypts cleanly and is presented as the minimum -- SUM() "
+            "produces garbage the read path then misreports as "
+            "NOT_CIPHERTEXT, COUNT(DISTINCT) counts envelopes rather than "
+            "values, LENGTH() reports ciphertext size. Materialize the rows "
+            "and compute in Python after decryption; a non-null count is "
+            f".filter({name}__isnull=False).count()."
+        )
+
+    def _refuse_ciphertext_grouping(self, name: str, method: str) -> None:
+        raise FieldsealNotSupported(
+            f"`{method}()` would GROUP BY the encrypted column {name!r}, "
+            "which is in this queryset's values() projection: every "
+            "randomized envelope is its own group, so the aggregates come "
+            "back wrong -- one group per row -- under group keys that "
+            "decrypt and print identically. Group in Python after "
+            "decryption (sort the decrypted values, then "
+            "itertools.groupby), or group by a plaintext column."
+        )
+
+    def _refuse_distinct_over_ciphertext(self, name: str) -> None:
+        raise FieldsealNotSupported(
+            f"`distinct()` over the encrypted column {name!r} deduplicates "
+            "nothing: a randomized suite writes a different envelope for "
+            "every row, so each one is already distinct and rows holding "
+            "the same value come back as duplicates -- silently. "
+            "Deduplicate in Python after decryption, or apply distinct() "
+            "to a plaintext projection."
         )
 
     def resolve_expression(self, *args: Any, **kwargs: Any) -> Any:
@@ -623,11 +858,14 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     def values(self, *fields: Any, **expressions: Any) -> Any:
         if self._verifying:
             self._refuse_projection("values")
+        self._refuse_projection_hazards(
+            "values", (*fields, *expressions.values()))
         return super().values(*fields, **expressions)
 
     def values_list(self, *fields: Any, **kwargs: Any) -> Any:
         if self._verifying:
             self._refuse_projection("values_list")
+        self._refuse_projection_hazards("values_list", fields)
         return super().values_list(*fields, **kwargs)
 
     def only(self, *fields: Any) -> Any:
