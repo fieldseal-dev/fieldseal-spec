@@ -131,7 +131,12 @@ not the target matrix in `docs/12` §6.
 | `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands | `test_combinators_refuse_on_either_side` |
 | Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too | `TestRelationTraversal` |
 | `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted (filter-time ones included; the cross-model traversal is the exception — embed the owner's `.candidates()` instead) | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals` |
-| `order_by()` / `earliest("f")` / `values().annotate()` grouping / `distinct("f")` over an encrypted column | ⚠️ **KNOWN GAP — currently silently meaningless** (orders/groups envelope bytes; grouped counts are wrong numbers). Tracked as [G20 #80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80); refusals land with its closure | — |
+| `order_by()` over an encrypted column — direct, relation path, or expression | 🛑 refused on **every** queryset (G20) — sorts envelope bytes; `.candidates()` does not lift it | `TestOrderBy` |
+| `earliest()`/`latest()` naming one (or via `Meta.get_latest_by`) | 🛑 refused (G20) — the same ordering through a different door | `TestEarliestLatest` |
+| Aggregate/function expressions over one (`Min`, `Sum`, `Count`, `Length`, …) | 🛑 refused (G20) — measured: `Min("age")` over {30, 40} returned **40**, decrypted cleanly | `TestAggregates` |
+| `values(enc).annotate(<aggregate>)` grouping / `distinct` over an encrypted projection | 🛑 refused (G20) — one group per row; dedup removes nothing | `TestGroupingAndDistinct` |
+| Bare `F("enc")` annotation · `order_by("enc_bidx")` sibling ordering · bare `distinct()` on full rows | ✅ allowed — exact select-and-decrypt; deterministic documented-meaningless tiebreaker; full-row distinct is pk-keyed and cannot dedupe wrongly, only no-op | `TestAggregates`, `TestOrderBy`, `TestGroupingAndDistinct` |
+| `Meta.ordering`/`get_latest_by` naming one · admin sortable encrypted column | 🛑 **E009** (Error) / ⚠️ **W005** (Warning) — the compiler applies these where no queryset refusal can see them | `TestE009`, `TestW005` |
 | Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
 | Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
 | **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
@@ -178,6 +183,18 @@ that needs none of this: `filter(field=None)` and `__isnull` compile to
 `IS [NOT] NULL` on the envelope column itself, which is exact. `.candidates()`
 opts out of all of it and hands you bucket semantics, documented as
 unverified.
+
+**A second refusal family does not depend on filtering at all** (G20,
+[#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that
+*computes on envelope bytes* — `order_by()`, `earliest()`/`latest()`,
+`distinct`, grouping, aggregate and function expressions over an encrypted
+column — is refused on every queryset, and `.candidates()` does **not** lift
+it, because there is nothing meaningful to accept: measured before the
+refusals were written, `Min("age")` over `{30, 40}` returned `40` (the
+byte-wise minimum *envelope*, decrypted cleanly and presented as the
+minimum), and grouping returned one group per row under keys that print
+identically. A bare `F("field")` annotation stays allowed — it only selects,
+and the converter decrypts what comes back.
 
 **Equality is the column's normalizer's** (G19). On a `nfc-casefold-v1`
 column, `filter(email="ada@example.com")` matches a row stored as
