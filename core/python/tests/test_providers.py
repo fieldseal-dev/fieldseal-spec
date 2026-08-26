@@ -430,3 +430,55 @@ class TestKeyMaterialOwnership:
         assert "provider-owned" in decl
         assert "Not performed" in decl
         assert "record_key" in decl
+
+
+# -- docs/10 section 4: warm_blocking (added 2026-08-26) ----------------------
+#
+# The binding document had specified this method since it was written and the
+# implementation did not have it -- the same drift PR #61 found in the
+# declaration-time gates. It matters because an EnvelopeKeyProvider deployment
+# cannot serve one read until its cache is warm (docs/09 section 8.2 confines
+# unwrapping to warm and forbids the value path from blocking on network), and
+# WSGI apps and management commands have no loop to await in.
+
+class _CountingWarmProvider(StaticKeyProvider):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.warmed: list[FieldContext] = []
+
+    async def warm(self, contexts):
+        self.warmed.extend(contexts)
+
+
+def _warm_client(provider):
+    return Fieldseal(key_provider=provider, allowed_suites={0xFF01},
+                     write_suite=0xFF01, arm_provisional_suites=True)
+
+
+def test_warm_blocking_reaches_the_provider_from_sync_code():
+    provider = _CountingWarmProvider(KEY_ID, DEK, INDEX_KEY)
+    fs = _warm_client(provider)
+    fs.warm_blocking([CTX])
+    assert provider.warmed == [CTX]
+
+
+def test_warm_blocking_is_a_no_op_without_a_provider_warm():
+    """docs/09 section 8: warming is never required for correctness, so a
+    provider that offers none must not make the call an error."""
+    fs = _warm_client(StaticKeyProvider(KEY_ID, DEK, INDEX_KEY))
+    fs.warm_blocking([CTX])
+
+
+def test_warm_blocking_refuses_inside_a_running_loop_rather_than_hanging():
+    """Blocking on a coroutine from within the loop that would run it is a
+    hang, not a slow call -- and a hang at startup is diagnosed by guesswork.
+    """
+    fs = _warm_client(_CountingWarmProvider(KEY_ID, DEK, INDEX_KEY))
+
+    async def inside():
+        with pytest.raises(ConfigurationError) as e:
+            fs.warm_blocking([CTX])
+        assert "deadlock" in str(e.value)
+        assert "Await warm()" in str(e.value)
+
+    asyncio.run(inside())

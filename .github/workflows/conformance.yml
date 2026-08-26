@@ -106,7 +106,7 @@ jobs:
           path: conformance-python.json
 
   django-adapter:
-    name: Django adapter (L1) on SQLite and Postgres
+    name: Django adapter (L1+L2) on SQLite and Postgres
     runs-on: ubuntu-24.04
     # Both backends, because docs/12 §8 requires it: binary-column behaviour
     # differs between them, and a single-backend run hides exactly the class

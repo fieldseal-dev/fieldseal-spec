@@ -129,6 +129,12 @@ not the target matrix in `docs/12` §6.
 | `contains`, `startswith`, `gt`, `range`, `regex`, `iexact`, … | 🛑 raise (spec §7.10 lists the fallback for each) | `test_refused_lookups_raise_rather_than_return_nothing` |
 | `.extra()`, `RawSQL()`, `cursor.execute()` params | 🛑 **cannot intercept — plaintext hazard** | — see below |
 | `django.core.cache` of model instances | ⚠️ holds plaintext (spec §10.2) | — |
+| `on_unindexable="refuse"` | ✅ field-level `ValidationError`, §10.2 wording | `TestRefuse`, `TestTheMessage` |
+| `on_unindexable="bucket"` | ✅ row saves, stays findable by its own value | `TestBucket` |
+| Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
+| `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
+| `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
+| `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 
 ### Equality, and the part that is not the rewrite
@@ -192,9 +198,39 @@ No ORM encrypts raw query parameters, and this adapter cannot either.
 in plaintext, into the encrypted column. Use ORM paths, or call the core
 directly and pass the resulting envelope.
 
+### Unindexable values, and the transaction footnote
+
+A value containing a character the pinned Unicode version does not define
+**stores fine and cannot be indexed**. Per column you choose `refuse` (the
+default — right for a login email, where such a character usually means
+something upstream is broken) or `bucket` (right for a legal name, where rare
+characters legitimately appear). `bucket` needs the same
+`{reason, approved_by, date}` ceremony spec §7.6 requires elsewhere.
+
+Under `refuse`, **validate through a form or `full_clean()`**. The index can
+only be derived in `pre_save`, which runs inside the INSERT, so a refusal
+there marks the transaction for rollback — Django does that for any exception
+out of `save()`. `Encrypted.validate()` moves the failure to `full_clean()`,
+which every `ModelForm` calls first, so the form path never touches the
+database. A direct `Model.objects.create()` still raises *and* leaves the
+transaction needing a rollback.
+
+### Warming the cache is not optional under an `EnvelopeKeyProvider`
+
+Every field hook is synchronous, so the core confines KMS unwrapping to
+`warm()` and forbids the value path from blocking on network (`docs/09` §8.2).
+A cold cache therefore serves `KEY_UNAVAILABLE` on **every** read. Run
+`manage.py fieldseal_warm` before serving traffic, or set
+`FIELDSEAL["WARM_ON_READY"] = True`.
+
+It is off by default on purpose: `ready()` runs for `makemigrations`, `shell`
+and every test process, and a migration that cannot run because the KMS is
+unreachable is a worse failure than a cold cache. Tenant-bound columns need
+their tenants named (`--tenant`, or `FIELDSEAL["WARM_TENANTS"]`) — the adapter
+cannot enumerate them.
+
 ## Known gaps
 
-- **No `fieldseal_gen_uuids` management command yet**; error messages name it.
 - **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump
   is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
   tenant-bound model outside `tenant_scope(...)` refuses. Both are correct

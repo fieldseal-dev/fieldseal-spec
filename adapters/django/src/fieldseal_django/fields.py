@@ -23,7 +23,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from fieldseal.errors import InvalidArgument
 
-from . import codec
+from . import codec, unindexable
 from .context import build_context
 from .declarations import BlindIndex, parse_uuid
 from .errors import FieldsealConfigurationError, FieldsealNotSupported
@@ -73,6 +73,7 @@ class Encrypted(models.Field):
         index: BlindIndex | None = None,
         tenant_bound: bool | None = None,
         storage: str = "binary",
+        unindexable_noun: str = "value",
         **kwargs: Any,
     ) -> None:
         if not isinstance(inner, models.Field):
@@ -91,6 +92,11 @@ class Encrypted(models.Field):
         self.index = index
         self.tenant_bound = tenant_bound
         self.storage = storage
+        #: What this column holds, for the `docs/12` §10.2 refusal message.
+        #: "We can't save this **name** yet" reads very differently from "this
+        #: value" to the person whose name it is, and §10.2's requirement 2 is
+        #: precisely about how that sentence lands.
+        self.unindexable_noun = unindexable_noun
 
         # The inner field's own kwargs stay with the inner field. What this
         # field takes are the storage-level ones: a ciphertext column is
@@ -119,6 +125,8 @@ class Encrypted(models.Field):
             kwargs["tenant_bound"] = self.tenant_bound
         if self.storage != "binary":
             kwargs["storage"] = self.storage
+        if self.unindexable_noun != "value":
+            kwargs["unindexable_noun"] = self.unindexable_noun
         return name, path, args, kwargs
 
     def contribute_to_class(
@@ -138,6 +146,60 @@ class Encrypted(models.Field):
         if self.storage == "base64":
             return connection.data_types.get("TextField")
         return connection.data_types.get("BinaryField")
+
+    def validate(self, value: Any, model_instance: Any) -> None:
+        """Refuse an unindexable value here, where a form can still render it.
+
+        **This is where `docs/12` §10.1 wants the failure**, and the reason is
+        not tidiness. The index can only be derived in `pre_save`, which is
+        the one hook that receives the instance -- and `pre_save` runs *inside*
+        the INSERT, so a `ValidationError` raised there propagates out of
+        `Model.save()`, whose `transaction.atomic(savepoint=False)` marks the
+        connection for rollback. The caller then gets their field error and a
+        transaction they cannot use, which is not a form error in any sense
+        that helps.
+
+        `validate()` runs from `full_clean()`, which every `ModelForm` calls
+        before `save()`. So the form path fails before the database is
+        touched, and `pre_save` stays as the backstop for code that calls
+        `create()` directly -- where the transaction consequence is real and
+        is documented in the package README rather than pretended away.
+        """
+        super().validate(value, model_instance)
+        if self.index is None or value is None:
+            return
+        from fieldseal import normalize
+        from fieldseal.errors import InvalidArgument
+
+        if self.index.on_unindexable == "bucket":
+            return
+        try:
+            normalize(self.index.normalize, self.index_operand(value))
+        except InvalidArgument as e:
+            raise ValidationError(
+                unindexable.validation_error(
+                    self.index.normalize, value, self.unindexable_noun)
+            ) from e
+
+    def index_operand(self, value: Any) -> Any:
+        """What to hand `blind_index` for this column.
+
+        **Text goes to the core as text.** `docs/09` §7.1 (G16 part A) makes
+        an index API accept the language's string type precisely because the
+        encoding step can destroy information before the core is entered --
+        and while CPython's `str.encode` raises on a lone surrogate rather
+        than substituting, that is a property of CPython rather than of this
+        adapter, and it would surface as a `UnicodeEncodeError` nobody
+        catches instead of the §9 `INVALID_ARGUMENT` the refusal path expects.
+        Passing the `str` keeps the refusal where the information still is.
+
+        Everything else goes through the codec, which is what the write path
+        encrypts, so an index and its ciphertext are derived from the same
+        rendering of the same value.
+        """
+        if isinstance(value, str):
+            return value
+        return codec.to_bytes(self.inner, value)
 
     # -- context -----------------------------------------------------------
 
@@ -455,12 +517,18 @@ class EncryptedIndex(models.BinaryField):
             )
         ctx = source.fieldseal_context().for_index(decl.index_id)
         try:
-            return _client().blind_index(codec.to_bytes(source.inner, value), ctx)
+            # `bucket` never reaches the except: the core returns the column's
+            # reserved marker rather than raising (docs/09 §7.2), so the row
+            # saves and stays findable with no adapter special-casing.
+            return _client().blind_index(source.index_operand(value), ctx)
         except InvalidArgument as e:
             # docs/12 §10.1: `refuse` must arrive as a field error the person
             # who typed the value can act on, not as a 500 and not as a
-            # silently missing index.
-            raise ValidationError({self.source: str(e)}) from e
+            # silently missing index. §10.2 shapes the wording.
+            raise ValidationError(
+                {self.source: unindexable.validation_error(
+                    decl.normalize, value, source.unindexable_noun)}
+            ) from e
 
 
 class _IndexedLookup(models.Lookup):
@@ -490,12 +558,15 @@ class _IndexedLookup(models.Lookup):
             try:
                 out.append(client.blind_index(codec.to_bytes(field.inner, v), ctx))
             except InvalidArgument as e:
-                # docs/12 §10.2: a query for a value this column's normalizer
-                # refuses. Under `refuse` there can be no such row, so the
-                # honest answer names the value rather than returning nothing.
-                raise FieldsealNotSupported(
-                    f"cannot derive a blind index for the value queried on "
-                    f"{field.model.__name__}.{field.name}: {e}"
+                # docs/12 §10.1: a lookup for a value this column refuses
+                # "raises the same ValidationError -- never returns an empty
+                # queryset". The same wording as the write path, because the
+                # reader is the same person: a search box is a form field too,
+                # and an empty result page would tell them their name does not
+                # exist here rather than that we cannot spell it yet.
+                raise ValidationError(
+                    {field.name: unindexable.validation_error(
+                        decl.normalize, v, field.unindexable_noun)}
                 ) from e
         return out
 

@@ -40,7 +40,7 @@ _client_lock = threading.Lock()
 #: change nothing and be discovered in production.
 _SETTING_KEYS = {
     "KEY_PROVIDER", "CLIENT", "READ_MODE", "ALLOWED_SUITES", "WRITE_SUITE",
-    "ARM_PROVISIONAL_SUITES",
+    "ARM_PROVISIONAL_SUITES", "WARM_ON_READY", "WARM_TENANTS",
 }
 
 
@@ -245,3 +245,58 @@ class FieldsealConfig(AppConfig):
 
     def ready(self) -> None:
         from . import checks  # noqa: F401  (registers the system checks)
+
+        self._warm_on_ready()
+
+    def _warm_on_ready(self) -> None:
+        """Prime the DEK cache at startup, when the deployment asks for it.
+
+        **Off by default, and that is the interesting part.** `docs/12` §7
+        calls for a `ready()` hook, and warming unconditionally would be
+        wrong: `ready()` runs for `makemigrations`, `shell`, `collectstatic`
+        and every test process, so an `EnvelopeKeyProvider` deployment would
+        pay a KMS round trip -- and a hard failure when the KMS is
+        unreachable -- to run a command that touches no encrypted row. A
+        migration that cannot run because the key service is down is a worse
+        failure than a cold cache.
+
+        So it is opt-in per deployment, and the honest consequence is
+        documented rather than defaulted around: under an
+        `EnvelopeKeyProvider`, **something** must warm the cache before the
+        first read, because §8.2 confines unwrapping to `warm` and forbids the
+        value path from blocking on network. That something is this setting or
+        the `fieldseal_warm` command; there is no third option and no silent
+        fallback that would make a cold read work.
+
+        A failure here **warns and continues**. The alternative is refusing to
+        start a process whose cache could not be primed, and a web worker that
+        exits on a transient KMS blip takes the deployment down for a
+        condition the next request might not even have.
+        """
+        import warnings
+
+        cfg = settings.FIELDSEAL if hasattr(settings, "FIELDSEAL") else {}
+        if not cfg.get("WARM_ON_READY"):
+            return
+        from .warm import warm_contexts
+
+        try:
+            contexts, skipped = warm_contexts(
+                tenants=list(cfg.get("WARM_TENANTS", [])))
+            if contexts:
+                get_client().warm_blocking(contexts)
+        except Exception as e:  # noqa: BLE001 - startup must not die on this
+            warnings.warn(
+                f"FIELDSEAL['WARM_ON_READY'] is set but warming failed: {e}. "
+                "Under an EnvelopeKeyProvider every read will raise "
+                "KEY_UNAVAILABLE until the cache is primed (docs/09 §8.2); "
+                "run `manage.py fieldseal_warm` once the key service is "
+                "reachable.", RuntimeWarning, stacklevel=2)
+            return
+        if skipped:
+            warnings.warn(
+                "FIELDSEAL['WARM_ON_READY'] skipped tenant-bound columns "
+                f"({', '.join(skipped)}): no FIELDSEAL['WARM_TENANTS'] is "
+                "set, and the adapter cannot enumerate a deployment's "
+                "tenants. Reads on those columns will raise KEY_UNAVAILABLE "
+                "under an EnvelopeKeyProvider.", RuntimeWarning, stacklevel=2)
