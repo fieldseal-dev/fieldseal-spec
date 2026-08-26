@@ -12,7 +12,8 @@ to forbid. The safe path has to be the default path.
 every assumption this module makes about it, so that a Django upgrade breaks
 the build rather than silently returning unverified rows.
 
-**What re-verification compares** is G19 ([#78]): `normalize(stored)` against
+**What re-verification compares** is spec §7.5's comparison rule (G19,
+[#78], resolved 2026-08-26): `normalize(stored)` against
 `normalize(queried)` under the index's own normalizer, not raw plaintext. On a
 column declaring `nfc-casefold-v1` a row stored `Ada@Example.com` matches a
 query for `ada@example.com` -- because the index already merged them, and a
