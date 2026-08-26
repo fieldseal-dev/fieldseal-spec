@@ -3,11 +3,11 @@
 Transparent field-level encryption at rest for Django. Design:
 [`docs/12-adapter-django.md`](../../docs/12-adapter-django.md).
 
-**Status: L1 only, and not usable in production.** Values encrypt and decrypt
-transparently and the blind-index column is written correctly, but **equality
-lookups are refused** — L2 is not implemented yet. Nothing here is frozen:
-the suite identifier is provisional (spec §4.8), Gate 0b is open, and the
-project does not invite adoption.
+**Status: L1 + L2, and not usable in production.** Values encrypt and decrypt
+transparently, and `filter(email=...)` / `__in` are served through the blind
+index with the spec §7.5 re-verification that makes them correct. Nothing here
+is frozen: the suite identifier is provisional (spec §4.8), Gate 0b is open,
+and the project does not invite adoption.
 
 **AD-1 (spec §11.3): this package contains no cryptography.** It calls the
 core's sync operations and nothing else. `pip`-installing it pulls in
@@ -113,26 +113,80 @@ not the target matrix in `docs/12` §6.
 | Tampered ciphertext | ✅ raises; never returns garbage | `test_a_tampered_envelope_raises_rather_than_returning_garbage` |
 | Tenant-bound column, no tenant set | ✅ refuses the write | `test_writing_without_a_tenant_refuses_rather_than_falling_back` |
 | Wrong tenant reading a row | ✅ raises (binding is cryptographic, not a filter) | `test_another_tenant_cannot_read_the_row` |
-| **`filter(field=...)` / `__in`** | 🛑 **refused — L2 not implemented** | `TestEqualityIsRefusedUntilItCanReVerify` |
-| **`filter(field_bidx=...)`** | 🛑 **refused — needs §7.5 re-verification** | same |
+| **`filter(field=...)` / `__in`** | ✅ rewritten to the index, then §7.5-verified | `TestEqualityRoundTrips`, `TestReVerification` |
+| A colliding candidate row | ✅ dropped before it reaches the caller | `test_a_colliding_candidate_is_dropped` |
+| `count()`, `exists()`, `first()`, `last()` | ✅ count/answer **verified** rows, not candidates | `TestReVerification` |
+| `get()` | ✅ materializes the whole bucket — Django's `LIMIT 21` sample could hide the match past the window | `test_get_finds_a_match_behind_a_full_window_of_collisions` |
+| `iterator()` / `aiterator()` | ✅ verified, still streaming — both bypass `_fetch_all` by design | `test_iterator_yields_only_verified_rows`, `test_aiterator_…` |
+| `filter(field=None)`, `__isnull`, `exclude(field=None)` | ✅ served exactly — `IS [NOT] NULL` on the envelope column, no index touched | `TestNullSemantics` |
+| Case variant / canonical-equivalent spelling | ✅ matches — equality is the normalizer's (G19) | `TestNormalizedEquality` |
+| Plain-AND `Q` over an encrypted column | ✅ records the obligation, verifies like a keyword | `TestPlainAndQ` |
+| Slicing / pagination / `qs[i]` on a verified queryset | 🛑 refused — LIMIT precedes verification (§7.5) | `test_slicing_refuses`, `test_int_indexing_refuses` |
+| `earliest()` / `latest()` | 🛑 refused — `LIMIT 1` before verification, `first()`'s failure renamed | `test_earliest_and_latest_refuse` |
+| `update()`, `delete()` on a verified queryset | 🛑 refused — would write to collision rows | `test_sql_answered_paths_refuse` |
+| `aggregate()`, `values()`, `values_list()`, `only()`, `defer()` | 🛑 refused — answered from SQL, or drop the column verification needs | same |
+| `exclude(field=...)` | 🛑 refused — false negatives are unrecoverable | `test_exclude_refuses` |
+| `Q` with `OR`/`XOR`/negation over an encrypted column | 🛑 refused — cannot decide a candidate | `test_or_through_q_refuses`, `test_negation_still_refuses` |
+| Subquery embedding (`__in=qs`, `Subquery`, `Exists`) | 🛑 refused — the outer query would receive unverified candidates | `test_a_verifying_queryset_refuses_to_become_a_subquery` |
+| `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands | `test_combinators_refuse_on_either_side` |
+| Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too | `TestRelationTraversal` |
+| `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted (filter-time ones included; the cross-model traversal is the exception — embed the owner's `.candidates()` instead) | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals` |
+| Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
+| Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
+| **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
 | `contains`, `startswith`, `gt`, `range`, `regex`, `iexact`, … | 🛑 raise (spec §7.10 lists the fallback for each) | `test_refused_lookups_raise_rather_than_return_nothing` |
 | `.extra()`, `RawSQL()`, `cursor.execute()` params | 🛑 **cannot intercept — plaintext hazard** | — see below |
 | `django.core.cache` of model instances | ⚠️ holds plaintext (spec §10.2) | — |
+| `on_unindexable="refuse"` | ✅ field-level `ValidationError`, §10.2 wording | `TestRefuse`, `TestTheMessage` |
+| `on_unindexable="bucket"` | ✅ row saves, stays findable by its own value | `TestBucket` |
+| Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
+| `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
+| `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
+| `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
+| A row written here, read by the TypeScript core | ✅ CI cross matrix; `django` is a producer | `tests/test_cross_produce.py` |
+| A blind index written here, derived by another core | ❌ next cross-language increment | — |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 
-### Why equality is refused rather than approximated
+### Equality, and the part that is not the rewrite
 
-A direct comparison against a randomized envelope matches nothing, so
-`filter(email="...")` would return an **empty queryset** — a wrong answer, not
-an error. Matching on the index column alone is no better: spec §7.4 *mandates*
-collisions in a truncated index, so the rows returned would include values
-that merely share a fingerprint. Spec §7.5 therefore requires candidates to be
-decrypted and re-verified before they reach the caller, and until that is
-implemented both paths raise. Spec §10.2 is the rule: where a path would
-silently return wrong results, the adapter throws.
+`filter(email="ada@example.com")` compiles to a comparison on the `email_bidx`
+sibling, not on the ciphertext — a direct comparison against a randomized
+envelope matches nothing and would return an empty queryset, which is a wrong
+answer rather than an error.
 
-The index column is written correctly in the meantime, so enabling L2 later
-needs no backfill.
+**That rewrite alone is only half of it.** Spec §7.4 *mandates* collisions in
+a truncated index, so the rows the database returns are a **superset** of the
+answer. Spec §7.5 requires candidates to be decrypted and re-verified before
+they reach the caller, and `FieldsealQuerySet` does that in `_fetch_all` — so
+the default path is the safe path and there is nothing to remember. The
+manager is installed automatically on models that declare none of their own;
+where you wrote your own, system check **E008** asks you to mix
+`FieldsealQuerySet` in rather than the adapter silently replacing it.
+
+**What shrinks is the design work.** Verification drops rows after the
+database has already applied `COUNT`, `LIMIT` and `OFFSET`, so anything
+answered from SQL would be answering about candidates. `count()`, `exists()`,
+`first()`, `last()` and `get()` are implemented against verified rows (Django's
+`get()` samples a `LIMIT 21` window of candidates; ours reads the whole
+bucket), and `iterator()`/`aiterator()` filter the stream as it passes;
+slicing, `qs[i]`, `earliest()`/`latest()`, `update()`, `delete()`,
+`aggregate()`, the projections, subquery embedding and the set combinators are
+**refused**, and so is `exclude()` — a filter's false positives are
+recoverable, an exclusion's false negatives are not. NULL is the exception
+that needs none of this: `filter(field=None)` and `__isnull` compile to
+`IS [NOT] NULL` on the envelope column itself, which is exact. `.candidates()`
+opts out of all of it and hands you bucket semantics, documented as
+unverified.
+
+**Equality is the column's normalizer's** (G19). On a `nfc-casefold-v1`
+column, `filter(email="ada@example.com")` matches a row stored as
+`Ada@Example.com`, and precomposed `é` matches decomposed `e`+`◌́`. That is
+why `iexact` is refused: the column has exactly one equality, and a second
+would be a second question the index cannot answer.
+
+**Pagination is the one to read twice.** Spec §7.5 states outright that
+pagination built directly on an indexed encrypted column is incorrect. The
+documented pattern is over-fetch → decrypt → filter → paginate.
 
 ### Why `loaddata` is refused
 
@@ -160,9 +214,39 @@ No ORM encrypts raw query parameters, and this adapter cannot either.
 in plaintext, into the encrypted column. Use ORM paths, or call the core
 directly and pass the resulting envelope.
 
+### Unindexable values, and the transaction footnote
+
+A value containing a character the pinned Unicode version does not define
+**stores fine and cannot be indexed**. Per column you choose `refuse` (the
+default — right for a login email, where such a character usually means
+something upstream is broken) or `bucket` (right for a legal name, where rare
+characters legitimately appear). `bucket` needs the same
+`{reason, approved_by, date}` ceremony spec §7.6 requires elsewhere.
+
+Under `refuse`, **validate through a form or `full_clean()`**. The index can
+only be derived in `pre_save`, which runs inside the INSERT, so a refusal
+there marks the transaction for rollback — Django does that for any exception
+out of `save()`. `Encrypted.validate()` moves the failure to `full_clean()`,
+which every `ModelForm` calls first, so the form path never touches the
+database. A direct `Model.objects.create()` still raises *and* leaves the
+transaction needing a rollback.
+
+### Warming the cache is not optional under an `EnvelopeKeyProvider`
+
+Every field hook is synchronous, so the core confines KMS unwrapping to
+`warm()` and forbids the value path from blocking on network (`docs/09` §8.2).
+A cold cache therefore serves `KEY_UNAVAILABLE` on **every** read. Run
+`manage.py fieldseal_warm` before serving traffic, or set
+`FIELDSEAL["WARM_ON_READY"] = True`.
+
+It is off by default on purpose: `ready()` runs for `makemigrations`, `shell`
+and every test process, and a migration that cannot run because the KMS is
+unreachable is a worse failure than a cold cache. Tenant-bound columns need
+their tenants named (`--tenant`, or `FIELDSEAL["WARM_TENANTS"]`) — the adapter
+cannot enumerate them.
+
 ## Known gaps
 
-- **No `fieldseal_gen_uuids` management command yet**; error messages name it.
 - **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump
   is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
   tenant-bound model outside `tenant_scope(...)` refuses. Both are correct

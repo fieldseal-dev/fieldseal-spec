@@ -57,7 +57,7 @@ export { DekCache } from "./cache.ts";
 export type { CachePolicy, CacheHooks, CacheMetrics, EvictionCause } from "./cache.ts";
 export type { IndexDeclaration, IdfId, Argon2Params, CardinalityOverride, ValidatedIndex, OnUnindexable } from "./blindindex.ts";
 export { indexRegistryKey, validateIndexDeclaration } from "./blindindex.ts";
-export { NORMALIZER_IDS } from "./normalize.ts";
+export { NORMALIZER_IDS, normalize } from "./normalize.ts";
 export type { NormalizerId } from "./normalize.ts";
 export { SUITE_FF01, SUITE_FF02, FMT_VER, isProvisionalId, registeredSuiteIds } from "./registry.ts";
 export type { Suite } from "./registry.ts";

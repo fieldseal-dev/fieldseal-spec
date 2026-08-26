@@ -23,7 +23,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from fieldseal.errors import InvalidArgument
 
-from . import codec
+from . import codec, unindexable
 from .context import build_context
 from .declarations import BlindIndex, parse_uuid
 from .errors import FieldsealConfigurationError, FieldsealNotSupported
@@ -73,6 +73,7 @@ class Encrypted(models.Field):
         index: BlindIndex | None = None,
         tenant_bound: bool | None = None,
         storage: str = "binary",
+        unindexable_noun: str = "value",
         **kwargs: Any,
     ) -> None:
         if not isinstance(inner, models.Field):
@@ -91,6 +92,11 @@ class Encrypted(models.Field):
         self.index = index
         self.tenant_bound = tenant_bound
         self.storage = storage
+        #: What this column holds, for the `docs/12` §10.2 refusal message.
+        #: "We can't save this **name** yet" reads very differently from "this
+        #: value" to the person whose name it is, and §10.2's requirement 2 is
+        #: precisely about how that sentence lands.
+        self.unindexable_noun = unindexable_noun
 
         # The inner field's own kwargs stay with the inner field. What this
         # field takes are the storage-level ones: a ciphertext column is
@@ -119,6 +125,8 @@ class Encrypted(models.Field):
             kwargs["tenant_bound"] = self.tenant_bound
         if self.storage != "binary":
             kwargs["storage"] = self.storage
+        if self.unindexable_noun != "value":
+            kwargs["unindexable_noun"] = self.unindexable_noun
         return name, path, args, kwargs
 
     def contribute_to_class(
@@ -138,6 +146,60 @@ class Encrypted(models.Field):
         if self.storage == "base64":
             return connection.data_types.get("TextField")
         return connection.data_types.get("BinaryField")
+
+    def validate(self, value: Any, model_instance: Any) -> None:
+        """Refuse an unindexable value here, where a form can still render it.
+
+        **This is where `docs/12` §10.1 wants the failure**, and the reason is
+        not tidiness. The index can only be derived in `pre_save`, which is
+        the one hook that receives the instance -- and `pre_save` runs *inside*
+        the INSERT, so a `ValidationError` raised there propagates out of
+        `Model.save()`, whose `transaction.atomic(savepoint=False)` marks the
+        connection for rollback. The caller then gets their field error and a
+        transaction they cannot use, which is not a form error in any sense
+        that helps.
+
+        `validate()` runs from `full_clean()`, which every `ModelForm` calls
+        before `save()`. So the form path fails before the database is
+        touched, and `pre_save` stays as the backstop for code that calls
+        `create()` directly -- where the transaction consequence is real and
+        is documented in the package README rather than pretended away.
+        """
+        super().validate(value, model_instance)
+        if self.index is None or value is None:
+            return
+        from fieldseal import normalize
+        from fieldseal.errors import InvalidArgument
+
+        if self.index.on_unindexable == "bucket":
+            return
+        try:
+            normalize(self.index.normalize, self.index_operand(value))
+        except InvalidArgument as e:
+            raise ValidationError(
+                unindexable.validation_error(
+                    self.index.normalize, value, self.unindexable_noun)
+            ) from e
+
+    def index_operand(self, value: Any) -> Any:
+        """What to hand `blind_index` for this column.
+
+        **Text goes to the core as text.** `docs/09` §7.1 (G16 part A) makes
+        an index API accept the language's string type precisely because the
+        encoding step can destroy information before the core is entered --
+        and while CPython's `str.encode` raises on a lone surrogate rather
+        than substituting, that is a property of CPython rather than of this
+        adapter, and it would surface as a `UnicodeEncodeError` nobody
+        catches instead of the §9 `INVALID_ARGUMENT` the refusal path expects.
+        Passing the `str` keeps the refusal where the information still is.
+
+        Everything else goes through the codec, which is what the write path
+        encrypts, so an index and its ciphertext are derived from the same
+        rendering of the same value.
+        """
+        if isinstance(value, str):
+            return value
+        return codec.to_bytes(self.inner, value)
 
     # -- context -----------------------------------------------------------
 
@@ -348,24 +410,35 @@ class Encrypted(models.Field):
     def formfield(self, **kwargs: Any) -> Any:
         return self.inner.formfield(**kwargs)
 
+    @property
+    def fieldseal_index_field(self) -> EncryptedIndex:
+        """The sibling column this field's equality lookups compile against.
+
+        System check E001 already guarantees it exists whenever a BlindIndex
+        is declared, so a failure here is a configuration the checks would
+        have refused at startup.
+        """
+        for f in self.model._meta.fields:
+            if isinstance(f, EncryptedIndex) and f.source == self.name:
+                return f
+        raise FieldsealConfigurationError(
+            f"{self.model.__name__}.{self.name} declares a BlindIndex but no "
+            f"sibling index column (system check fieldseal.E001)"
+        )
+
     def get_lookup(self, lookup_name: str) -> Any:
         if lookup_name in ("exact", "in"):
-            # L2 is not implemented yet, and shipping half of it would be
-            # worse than shipping none: without spec §7.5 re-verification a
-            # truncated index returns collisions, so the queryset would hand
-            # back rows whose plaintext does not match -- a wrong answer
-            # rather than an error. Until that lands, both paths refuse.
-            raise FieldsealNotSupported(
-                f"`{self.model.__name__}.{self.name}__{lookup_name}` is not "
-                "available yet. The column holds a randomized envelope, so a "
-                "direct comparison matches nothing -- it would return an "
-                "empty queryset rather than an error, which spec §10.2 "
-                "forbids. Equality goes through the blind-index sibling "
-                "column, and that path is not enabled until it re-verifies "
-                "candidates as spec §7.5 requires (a truncated index collides "
-                "by design). Read rows by primary key, or decrypt and compare "
-                "in Python, until L2 ships."
-            )
+            if self.index is None:
+                raise FieldsealNotSupported(
+                    f"`{self.model.__name__}.{self.name}__{lookup_name}` is "
+                    "not available: this column declares no BlindIndex, so "
+                    "there is no index to match against, and the ciphertext "
+                    "is randomized -- a direct comparison matches nothing and "
+                    "would return an empty queryset rather than an error, "
+                    "which spec §10.2 forbids. Declare a BlindIndex and "
+                    "backfill, or filter in Python after fetching."
+                )
+            return _INDEXED_LOOKUPS[lookup_name]
         reason = REFUSED_LOOKUPS.get(lookup_name)
         if reason is not None:
             raise FieldsealNotSupported(
@@ -444,12 +517,128 @@ class EncryptedIndex(models.BinaryField):
             )
         ctx = source.fieldseal_context().for_index(decl.index_id)
         try:
-            return _client().blind_index(codec.to_bytes(source.inner, value), ctx)
+            # `bucket` never reaches the except: the core returns the column's
+            # reserved marker rather than raising (docs/09 §7.2), so the row
+            # saves and stays findable with no adapter special-casing.
+            return _client().blind_index(source.index_operand(value), ctx)
         except InvalidArgument as e:
             # docs/12 §10.1: `refuse` must arrive as a field error the person
             # who typed the value can act on, not as a 500 and not as a
-            # silently missing index.
-            raise ValidationError({self.source: str(e)}) from e
+            # silently missing index. §10.2 shapes the wording.
+            raise ValidationError(
+                {self.source: unindexable.validation_error(
+                    decl.normalize, value, source.unindexable_noun)}
+            ) from e
+
+
+class _IndexedLookup(models.Lookup):
+    """Compile an equality on the encrypted column onto its index sibling.
+
+    `docs/12` §3.2's route, and the reason it is a `Lookup` rather than a
+    queryset-level rewrite: compiling to a `Col` for the sibling composes with
+    `Q`, joins and subqueries for free, where a textual rewrite would have to
+    reimplement each of them.
+
+    **This class is only half of L2.** What it produces is a *candidate* set:
+    spec §7.4 mandates collisions in a truncated index, so the rows it matches
+    are a superset of the answer. `FieldsealQuerySet` performs the §7.5
+    re-verification that narrows them, and the two are not separable -- which
+    is why system check **E008** requires the manager.
+    """
+
+    def _index_values(self, values: list[Any]) -> list[bytes]:
+        from .apps import get_client
+
+        field = self.lhs.output_field
+        decl = field.index
+        ctx = field.fieldseal_context().for_index(decl.index_id)
+        client = get_client()
+        out = []
+        for v in values:
+            try:
+                out.append(client.blind_index(codec.to_bytes(field.inner, v), ctx))
+            except InvalidArgument as e:
+                # docs/12 §10.1: a lookup for a value this column refuses
+                # "raises the same ValidationError -- never returns an empty
+                # queryset". The same wording as the write path, because the
+                # reader is the same person: a search box is a form field too,
+                # and an empty result page would tell them their name does not
+                # exist here rather than that we cannot spell it yet.
+                raise ValidationError(
+                    {field.name: unindexable.validation_error(
+                        decl.normalize, v, field.unindexable_noun)}
+                ) from e
+        return out
+
+    def _sibling_sql(self, compiler: Any) -> tuple[str, list[Any]]:
+        self._refuse_cross_model(compiler)
+        sibling = self.lhs.output_field.fieldseal_index_field
+        col = sibling.get_col(self.lhs.alias, output_field=sibling)
+        sql, params = compiler.compile(col)
+        return str(sql), list(params)
+
+    def _refuse_cross_model(self, compiler: Any) -> None:
+        """Refuse compiling for any model but the column's own.
+
+        A lookup compiles wherever a join can reach the column --
+        `Visit.objects.filter(patient__email=...)` -- including from models
+        whose manager is a plain one this package never sees. Spec §7.5
+        re-verification runs only on the queryset that owns the encrypted
+        column, so a cross-model compilation would serve the §7.4 bucket,
+        unverified, as results: the spec §10.2 wrong answer. This is the
+        backstop for every queryset; `FieldsealQuerySet` additionally refuses
+        the same traversal at filter() time with the friendlier message.
+        Multi-table-inheritance children are the owning model for this
+        purpose: their (verifying) queryset materializes rows that carry the
+        column.
+        """
+        field = self.lhs.output_field
+        owner = field.model._meta.concrete_model
+        querying = compiler.query.model._meta.concrete_model
+        if owner is querying or owner in querying._meta.get_parent_list():
+            return
+        raise FieldsealNotSupported(
+            f"`{querying.__name__}` filters on the encrypted column "
+            f"{owner.__name__}.{field.name} through a relation. The join "
+            "would match its blind-index sibling, but spec §7.5 "
+            "re-verification runs on the queryset that owns the encrypted "
+            "column and cannot run from here, so the join would serve "
+            "unverified index candidates as results -- which spec §10.2 "
+            f"forbids. Filter {owner.__name__} directly instead and join on "
+            "the result: embed bucket semantics with "
+            f"filter(...__in={owner.__name__}_qs.candidates()), or "
+            "materialize verified primary keys and use "
+            "filter(...__pk__in=[...])."
+        )
+
+
+class EncryptedExact(_IndexedLookup):
+    lookup_name = "exact"
+
+    def as_sql(self, compiler: Any, connection: Any) -> tuple[str, list[Any]]:
+        lhs_sql, lhs_params = self._sibling_sql(compiler)
+        if self.rhs is None:
+            return f"{lhs_sql} IS NULL", list(lhs_params)
+        (value,) = self._index_values([self.rhs])
+        return f"{lhs_sql} = %s", [*lhs_params, value]
+
+
+class EncryptedIn(_IndexedLookup):
+    lookup_name = "in"
+
+    def as_sql(self, compiler: Any, connection: Any) -> tuple[str, list[Any]]:
+        values = self._index_values([v for v in self.rhs if v is not None])
+        if not values:
+            # Spec §7.10 membership over an empty set matches nothing, and
+            # must keep matching nothing rather than degrading to `IN ()`,
+            # which is a syntax error on most backends.
+            return "1 = 0", []
+        lhs_sql, lhs_params = self._sibling_sql(compiler)
+        placeholders = ", ".join(["%s"] * len(values))
+        return f"{lhs_sql} IN ({placeholders})", [*lhs_params, *values]
+
+
+_INDEXED_LOOKUPS = {"exact": EncryptedExact, "in": EncryptedIn}
 
 
 def index_column(source: str, **kwargs: Any) -> EncryptedIndex:

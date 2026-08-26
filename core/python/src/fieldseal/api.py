@@ -18,6 +18,7 @@ docs/18 entry that records it.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import warnings
@@ -424,6 +425,32 @@ class Fieldseal:
         w = getattr(self._provider, "warm", None)
         if w is not None:
             await w(contexts)
+
+    def warm_blocking(self, contexts: Iterable[FieldContext]) -> None:
+        """`warm` for a synchronous caller (docs/10 §4).
+
+        WSGI apps and management commands have no event loop and no way to
+        await, and an `EnvelopeKeyProvider` deployment cannot serve a single
+        read until its cache is warm -- §8.2 confines unwrapping to `warm` and
+        forbids the value path from blocking on network. So the prefetch has
+        to be reachable from sync code or that provider is unusable outside
+        ASGI. `docs/10` §4 has specified this method since the binding was
+        written; it was missing until 2026-08-26.
+
+        **It refuses inside a running loop rather than deadlocking.** Blocking
+        on a coroutine from within the loop that would have to run it is a
+        hang, not a slow call, and a hang at startup is diagnosed by
+        guesswork. An async caller has `await warm(...)` and needs nothing
+        from here.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.warm(contexts))
+            return
+        raise ConfigurationError(
+            "warm_blocking() was called from inside a running event loop, "
+            "where it would deadlock rather than block. Await warm() instead.")
 
 
 __all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]
