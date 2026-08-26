@@ -155,6 +155,27 @@ NORMALIZERS: dict[str, Callable[[str | bytes], bytes]] = {
     "digits-only-v1": normalize_digits_only,
 }
 
+NORMALIZER_IDS = tuple(sorted(NORMALIZERS))
+
+
+def normalize(normalizer_id: str, value: str | bytes) -> bytes:
+    """Apply one of the closed set of normalizers by id (docs/09 §7).
+
+    Public because §7.5 re-verification compares *normalized* values (G19),
+    and that comparison happens in the adapter. An adapter that reimplemented
+    `nfc-casefold-v1` would be reimplementing portability surface -- the
+    identifier IS the definition, and two implementations disagreeing on it
+    is a silent lookup miss rather than an error. So the core hands out the
+    one implementation instead of leaving callers to write a second.
+    """
+    fn = NORMALIZERS.get(normalizer_id)
+    if fn is None:
+        raise ConfigurationError(
+            f"unknown normalizer {normalizer_id!r}; the set is closed and "
+            f"versioned: {sorted(NORMALIZERS)} (docs/09 §7)")
+    return fn(value)
+
+
 # Normalizers that can refuse an otherwise-storable value (docs/09 §7.2).
 # Only these make `on_unindexable` meaningful: `identity` and `digits-only-v1`
 # consult no Unicode table and have nothing to refuse.

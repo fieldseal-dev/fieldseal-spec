@@ -36,6 +36,7 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                     **kwargs: Any) -> list[Any]:
     from .apps import build_client, get_settings, iter_encrypted_fields
     from .fields import Encrypted, EncryptedIndex
+    from .query import FieldsealManager
 
     issues: list[Any] = []
     pairs = iter_encrypted_fields(apps)
@@ -100,6 +101,31 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                      "index over ciphertext is index bloat with no lookup it "
                      "can serve.",
                 obj=field, id="fieldseal.E005"))
+
+    # E008 -- the verifying manager. Auto-installed when the model declares
+    # no manager of its own (`apps._install_manager`); this catches the case
+    # the adapter deliberately will not touch, because replacing a manager
+    # somebody wrote on purpose would be a silent behaviour change.
+    for model, field in pairs:
+        if field.index is None:
+            continue
+        if isinstance(model._default_manager, FieldsealManager):
+            continue
+        issues.append(Error(
+            f"{model._meta.label} has an indexed encrypted column but its "
+            f"default manager is {type(model._default_manager).__name__}, "
+            "which does not re-verify blind-index candidates.",
+            hint="spec §7.4 mandates collisions in a truncated index and "
+                 "§7.5 makes decrypt-and-re-verify mandatory in response, so "
+                 "a queryset that does not verify returns rows whose value "
+                 "differs from the one asked for -- a wrong answer, which "
+                 "spec §10.2 forbids. Mix the adapter's queryset into your "
+                 "manager: `class MyManager(FieldsealManager): ...`, or "
+                 "`MyQuerySet` inheriting `FieldsealQuerySet`. The adapter "
+                 "installs it automatically only when a model declares no "
+                 "manager of its own, because replacing one you wrote would "
+                 "be a silent change to behaviour you specified.",
+            obj=model, id="fieldseal.E008"))
 
     # E001 -- declaration order. `SQLInsertCompiler.as_sql` iterates fields in
     # declaration order, so an index sibling declared before its source reads

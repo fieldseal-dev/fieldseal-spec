@@ -9,11 +9,13 @@ from __future__ import annotations
 from . import errors
 from .api import Fieldseal
 from .blindindex import (
+    NORMALIZER_IDS,
     Argon2Params,
     CardinalityOverride,
     IndexDeclaration,
     ValidatedIndex,
     index_registry_key,
+    normalize,
     validate_index_declaration,
 )
 from .context import FieldContext
@@ -26,6 +28,7 @@ from .registry import SUITES, is_provisional
 # either by hand is the coupling the accessor exists to remove.
 __all__ = ["Fieldseal", "FieldContext", "IndexDeclaration", "ValidatedIndex",
            "Argon2Params", "CardinalityOverride", "index_registry_key",
-           "validate_index_declaration", "errors", "SUITES",
+           "validate_index_declaration", "normalize", "NORMALIZER_IDS",
+           "errors", "SUITES",
            "is_provisional"]
 __version__ = "0.1.0.dev0"

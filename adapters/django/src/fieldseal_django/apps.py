@@ -22,6 +22,7 @@ from typing import Any
 from django.apps import AppConfig
 from django.conf import settings
 from django.core.signals import setting_changed
+from django.db.models.signals import class_prepared
 from django.dispatch import receiver
 from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclaration
 
@@ -195,6 +196,40 @@ def reset_client() -> None:
     """Drop the cached client. For tests and `setting_changed`."""
     global _client
     _client = None
+
+
+@receiver(class_prepared)
+def _install_manager(sender: Any, **kwargs: Any) -> None:
+    """Give a model with an indexed encrypted column the verifying manager.
+
+    **Only when the model declared no manager of its own.** Django adds
+    `objects = Manager()` itself when none is declared and marks it
+    `auto_created` (`ModelBase._prepare`, before this signal fires), so that
+    flag is an exact test for "the user did not choose a manager". Replacing
+    one somebody wrote on purpose would be the adapter silently changing
+    behaviour the model author specified; system check **E008** reports that
+    case instead.
+
+    Why auto-install at all: decision C (`docs/12` §3.2) puts §7.5
+    re-verification on the *default* path precisely so that nothing has to be
+    remembered. A `FieldsealManager` the user must add by hand would reinstate
+    the failure mode that decision rejected -- one forgotten line and
+    `filter()` returns collision rows.
+    """
+    from .fields import Encrypted
+    from .query import FieldsealManager
+
+    if not any(isinstance(f, Encrypted) and f.index is not None
+               for f in sender._meta.fields):
+        return
+    managers = sender._meta.local_managers
+    if len(managers) != 1 or not getattr(managers[0], "auto_created", False):
+        return  # E008's business, not ours.
+    sender._meta.local_managers = []
+    manager = FieldsealManager()
+    manager.auto_created = True
+    sender.add_to_class("objects", manager)
+    sender._meta._expire_cache()
 
 
 @receiver(setting_changed)

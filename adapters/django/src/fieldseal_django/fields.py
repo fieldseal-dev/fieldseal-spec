@@ -348,24 +348,35 @@ class Encrypted(models.Field):
     def formfield(self, **kwargs: Any) -> Any:
         return self.inner.formfield(**kwargs)
 
+    @property
+    def fieldseal_index_field(self) -> EncryptedIndex:
+        """The sibling column this field's equality lookups compile against.
+
+        System check E001 already guarantees it exists whenever a BlindIndex
+        is declared, so a failure here is a configuration the checks would
+        have refused at startup.
+        """
+        for f in self.model._meta.fields:
+            if isinstance(f, EncryptedIndex) and f.source == self.name:
+                return f
+        raise FieldsealConfigurationError(
+            f"{self.model.__name__}.{self.name} declares a BlindIndex but no "
+            f"sibling index column (system check fieldseal.E001)"
+        )
+
     def get_lookup(self, lookup_name: str) -> Any:
         if lookup_name in ("exact", "in"):
-            # L2 is not implemented yet, and shipping half of it would be
-            # worse than shipping none: without spec §7.5 re-verification a
-            # truncated index returns collisions, so the queryset would hand
-            # back rows whose plaintext does not match -- a wrong answer
-            # rather than an error. Until that lands, both paths refuse.
-            raise FieldsealNotSupported(
-                f"`{self.model.__name__}.{self.name}__{lookup_name}` is not "
-                "available yet. The column holds a randomized envelope, so a "
-                "direct comparison matches nothing -- it would return an "
-                "empty queryset rather than an error, which spec §10.2 "
-                "forbids. Equality goes through the blind-index sibling "
-                "column, and that path is not enabled until it re-verifies "
-                "candidates as spec §7.5 requires (a truncated index collides "
-                "by design). Read rows by primary key, or decrypt and compare "
-                "in Python, until L2 ships."
-            )
+            if self.index is None:
+                raise FieldsealNotSupported(
+                    f"`{self.model.__name__}.{self.name}__{lookup_name}` is "
+                    "not available: this column declares no BlindIndex, so "
+                    "there is no index to match against, and the ciphertext "
+                    "is randomized -- a direct comparison matches nothing and "
+                    "would return an empty queryset rather than an error, "
+                    "which spec §10.2 forbids. Declare a BlindIndex and "
+                    "backfill, or filter in Python after fetching."
+                )
+            return _INDEXED_LOOKUPS[lookup_name]
         reason = REFUSED_LOOKUPS.get(lookup_name)
         if reason is not None:
             raise FieldsealNotSupported(
@@ -450,6 +461,78 @@ class EncryptedIndex(models.BinaryField):
             # who typed the value can act on, not as a 500 and not as a
             # silently missing index.
             raise ValidationError({self.source: str(e)}) from e
+
+
+class _IndexedLookup(models.Lookup):
+    """Compile an equality on the encrypted column onto its index sibling.
+
+    `docs/12` §3.2's route, and the reason it is a `Lookup` rather than a
+    queryset-level rewrite: compiling to a `Col` for the sibling composes with
+    `Q`, joins and subqueries for free, where a textual rewrite would have to
+    reimplement each of them.
+
+    **This class is only half of L2.** What it produces is a *candidate* set:
+    spec §7.4 mandates collisions in a truncated index, so the rows it matches
+    are a superset of the answer. `FieldsealQuerySet` performs the §7.5
+    re-verification that narrows them, and the two are not separable -- which
+    is why system check **E008** requires the manager.
+    """
+
+    def _index_values(self, values: list[Any]) -> list[bytes]:
+        from .apps import get_client
+
+        field = self.lhs.output_field
+        decl = field.index
+        ctx = field.fieldseal_context().for_index(decl.index_id)
+        client = get_client()
+        out = []
+        for v in values:
+            try:
+                out.append(client.blind_index(codec.to_bytes(field.inner, v), ctx))
+            except InvalidArgument as e:
+                # docs/12 §10.2: a query for a value this column's normalizer
+                # refuses. Under `refuse` there can be no such row, so the
+                # honest answer names the value rather than returning nothing.
+                raise FieldsealNotSupported(
+                    f"cannot derive a blind index for the value queried on "
+                    f"{field.model.__name__}.{field.name}: {e}"
+                ) from e
+        return out
+
+    def _sibling_sql(self, compiler: Any) -> tuple[str, list[Any]]:
+        sibling = self.lhs.output_field.fieldseal_index_field
+        col = sibling.get_col(self.lhs.alias, output_field=sibling)
+        sql, params = compiler.compile(col)
+        return str(sql), list(params)
+
+
+class EncryptedExact(_IndexedLookup):
+    lookup_name = "exact"
+
+    def as_sql(self, compiler: Any, connection: Any) -> tuple[str, list[Any]]:
+        lhs_sql, lhs_params = self._sibling_sql(compiler)
+        if self.rhs is None:
+            return f"{lhs_sql} IS NULL", list(lhs_params)
+        (value,) = self._index_values([self.rhs])
+        return f"{lhs_sql} = %s", [*lhs_params, value]
+
+
+class EncryptedIn(_IndexedLookup):
+    lookup_name = "in"
+
+    def as_sql(self, compiler: Any, connection: Any) -> tuple[str, list[Any]]:
+        values = self._index_values([v for v in self.rhs if v is not None])
+        if not values:
+            # Spec §7.10 membership over an empty set matches nothing, and
+            # must keep matching nothing rather than degrading to `IN ()`,
+            # which is a syntax error on most backends.
+            return "1 = 0", []
+        lhs_sql, lhs_params = self._sibling_sql(compiler)
+        placeholders = ", ".join(["%s"] * len(values))
+        return f"{lhs_sql} IN ({placeholders})", [*lhs_params, *values]
+
+
+_INDEXED_LOOKUPS = {"exact": EncryptedExact, "in": EncryptedIn}
 
 
 def index_column(source: str, **kwargs: Any) -> EncryptedIndex:

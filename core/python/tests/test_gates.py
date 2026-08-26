@@ -604,3 +604,42 @@ def test_reflection_is_empty_rather_than_absent_with_no_indexes():
     declared" from "this core cannot say", and only one of those is a state."""
     fs = _client()
     assert dict(fs.indexes) == {}
+
+
+# -- docs/09 §7: the normalizer set is public (G19) ---------------------------
+
+def test_normalize_is_public_and_the_set_is_closed():
+    """§7.5 re-verification compares *normalized* values, and that comparison
+    happens in the adapter -- so the one implementation has to be reachable.
+
+    An adapter that reimplemented `nfc-casefold-v1` would be reimplementing
+    portability surface: the identifier IS the definition (docs/09 §7), and
+    two implementations disagreeing on it is a silent lookup miss, not an
+    error.
+    """
+    from fieldseal import NORMALIZER_IDS, normalize
+
+    assert set(NORMALIZER_IDS) == {"identity", "nfc-casefold-v1",
+                                   "digits-only-v1"}
+    assert normalize("identity", b"Ada") == b"Ada"
+    assert normalize("nfc-casefold-v1", "Ada@Example.COM") == b"ada@example.com"
+    assert normalize("digits-only-v1", "555-0100") == b"5550100"
+
+
+def test_normalize_agrees_with_what_blind_index_derives():
+    """The public helper must be the same function the index path uses, or
+    an adapter verifying with it would disagree with the column it queried."""
+    from fieldseal import normalize
+
+    fs = _client(indexes=[_decl()])
+    a = fs.blind_index("Ada@Example.COM", IDX_CTX)
+    b = fs.blind_index(normalize("nfc-casefold-v1", "Ada@Example.COM"), IDX_CTX)
+    assert a == b
+
+
+def test_an_unknown_normalizer_is_refused():
+    from fieldseal import normalize
+
+    with pytest.raises(ConfigurationError) as e:
+        normalize("nfc-casefold-v2", "x")
+    assert "closed" in str(e.value)

@@ -170,34 +170,39 @@ class TestReadFailures:
             Patient.objects.get(pk=p.pk)
 
 
-class TestEqualityIsRefusedUntilItCanReVerify:
-    """L2 is not implemented, and both equality paths refuse.
+class TestEqualityGoesThroughTheIndexSibling:
+    """L2 shipped (docs/12 §3.2, decision C). What still refuses, and why.
 
-    This is the §10.2 rule applied to an *unfinished feature*: a direct
-    comparison against a randomized envelope returns an empty queryset, and a
-    match on a truncated index returns collisions. Either would be a wrong
-    answer rather than an error, so neither is served.
+    The behaviour of the served paths lives in `test_l2.py`; what is pinned
+    here is the one equality surface that stays refused, because it is the
+    one a reader is most likely to assume works.
     """
 
-    def test_exact_on_the_encrypted_column_refuses(self):
-        Patient.objects.create(email="ada@example.com")
-        with pytest.raises(FieldsealNotSupported) as e:
-            Patient.objects.filter(email="ada@example.com").count()
-        assert "§7.5" in str(e.value)
+    def test_exact_on_the_encrypted_column_is_served(self):
+        row = Patient.objects.create(email="ada@example.com")
+        assert Patient.objects.filter(email="ada@example.com").count() == 1
+        assert Patient.objects.get(email="ada@example.com").pk == row.pk
 
-    def test_in_on_the_encrypted_column_refuses(self):
-        with pytest.raises(FieldsealNotSupported):
-            Patient.objects.filter(email__in=["a@b.com"]).count()
+    def test_in_on_the_encrypted_column_is_served(self):
+        Patient.objects.create(email="ada@example.com")
+        assert Patient.objects.filter(email__in=["ada@example.com"]).count() == 1
 
     def test_exact_on_the_index_column_refuses_naming_the_collision_rule(self):
+        """The sibling column is still refused, and deliberately so.
+
+        Matching it directly is the L2(a) "explicit index property" surface,
+        and it cannot re-verify: `get_lookup` on the sibling has no access to
+        the queryset that would do it, so serving it would return collisions
+        under a spelling that looks precise. The verified path is
+        `filter(email=...)`; the unverified one is `.candidates()`, which at
+        least says what it is.
+        """
         Patient.objects.create(email="ada@example.com")
         with pytest.raises(FieldsealNotSupported) as e:
             Patient.objects.filter(email_bidx="ada@example.com").count()
         msg = str(e.value)
         assert "§7.4" in msg and "§7.5" in msg
-        # The operator needs to know the stored data is fine.
         assert "backfill" in msg
-
 
 class TestBackendDivergence:
     """`bulk_update` builds a different expression tree per backend.

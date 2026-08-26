@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ARM_PROVISIONAL_ENV, ModeViolationError, SUITE_FF01, SuiteProvisionalError, indexRegistryKey, validateIndexDeclaration, type ValidatedIndex, type Warning } from "../src/index.ts";
+import { ARM_PROVISIONAL_ENV, ModeViolationError, NORMALIZER_IDS, SUITE_FF01, SuiteProvisionalError, indexRegistryKey, normalize, validateIndexDeclaration, type ValidatedIndex, type Warning } from "../src/index.ts";
 import { INTERNALS } from "../src/internal.ts";
 import { encrypt_with_materials, TestModeNotArmedError } from "../src/testing/index.ts";
 import { bytes, codeOf, CTX, makeClient, messageOf, withEnv } from "./helpers.ts";
@@ -23,6 +23,7 @@ const SEED = new Uint8Array(32).fill(0x41);
 const NONCE = new Uint8Array(12).fill(0x02);
 const IDX_CTX = { ...CTX, purpose: "index:exact" };
 const INDEX = { tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
+const INDEX_CASEFOLD = { ...INDEX, normalize: "nfc-casefold-v1" as const };
 
 describe("spec §4.8 provisional-suite gate", () => {
   const armed = makeClient({ indexes: [INDEX] });
@@ -391,5 +392,33 @@ describe("docs/09 §2 configuration reflection (G18)", () => {
     // An adapter comparing registries must be able to tell "no indexes
     // declared" from "this core cannot say", and only one of those is a state.
     expect(makeClient({}).indexes.size).toBe(0);
+  });
+});
+
+describe("docs/09 §7 normalizers are public (G19)", () => {
+  it("exposes the closed set and its implementation", () => {
+    // §7.5 re-verification compares *normalized* values and happens in the
+    // adapter, so the one implementation has to be reachable. An adapter
+    // reimplementing nfc-casefold-v1 would be reimplementing portability
+    // surface: the identifier IS the definition, and two implementations
+    // disagreeing is a silent lookup miss rather than an error.
+    expect([...NORMALIZER_IDS].sort()).toEqual(["digits-only-v1", "identity", "nfc-casefold-v1"]);
+    expect(Buffer.from(normalize("nfc-casefold-v1", "Ada@Example.COM")).toString()).toBe("ada@example.com");
+    expect(Buffer.from(normalize("digits-only-v1", "555-0100")).toString()).toBe("5550100");
+  });
+
+  it("is the same function the index path uses", () => {
+    const fs = makeClient({ indexes: [INDEX_CASEFOLD] });
+    const a = fs.blindIndex("Ada@Example.COM", IDX_CTX);
+    const b = fs.blindIndex(normalize("nfc-casefold-v1", "Ada@Example.COM"), IDX_CTX);
+    expect(a.equals(b)).toBe(true);
+  });
+
+  it("agrees across a canonical-equivalence pair", () => {
+    // Precomposed U+00E9 against decomposed e + U+0301: one text to every
+    // reader, and one index value, which is what makes G19's normalized
+    // comparison the only coherent verification rule.
+    const fs = makeClient({ indexes: [INDEX_CASEFOLD] });
+    expect(fs.blindIndex("rené", IDX_CTX).equals(fs.blindIndex("rené", IDX_CTX))).toBe(true);
   });
 });

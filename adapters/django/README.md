@@ -3,11 +3,11 @@
 Transparent field-level encryption at rest for Django. Design:
 [`docs/12-adapter-django.md`](../../docs/12-adapter-django.md).
 
-**Status: L1 only, and not usable in production.** Values encrypt and decrypt
-transparently and the blind-index column is written correctly, but **equality
-lookups are refused** — L2 is not implemented yet. Nothing here is frozen:
-the suite identifier is provisional (spec §4.8), Gate 0b is open, and the
-project does not invite adoption.
+**Status: L1 + L2, and not usable in production.** Values encrypt and decrypt
+transparently, and `filter(email=...)` / `__in` are served through the blind
+index with the spec §7.5 re-verification that makes them correct. Nothing here
+is frozen: the suite identifier is provisional (spec §4.8), Gate 0b is open,
+and the project does not invite adoption.
 
 **AD-1 (spec §11.3): this package contains no cryptography.** It calls the
 core's sync operations and nothing else. `pip`-installing it pulls in
@@ -113,26 +113,58 @@ not the target matrix in `docs/12` §6.
 | Tampered ciphertext | ✅ raises; never returns garbage | `test_a_tampered_envelope_raises_rather_than_returning_garbage` |
 | Tenant-bound column, no tenant set | ✅ refuses the write | `test_writing_without_a_tenant_refuses_rather_than_falling_back` |
 | Wrong tenant reading a row | ✅ raises (binding is cryptographic, not a filter) | `test_another_tenant_cannot_read_the_row` |
-| **`filter(field=...)` / `__in`** | 🛑 **refused — L2 not implemented** | `TestEqualityIsRefusedUntilItCanReVerify` |
-| **`filter(field_bidx=...)`** | 🛑 **refused — needs §7.5 re-verification** | same |
+| **`filter(field=...)` / `__in`** | ✅ rewritten to the index, then §7.5-verified | `TestEqualityRoundTrips`, `TestReVerification` |
+| A colliding candidate row | ✅ dropped before it reaches the caller | `test_a_colliding_candidate_is_dropped` |
+| `count()`, `exists()`, `first()`, `last()` | ✅ count/answer **verified** rows, not candidates | `TestReVerification` |
+| Case variant / canonical-equivalent spelling | ✅ matches — equality is the normalizer's (G19) | `TestNormalizedEquality` |
+| Slicing / pagination on a verified queryset | 🛑 refused — LIMIT precedes verification (§7.5) | `test_slicing_refuses` |
+| `update()`, `delete()` on a verified queryset | 🛑 refused — would write to collision rows | `test_sql_answered_paths_refuse` |
+| `aggregate()`, `values()`, `values_list()`, `only()`, `defer()` | 🛑 refused — answered from SQL, or drop the column verification needs | same |
+| `exclude(field=...)` | 🛑 refused — false negatives are unrecoverable | `test_exclude_refuses` |
+| `Q` with `OR`/negation over an encrypted column | 🛑 refused — cannot decide a candidate | `test_or_through_q_refuses` |
+| `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted | `TestCandidatesOptOut` |
+| Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
+| Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
+| **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
 | `contains`, `startswith`, `gt`, `range`, `regex`, `iexact`, … | 🛑 raise (spec §7.10 lists the fallback for each) | `test_refused_lookups_raise_rather_than_return_nothing` |
 | `.extra()`, `RawSQL()`, `cursor.execute()` params | 🛑 **cannot intercept — plaintext hazard** | — see below |
 | `django.core.cache` of model instances | ⚠️ holds plaintext (spec §10.2) | — |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 
-### Why equality is refused rather than approximated
+### Equality, and the part that is not the rewrite
 
-A direct comparison against a randomized envelope matches nothing, so
-`filter(email="...")` would return an **empty queryset** — a wrong answer, not
-an error. Matching on the index column alone is no better: spec §7.4 *mandates*
-collisions in a truncated index, so the rows returned would include values
-that merely share a fingerprint. Spec §7.5 therefore requires candidates to be
-decrypted and re-verified before they reach the caller, and until that is
-implemented both paths raise. Spec §10.2 is the rule: where a path would
-silently return wrong results, the adapter throws.
+`filter(email="ada@example.com")` compiles to a comparison on the `email_bidx`
+sibling, not on the ciphertext — a direct comparison against a randomized
+envelope matches nothing and would return an empty queryset, which is a wrong
+answer rather than an error.
 
-The index column is written correctly in the meantime, so enabling L2 later
-needs no backfill.
+**That rewrite alone is only half of it.** Spec §7.4 *mandates* collisions in
+a truncated index, so the rows the database returns are a **superset** of the
+answer. Spec §7.5 requires candidates to be decrypted and re-verified before
+they reach the caller, and `FieldsealQuerySet` does that in `_fetch_all` — so
+the default path is the safe path and there is nothing to remember. The
+manager is installed automatically on models that declare none of their own;
+where you wrote your own, system check **E008** asks you to mix
+`FieldsealQuerySet` in rather than the adapter silently replacing it.
+
+**What shrinks is the design work.** Verification drops rows after the
+database has already applied `COUNT`, `LIMIT` and `OFFSET`, so anything
+answered from SQL would be answering about candidates. `count()`, `exists()`,
+`first()` and `last()` are implemented against verified rows; slicing,
+`update()`, `delete()`, `aggregate()` and the projections are **refused**, and
+so is `exclude()` — a filter's false positives are recoverable, an exclusion's
+false negatives are not. `.candidates()` opts out of all of it and hands you
+bucket semantics, documented as unverified.
+
+**Equality is the column's normalizer's** (G19). On a `nfc-casefold-v1`
+column, `filter(email="ada@example.com")` matches a row stored as
+`Ada@Example.com`, and precomposed `é` matches decomposed `e`+`◌́`. That is
+why `iexact` is refused: the column has exactly one equality, and a second
+would be a second question the index cannot answer.
+
+**Pagination is the one to read twice.** Spec §7.5 states outright that
+pagination built directly on an indexed encrypted column is incorrect. The
+documented pattern is over-fetch → decrypt → filter → paginate.
 
 ### Why `loaddata` is refused
 

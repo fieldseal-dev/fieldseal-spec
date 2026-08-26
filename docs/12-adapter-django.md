@@ -82,11 +82,32 @@ class EncryptedExact(Lookup):
         return f"{lhs_sql} = %s", [*lhs_params, rhs]
 ```
 
-`In` gets the same treatment (N index values OR'd/`IN`, spec §7.10). **Mandatory over-fetch re-verification (spec §7.5):** the adapter wraps matching querysets in a decrypt-and-compare filter before results reach the caller; the queryset's `_fetch_all` path re-verifies candidates and drops collisions. Pagination guidance (over-fetch → decrypt → filter → paginate) goes in the package docs verbatim from §7.5. **[Design note: intercepting `_fetch_all` is private-API territory — the implementation may instead return a documented `.verified()` queryset method as the supported surface and make plain `filter()` on encrypted fields emit the candidate semantics warning. Decide during implementation; either way the *default documented pattern* must re-verify.]**
+`In` gets the same treatment (N index values `IN`'d, spec §7.10).
+
+**Mandatory over-fetch re-verification (spec §7.5) — decided at implementation, 2026-08-26.** The design note this paragraph used to carry is settled as **option C**: `FieldsealQuerySet._fetch_all` re-verifies by default and **`.candidates()`** opts out. The rejected alternative was an explicit `.verified()`, whose failure mode is silent — one forgotten call returns collision rows, which is the §10.2 wrong answer the adapter exists to prevent. The safe path has to be the default path.
+
+**The manager arrives without being asked for.** A default that must be installed by hand is not a default, so `class_prepared` installs `FieldsealManager` on any model with an indexed encrypted column **that declares no manager of its own** — Django marks its own auto-created `objects` with `auto_created`, which is an exact test for "the author did not choose". Where the author did choose, the adapter does not overwrite it; system check **E008** requires them to mix `FieldsealQuerySet` in.
+
+**What re-verification compares is G19 ([#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78)):** `normalize(stored)` against `normalize(queried)` under the index's own normalizer. The normalizer comes from the core (`fieldseal.normalize`, made public for this); an adapter that reimplemented `nfc-casefold-v1` would be reimplementing portability surface where a disagreement is a silent lookup miss.
+
+**The design work is not the rewrite, it is what shrinks.** Verification drops rows *after* the database has applied `COUNT`, `LIMIT` and `OFFSET`, so every queryset method answered from SQL is wrong by default. Each is handled explicitly:
+
+| Surface | Behaviour on a verifying queryset | Why |
+|---|---|---|
+| iteration, `list()`, `len()`, `get()`, `bool()` | verified | all route through `_fetch_all` |
+| `count()`, `exists()`, `first()`, `last()` | **implemented correctly** | materialize and verify; `exists()`/`first()` stop at the first verified match. Cost is bounded by the bucket, which §7.4 sizes at `2 ≤ P·2^−b < √P` by design |
+| slicing / pagination | **refused** | LIMIT/OFFSET precede verification, so the page is short and the next one misaligned. §7.5 states outright that pagination built directly on an indexed encrypted column is incorrect; the documented pattern is over-fetch → decrypt → filter → paginate |
+| `update()`, `delete()` | **refused** | the statement runs in the database against the bucket, so it would write to or destroy rows whose value differs. The only unrecoverable case on this list |
+| `aggregate()` | **refused** | answered from SQL, over candidates |
+| `values()`, `values_list()`, `only()`, `defer()` | **refused** | they decide which columns come back, and verification needs the encrypted one |
+| `exclude()` | **refused** | the SQL excludes the whole bucket, so it drops rows it should keep and they never reach the adapter for §7.5 to put back. **A filter's false positives are recoverable; an exclusion's false negatives are not** |
+| `Q` with `OR` or negation over an encrypted column | **refused** | a candidate may be present because another branch matched, so verification cannot decide it without evaluating the whole predicate in Python |
+
+`.candidates()` lifts every refusal in that table and returns bucket semantics, documented as unverified. An escape hatch that refuses the same things is not one.
 
 ### 3.3 Refused lookups (spec §10.2 — throw, never degrade)
 
-On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isnull`) raises `FieldsealNotSupported` with the honest-fallback text from spec §7.10: `contains`, `icontains`, `startswith`, `gt/gte/lt/lte`, `range`, `regex`, `iexact` (case folding belongs to the normalizer, not the query), `search`. Without a declared index, `exact`/`in` raise too ("no blind index declared for this column").
+On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isnull`) raises `FieldsealNotSupported` with the honest-fallback text from spec §7.10: `contains`, `icontains`, `startswith`, `gt/gte/lt/lte`, `range`, `regex`, `iexact` (case folding belongs to the normalizer, not the query — and as of G19 ([#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78)) that is a rule rather than an aside: §7.5 re-verification compares normalized values, so on a `nfc-casefold-v1` column `exact` **is** the caseless lookup and a second one would be a second equality the index cannot serve), `search`. Without a declared index, `exact`/`in` raise too ("no blind index declared for this column").
 
 ## 4. Context assembly and modes
 
@@ -104,6 +125,7 @@ On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isn
 | fieldseal.E004 | Error | Missing `table_uuid`/`column_uuid` |
 | fieldseal.E005 | Error | Encrypted field **or its index sibling** named in a `UniqueConstraint` or composite index (uniqueness over ciphertext is meaningless; uniqueness over a truncated index is forbidden by §7.10, G12 resolved) |
 | fieldseal.E006 | Error | A user-supplied `FIELDSEAL["CLIENT"]` whose index registry does not exactly match the model-declared indexes (§7). Compared in the **validated** form on both sides, so a client carrying the right key set with a different resolved truncation length or Argon2 cost is caught too — under spec §7.8 that is a *different index*, not a reconfiguration of one. **Exact match, not a subset**, because only one direction is loud: a client missing a declared index fails every lookup on that column at runtime, while a client carrying an index the models do not declare stores values for that column under rules no model states and nothing raises. **Shipped as `W004` and untested between 2026-08-25 and 2026-08-26** — the core kept its validated registry private, so the check could only have been written against `Fieldseal._indexes`; `docs/09` §2's *Configuration reflection* clause (G18, [#75](https://github.com/fieldseal-dev/fieldseal-spec/issues/75)) closed that and the check is now the Error this row always specified |
+| fieldseal.E008 | Error | A model with an indexed encrypted column whose default manager does not re-verify blind-index candidates. **Added at implementation (2026-08-26):** the adapter installs `FieldsealManager` automatically when a model declares no manager of its own, and deliberately does **not** overwrite one the author wrote — so this is the case it will not touch. Without a verifying queryset, §7.4's mandated collisions reach the caller as results |
 | fieldseal.W001 | Warning | Encrypted field in `ModelAdmin.search_fields` (generates `icontains` → will raise at runtime; `docs/04` §1 gotcha) |
 | fieldseal.W002 | Warning | `db_index=True` on ciphertext column (pointless index bloat) |
 | fieldseal.E007 | Error | `FIELDSEAL` settings missing or unknown keys present, on a project that declares encrypted fields. **Added at implementation:** these were reported as E003 ("the core refused an index declaration"), which sends an operator who has simply not configured the adapter to look at models that are fine |
