@@ -59,6 +59,12 @@ class Patient(models.Model):
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
 
+    class Meta:
+        # A *plaintext* get_latest_by: the earliest()/latest() no-argument
+        # fallback must keep working when the declaration is fine (the
+        # encrypted-declaration case is E009, tested in isolation).
+        get_latest_by = "created"
+
 
 TABLE_DOC = "018f3c2e-0000-7000-8000-000000000010"
 COL_BODY = "018f3c2e-0000-7000-8000-000000000011"

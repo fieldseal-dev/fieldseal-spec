@@ -85,6 +85,13 @@ class TestEarliestLatest:
     def test_earliest_by_a_plaintext_column_works(self, rows):
         assert Patient.objects.all().earliest("created").pk == rows[0].pk
 
+    def test_the_plaintext_get_latest_by_fallback_still_works(self, rows):
+        """The no-argument path reads Meta.get_latest_by; a plaintext
+        declaration (Patient's is `created`) must pass the check and reach
+        Django untouched -- the refusal is for encrypted targets only."""
+        assert Patient.objects.all().earliest().pk == rows[0].pk
+        assert Patient.objects.all().latest().pk == rows[-1].pk
+
     @isolate_apps("tests")
     def test_get_latest_by_is_read_when_no_fields_are_given(self):
         """`earliest()` with no arguments falls back to Meta.get_latest_by,
@@ -295,5 +302,18 @@ class TestW005:
         class FakeAdmin:
             list_display = ("created",)
             ordering = ("-created",)
+
+        assert self._w005({Patient: FakeAdmin()}) == []
+
+    def test_an_unsortable_method_shadowing_a_field_name_is_clean(self):
+        """An admin *method* named after an encrypted field, without
+        admin_order_field, is not sortable in Django -- warning on it would
+        be a false positive (found in the PR #82 review)."""
+
+        class FakeAdmin:
+            list_display = ("email",)
+
+            def email(self, obj):  # pragma: no cover - never rendered
+                return "redacted"
 
         assert self._w005({Patient: FakeAdmin()}) == []

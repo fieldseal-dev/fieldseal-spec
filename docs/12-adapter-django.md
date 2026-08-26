@@ -122,6 +122,7 @@ class EncryptedExact(Lookup):
 | `values(...).annotate(<aggregate>)` with an encrypted column in the projection | **refused** | the projection becomes the `GROUP BY`: one group per row, wrong counts under identical printed keys |
 | `distinct("field")`, or `distinct()` over a `values()`/`values_list()` projection naming an encrypted column (either call order) | **refused** | every envelope is distinct; deduplicates nothing, silently |
 | a bare `F("email")` annotation | **allowed** | it only *selects* the column, and the converter decrypts what comes back — exact |
+| bare `distinct()` on full model rows | **allowed** | the projection includes the primary key, so every row is already unique — a full-row `SELECT DISTINCT` cannot dedupe wrongly on envelope bytes, only no-op. (§7.10's ciphertext-column row is about computing *on the column*; this shape never asks the envelope bytes to carry identity) |
 | `order_by("email_bidx")` (the index sibling) | **allowed** | deterministic, documented as meaningless — a stable tiebreaker |
 | `Meta.ordering` / `Meta.get_latest_by` naming an encrypted column | **system check E009** (Error) | the compiler applies both directly, where no queryset refusal can see them |
 | an encrypted column the admin changelist would order by | **system check W005** (Warning) | `ModelAdmin.ordering` breaks every changelist request; a sortable column breaks on a header click — both now raise, so the check says so at startup |

@@ -8,7 +8,9 @@ without any operation failing.
 **E001's rationale was wrong until 2026-08-25 and is corrected here.** Both
 this module and `docs/12` §1.2 claimed that an index sibling declared before
 its source derives "a stale or empty index", because `SQLInsertCompiler`
-iterates fields in declaration order. Measured: it does not. `pre_save` reads
+iterates fields in declaration order. Measured (on Django 6.1, 2026-08-25;
+the claim is about `pre_save` timing, which the value-path tests exercise on
+every run): it does not. `pre_save` reads
 the *instance attribute*, which Python has set long before any field hook
 runs, so a reversed declaration produces the byte-identical index value. The
 check is kept for the reasons that are true -- deterministic column order in
@@ -511,7 +513,16 @@ def _check_admin_ordering(pairs: list[Any],
                 if attr is None:
                     attr = getattr(model, entry, None)
                 order_field = getattr(attr, "admin_order_field", None)
-                target = order_field if order_field is not None else entry
+                if order_field is not None:
+                    target = order_field
+                elif callable(attr):
+                    # An admin/model *method* without admin_order_field is
+                    # not sortable in Django, even when it shadows an
+                    # encrypted field's name -- warning on it would be a
+                    # false positive (found in PR #82 review).
+                    continue
+                else:
+                    target = entry
             elif callable(entry):
                 target = getattr(entry, "admin_order_field", None)
             if target is None:

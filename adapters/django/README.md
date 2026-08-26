@@ -135,7 +135,7 @@ not the target matrix in `docs/12` §6.
 | `earliest()`/`latest()` naming one (or via `Meta.get_latest_by`) | 🛑 refused (G20) — the same ordering through a different door | `TestEarliestLatest` |
 | Aggregate/function expressions over one (`Min`, `Sum`, `Count`, `Length`, …) | 🛑 refused (G20) — measured: `Min("age")` over {30, 40} returned **40**, decrypted cleanly | `TestAggregates` |
 | `values(enc).annotate(<aggregate>)` grouping / `distinct` over an encrypted projection | 🛑 refused (G20) — one group per row; dedup removes nothing | `TestGroupingAndDistinct` |
-| Bare `F("enc")` annotation · `order_by("enc_bidx")` sibling ordering | ✅ allowed — exact select-and-decrypt; deterministic documented-meaningless tiebreaker | `TestAggregates`, `TestOrderBy` |
+| Bare `F("enc")` annotation · `order_by("enc_bidx")` sibling ordering · bare `distinct()` on full rows | ✅ allowed — exact select-and-decrypt; deterministic documented-meaningless tiebreaker; full-row distinct is pk-keyed and cannot dedupe wrongly, only no-op | `TestAggregates`, `TestOrderBy`, `TestGroupingAndDistinct` |
 | `Meta.ordering`/`get_latest_by` naming one · admin sortable encrypted column | 🛑 **E009** (Error) / ⚠️ **W005** (Warning) — the compiler applies these where no queryset refusal can see them | `TestE009`, `TestW005` |
 | Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
 | Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
