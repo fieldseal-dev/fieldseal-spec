@@ -78,13 +78,42 @@ export class Fieldseal {
     return this.#cfg.writeSuite;
   }
 
+  /**
+   * The validated allow-list (docs/09 §2).
+   *
+   * A fresh Set, for the same reason `indexes` returns a fresh Map: this is
+   * the Set the decrypt path consults (`#cfg.allowedSuites.has(...)` below),
+   * `ReadonlySet` is erased at runtime, and one `as Set` cast would otherwise
+   * let a caller change what the client will decrypt through an accessor
+   * documented as read-only. Internal code reads `#cfg.allowedSuites`
+   * directly, so the copy never touches the value path.
+   */
   get allowedSuites(): ReadonlySet<number> {
-    return this.#cfg.allowedSuites;
+    return new Set(this.#cfg.allowedSuites);
   }
 
   /** Whether spec §4.8 provisional writing was armed for this client. */
   get provisionalArmed(): boolean {
     return this.#cfg.provisionalArmed;
+  }
+
+  /**
+   * The validated index registry, keyed by `indexRegistryKey` (docs/09 §2).
+   *
+   * Validated, not as-declared: `argon2` carries the §7.3 minima filled in,
+   * `indexId` its "exact" default, `onUnindexable` its `refuse` default.
+   * Comparing as-declared inputs would let two declarations that agree
+   * textually and differ operationally register as a match — which is the
+   * failure #62 was.
+   *
+   * A fresh Map, not `#cfg.indexes`. `ReadonlyMap` is a type, not a runtime
+   * guarantee: one `as Map` cast on the live registry would let a caller
+   * clear it, and docs/09 §2 makes the client immutable after construction.
+   * The copy is O(declared indexes) and this is a startup-time call, never a
+   * value-path one.
+   */
+  get indexes(): ReadonlyMap<string, ValidatedIndex> {
+    return new Map(this.#cfg.indexes);
   }
 
   // -------------------------------------------------------------------------

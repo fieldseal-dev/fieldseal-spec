@@ -73,6 +73,13 @@ fs.blindIndex(v: string | Uint8Array, ctx: FieldContext): Buffer  // sync; text 
 fs.isCiphertext(v: Uint8Array): boolean                    // sync
 fs.rotate(ct: Uint8Array, ctx: FieldContext): Buffer       // sync
 await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async method
+
+// docs/09 §2 configuration reflection
+fs.readMode: ReadMode
+fs.writeSuite: number
+fs.allowedSuites: ReadonlySet<number>
+fs.provisionalArmed: boolean
+fs.indexes: ReadonlyMap<string, ValidatedIndex>   // keyed by indexRegistryKey(...)
 ```
 
 - Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are not accepted — except by `blindIndex`, which requires them** (docs/09 §7.1; G16 part A). An implicit `utf8` coercion on the *envelope* operations would be exactly the cross-language divergence the vectors exist to catch, and that reasoning still holds for `encrypt`, `decrypt`, `rotate` and `isCiphertext`. It does not hold for index derivation, and inverting there was the point of G16 part A: `TextEncoder` substitutes U+FFFD for an unpaired surrogate rather than failing, so a caller who encodes first has already collapsed two distinct values into one before this core is entered. Passing the string keeps the refusal where the information still exists. This core previously refused strings with a message directing callers to encode themselves, which named the lossy conversion as the supported route.
@@ -81,6 +88,7 @@ await fs.warm(ctxs: Iterable<FieldContext>): Promise<void> // the only async met
 - Deviation from docs/09 §2's config sketch: there is **no client-level `cache` field**. The §5.5 cache policy is `EnvelopeKeyProvider`'s own required `cache` option (docs/09 §2's "required for EnvelopeKeyProvider", enforced at provider construction); a `cache` key present in the client config is refused with a `ConfigurationError` rather than accepted and ignored.
 - Errors: `FieldsealError` subclasses, each with `code` matching the §9 strings (`"TAG_INVALID"`, …) for the vector harness mapping.
 - Method naming is the docs/09 §12 casing rule applied: `blindIndex`/`isCiphertext` are the camelCase renderings of the fixed operation names.
+- **Configuration reflection (docs/09 §2).** The first four accessors predate G18; `indexes` is what that issue added, and it is the one an adapter needs — before it, `docs/12` §5's E006 registry check was unimplementable in this language *at all*, not merely awkwardly: `#cfg` is a hard private field on an instance the constructor freezes, so there is no bad option to fall back on the way Python's `_indexes` offers one. `ValidatedIndex`, `validateIndexDeclaration` and `indexRegistryKey` are exported for the comparison. **Three runtime guarantees are load-bearing here and none comes from a type.** `indexes` returns `new Map(this.#cfg.indexes)` and `allowedSuites` returns `new Set(this.#cfg.allowedSuites)`, because `ReadonlyMap`/`ReadonlySet` are erased at runtime: both accessors would otherwise hand out the very collections the value path consults, and one `as Map`/`as Set` cast would let a caller clear the registry or change what the client will decrypt. Both copies are O(small) on startup-time calls, and internal code keeps reading `#cfg` directly, so neither touches the value path. And `validateIndexDeclaration` freezes what it returns, because `readonly` on an interface member is a compile-time claim only — a caller with the record in hand could otherwise rewrite `truncateBits` through a single cast and change what the client derives. **`allowedSuites` was missed on the first pass** and caught in review: it predates G18, so the clause this section documents made an accessor that already existed non-conformant. Worth stating, because it is the general hazard of adding a rule to a surface that grew before it — the new members get the treatment and the old ones are assumed to have had it.
 
 ## 5. Security-relevant implementation notes
 

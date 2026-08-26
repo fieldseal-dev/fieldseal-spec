@@ -64,8 +64,11 @@ The adapter builds the `Fieldseal` client itself, in `AppConfig.ready()`,
 assembling the index registry from the model declarations. That is not a
 convenience: the core's §7.4 truncation band and §7.6 cardinality gate run at
 client construction, and this is the only arrangement where they see the
-columns that actually exist. `FIELDSEAL["CLIENT"]` overrides it and is
-reported by `fieldseal.W004` — see *Known gaps*.
+columns that actually exist. `FIELDSEAL["CLIENT"]` overrides it, and
+`fieldseal.E006` then checks the supplied client's registry against the model
+declarations — an exact match in both directions, comparing the validated
+form, because a client carrying an index the models do not declare stores
+values for that column under rules no model states and nothing raises.
 
 ## Tenant binding (spec §10, L3)
 
@@ -159,13 +162,6 @@ directly and pass the resulting envelope.
 
 ## Known gaps
 
-- **`fieldseal.W004` instead of `E006`.** `docs/12` §5 specifies an *error*
-  when `FIELDSEAL["CLIENT"]`'s index registry does not match the model
-  declarations. The core exposes no public accessor for a client's validated
-  registry, so implementing it would mean reading a private attribute — a
-  check that breaks silently when internals move. It is reported as a warning
-  naming the gap instead, and the missing accessor is a follow-up against
-  `docs/09` §8.
 - **No `fieldseal_gen_uuids` management command yet**; error messages name it.
 - **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump
   is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
