@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.3.0-provisional",
+  "vector_suite_version": "0.4.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "held-out",
@@ -553,6 +553,26 @@
       "expected": {
         "index_a": "90fa",
         "index_b": "90fa",
+        "must_be_equal": true
+      }
+    },
+    {
+      "id": "blind-index/argon2id/normalizer-collapses-e-acute",
+      "description": "precomposed U+00E9 and the decomposed e + U+0301 MUST produce the same index under the nfc-casefold-v1 normalizer",
+      "spec_ref": "§7.2",
+      "assertion": "equal",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "normalize": "nfc-casefold-v1",
+        "plaintext_preimage_a": "rené@example.com",
+        "plaintext_preimage_b": "rené@example.com",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index_a": "0e82",
+        "index_b": "0e82",
         "must_be_equal": true
       }
     },

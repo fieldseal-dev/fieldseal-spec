@@ -4,7 +4,7 @@
 **Blocks:** Django L2 and Prisma L2 — the adapter cannot implement §7.5 without choosing, and the choice is user-visible in the result set. No stored byte, no derived value, no vector in any family.
 **Found:** 2026-08-26, implementing `docs/12` §3.2's re-verification filter for the Django adapter's L2 path.
 
-**Status:** OPEN — tracker [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), posted 2026-08-26.
+**Status:** CLOSED 2026-08-26, the day it was filed — tracker [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78). Adopted as proposed (reading B): spec §7.5 now states the comparison — `normalize(stored)` against `normalize(queried)` under the index's declared normalizer, on its output bytes — with the one-equality adapter obligation, and the vector obligation is met: suite `0.4.0-provisional` pins the named canonical-equivalence pair (`normalizer-collapses-e-acute`, precomposed `U+00E9` vs `e` + `U+0301`), both cores 145/145. The case-variant pair was already pinned (`normalizer-collapses-case`, suite 0.2.0). See the closure note in `docs/issues/README.md` and the `docs/07` §7 log entry.
 
 ## Gap
 

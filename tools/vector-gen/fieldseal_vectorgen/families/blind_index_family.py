@@ -63,10 +63,21 @@ COLLISION_PAIRS = [
      "U+0390 and its uppercase spelling U+03AA U+0301"),
     ("normalizer-collapses-fold-nfc-upsilon", "ΰ@example.com", "Ϋ́@example.com",
      "U+03B0 and its uppercase spelling U+03AB U+0301"),
-    ("normalizer-collapses-precomposed", "ǰ@example.com", "ǰ@example.com",
+    ("normalizer-collapses-precomposed",
+     "\u01f0@example.com", "j\u030c@example.com",
      "U+01F0 and the decomposed j + U+030C"),
     ("normalizer-collapses-sharp-s", "straße@example.com", "STRASSE@example.com",
      "ß and SS under full case folding"),
+    # G19's named pair (spec §7.5, resolved 2026-08-26): two spellings of the
+    # same text to every reader and every rendering engine. This pair and the
+    # precomposed one above are the two whose sides NFC-compose into each
+    # other, so they are written as backslash-u escapes: a source file
+    # holding them as literals is one editor-normalization away from a pair
+    # of identical strings. The distinctness assert in _vectors is the guard
+    # that holds either way, for every pair, escaped or not.
+    ("normalizer-collapses-e-acute",
+     "ren\u00e9@example.com", "rene\u0301@example.com",
+     "precomposed U+00E9 and the decomposed e + U+0301"),
 ]
 
 
@@ -126,6 +137,15 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
 
     # Collision is the point of declaring a normalizer. Inputs carried (D-08).
     for slug, pre_a, pre_b, why in COLLISION_PAIRS:
+        # Identical preimages would satisfy the equality below vacuously --
+        # the exact hole an NFC-normalizing editor would open (found in the
+        # PR #84 review). Neither harness re-checks distinctness, so this
+        # assert is what keeps every collision pair a real assertion.
+        assert pre_a != pre_b, (
+            f"{slug}: the two preimages are identical; the pair asserts "
+            "nothing. If an editor NFC-normalized this source file, "
+            "restore the decomposed spelling as backslash-u escapes."
+        )
         a = truncate(idf(ik, normalize_nfc_casefold_v1(pre_a)), 15)
         b = truncate(idf(ik, normalize_nfc_casefold_v1(pre_b)), 15)
         assert a == b, f"{slug}: {pre_a!r} and {pre_b!r} do not collide"

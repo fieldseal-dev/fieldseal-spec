@@ -88,7 +88,7 @@ class EncryptedExact(Lookup):
 
 **The manager arrives without being asked for.** A default that must be installed by hand is not a default, so `class_prepared` installs `FieldsealManager` on any model with an indexed encrypted column **that declares no manager of its own** — Django marks its own auto-created `objects` with `auto_created`, which is an exact test for "the author did not choose". Where the author did choose, the adapter does not overwrite it; system check **E008** requires them to mix `FieldsealQuerySet` in.
 
-**What re-verification compares is G19 ([#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78)):** `normalize(stored)` against `normalize(queried)` under the index's own normalizer. The normalizer comes from the core (`fieldseal.normalize`, made public for this); an adapter that reimplemented `nfc-casefold-v1` would be reimplementing portability surface where a disagreement is a silent lookup miss.
+**What re-verification compares is spec §7.5's comparison rule (G19 [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), resolved 2026-08-26 — this adapter was the rule's prototype):** `normalize(stored)` against `normalize(queried)` under the index's own normalizer. The normalizer comes from the core (`fieldseal.normalize`, made public for this); an adapter that reimplemented `nfc-casefold-v1` would be reimplementing portability surface where a disagreement is a silent lookup miss.
 
 **The design work is not the rewrite, it is what shrinks.** Verification drops rows *after* the database has applied `COUNT`, `LIMIT` and `OFFSET`, so every queryset method answered from SQL is wrong by default. Each is handled explicitly:
 
@@ -131,7 +131,7 @@ class EncryptedExact(Lookup):
 
 ### 3.3 Refused lookups (spec §10.2 — throw, never degrade)
 
-On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isnull`) raises `FieldsealNotSupported` with the honest-fallback text from spec §7.10: `contains`, `icontains`, `startswith`, `gt/gte/lt/lte`, `range`, `regex`, `iexact` (case folding belongs to the normalizer, not the query — and as of G19 ([#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78)) that is a rule rather than an aside: §7.5 re-verification compares normalized values, so on a `nfc-casefold-v1` column `exact` **is** the caseless lookup and a second one would be a second equality the index cannot serve), `search`. Without a declared index, `exact`/`in` raise too ("no blind index declared for this column").
+On the encrypted field, every lookup except the rewritten `exact`/`in` (and `isnull`) raises `FieldsealNotSupported` with the honest-fallback text from spec §7.10: `contains`, `icontains`, `startswith`, `gt/gte/lt/lte`, `range`, `regex`, `iexact` (case folding belongs to the normalizer, not the query — and since G19 ([#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), resolved 2026-08-26) that is spec §7.5's normative rule rather than an aside: §7.5 re-verification compares normalized values, so on a `nfc-casefold-v1` column `exact` **is** the caseless lookup and a second one would be a second equality the index cannot serve), `search`. Without a declared index, `exact`/`in` raise too ("no blind index declared for this column").
 
 ## 4. Context assembly and modes
 
