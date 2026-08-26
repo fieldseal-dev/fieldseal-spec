@@ -78,8 +78,18 @@ export class Fieldseal {
     return this.#cfg.writeSuite;
   }
 
+  /**
+   * The validated allow-list (docs/09 §2).
+   *
+   * A fresh Set, for the same reason `indexes` returns a fresh Map: this is
+   * the Set the decrypt path consults (`#cfg.allowedSuites.has(...)` below),
+   * `ReadonlySet` is erased at runtime, and one `as Set` cast would otherwise
+   * let a caller change what the client will decrypt through an accessor
+   * documented as read-only. Internal code reads `#cfg.allowedSuites`
+   * directly, so the copy never touches the value path.
+   */
   get allowedSuites(): ReadonlySet<number> {
-    return this.#cfg.allowedSuites;
+    return new Set(this.#cfg.allowedSuites);
   }
 
   /** Whether spec §4.8 provisional writing was armed for this client. */

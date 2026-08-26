@@ -543,6 +543,13 @@ def test_client_reflects_its_validated_configuration():
     assert fs.write_suite == 0xFF01
     assert fs.allowed_suites == frozenset({0xFF01})
     assert fs.provisional_armed is True
+    # The allow-list is the other collection on this surface, and the decrypt
+    # path consults it. `frozenset` carries no mutating methods, so this
+    # binding needs no copy where TypeScript's `ReadonlySet` -- a type, not a
+    # runtime guarantee -- does. Pinned so the type cannot quietly become a
+    # `set`.
+    assert isinstance(fs.allowed_suites, frozenset)
+    assert not hasattr(fs.allowed_suites, "add")
     # The carve-out is the point of stating the rule as a principle: a
     # reflected handle to the object holding key material is a larger surface
     # than any consumer of this needs.

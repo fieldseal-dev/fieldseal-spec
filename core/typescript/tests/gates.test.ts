@@ -370,6 +370,23 @@ describe("docs/09 §2 configuration reflection (G18)", () => {
     expect(fs.indexes.get(key)?.truncateBits).toBe(15);
   });
 
+  it("hands out an allow-list that cannot mutate the client", () => {
+    // `allowedSuites` predates G18 but the §2 anti-mutation clause now covers
+    // it, and it is the only other collection on the reflected surface —
+    // readMode/writeSuite/provisionalArmed are primitives. The getter used to
+    // return `#cfg.allowedSuites` itself, which is the same Set the decrypt
+    // path consults, so a caller could change what the client will decrypt
+    // through an accessor documented as read-only.
+    const fs = makeClient({ indexes: [INDEX] });
+    const envelope = fs.encrypt(PT, CTX);
+    (fs.allowedSuites as Set<number>).delete(SUITE_FF01);
+    (fs.allowedSuites as Set<number>).add(0xff02);
+    expect([...fs.allowedSuites]).toEqual([SUITE_FF01]);
+    // The proof that the copy matters: without it this decrypt raises
+    // SUITE_NOT_ALLOWED on an envelope the client wrote moments earlier.
+    expect(fs.decrypt(envelope, CTX).equals(Buffer.from(PT))).toBe(true);
+  });
+
   it("reports an empty registry rather than nothing when no index is declared", () => {
     // An adapter comparing registries must be able to tell "no indexes
     // declared" from "this core cannot say", and only one of those is a state.
