@@ -571,10 +571,45 @@ class _IndexedLookup(models.Lookup):
         return out
 
     def _sibling_sql(self, compiler: Any) -> tuple[str, list[Any]]:
+        self._refuse_cross_model(compiler)
         sibling = self.lhs.output_field.fieldseal_index_field
         col = sibling.get_col(self.lhs.alias, output_field=sibling)
         sql, params = compiler.compile(col)
         return str(sql), list(params)
+
+    def _refuse_cross_model(self, compiler: Any) -> None:
+        """Refuse compiling for any model but the column's own.
+
+        A lookup compiles wherever a join can reach the column --
+        `Visit.objects.filter(patient__email=...)` -- including from models
+        whose manager is a plain one this package never sees. Spec §7.5
+        re-verification runs only on the queryset that owns the encrypted
+        column, so a cross-model compilation would serve the §7.4 bucket,
+        unverified, as results: the spec §10.2 wrong answer. This is the
+        backstop for every queryset; `FieldsealQuerySet` additionally refuses
+        the same traversal at filter() time with the friendlier message.
+        Multi-table-inheritance children are the owning model for this
+        purpose: their (verifying) queryset materializes rows that carry the
+        column.
+        """
+        field = self.lhs.output_field
+        owner = field.model._meta.concrete_model
+        querying = compiler.query.model._meta.concrete_model
+        if owner is querying or owner in querying._meta.get_parent_list():
+            return
+        raise FieldsealNotSupported(
+            f"`{querying.__name__}` filters on the encrypted column "
+            f"{owner.__name__}.{field.name} through a relation. The join "
+            "would match its blind-index sibling, but spec §7.5 "
+            "re-verification runs on the queryset that owns the encrypted "
+            "column and cannot run from here, so the join would serve "
+            "unverified index candidates as results -- which spec §10.2 "
+            f"forbids. Filter {owner.__name__} directly instead and join on "
+            "the result: embed bucket semantics with "
+            f"filter(...__in={owner.__name__}_qs.candidates()), or "
+            "materialize verified primary keys and use "
+            "filter(...__pk__in=[...])."
+        )
 
 
 class EncryptedExact(_IndexedLookup):

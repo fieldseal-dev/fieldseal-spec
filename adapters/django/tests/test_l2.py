@@ -115,15 +115,14 @@ class TestReVerification:
         assert [p.pk for p in chained] == [rows[0].pk]
 
     def test_a_null_column_never_matches(self):
-        """A NULL column cannot equal a value, and could not have been
-        indexed either. Asserted on the matcher rather than through a row,
-        because the fixture model's email is non-nullable and making it
-        nullable to test this would be a migration for one branch."""
+        """A NULL row cannot equal an indexed target -- under a non-NULL
+        query it must always be dropped. (A NULL row only legitimately
+        reaches a result set through `IS NULL` predicates, which record no
+        obligation at all; see TestNullSemantics.)"""
         qs = Patient.objects.filter(email="ada@example.com")
-        field = Patient._meta.get_field("email")
         (obligation,) = qs._fieldseal_obligations
-        assert obligation.matches(None, field) is False
-        assert obligation.matches("ada@example.com", field) is True
+        assert obligation.matches(None) is False
+        assert obligation.matches("ada@example.com") is True
 
 
 class TestNormalizedEquality:

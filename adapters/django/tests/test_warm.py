@@ -28,8 +28,9 @@ class TestContexts:
     def test_every_encrypted_column_is_covered(self):
         contexts, _ = warm_contexts()
         columns = {(c.table_uuid, c.column_uuid) for c in contexts}
-        # Patient.email, Patient.note, Patient.age, Person.legal_name.
-        assert len(columns) == 4
+        # Patient.email, Patient.note, Patient.age, Patient.nickname,
+        # Person.legal_name, Visit.reason.
+        assert len(columns) == 6
 
     def test_an_indexed_column_warms_its_index_key_too(self):
         """spec §5.2: the index key is a **sibling** of the tenant DEK, not

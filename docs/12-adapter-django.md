@@ -94,16 +94,23 @@ class EncryptedExact(Lookup):
 
 | Surface | Behaviour on a verifying queryset | Why |
 |---|---|---|
-| iteration, `list()`, `len()`, `get()`, `bool()` | verified | all route through `_fetch_all` |
+| iteration, `list()`, `len()`, `bool()` | verified | all route through `_fetch_all` |
 | `count()`, `exists()`, `first()`, `last()` | **implemented correctly** | materialize and verify; `exists()`/`first()` stop at the first verified match. Cost is bounded by the bucket, which §7.4 sizes at `2 ≤ P·2^−b < √P` by design |
-| slicing / pagination | **refused** | LIMIT/OFFSET precede verification, so the page is short and the next one misaligned. §7.5 states outright that pagination built directly on an indexed encrypted column is incorrect; the documented pattern is over-fetch → decrypt → filter → paginate |
+| `get()` | **implemented correctly** | Django's `get()` samples `LIMIT MAX_GET_RESULTS` (21) of the *candidates*, so a §7.4 bucket larger than the window could hold the true match past it and raise `DoesNotExist` about a row that exists. Verified `get()` materializes the whole bucket (found in the PR #79 review round) |
+| `iterator()`, `aiterator()` | **verified, still streaming** | both bypass `_fetch_all` by design (no result cache), so the stream is filtered as it passes. `aiterator` is the one async method that does not delegate to its sync twin; every other `a*` method wraps the overridden sync one, and the test suite pins that |
+| `filter(field=None)`, `__isnull`, `exclude(field=None)` | **served exactly, no verification needed** | NULL plaintext stores NULL in both columns and Django rewrites `exact=None` to `isnull`, so the SQL is `IS [NOT] NULL` on the envelope column itself — precise, touches no blind index, allowed in any combination including negation and `OR` |
+| slicing / pagination / `qs[i]` | **refused** | LIMIT/OFFSET precede verification, so the page is short and the next one misaligned — and `qs[i]` is `LIMIT i,1`, the `first()` failure behind different syntax. §7.5 states outright that pagination built directly on an indexed encrypted column is incorrect; the documented pattern is over-fetch → decrypt → filter → paginate |
+| `earliest()`, `latest()` | **refused** | `LIMIT 1` applied by the database before verification — `first()`'s failure behind another name; the message points at `.order_by(f).first()` |
 | `update()`, `delete()` | **refused** | the statement runs in the database against the bucket, so it would write to or destroy rows whose value differs. The only unrecoverable case on this list |
 | `aggregate()` | **refused** | answered from SQL, over candidates |
 | `values()`, `values_list()`, `only()`, `defer()` | **refused** | they decide which columns come back, and verification needs the encrypted one |
 | `exclude()` | **refused** | the SQL excludes the whole bucket, so it drops rows it should keep and they never reach the adapter for §7.5 to put back. **A filter's false positives are recoverable; an exclusion's false negatives are not** |
-| `Q` with `OR` or negation over an encrypted column | **refused** | a candidate may be present because another branch matched, so verification cannot decide it without evaluating the whole predicate in Python |
+| `Q` with `OR`/`XOR` or negation over an encrypted column | **refused** | a candidate may be present because another branch matched, so verification cannot decide it without evaluating the whole predicate in Python. A **plain AND of positive terms** records obligations and verifies exactly like keyword arguments — under AND, every returned row must satisfy the encrypted term too, so per-term verification is exact |
+| subquery embedding (`__in=qs`, `Subquery`, `Exists`) | **refused** | the subquery runs entirely in the database, where §7.5 cannot run, so the outer query would receive unverified candidates — silently. Escape: materialize verified pks, or embed `.candidates()` |
+| `union()`, `intersection()`, `difference()` | **refused, on either side** | the combined statement is answered by the database, and this queryset's obligations cannot be applied to rows the *other* operand contributed — the AND-composition argument only holds within one WHERE clause |
+| relation traversal (`filter(rel__enc=...)`, forward or reverse) | **refused, at two layers** | the join matches the blind-index sibling, but §7.5 runs on the queryset that owns the column: a `FieldsealQuerySet` refuses at `filter()` time, and the lookup itself refuses at compile time for **every other queryset** — a related model with a plain manager never passes through this package's queryset at all, so the field layer is the layer that actually holds (PR #79 review round). Escapes: `filter(rel__in=Owner_qs.filter(col=v).candidates())` for bucket semantics, or verified primary keys |
 
-`.candidates()` lifts every refusal in that table and returns bucket semantics, documented as unverified. An escape hatch that refuses the same things is not one.
+`.candidates()` lifts every refusal in that table — including the filter-time ones (`exclude`, `Q` under `OR`), since the SQL semantics they refuse are exactly what it hands over — and returns bucket semantics, documented as unverified. An escape hatch that refuses the same things is not one. The one refusal it cannot lift is the cross-model traversal, because another model's queryset cannot take on §7.5; the opt-in there is the *owning* model's `.candidates()`, embedded as above.
 
 ### 3.3 Refused lookups (spec §10.2 — throw, never degrade)
 

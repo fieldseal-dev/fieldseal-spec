@@ -116,13 +116,21 @@ not the target matrix in `docs/12` §6.
 | **`filter(field=...)` / `__in`** | ✅ rewritten to the index, then §7.5-verified | `TestEqualityRoundTrips`, `TestReVerification` |
 | A colliding candidate row | ✅ dropped before it reaches the caller | `test_a_colliding_candidate_is_dropped` |
 | `count()`, `exists()`, `first()`, `last()` | ✅ count/answer **verified** rows, not candidates | `TestReVerification` |
+| `get()` | ✅ materializes the whole bucket — Django's `LIMIT 21` sample could hide the match past the window | `test_get_finds_a_match_behind_a_full_window_of_collisions` |
+| `iterator()` / `aiterator()` | ✅ verified, still streaming — both bypass `_fetch_all` by design | `test_iterator_yields_only_verified_rows`, `test_aiterator_…` |
+| `filter(field=None)`, `__isnull`, `exclude(field=None)` | ✅ served exactly — `IS [NOT] NULL` on the envelope column, no index touched | `TestNullSemantics` |
 | Case variant / canonical-equivalent spelling | ✅ matches — equality is the normalizer's (G19) | `TestNormalizedEquality` |
-| Slicing / pagination on a verified queryset | 🛑 refused — LIMIT precedes verification (§7.5) | `test_slicing_refuses` |
+| Plain-AND `Q` over an encrypted column | ✅ records the obligation, verifies like a keyword | `TestPlainAndQ` |
+| Slicing / pagination / `qs[i]` on a verified queryset | 🛑 refused — LIMIT precedes verification (§7.5) | `test_slicing_refuses`, `test_int_indexing_refuses` |
+| `earliest()` / `latest()` | 🛑 refused — `LIMIT 1` before verification, `first()`'s failure renamed | `test_earliest_and_latest_refuse` |
 | `update()`, `delete()` on a verified queryset | 🛑 refused — would write to collision rows | `test_sql_answered_paths_refuse` |
 | `aggregate()`, `values()`, `values_list()`, `only()`, `defer()` | 🛑 refused — answered from SQL, or drop the column verification needs | same |
 | `exclude(field=...)` | 🛑 refused — false negatives are unrecoverable | `test_exclude_refuses` |
-| `Q` with `OR`/negation over an encrypted column | 🛑 refused — cannot decide a candidate | `test_or_through_q_refuses` |
-| `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted | `TestCandidatesOptOut` |
+| `Q` with `OR`/`XOR`/negation over an encrypted column | 🛑 refused — cannot decide a candidate | `test_or_through_q_refuses`, `test_negation_still_refuses` |
+| Subquery embedding (`__in=qs`, `Subquery`, `Exists`) | 🛑 refused — the outer query would receive unverified candidates | `test_a_verifying_queryset_refuses_to_become_a_subquery` |
+| `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands | `test_combinators_refuse_on_either_side` |
+| Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too | `TestRelationTraversal` |
+| `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted (filter-time ones included; the cross-model traversal is the exception — embed the owner's `.candidates()` instead) | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals` |
 | Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
 | Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
 | **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
@@ -158,11 +166,17 @@ where you wrote your own, system check **E008** asks you to mix
 **What shrinks is the design work.** Verification drops rows after the
 database has already applied `COUNT`, `LIMIT` and `OFFSET`, so anything
 answered from SQL would be answering about candidates. `count()`, `exists()`,
-`first()` and `last()` are implemented against verified rows; slicing,
-`update()`, `delete()`, `aggregate()` and the projections are **refused**, and
-so is `exclude()` — a filter's false positives are recoverable, an exclusion's
-false negatives are not. `.candidates()` opts out of all of it and hands you
-bucket semantics, documented as unverified.
+`first()`, `last()` and `get()` are implemented against verified rows (Django's
+`get()` samples a `LIMIT 21` window of candidates; ours reads the whole
+bucket), and `iterator()`/`aiterator()` filter the stream as it passes;
+slicing, `qs[i]`, `earliest()`/`latest()`, `update()`, `delete()`,
+`aggregate()`, the projections, subquery embedding and the set combinators are
+**refused**, and so is `exclude()` — a filter's false positives are
+recoverable, an exclusion's false negatives are not. NULL is the exception
+that needs none of this: `filter(field=None)` and `__isnull` compile to
+`IS [NOT] NULL` on the envelope column itself, which is exact. `.candidates()`
+opts out of all of it and hands you bucket semantics, documented as
+unverified.
 
 **Equality is the column's normalizer's** (G19). On a `nfc-casefold-v1`
 column, `filter(email="ada@example.com")` matches a row stored as

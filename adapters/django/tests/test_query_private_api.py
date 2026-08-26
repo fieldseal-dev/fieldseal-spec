@@ -112,3 +112,82 @@ def test_the_obligations_actually_survive_a_representative_chain():
         "unverified candidates"
     )
     assert isinstance(qs, FieldsealQuerySet)
+
+
+def test_get_still_samples_through_a_limit():
+    """`get()` is overridden because Django's applies LIMIT MAX_GET_RESULTS
+    before materializing -- a window over *candidates*, so a §7.4 bucket
+    larger than the window can hide the true match past it."""
+    source = inspect.getsource(QuerySet.get)
+    assert "MAX_GET_RESULTS" in source and "set_limits" in source, (
+        "Django's get() no longer samples through MAX_GET_RESULTS. The "
+        "get() override in fieldseal_django.query may now be unnecessary -- "
+        "check how get() materializes before removing it."
+    )
+
+
+def test_int_indexing_still_compiles_to_a_limit():
+    """`qs[0]` is refused because Django compiles it to LIMIT k,1 before
+    verification -- the same failure first() exists to avoid."""
+    assert "set_limits(k, k + 1)" in inspect.getsource(QuerySet.__getitem__), (
+        "Django's __getitem__ no longer applies set_limits(k, k + 1) for "
+        "int indices. Re-read it and re-decide whether the int-index "
+        "refusal in fieldseal_django.query is still needed."
+    )
+
+
+def test_earliest_still_applies_limit_one():
+    assert "set_limits(high=1)" in inspect.getsource(QuerySet._earliest), (
+        "Django's _earliest no longer applies LIMIT 1 in SQL. The "
+        "earliest()/latest() refusals in fieldseal_django.query exist "
+        "because of that limit; re-verify before relaxing them."
+    )
+
+
+def test_combinators_still_funnel_through_combinator_query():
+    """The union/intersection/difference refusal lives in
+    `_combinator_query`; if a public method stops routing there, an
+    encrypted side would be combined unverified."""
+    for method in (QuerySet.union, QuerySet.intersection, QuerySet.difference):
+        assert "_combinator_query(" in inspect.getsource(method), (
+            f"{method.__name__}() no longer routes through "
+            "_combinator_query; the refusal in fieldseal_django.query is "
+            "being bypassed and unverified candidates can be combined."
+        )
+
+
+def test_iterators_still_bypass_fetch_all():
+    """`iterator()`/`aiterator()` are overridden because they stream from
+    `_iterable_class` without `_fetch_all` -- if Django starts routing them
+    through it, the overrides become redundant (verify, then simplify)."""
+    for method in (QuerySet._iterator, QuerySet.aiterator):
+        source = inspect.getsource(method)
+        assert "_iterable_class" in source and "_fetch_all" not in source
+
+
+def test_async_methods_still_delegate_to_the_sync_overrides():
+    """Every other async method must keep wrapping its sync twin, because
+    the sync methods are where verification lives. `aiterator` is the known
+    exception and is overridden separately."""
+    for name in ("aget", "afirst", "alast", "acount", "aexists",
+                 "aearliest", "alatest", "aupdate", "adelete", "aaggregate"):
+        source = inspect.getsource(getattr(QuerySet, name))
+        assert f"sync_to_async(self.{name[1:]})" in source, (
+            f"QuerySet.{name} no longer delegates to self.{name[1:]} via "
+            "sync_to_async; it is bypassing the verifying override and "
+            "needs one of its own in fieldseal_django.query."
+        )
+
+
+def test_exact_none_is_still_rewritten_to_isnull():
+    """`filter(field=None)` records no obligation because Django itself
+    rewrites `exact=None` to `isnull`, which compiles to a *precise*
+    `IS NULL` on the envelope column. If that rewrite disappears, None
+    reaches EncryptedExact and the design must be revisited."""
+    from django.db.models.sql.query import Query
+
+    assert 'get_lookup("isnull")' in inspect.getsource(Query.build_lookup), (
+        "Django's build_lookup no longer rewrites exact=None to isnull. "
+        "The NULL-equality path in fieldseal_django.query._predicate "
+        "leans on that rewrite; re-verify filter(field=None) end to end."
+    )
