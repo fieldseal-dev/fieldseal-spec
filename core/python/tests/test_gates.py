@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import warnings
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -24,11 +25,12 @@ from fieldseal import (  # noqa: E402
     FieldContext,
     Fieldseal,
     IndexDeclaration,
+    index_registry_key,
+    validate_index_declaration,
 )
 from fieldseal.blindindex import (  # noqa: E402
     ARGON2_MIN_M_KIB,
     ARGON2_MIN_T,
-    validate_index_declaration,
 )
 from fieldseal.envelope import is_ciphertext  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
@@ -525,3 +527,73 @@ def test_index_id_grammar_is_checked_at_declaration():
     with pytest.raises(ConfigurationError) as e:
         _client(indexes=[_decl(index_id="Email_EQ")])
     assert "§6.1" in str(e.value)
+
+
+# -- docs/09 §2 configuration reflection (G18) --------------------------------
+
+def test_client_reflects_its_validated_configuration():
+    """docs/09 §2: what construction validated must be readable back.
+
+    Everything asserted here decides stored bytes, query results or read
+    behaviour. The key provider and the cache are deliberately absent from the
+    surface, which is what the last assertion pins.
+    """
+    fs = _client(indexes=[_decl()])
+    assert fs.read_mode == "strict"
+    assert fs.write_suite == 0xFF01
+    assert fs.allowed_suites == frozenset({0xFF01})
+    assert fs.provisional_armed is True
+    # The carve-out is the point of stating the rule as a principle: a
+    # reflected handle to the object holding key material is a larger surface
+    # than any consumer of this needs.
+    assert not hasattr(fs, "key_provider")
+
+
+def test_index_registry_is_readable_and_resolved():
+    """Validated, not as-declared.
+
+    `argon2` absent in the declaration comes back filled in from the §7.3
+    minima, and `on_unindexable` comes back as its `refuse` default. Comparing
+    as-declared inputs would let two declarations that agree textually and
+    differ operationally register as a match -- the failure #62 was.
+    """
+    fs = _client(indexes=[_decl(idf="argon2id")])
+    key = index_registry_key(CTX.table_uuid, CTX.column_uuid, "email-eq")
+    assert set(fs.indexes) == {key}
+    v = fs.indexes[key]
+    assert v.idf == "argon2id"
+    assert v.argon2 == Argon2Params(time_cost=ARGON2_MIN_T,
+                                    memory_kib=ARGON2_MIN_M_KIB)
+    assert v.on_unindexable == "refuse"
+    assert v.truncate_bits == 15
+    # The public validation entry point resolves a declaration to exactly what
+    # the client holds, which is what makes an exact-match check writable from
+    # outside the core at all.
+    assert validate_index_declaration(_decl(idf="argon2id")) == v
+
+
+def test_reflected_registry_cannot_mutate_the_client():
+    """docs/09 §2 makes the client immutable after construction, and an
+    accessor handing out the live registry would make that untrue for anyone
+    who asked for it."""
+    fs = _client(indexes=[_decl()])
+    view = fs.indexes
+    key = next(iter(view))
+    with pytest.raises(TypeError):
+        view["injected"] = view[key]  # type: ignore[index]
+    # `mappingproxy` has no mutating methods at all, which is a stronger
+    # guarantee than refusing them.
+    assert not hasattr(view, "clear")
+    assert not hasattr(view, "pop")
+    assert len(fs.indexes) == 1
+    # The declarations themselves are frozen, so a caller holding one cannot
+    # rewrite the truncation length of a live index either.
+    with pytest.raises(FrozenInstanceError):
+        view[key].truncate_bits = 32  # type: ignore[misc]
+
+
+def test_reflection_is_empty_rather_than_absent_with_no_indexes():
+    """An adapter comparing registries must be able to tell "no indexes
+    declared" from "this core cannot say", and only one of those is a state."""
+    fs = _client()
+    assert dict(fs.indexes) == {}

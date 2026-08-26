@@ -87,6 +87,25 @@ export class Fieldseal {
     return this.#cfg.provisionalArmed;
   }
 
+  /**
+   * The validated index registry, keyed by `indexRegistryKey` (docs/09 §2).
+   *
+   * Validated, not as-declared: `argon2` carries the §7.3 minima filled in,
+   * `indexId` its "exact" default, `onUnindexable` its `refuse` default.
+   * Comparing as-declared inputs would let two declarations that agree
+   * textually and differ operationally register as a match — which is the
+   * failure #62 was.
+   *
+   * A fresh Map, not `#cfg.indexes`. `ReadonlyMap` is a type, not a runtime
+   * guarantee: one `as Map` cast on the live registry would let a caller
+   * clear it, and docs/09 §2 makes the client immutable after construction.
+   * The copy is O(declared indexes) and this is a startup-time call, never a
+   * value-path one.
+   */
+  get indexes(): ReadonlyMap<string, ValidatedIndex> {
+    return new Map(this.#cfg.indexes);
+  }
+
   // -------------------------------------------------------------------------
   // encrypt (docs/09 §3.1)
 

@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ARM_PROVISIONAL_ENV, ModeViolationError, SuiteProvisionalError, type Warning } from "../src/index.ts";
+import { ARM_PROVISIONAL_ENV, ModeViolationError, SUITE_FF01, SuiteProvisionalError, indexRegistryKey, validateIndexDeclaration, type ValidatedIndex, type Warning } from "../src/index.ts";
 import { INTERNALS } from "../src/internal.ts";
 import { encrypt_with_materials, TestModeNotArmedError } from "../src/testing/index.ts";
 import { bytes, codeOf, CTX, makeClient, messageOf, withEnv } from "./helpers.ts";
@@ -311,5 +311,68 @@ describe("spec §6.1 unbounded context fields", () => {
     const altered = new Uint8Array(tenantId);
     altered[2999] = 0x40; // 'A' with bit 0 cleared
     expect(codeOf(() => c.decrypt(env, { ...CTX, tenantId: altered }))).toBe("COMMITMENT_INVALID");
+  });
+});
+
+describe("docs/09 §2 configuration reflection (G18)", () => {
+  const ARGON = {
+    tableUuid: CTX.tableUuid,
+    columnUuid: CTX.columnUuid,
+    idf: "argon2id" as const,
+    normalize: "nfc-casefold-v1" as const,
+    truncateBits: 15,
+    projectedPopulation: 65536,
+  };
+
+  it("reports back what construction validated", () => {
+    const fs = makeClient({ indexes: [INDEX] });
+    expect(fs.readMode).toBe("strict");
+    expect(fs.writeSuite).toBe(SUITE_FF01);
+    expect([...fs.allowedSuites]).toEqual([SUITE_FF01]);
+    expect(fs.provisionalArmed).toBe(true);
+    // The carve-out is the point of stating the rule as a principle: a
+    // reflected handle to the object holding key material is a larger surface
+    // than any consumer of this needs.
+    expect("keyProvider" in fs).toBe(false);
+  });
+
+  it("returns the index registry resolved, not as declared", () => {
+    const fs = makeClient({ indexes: [ARGON] });
+    const key = indexRegistryKey(CTX.tableUuid, CTX.columnUuid, "exact");
+    expect([...fs.indexes.keys()]).toEqual([key]);
+    const v = fs.indexes.get(key) as ValidatedIndex;
+    // Absent in the declaration, filled in from the §7.3 minima. Comparing
+    // as-declared inputs would let two declarations that agree textually and
+    // differ operationally register as a match — the failure #62 was.
+    expect(v.argon2).toEqual({ timeCost: 3, memoryKib: 32 * 1024 });
+    expect(v.indexId).toBe("exact");
+    expect(v.onUnindexable).toBe("refuse");
+    // The public validation entry point resolves a declaration to exactly what
+    // the client holds, which is what makes an exact-match check writable from
+    // outside the core at all.
+    expect(validateIndexDeclaration(ARGON)).toEqual(v);
+  });
+
+  it("hands out a registry that cannot mutate the client", () => {
+    const fs = makeClient({ indexes: [INDEX] });
+    const key = [...fs.indexes.keys()][0] as string;
+    // `ReadonlyMap` is a type, not a runtime guarantee; the copy is.
+    (fs.indexes as Map<string, ValidatedIndex>).clear();
+    expect(fs.indexes.size).toBe(1);
+    // And the declarations are frozen, so a caller holding one cannot rewrite
+    // the truncation length of a live index either.
+    const v = fs.indexes.get(key) as { truncateBits: number };
+    expect(Object.isFrozen(v)).toBe(true);
+    expect(() => {
+      "use strict";
+      v.truncateBits = 32;
+    }).toThrow(TypeError);
+    expect(fs.indexes.get(key)?.truncateBits).toBe(15);
+  });
+
+  it("reports an empty registry rather than nothing when no index is declared", () => {
+    // An adapter comparing registries must be able to tell "no indexes
+    // declared" from "this core cannot say", and only one of those is a state.
+    expect(makeClient({}).indexes.size).toBe(0);
   });
 });

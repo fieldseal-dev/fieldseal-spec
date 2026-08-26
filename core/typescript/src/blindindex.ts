@@ -273,15 +273,20 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
       );
     }
   }
-  return {
+  // Frozen because `Fieldseal.indexes` hands these out (docs/09 §2, G18) and
+  // `readonly` in the interface is a compile-time claim only: a caller with
+  // the value in hand can rewrite `truncateBits` through one `as` cast and
+  // change what the client derives. Freezing at validation costs nothing --
+  // this runs once per declaration, at construction.
+  return Object.freeze({
     key: indexRegistryKey(d.tableUuid, d.columnUuid, indexId),
     indexId,
     idf: d.idf,
-    argon2,
+    argon2: argon2 === undefined ? undefined : Object.freeze({ ...argon2 }),
     normalize: d.normalize,
     truncateBits: b,
     projectedPopulation: P,
     overridden,
     onUnindexable,
-  };
+  });
 }

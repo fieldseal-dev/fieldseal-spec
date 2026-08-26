@@ -50,7 +50,7 @@ export function fieldsealExtension(opts: {
 }): PrismaExtension
 ```
 
-There is no `client` option: a pre-built core client cannot contain declarations parsed from the schema, and a split registry (some indexes in the client, some in the extension) is exactly the configuration-drift failure the Django adapter's E006 check exists to catch.
+There is no `client` option: a pre-built core client cannot contain declarations parsed from the schema, and a split registry (some indexes in the client, some in the extension) is a configuration drift with no way to notice it. **This decision is unchanged by G18 but its justification is narrower than it was.** It previously read as though verifying a supplied client were impossible; it is not, as of `docs/09` §2's *Configuration reflection* clause — `Fieldseal.indexes` reports the validated registry and the Django adapter's E006 now checks exactly that. Removing the option here remains the right call for a different reason: this extension always parses the schema, so a supplied client would be a second source for declarations that already have one, and no deployment need is served by it. That is a design choice, not a constraint. Worth recording that until 2026-08-26 it *was* a constraint in this language and not merely in this adapter: the TypeScript core's configuration lives behind a `#`-private field on a frozen instance, so an extension had no way to read a supplied client's registry well or badly, while the Python adapter could at least have reached into `_indexes`.
 
 Pipeline per operation:
 

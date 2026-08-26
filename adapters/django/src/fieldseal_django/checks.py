@@ -205,40 +205,82 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
         # E006 -- a hand-built client must match the model declarations.
         cfg = get_settings()
         if "CLIENT" in cfg:
-            issues.extend(_check_client_registry())
+            issues.extend(_check_client_registry(apps))
 
     return issues
 
 
-def _check_client_registry() -> list[Any]:
-    """E006/W004: a hand-built client cannot currently be verified.
+def _check_client_registry(registry: Any = None) -> list[Any]:
+    """E006: a hand-supplied client's registry must match the models exactly.
 
-    `docs/12` §5 specifies E006 as an *Error* when `FIELDSEAL['CLIENT']`'s
-    index registry does not exactly match the model declarations. That check
-    cannot be implemented against the core's public API: `Fieldseal` keeps its
-    validated registry in a private attribute and exposes no accessor, so the
-    only way to compare would be to reach into `_indexes`, and a check that
-    depends on another package's internals fails silently the moment they
-    change -- which is worse than the gap it closes.
+    This shipped as a `W004` warning until G18 ([#75]), because the core kept
+    its validated registry private and exposed no accessor: the only way to
+    compare was to read `Fieldseal._indexes`, and a check written against
+    another package's internals fails silently the moment they move -- worse
+    than the gap it closes. `docs/09` §2's reflection clause closed that, and
+    this is the check it was blocking.
 
-    Rather than ship a check that looks authoritative and is not, this reports
-    the gap. The operator learns that the escape hatch bypasses a guarantee,
-    which is the actionable half; the missing accessor is recorded as a
-    follow-up against `docs/09` §8.
+    **Both directions matter, and only one of them is loud.** A client missing
+    a declared index fails every lookup on that column at runtime, visibly. A
+    client carrying an *extra* index derives and stores values for a column
+    under rules no model states, and nothing ever raises -- so an exact match
+    is the requirement, not a subset one.
+
+    The comparison is against the *validated* form on both sides: the client
+    reports resolved declarations, and the model side is resolved through the
+    core's own `validate_index_declaration`. Comparing as-declared inputs
+    would let two declarations that agree textually and differ operationally
+    register as a match, which is what [#62] was.
     """
-    return [Warning(
-        "FIELDSEAL['CLIENT'] is set, so the client's index registry is NOT "
-        "verified against the model declarations.",
-        hint="docs/12 §5 specifies this as error fieldseal.E006, and it is "
-             "downgraded here because the core exposes no public accessor "
-             "for a client's validated index registry -- implementing it "
-             "would mean reading a private attribute. Keep the two in sync "
-             "by hand: a client missing a declared index fails every lookup "
-             "on that column at runtime, and one carrying an extra index is "
-             "indexing a column under rules no model states. Dropping "
-             "FIELDSEAL['CLIENT'] and letting the adapter build the client "
-             "restores the guarantee.",
-        obj=None, id="fieldseal.W004")]
+    from fieldseal import validate_index_declaration
+
+    from .apps import build_client, build_index_registry
+
+    try:
+        client = build_client(registry)
+        declared = {
+            v.key: v
+            for v in (validate_index_declaration(d)
+                      for d in build_index_registry(registry))
+        }
+    except FieldsealAdapterError:
+        # A malformed CLIENT or an unbuildable declaration set is E003/E007's
+        # to report; this check has nothing to say about it and must not
+        # report the same fault twice under a second id.
+        return []
+    except Exception:  # noqa: BLE001 - the core's ConfigurationError
+        return []
+
+    actual = dict(client.indexes)
+    missing = sorted(set(declared) - set(actual))
+    extra = sorted(set(actual) - set(declared))
+    differing = sorted(k for k in set(declared) & set(actual)
+                       if declared[k] != actual[k])
+    if not (missing or extra or differing):
+        return []
+
+    parts = []
+    if missing:
+        parts.append(
+            f"declared on models but absent from the client: {missing}")
+    if extra:
+        parts.append(f"present in the client but declared on no model: "
+                     f"{extra}")
+    if differing:
+        parts.append(f"declared in both with different resolved parameters: "
+                     f"{differing}")
+    return [Error(
+        "FIELDSEAL['CLIENT']'s index registry does not match the model "
+        "declarations -- " + "; ".join(parts) + ".",
+        hint="An index the client does not carry fails every lookup on that "
+             "column at runtime. An index the models do not declare is worse: "
+             "the client derives and stores values for that column under "
+             "rules no model states, and nothing raises. Resolved parameters "
+             "are compared, not as-written ones, so a difference here is a "
+             "difference in what gets stored. Add the missing declarations to "
+             "the client, or drop FIELDSEAL['CLIENT'] and let the adapter "
+             "build the client from the models.",
+        obj=None, id="fieldseal.E006")]
 
 
 def _missing_required_settings() -> set[str]:
