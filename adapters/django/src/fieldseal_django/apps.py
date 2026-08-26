@@ -22,6 +22,7 @@ from typing import Any
 from django.apps import AppConfig
 from django.conf import settings
 from django.core.signals import setting_changed
+from django.db.models.signals import class_prepared
 from django.dispatch import receiver
 from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclaration
 
@@ -39,7 +40,7 @@ _client_lock = threading.Lock()
 #: change nothing and be discovered in production.
 _SETTING_KEYS = {
     "KEY_PROVIDER", "CLIENT", "READ_MODE", "ALLOWED_SUITES", "WRITE_SUITE",
-    "ARM_PROVISIONAL_SUITES",
+    "ARM_PROVISIONAL_SUITES", "WARM_ON_READY", "WARM_TENANTS",
 }
 
 
@@ -197,6 +198,40 @@ def reset_client() -> None:
     _client = None
 
 
+@receiver(class_prepared)
+def _install_manager(sender: Any, **kwargs: Any) -> None:
+    """Give a model with an indexed encrypted column the verifying manager.
+
+    **Only when the model declared no manager of its own.** Django adds
+    `objects = Manager()` itself when none is declared and marks it
+    `auto_created` (`ModelBase._prepare`, before this signal fires), so that
+    flag is an exact test for "the user did not choose a manager". Replacing
+    one somebody wrote on purpose would be the adapter silently changing
+    behaviour the model author specified; system check **E008** reports that
+    case instead.
+
+    Why auto-install at all: decision C (`docs/12` §3.2) puts §7.5
+    re-verification on the *default* path precisely so that nothing has to be
+    remembered. A `FieldsealManager` the user must add by hand would reinstate
+    the failure mode that decision rejected -- one forgotten line and
+    `filter()` returns collision rows.
+    """
+    from .fields import Encrypted
+    from .query import FieldsealManager
+
+    if not any(isinstance(f, Encrypted) and f.index is not None
+               for f in sender._meta.fields):
+        return
+    managers = sender._meta.local_managers
+    if len(managers) != 1 or not getattr(managers[0], "auto_created", False):
+        return  # E008's business, not ours.
+    sender._meta.local_managers = []
+    manager = FieldsealManager()
+    manager.auto_created = True
+    sender.add_to_class("objects", manager)
+    sender._meta._expire_cache()
+
+
 @receiver(setting_changed)
 def _on_setting_changed(sender: Any, setting: str, **kwargs: Any) -> None:
     if setting == "FIELDSEAL":
@@ -210,3 +245,58 @@ class FieldsealConfig(AppConfig):
 
     def ready(self) -> None:
         from . import checks  # noqa: F401  (registers the system checks)
+
+        self._warm_on_ready()
+
+    def _warm_on_ready(self) -> None:
+        """Prime the DEK cache at startup, when the deployment asks for it.
+
+        **Off by default, and that is the interesting part.** `docs/12` §7
+        calls for a `ready()` hook, and warming unconditionally would be
+        wrong: `ready()` runs for `makemigrations`, `shell`, `collectstatic`
+        and every test process, so an `EnvelopeKeyProvider` deployment would
+        pay a KMS round trip -- and a hard failure when the KMS is
+        unreachable -- to run a command that touches no encrypted row. A
+        migration that cannot run because the key service is down is a worse
+        failure than a cold cache.
+
+        So it is opt-in per deployment, and the honest consequence is
+        documented rather than defaulted around: under an
+        `EnvelopeKeyProvider`, **something** must warm the cache before the
+        first read, because §8.2 confines unwrapping to `warm` and forbids the
+        value path from blocking on network. That something is this setting or
+        the `fieldseal_warm` command; there is no third option and no silent
+        fallback that would make a cold read work.
+
+        A failure here **warns and continues**. The alternative is refusing to
+        start a process whose cache could not be primed, and a web worker that
+        exits on a transient KMS blip takes the deployment down for a
+        condition the next request might not even have.
+        """
+        import warnings
+
+        cfg = settings.FIELDSEAL if hasattr(settings, "FIELDSEAL") else {}
+        if not cfg.get("WARM_ON_READY"):
+            return
+        from .warm import warm_contexts
+
+        try:
+            contexts, skipped = warm_contexts(
+                tenants=list(cfg.get("WARM_TENANTS", [])))
+            if contexts:
+                get_client().warm_blocking(contexts)
+        except Exception as e:  # noqa: BLE001 - startup must not die on this
+            warnings.warn(
+                f"FIELDSEAL['WARM_ON_READY'] is set but warming failed: {e}. "
+                "Under an EnvelopeKeyProvider every read will raise "
+                "KEY_UNAVAILABLE until the cache is primed (docs/09 §8.2); "
+                "run `manage.py fieldseal_warm` once the key service is "
+                "reachable.", RuntimeWarning, stacklevel=2)
+            return
+        if skipped:
+            warnings.warn(
+                "FIELDSEAL['WARM_ON_READY'] skipped tenant-bound columns "
+                f"({', '.join(skipped)}): no FIELDSEAL['WARM_TENANTS'] is "
+                "set, and the adapter cannot enumerate a deployment's "
+                "tenants. Reads on those columns will raise KEY_UNAVAILABLE "
+                "under an EnvelopeKeyProvider.", RuntimeWarning, stacklevel=2)

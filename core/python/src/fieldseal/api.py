@@ -18,10 +18,12 @@ docs/18 entry that records it.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 
 from cryptography.hazmat.primitives import constant_time
 
@@ -145,6 +147,55 @@ class Fieldseal:
                 f"Fieldseal read_mode={read_mode!r}: non-envelope input is "
                 "returned as plaintext (spec §10.3). This is a migration "
                 "setting, not a steady state.", FieldsealWarning, stacklevel=2)
+
+    # -- configuration reflection (docs/09 §2, G18) ------------------------
+    #
+    # Read-only views of what construction validated. The rule is stated as a
+    # principle in docs/09 §2: everything that decides stored bytes, query
+    # results or read behaviour is reportable; the key provider and the cache
+    # are not, because a reflected handle to the object holding key material
+    # is a larger surface than any consumer needs.
+    #
+    # `indexes` is the load-bearing one. Without it a check like the Django
+    # adapter's E006 -- does a hand-supplied client's registry match what the
+    # models declare -- can only be written against `_indexes`, and one
+    # written against another package's internals fails silently the first
+    # time they move.
+
+    @property
+    def read_mode(self) -> str:
+        return self._read_mode
+
+    @property
+    def write_suite(self) -> int:
+        return self._write_suite
+
+    @property
+    def allowed_suites(self) -> frozenset[int]:
+        return self._allowed
+
+    @property
+    def provisional_armed(self) -> bool:
+        """Whether spec §4.8 provisional writing was armed for this client."""
+        return self._provisional_armed
+
+    @property
+    def indexes(self) -> Mapping[str, ValidatedIndex]:
+        """The validated index registry, keyed by `index_registry_key`.
+
+        Validated, not as-declared: `argon2` carries the §7.3 minima filled
+        in, `index_id` its "exact" default, `on_unindexable` its `refuse`
+        default. Comparing as-declared inputs would let two declarations that
+        agree textually and differ operationally register as a match, which is
+        the failure #62 was: one core read the Argon2 cost from a module
+        constant, the other took it per column, and they agreed on every
+        shipped vector.
+
+        A `MappingProxyType`, not the dict: docs/09 §2 makes the client
+        immutable after construction, and an accessor handing out the live
+        registry would make that untrue for anyone who asked for it.
+        """
+        return MappingProxyType(self._indexes)
 
     # -- gates ------------------------------------------------------------
     def _write_boundary(self, plaintext: bytes, ctx: FieldContext) -> Suite:
@@ -374,6 +425,32 @@ class Fieldseal:
         w = getattr(self._provider, "warm", None)
         if w is not None:
             await w(contexts)
+
+    def warm_blocking(self, contexts: Iterable[FieldContext]) -> None:
+        """`warm` for a synchronous caller (docs/10 §4).
+
+        WSGI apps and management commands have no event loop and no way to
+        await, and an `EnvelopeKeyProvider` deployment cannot serve a single
+        read until its cache is warm -- §8.2 confines unwrapping to `warm` and
+        forbids the value path from blocking on network. So the prefetch has
+        to be reachable from sync code or that provider is unusable outside
+        ASGI. `docs/10` §4 has specified this method since the binding was
+        written; it was missing until 2026-08-26.
+
+        **It refuses inside a running loop rather than deadlocking.** Blocking
+        on a coroutine from within the loop that would have to run it is a
+        hang, not a slow call, and a hang at startup is diagnosed by
+        guesswork. An async caller has `await warm(...)` and needs nothing
+        from here.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.warm(contexts))
+            return
+        raise ConfigurationError(
+            "warm_blocking() was called from inside a running event loop, "
+            "where it would deadlock rather than block. Await warm() instead.")
 
 
 __all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]

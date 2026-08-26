@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ARM_PROVISIONAL_ENV, ModeViolationError, SuiteProvisionalError, type Warning } from "../src/index.ts";
+import { ARM_PROVISIONAL_ENV, ModeViolationError, NORMALIZER_IDS, SUITE_FF01, SuiteProvisionalError, indexRegistryKey, normalize, validateIndexDeclaration, type ValidatedIndex, type Warning } from "../src/index.ts";
 import { INTERNALS } from "../src/internal.ts";
 import { encrypt_with_materials, TestModeNotArmedError } from "../src/testing/index.ts";
 import { bytes, codeOf, CTX, makeClient, messageOf, withEnv } from "./helpers.ts";
@@ -23,6 +23,7 @@ const SEED = new Uint8Array(32).fill(0x41);
 const NONCE = new Uint8Array(12).fill(0x02);
 const IDX_CTX = { ...CTX, purpose: "index:exact" };
 const INDEX = { tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
+const INDEX_CASEFOLD = { ...INDEX, normalize: "nfc-casefold-v1" as const };
 
 describe("spec §4.8 provisional-suite gate", () => {
   const armed = makeClient({ indexes: [INDEX] });
@@ -311,5 +312,113 @@ describe("spec §6.1 unbounded context fields", () => {
     const altered = new Uint8Array(tenantId);
     altered[2999] = 0x40; // 'A' with bit 0 cleared
     expect(codeOf(() => c.decrypt(env, { ...CTX, tenantId: altered }))).toBe("COMMITMENT_INVALID");
+  });
+});
+
+describe("docs/09 §2 configuration reflection (G18)", () => {
+  const ARGON = {
+    tableUuid: CTX.tableUuid,
+    columnUuid: CTX.columnUuid,
+    idf: "argon2id" as const,
+    normalize: "nfc-casefold-v1" as const,
+    truncateBits: 15,
+    projectedPopulation: 65536,
+  };
+
+  it("reports back what construction validated", () => {
+    const fs = makeClient({ indexes: [INDEX] });
+    expect(fs.readMode).toBe("strict");
+    expect(fs.writeSuite).toBe(SUITE_FF01);
+    expect([...fs.allowedSuites]).toEqual([SUITE_FF01]);
+    expect(fs.provisionalArmed).toBe(true);
+    // The carve-out is the point of stating the rule as a principle: a
+    // reflected handle to the object holding key material is a larger surface
+    // than any consumer of this needs.
+    expect("keyProvider" in fs).toBe(false);
+  });
+
+  it("returns the index registry resolved, not as declared", () => {
+    const fs = makeClient({ indexes: [ARGON] });
+    const key = indexRegistryKey(CTX.tableUuid, CTX.columnUuid, "exact");
+    expect([...fs.indexes.keys()]).toEqual([key]);
+    const v = fs.indexes.get(key) as ValidatedIndex;
+    // Absent in the declaration, filled in from the §7.3 minima. Comparing
+    // as-declared inputs would let two declarations that agree textually and
+    // differ operationally register as a match — the failure #62 was.
+    expect(v.argon2).toEqual({ timeCost: 3, memoryKib: 32 * 1024 });
+    expect(v.indexId).toBe("exact");
+    expect(v.onUnindexable).toBe("refuse");
+    // The public validation entry point resolves a declaration to exactly what
+    // the client holds, which is what makes an exact-match check writable from
+    // outside the core at all.
+    expect(validateIndexDeclaration(ARGON)).toEqual(v);
+  });
+
+  it("hands out a registry that cannot mutate the client", () => {
+    const fs = makeClient({ indexes: [INDEX] });
+    const key = [...fs.indexes.keys()][0] as string;
+    // `ReadonlyMap` is a type, not a runtime guarantee; the copy is.
+    (fs.indexes as Map<string, ValidatedIndex>).clear();
+    expect(fs.indexes.size).toBe(1);
+    // And the declarations are frozen, so a caller holding one cannot rewrite
+    // the truncation length of a live index either.
+    const v = fs.indexes.get(key) as { truncateBits: number };
+    expect(Object.isFrozen(v)).toBe(true);
+    expect(() => {
+      "use strict";
+      v.truncateBits = 32;
+    }).toThrow(TypeError);
+    expect(fs.indexes.get(key)?.truncateBits).toBe(15);
+  });
+
+  it("hands out an allow-list that cannot mutate the client", () => {
+    // `allowedSuites` predates G18 but the §2 anti-mutation clause now covers
+    // it, and it is the only other collection on the reflected surface —
+    // readMode/writeSuite/provisionalArmed are primitives. The getter used to
+    // return `#cfg.allowedSuites` itself, which is the same Set the decrypt
+    // path consults, so a caller could change what the client will decrypt
+    // through an accessor documented as read-only.
+    const fs = makeClient({ indexes: [INDEX] });
+    const envelope = fs.encrypt(PT, CTX);
+    (fs.allowedSuites as Set<number>).delete(SUITE_FF01);
+    (fs.allowedSuites as Set<number>).add(0xff02);
+    expect([...fs.allowedSuites]).toEqual([SUITE_FF01]);
+    // The proof that the copy matters: without it this decrypt raises
+    // SUITE_NOT_ALLOWED on an envelope the client wrote moments earlier.
+    expect(fs.decrypt(envelope, CTX).equals(Buffer.from(PT))).toBe(true);
+  });
+
+  it("reports an empty registry rather than nothing when no index is declared", () => {
+    // An adapter comparing registries must be able to tell "no indexes
+    // declared" from "this core cannot say", and only one of those is a state.
+    expect(makeClient({}).indexes.size).toBe(0);
+  });
+});
+
+describe("docs/09 §7 normalizers are public (G19)", () => {
+  it("exposes the closed set and its implementation", () => {
+    // §7.5 re-verification compares *normalized* values and happens in the
+    // adapter, so the one implementation has to be reachable. An adapter
+    // reimplementing nfc-casefold-v1 would be reimplementing portability
+    // surface: the identifier IS the definition, and two implementations
+    // disagreeing is a silent lookup miss rather than an error.
+    expect([...NORMALIZER_IDS].sort()).toEqual(["digits-only-v1", "identity", "nfc-casefold-v1"]);
+    expect(Buffer.from(normalize("nfc-casefold-v1", "Ada@Example.COM")).toString()).toBe("ada@example.com");
+    expect(Buffer.from(normalize("digits-only-v1", "555-0100")).toString()).toBe("5550100");
+  });
+
+  it("is the same function the index path uses", () => {
+    const fs = makeClient({ indexes: [INDEX_CASEFOLD] });
+    const a = fs.blindIndex("Ada@Example.COM", IDX_CTX);
+    const b = fs.blindIndex(normalize("nfc-casefold-v1", "Ada@Example.COM"), IDX_CTX);
+    expect(a.equals(b)).toBe(true);
+  });
+
+  it("agrees across a canonical-equivalence pair", () => {
+    // Precomposed U+00E9 against decomposed e + U+0301: one text to every
+    // reader, and one index value, which is what makes G19's normalized
+    // comparison the only coherent verification rule.
+    const fs = makeClient({ indexes: [INDEX_CASEFOLD] });
+    expect(fs.blindIndex("rené", IDX_CTX).equals(fs.blindIndex("rené", IDX_CTX))).toBe(true);
   });
 });

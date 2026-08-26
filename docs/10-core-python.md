@@ -83,6 +83,13 @@ bx: bytes  = fs.blind_index("...", ctx)   # str or bytes; str is the preferred f
 ok: bool   = fs.is_ciphertext(ct)
 ct2: bytes = fs.rotate(ct, ctx)
 await fs.warm([ctx, ...])          # the only coroutine on the client
+
+# docs/09 §2 configuration reflection
+fs.read_mode         # -> str
+fs.write_suite       # -> int
+fs.allowed_suites    # -> frozenset[int]
+fs.provisional_armed # -> bool
+fs.indexes           # -> Mapping[str, ValidatedIndex], keyed by index_registry_key(...)
 ```
 
 - **`blind_index` takes `str | bytes`; every other operation takes `bytes`.** This asymmetry predates G16 and is now the normative shape (docs/09 §7.1): normalization is a text operation, encryption is not, so index derivation is the only place where the difference between a string and its encoding changes the answer. Passing `str` is the preferred form because it is the only one that cannot have lost information already — this core's `bytes` path is safe too (`str.encode("utf-8")` raises on a lone surrogate rather than substituting, unlike JavaScript's `TextEncoder`), but that is a property of CPython rather than of the API. What CPython raises is a `UnicodeEncodeError`, which is outside the §9 taxonomy; the normalizers re-raise it as `InvalidArgument` so that the refusal carries the same code as the TypeScript core's and so that `on_unindexable` can recognise it.
@@ -91,6 +98,7 @@ await fs.warm([ctx, ...])          # the only coroutine on the client
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
 - Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `SuiteProvisional` (code `SUITE_PROVISIONAL`, spec §4.8), and two implementation-local codes docs/09 §9 permits outside §9: `ConfigurationError` (construction time) and `InvalidArgument` (an operand refused at the API boundary — an index purpose handed to `encrypt`, invalid UTF-8 handed to a text normalizer). Each carries `.code: str` equal to the vector-suite string (docs/09 §9). `FieldsealWarning` is the spec §10.3 warning for the pass-through modes.
 - `KeyProvider` is spec §8's interface by name: `encryption_key(ctx) -> (key_material, key_id)` with purpose routing, and `decryption_keys(header) -> Sequence[bytes]` returning every currently-valid version in preference order; the client tries each candidate's commitment in turn (docs/09 §3.2 step 6).
+- **Configuration reflection (docs/09 §2, added by G18).** The five properties above are read-only and report the validated form: `indexes` returns `ValidatedIndex` records with the §7.3 Argon2 minima filled in, `index_id` defaulted to `"exact"` and `on_unindexable` to `refuse`. `ValidatedIndex`, `validate_index_declaration` and `index_registry_key` are exported from the package for the purpose — a caller comparing its own declarations against a client's registry needs the last two to build the same keys and resolve the same defaults. The mapping is a `MappingProxyType` over the client's registry, not the dict: `mappingproxy` carries no mutating methods at all, which is a stronger guarantee than refusing them, and the `ValidatedIndex` records are frozen dataclasses, so a caller holding one cannot rewrite the truncation length of a live index. `key_provider` and the cache are deliberately absent from this surface (docs/09 §2's carve-out).
 
 ## 5. Security-relevant implementation notes
 
