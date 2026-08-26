@@ -131,6 +131,7 @@ not the target matrix in `docs/12` §6.
 | `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands | `test_combinators_refuse_on_either_side` |
 | Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too | `TestRelationTraversal` |
 | `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted (filter-time ones included; the cross-model traversal is the exception — embed the owner's `.candidates()` instead) | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals` |
+| `order_by()` / `earliest("f")` / `values().annotate()` grouping / `distinct("f")` over an encrypted column | ⚠️ **KNOWN GAP — currently silently meaningless** (orders/groups envelope bytes; grouped counts are wrong numbers). Tracked as [G20 #80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80); refusals land with its closure | — |
 | Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
 | Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
 | **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
