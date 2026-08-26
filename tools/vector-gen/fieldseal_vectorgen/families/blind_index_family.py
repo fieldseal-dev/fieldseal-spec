@@ -67,6 +67,14 @@ COLLISION_PAIRS = [
      "U+01F0 and the decomposed j + U+030C"),
     ("normalizer-collapses-sharp-s", "straße@example.com", "STRASSE@example.com",
      "ß and SS under full case folding"),
+    # G19's named pair (spec §7.5, resolved 2026-08-26): two spellings of the
+    # same text to every reader and every rendering engine. Escaped rather
+    # than written literally so an editor that normalizes source files cannot
+    # silently collapse the pair into one spelling and make the vector
+    # assert nothing.
+    ("normalizer-collapses-e-acute",
+     "rené@example.com", "rené@example.com",
+     "precomposed U+00E9 and the decomposed e + U+0301"),
 ]
 
 

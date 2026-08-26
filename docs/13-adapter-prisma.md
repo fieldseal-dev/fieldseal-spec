@@ -81,6 +81,8 @@ Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`,
 
 Decryption happens on the awaited result (step 7), not via `result.compute` — computed fields cannot be used in `where`/`orderBy` and cannot replace stored values (`docs/04` §3). The visitor mirrors `include` nesting using the DMMF relation graph. Because `select`/`include` cannot be mutated by extensions (`docs/04` §3, Prisma docs verbatim), there is no hidden-column problem for values (ciphertext lives in the field's own column), but **sibling index columns appear in results**: the read pass strips `*Bidx` fields from returned objects unless `exposeIndexColumns: true`, so application code never accidentally depends on index bytes.
 
+**Re-verification compares under spec §7.5's rule (G19 [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), resolved 2026-08-26):** `normalize(stored)` against `normalize(queried)` under the index's declared normalizer, on the normalizer's output bytes — using the core's public `normalize`, never a reimplementation. The extension MUST document the consequence §7.5 states: on a non-`identity` column an equality filter is equality under that normalizer (a query for `ada@example.com` can return `Ada@Example.com`), and no second, differently-folded equality may be offered — which is the reason `mode: "insensitive"` is on the §5 rejection list rather than being mapped onto the index.
+
 Read modes: core modes apply as-is; `permissive` fires the extension's `onPlaintextRead` hook with model/field (never the value) per spec §10.3.
 
 ## 4. The mandatory throw list (spec §10.2 — normative for this adapter)
