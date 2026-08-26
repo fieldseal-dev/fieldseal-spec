@@ -226,3 +226,32 @@ def test_W004_is_withdrawn():
     with override_settings(FIELDSEAL={"CLIENT": _client([])}):
         assert "fieldseal.W004" not in ids(run_checks())
     reset_client()
+
+
+def test_client_does_not_disable_E003():
+    """FIELDSEAL['CLIENT'] must not silently switch off the core's gates.
+
+    `build_client` returns a supplied client immediately, without assembling
+    the registry -- so on this path the core never sees the model
+    declarations, and the §7.4 band and §7.6 cardinality gate that E003
+    exists to surface would run against nothing. Found while implementing
+    E006 (G18): the registry comparison has to validate the model side
+    anyway, which is what makes the gate reachable here at all.
+    """
+    from fieldseal_django.apps import reset_client
+
+    with isolate_apps("tests") as apps:
+        class Ungated(models.Model):
+            # P below the §7.6 gate with no logged override: the core refuses
+            # this declaration at construction.
+            email = Encrypted(
+                models.EmailField(), column_uuid=COL_EMAIL,
+                index=BlindIndex(projected_population=64, truncate_bits=4))
+            email_bidx = Encrypted.index_column("email")
+
+            fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
+
+        reset_client()
+        with override_settings(FIELDSEAL={"CLIENT": _client([])}):
+            assert "fieldseal.E003" in ids(run_checks(apps))
+        reset_client()

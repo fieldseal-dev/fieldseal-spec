@@ -238,18 +238,35 @@ def _check_client_registry(registry: Any = None) -> list[Any]:
 
     try:
         client = build_client(registry)
+    except Exception:  # noqa: BLE001 - reported as E003/E007 above
+        # A malformed CLIENT is already reported under its own id; this check
+        # must not report the same fault twice.
+        return []
+
+    # **The core's gates do not run on the model declarations in this path.**
+    # `build_client` returns a supplied CLIENT immediately, without ever
+    # assembling the registry -- so a project that sets FIELDSEAL["CLIENT"]
+    # gets no §7.4 band check and no §7.6 cardinality gate on its models, and
+    # E003 above cannot fire. Validating here is the only place it can happen,
+    # and it is reported under E003 rather than E006 because it is E003's
+    # condition: the core refused a declaration.
+    try:
         declared = {
             v.key: v
             for v in (validate_index_declaration(d)
                       for d in build_index_registry(registry))
         }
-    except FieldsealAdapterError:
-        # A malformed CLIENT or an unbuildable declaration set is E003/E007's
-        # to report; this check has nothing to say about it and must not
-        # report the same fault twice under a second id.
-        return []
-    except Exception:  # noqa: BLE001 - the core's ConfigurationError
-        return []
+    except FieldsealAdapterError as e:
+        return [Error(str(e), obj=None, id="fieldseal.E003")]
+    except Exception as e:  # noqa: BLE001 - the core's ConfigurationError
+        return [Error(
+            f"the core refused an index declaration: {e}",
+            hint="This is the core's own §7.4 band / §7.6 cardinality gate. "
+                 "FIELDSEAL['CLIENT'] means the adapter never assembles the "
+                 "registry, so this is the only place the gate runs against "
+                 "your models -- and the client you supplied is not running "
+                 "it either. Fix the declaration named above.",
+            obj=None, id="fieldseal.E003")]
 
     actual = dict(client.indexes)
     missing = sorted(set(declared) - set(actual))
