@@ -147,6 +147,11 @@ the target matrix in `docs/13` §6.
 |---|---|---|
 | `create`, `createMany`, `update`, `updateMany` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
 | Nested relation writes (`create`, `connectOrCreate`, `upsert`, nested `update`) | ✅ reached through the relation graph, not path patterns | `encrypts a nested relation write…` |
+| **Filters inside nested writes** (`updateMany.where`, `deleteMany`, `upsert.where`, unique inputs) | 🛑 refused when they name an encrypted column — same walk as the top-level `where` | `refuses a nested updateMany.where…`, `refuses a nested deleteMany…` |
+| Nested `deleteMany`/`connect`/`disconnect`/`delete`/`set` off encrypted columns | ✅ served — they write no ciphertext | `serves a nested deleteMany over plaintext columns…` |
+| `undefined` in a payload | ✅ touches nothing — not the value, not the sibling (Prisma's "do not touch" contract) | `touches nothing: not the value, and not the sibling` |
+| **A model with no declarations** (relations to declared ones) | ✅ in the map as a relation-only entry; writes, reads and filters through it traverse the pipeline | `reaching Patient through the undeclared Referral model` |
+| A model missing from the field map | 🛑 refused — a stale or edited map, never a passthrough | `refuses an operation on a model the field map does not carry` |
 | Database holds an envelope, never plaintext | ✅ | `stores an envelope in the database…` |
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `writes a different envelope every time…` |
 | `update` re-encrypts | ✅ including the `{ set: … }` form | `re-encrypts on update…`, `accepts the { set: value } update form` |
@@ -155,7 +160,8 @@ the target matrix in `docs/13` §6.
 | Non-ASCII values | ✅ round-trip byte-for-byte | `round-trips a non-ASCII value…` |
 | Empty string | ✅ a value, not an absence | `treats the empty string as a value…` |
 | `NULL` | ✅ stays NULL; its index is NULL too | `stays NULL rather than becoming an envelope` |
-| Non-text logical types (`as: "int"`, …) | ✅ round-trip as their own type | `reads an explicit \`as\`` |
+| `where: { field: null }`, `{ equals: null }`, `{ not: null }` | ✅ served — `IS [NOT] NULL` is exact over envelopes, because NULL stays NULL | `serves literal-NULL equality…` |
+| Non-text logical types (`as: "int"`, `"datetime"`, `"boolean"`, `"float"`, `"bytes"`) | ✅ round-trip as their own type, incl. a bare `Date` | `every declared \`as:\` type round-trips as itself` |
 | A value that does not match the declared `as:` | 🛑 refused rather than coerced | `refuses a value whose type does not match…` |
 | `storage: "base64"` on a `String` column | ✅ ASCII in the column, ~33% overhead | `round-trips through a String column…` |
 | Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `is derived on write…`, `folds case…` |
@@ -167,18 +173,24 @@ the target matrix in `docs/13` §6.
 | **`where` equality / `in` on an encrypted column** | 🛑 **refused in this release** — L2 rewrite + §7.5 re-verification land together | `refuses rather than comparing against a randomized envelope` |
 | `contains`, `startsWith`, `endsWith`, `lt`/`gte`, `search` | 🛑 refused (spec §7.1, §4.7) | `refuses \`contains\`…` (8-way sweep) |
 | `mode: "insensitive"` | 🛑 refused — the column has exactly one equality (G19) | `refuses \`mode: insensitive\`…` |
-| `not`, `notIn` | 🛑 refused — an exclusion's false negatives are unrecoverable | `explains notIn as an exclusion asymmetry…` |
+| `not`, `notIn` (non-null operands) | 🛑 refused — an exclusion's false negatives are unrecoverable | `explains notIn as an exclusion asymmetry…` |
 | An unrecognised filter operator | 🛑 hard error — fails closed, never passed through | `fails closed on an operator it does not recognise` |
 | Filtering the index sibling directly | 🛑 refused — cannot re-verify a filter it did not construct | `refuses a filter on the index sibling directly` |
 | `findUnique` on an encrypted column or its sibling | 🛑 refused — neither can be unique (spec §7.10) | `refuses findUnique on an encrypted column…` |
 | `orderBy` over an encrypted column | 🛑 refused (G20) — sorts envelope bytes | `refuses orderBy…` |
 | `distinct`, `groupBy.by`, `having` over one | 🛑 refused (G20) — one group per row, wrong counts | `refuses distinct…`, `refuses groupBy…` |
+| `distinct` on the **index sibling** | ⚠️ served — deduplicates by index value, §7.4 collisions included: a filter-grade answer, not an exact one | `serves distinct on the index sibling…` |
 | `_min`/`_max`/`_sum`/`_avg` over one | 🛑 refused (G20) — computes on bytes | `refuses aggregates…` |
+| `_count` over an encrypted field | ✅ served — counts non-NULL rows, reads no bytes, exact because NULL stays NULL | `serves _count over an encrypted field…` |
 | `cursor` on an encrypted column | 🛑 refused — ciphertext has no stable total order | `refuses cursor pagination…` |
 | Plaintext columns of the same model | ✅ untouched — filter, sort and group normally | `leaves filters on plaintext columns…`, `leaves orderBy and groupBy…` |
 | `count()` over rows | ✅ counts rows, reads no bytes | `allows _count over rows…` |
 | Raw SQL (`$queryRaw`, `$executeRaw`) | ⚠️ passthrough + hook (default) / 🛑 `strictRaw` | `passes through with a hook…`, `throws under strictRaw` |
 | Malformed declaration | 🛑 fails `prisma generate` | `fails the generate on a malformed declaration…` |
+| `@unique`/`@id`/`@@unique` on an encrypted column or sibling | 🛑 fails `prisma generate` (spec §7.10) — a unique sibling is delayed data loss under §7.4 collisions | `uniqueness refusals (spec §7.10)` |
+| Legacy plaintext row on a base64 column | 🛑 strict raises NOT_CIPHERTEXT / ⚠️ permissive returns the actual value and fires `onPlaintextRead` | `a stored value that is not an envelope…` |
+| Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
+| Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
 | `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction | fixture supplies it; see `helpers.ts` |
 | **Cross-language: a row written here, read by another core** | ❌ not yet — the cross producer is the next increment | — |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
@@ -223,8 +235,21 @@ it bites.
 `as:` declares. **Writes to a `Bytes`-stored encrypted column do not typecheck
 against the generated client and need a cast.** Two ways out today: declare the
 column `String` with `storage: "base64"`, which typechecks naturally at ~33%
-storage cost; or cast. A generator-emitted typed surface that fixes this
-properly is a follow-up, recorded rather than pretended away.
+storage cost; or cast the logical value at the write site:
+
+```ts
+await prisma.patient.create({
+  data: {
+    email: "ada@example.com" as never, // Bytes column; the adapter encrypts the string
+    plainName: "Ada",
+  },
+});
+```
+
+`as never` rather than `as unknown as Uint8Array`, so the cast reads as "the
+generated type is wrong here" and nothing downstream believes the value is
+bytes. A generator-emitted typed surface that fixes this properly is a
+follow-up, recorded rather than pretended away.
 
 **Storage overhead is real.** A 9-byte value becomes ~120 bytes binary or ~160
 bytes base64. Across a 20-column, 100M-row table that is ~220 GB before index
@@ -264,7 +289,7 @@ npm run build                    # dist/, and the generator bin
 npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma db push               # the fixture SQLite database
-npm test                         # 99 tests
+npm test                         # 127 tests
 npm run typecheck
 ```
 

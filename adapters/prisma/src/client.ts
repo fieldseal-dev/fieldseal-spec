@@ -61,11 +61,25 @@ export function buildIndexRegistry(map: ResolvedMap, opts: ClientOptions): Index
   for (const model of map.source.models) {
     for (const idx of model.indexes) {
       const key = `${model.model}.${idx.source}`;
+      // The generator guarantees both of these on any model that carries an
+      // index; a miss here means the map was edited or a map-shape change
+      // regressed, and the failure should say so rather than surface as a
+      // property read on undefined.
+      const source = model.encrypted.find((e) => e.field === idx.source);
+      if (source === undefined || model.tableUuid === null) {
+        throw new FieldsealConfigurationError(
+          `fieldseal: the field map carries an index ${model.model}.${idx.field} ` +
+            `over "${idx.source}", but ` +
+            (source === undefined
+              ? `no encrypted declaration for that column`
+              : `no table_uuid for the model`) +
+            ` is in the map. The generator emits both together, so the map is ` +
+            `stale or was edited -- re-run \`prisma generate\`.`,
+        );
+      }
       out.push({
         tableUuid: uuidBytes(model.tableUuid),
-        columnUuid: uuidBytes(
-          model.encrypted.find((e) => e.field === idx.source)!.columnUuid,
-        ),
+        columnUuid: uuidBytes(source.columnUuid),
         indexId: idx.indexId,
         idf: idx.idf,
         normalize: idx.normalize,

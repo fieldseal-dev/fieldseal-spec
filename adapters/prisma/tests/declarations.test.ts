@@ -50,8 +50,23 @@ const idxField = (name = "emailBidx", source = "email", extra = "") =>
   });
 
 describe("resolution", () => {
-  it("returns null for a model with nothing declared", () => {
-    expect(resolve(model({ name: "Plain", documentation: null }))).toBeNull();
+  it("resolves a model with nothing declared to a relation-only entry", () => {
+    // Not dropped: a write can reach an encrypted column *through* an
+    // undeclared model, so its relation edges must stay walkable, and a model
+    // missing from the map is a runtime staleness error, not a passthrough.
+    const m = resolve(
+      model({
+        name: "Plain",
+        documentation: null,
+        fields: [
+          field({ name: "patient", type: "Patient", kind: "object", relationName: "X2P" }),
+        ],
+      }),
+    );
+    expect(m.tableUuid).toBeNull();
+    expect(m.encrypted).toEqual([]);
+    expect(m.indexes).toEqual([]);
+    expect(m.relations).toEqual([{ field: "patient", model: "Patient", isList: false }]);
   });
 
   it("resolves an encrypted column with its defaults", () => {
@@ -246,7 +261,7 @@ describe("buildFieldMap", () => {
     expect(message).toMatch(/2 model\(s\) have declaration errors/);
   });
 
-  it("skips models with nothing declared", () => {
+  it("emits every model, declared or not -- an omitted model was a bypass", () => {
     const map = buildFieldMap(
       {
         models: [
@@ -256,6 +271,57 @@ describe("buildFieldMap", () => {
       },
       "test",
     );
-    expect(map.models.map((m) => m.model)).toEqual(["Patient"]);
+    expect(map.models.map((m) => m.model)).toEqual(["Plain", "Patient"]);
+    const plain = map.models.find((m) => m.model === "Plain")!;
+    expect(plain.tableUuid).toBeNull();
+    expect(plain.encrypted).toEqual([]);
+  });
+});
+
+describe("uniqueness refusals (spec §7.10)", () => {
+  it("refuses @unique on an encrypted column", () => {
+    expect(() =>
+      resolve(model({ name: "P", fields: [{ ...encField(), isUnique: true } as FieldInput] })),
+    ).toThrow(/cannot be @unique or @id/);
+  });
+
+  it("refuses @id on an encrypted column", () => {
+    expect(() =>
+      resolve(model({ name: "P", fields: [{ ...encField(), isId: true } as FieldInput] })),
+    ).toThrow(/cannot be @unique or @id/);
+  });
+
+  it("refuses @unique on an index sibling, naming the delayed data loss", () => {
+    // §7.4 mandates collisions, so a UNIQUE sibling starts rejecting
+    // legitimate distinct values as the table fills.
+    expect(() =>
+      resolve(
+        model({ name: "P", fields: [encField(), { ...idxField(), isUnique: true } as FieldInput] }),
+      ),
+    ).toThrow(/rejecting legitimate distinct values/);
+  });
+
+  it("refuses an encrypted column inside a @@unique group", () => {
+    expect(() =>
+      resolve(
+        model({
+          name: "P",
+          fields: [field({ name: "org" }), encField()],
+          uniqueFields: [["org", "email"]],
+        }),
+      ),
+    ).toThrow(/part of a @@unique or @@id/);
+  });
+
+  it("refuses an index sibling inside a compound @@id", () => {
+    expect(() =>
+      resolve(
+        model({
+          name: "P",
+          fields: [encField(), idxField()],
+          primaryKey: { fields: ["emailBidx", "email"] },
+        }),
+      ),
+    ).toThrow(/part of a @@unique or @@id/);
   });
 });

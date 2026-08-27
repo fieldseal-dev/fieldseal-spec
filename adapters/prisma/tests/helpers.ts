@@ -93,9 +93,10 @@ export function loose(client: unknown): LooseClient {
   return client as LooseClient;
 }
 
-/** Every table, emptied. Order matters: Visit has an FK onto Patient. */
+/** Every table, emptied. Order matters: Visit and Referral FK onto Patient. */
 export async function clearDb(base: PrismaClient): Promise<void> {
   await base.visit.deleteMany({});
+  await base.referral.deleteMany({});
   await base.patient.deleteMany({});
   await base.tenantDoc.deleteMany({});
   await base.person.deleteMany({});

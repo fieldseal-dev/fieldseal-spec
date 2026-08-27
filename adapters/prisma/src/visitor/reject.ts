@@ -54,8 +54,18 @@ const REFUSED_OPERATORS: Readonly<Record<string, string>> = {
   mode: "case folding belongs to the normalizer, not the query (spec §7.5)",
 };
 
-/** Aggregate keys Prisma accepts at the top level of an operation. */
-const AGGREGATES = ["_min", "_max", "_sum", "_avg", "_count"] as const;
+/**
+ * Aggregate keys Prisma accepts at the top level of an operation.
+ *
+ * `_count` is deliberately not here: `_count: { field: true }` counts non-NULL
+ * rows and reads no envelope bytes, and it is *exact* over an encrypted column
+ * because the write pass guarantees NULL stays NULL and a value stays not-NULL.
+ * It is the one member of the family with nothing to refuse.
+ */
+const AGGREGATES = ["_min", "_max", "_sum", "_avg"] as const;
+
+/** Keys under which an operation's write payload can appear (mirrors write.ts). */
+const DATA_KEYS = ["data", "create", "update"] as const;
 
 export interface RejectOptions {
   /** Whether equality has a rewrite available yet (L2, PR2). */
@@ -93,6 +103,63 @@ export function rejectForbiddenShapes(
   }
   if (isRecord(args["select"])) walkProjection(model, args["select"], ctx);
   if (isRecord(args["include"])) walkProjection(model, args["include"], ctx);
+
+  // Nested relation writes carry filters over *existing* rows -- the `where`
+  // of a nested update/updateMany/upsert/deleteMany/connectOrCreate, and the
+  // unique inputs of connect/disconnect/delete/set. The write pass encrypts
+  // their payloads but must never touch their filters, so the filters are
+  // walked here, exactly as the top-level `where` is.
+  for (const key of DATA_KEYS) {
+    const node = args[key];
+    if (node === undefined) continue;
+    for (const row of asArray(node)) walkWriteWheres(model, row, ctx, `${model.model}.${key}`);
+  }
+}
+
+/** Walk one write payload for the filters nested relation writes carry. */
+function walkWriteWheres(model: ResolvedModel, row: unknown, ctx: Ctx, path: string): void {
+  if (!isRecord(row)) return;
+  for (const [key, value] of Object.entries(row)) {
+    const rel = model.relationByField.get(key);
+    if (rel === undefined || !isRecord(value)) continue;
+    const target = ctx.map.byModel.get(rel.model);
+    if (target === undefined) continue;
+    for (const [nestedOp, payload] of Object.entries(value)) {
+      const p = `${path}.${key}.${nestedOp}`;
+      // Unique inputs: shorthand equalities over the target's columns.
+      if (
+        nestedOp === "connect" ||
+        nestedOp === "disconnect" ||
+        nestedOp === "delete" ||
+        nestedOp === "set"
+      ) {
+        for (const item of asArray(payload)) walkWhere(target, item, ctx, p);
+        continue;
+      }
+      // The payload *is* the filter.
+      if (nestedOp === "deleteMany") {
+        for (const item of asArray(payload)) walkWhere(target, item, ctx, p);
+        continue;
+      }
+      for (const item of asArray(payload)) {
+        if (!isRecord(item)) continue;
+        if (item["where"] !== undefined) walkWhere(target, item["where"], ctx, `${p}.where`);
+        // Descend into the write payloads for deeper relation levels. The
+        // shapes mirror write.ts: update/updateMany/upsert carry `data` /
+        // `create` / `update`; connectOrCreate carries `create`; create /
+        // createMany are either the payload itself or `{ data: [...] }`.
+        for (const dataKey of DATA_KEYS) {
+          const nested = item[dataKey];
+          if (nested === undefined) continue;
+          for (const r of asArray(nested)) walkWriteWheres(target, r, ctx, p);
+        }
+        if (item["where"] === undefined && item["data"] === undefined) {
+          // Bare payload form (to-one update, nested create).
+          walkWriteWheres(target, item, ctx, p);
+        }
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------- where ----
@@ -131,14 +198,24 @@ function walkWhere(model: ResolvedModel, node: unknown, ctx: Ctx, path: string):
     if (rel !== undefined) {
       const target = ctx.map.byModel.get(rel.model);
       if (target !== undefined && isRecord(value)) {
-        for (const [op, sub] of Object.entries(value)) {
-          // some / every / none / is / isNot all nest a where on the target.
-          walkWhere(target, sub, ctx, `${path}.${key}.${op}`);
+        // A to-many filter wraps the target's where in some/every/none, and a
+        // to-one filter in is/isNot -- but a to-one filter may also BE the
+        // target's where directly (`patient: { email: … }`), with no wrapper.
+        // Treating that form's operands as wheres walks right past them.
+        const keys = Object.keys(value);
+        if (keys.every((k) => RELATION_WRAPPERS.has(k))) {
+          for (const [op, sub] of Object.entries(value)) {
+            walkWhere(target, sub, ctx, `${path}.${key}.${op}`);
+          }
+        } else {
+          walkWhere(target, value, ctx, `${path}.${key}`);
         }
       }
     }
   }
 }
+
+const RELATION_WRAPPERS = new Set(["some", "every", "none", "is", "isNot"]);
 
 function refuseScalarFilter(
   model: ResolvedModel,
@@ -148,6 +225,12 @@ function refuseScalarFilter(
   path: string,
 ): void {
   const label = `${model.model}.${field}`;
+
+  // Literal NULL is exact over an envelope column: the write pass guarantees
+  // NULL stays NULL and a value stays not-NULL, so `IS NULL` has no collision
+  // class and needs no re-verification. Only the *literal* forms are served;
+  // anything nested is judged on its own shape below.
+  if (value === null) return;
 
   // Shorthand equality: `where: { email: "..." }`.
   if (!isRecord(value)) {
@@ -174,6 +257,7 @@ function refuseScalarFilter(
 
   for (const op of Object.keys(value)) {
     if (op === "equals") {
+      if (value["equals"] === null) continue; // IS NULL: exact, see above.
       refuseEquality(model, field, ctx, `${path}.${field}.equals`);
       continue;
     }
@@ -182,6 +266,7 @@ function refuseScalarFilter(
       continue;
     }
     if (op === "not") {
+      if (value["not"] === null) continue; // IS NOT NULL: equally exact.
       throw new FieldsealNotSupported(
         `${label}: \`not\` is not available on an encrypted column. The SQL ` +
           `excludes the whole index bucket, and spec §7.4 mandates that the ` +
@@ -402,8 +487,10 @@ function refuseUniqueBy(model: ResolvedModel, where: unknown): void {
         `states this normatively. A randomized envelope differs on every write, ` +
         `and §7.4 *mandates* collisions in a truncated index, so a UNIQUE ` +
         `constraint there would reject legitimate distinct values as the table ` +
-        `fills. Use \`findFirst\` with an equality filter, which the adapter ` +
-        `re-verifies under §7.5.`,
+        `fills. \`findFirst\` with an equality filter is the L2 shape (served ` +
+        `with §7.5 re-verification when the rewrite lands; refused in this L1 ` +
+        `release); today, fetch by primary key, or fetch and compare after ` +
+        `decryption.`,
     );
   }
 }
