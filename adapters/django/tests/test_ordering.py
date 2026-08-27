@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 from django.db import models
-from django.db.models import Count, F, Min, Q, Sum
+from django.db.models import Case, Count, F, Min, Q, Sum, Value, When
 from django.db.models.functions import Length
 from django.test.utils import isolate_apps
 
@@ -212,10 +212,16 @@ class TestPlainCountCarveOut:
         with pytest.raises(FieldsealNotSupported):
             Patient.objects.all().aggregate(n=Count(Length("note")))
 
-    def test_a_filtered_count_is_not_the_plain_shape(self, noted):
-        with pytest.raises(FieldsealNotSupported):
+    def test_a_filtered_count_is_refused_with_its_own_reason(self, noted):
+        # Not the bytes message -- a filtered COUNT reads no envelope bytes,
+        # and claiming it does is the white lie §10.2's honesty rule outlaws.
+        # The honest reason: §10.2's carve-out is the plain shape only, and
+        # the same count is available with the condition on the queryset.
+        with pytest.raises(FieldsealNotSupported) as e:
             Patient.objects.all().aggregate(
-                n=Count("note", filter=Q(age__isnull=False)))
+                n=Count("note", filter=Q(created__isnull=False)))
+        assert "envelope bytes" not in str(e.value)
+        assert "is the same count" in str(e.value)
 
     def test_the_refusal_message_names_the_carve_out(self, noted):
         # The false "COUNT computes on bytes" claim is what G23 was filed
@@ -232,6 +238,65 @@ class TestPlainCountCarveOut:
         with pytest.raises(FieldsealNotSupported):
             Patient.objects.filter(email="a@x.com").aggregate(
                 n=Count("note"))
+
+
+class TestUngovernedConditions:
+    """Conditions inside expressions -- an aggregate's `filter=`, a
+    `When.condition` -- are resolved when the expression compiles, outside
+    the queryset's filter path where the §7.5 obligations and refusals
+    attach. Measured before the refusal existed (found addressing the PR #91
+    review round): `Count("created", filter=Q(email=...))` was SERVED and
+    returned index-bucket counts, and a `When(email=...)` branch fired on a
+    bucket match -- both silently, with no re-verification. `Q` is a tree of
+    `(path, value)` tuples, not an expression, so `iter_reference_names`
+    never saw any of it."""
+
+    @pytest.fixture
+    def rows(self):
+        return [
+            Patient.objects.create(email="a@x.com", age=1, note="n"),
+            Patient.objects.create(email="b@x.com", age=2, note="n"),
+        ]
+
+    def test_encrypted_equality_in_an_aggregate_filter_refuses(self, rows):
+        # The measured hole: this served with bucket counts before the walk.
+        with pytest.raises(FieldsealNotSupported) as e:
+            Patient.objects.aggregate(
+                n=Count("created", filter=Q(email="a@x.com")))
+        assert "never re-verified" in str(e.value)
+        assert "envelope bytes" not in str(e.value)
+
+    def test_encrypted_equality_in_a_when_condition_refuses(self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.annotate(
+                x=Case(When(email="a@x.com", then=Value(1)),
+                       default=Value(0),
+                       output_field=models.IntegerField()))
+
+    def test_a_nested_q_is_walked_too(self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.aggregate(
+                n=Count("created",
+                        filter=Q(Q(created__isnull=False) | Q(email="x"))))
+
+    def test_ordering_by_a_conditional_over_an_encrypted_column_refuses(
+            self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.order_by(
+                Case(When(email="a@x.com", then=Value(0)),
+                     default=Value(1),
+                     output_field=models.IntegerField()))
+
+    def test_plain_conditions_keep_working(self, rows):
+        got = Patient.objects.aggregate(
+            n=Count("pk", filter=Q(created__isnull=False)))
+        assert got == {"n": 2}
+        annotated = list(
+            Patient.objects.annotate(
+                x=Case(When(created__isnull=False, then=Value(1)),
+                       default=Value(0),
+                       output_field=models.IntegerField())))
+        assert [p.x for p in annotated] == [1, 1]
 
 
 class TestGroupingAndDistinct:
