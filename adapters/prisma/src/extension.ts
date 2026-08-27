@@ -10,17 +10,24 @@
  *
  *   1. model === undefined (raw ops) -> passthrough + warning, or throw
  *   2. no encrypted column on this model            -> passthrough
- *   3. REJECT   walk args for forbidden shapes (§4) -> FieldsealNotSupported
+ *   3. ANALYSE  walk args: refuse forbidden shapes (§4), plan the rewrites
  *   4. WRITE    encrypt declared columns, derive index siblings
- *   5. WHERE    rewrite equality onto the sibling index          [L2, not here]
+ *   5. WHERE    rewrite equality/`in` onto the sibling index, record the
+ *               spec §7.5 obligations the rewrite incurs
  *   6. await query(args)      -- async: KMS acquisition can await here (L4)
  *   7. READ     decrypt declared columns in the result tree
- *   8. RE-VERIFY decrypt-and-compare, drop §7.4 collisions       [L2, not here]
+ *   8. RE-VERIFY discharge the obligations: drop §7.4 collision rows
  *
- * Steps 5 and 8 are L2 and land together, deliberately: a rewrite without
- * re-verification returns collision rows as matches, which is the wrong-answer
- * failure this adapter exists to refuse. Until then step 3 refuses equality on
- * an encrypted column outright.
+ * Steps 5 and 8 land together, deliberately: a rewrite without re-verification
+ * returns collision rows as matches, which is the wrong-answer failure this
+ * adapter exists to refuse. Step 3 keeps refusing equality wherever step 8
+ * cannot reach -- which, measured against Prisma 7.10.0, is everywhere except
+ * the top-level `where` of `findMany` and a relation `where` under
+ * `include`/`select`. Measured against Prisma 7.10.0, 2026-08-27; the
+ * classification is `docs/13` §2.0.
+ *
+ * `candidateScope(fn)` is the documented opt-out: inside it nothing is
+ * recorded, step 8 does not run, and the database answers over the §7.4 bucket.
  *
  * **Ordering.** Register fieldseal *last*. Measured against Prisma 7.10.0: the
  * extension registered first is outermost, so the one registered last sits
@@ -31,12 +38,15 @@
 
 import type { Fieldseal, ReadMode, Warning } from "@fieldseal/core";
 
+import { inCandidateScope } from "./candidates.ts";
 import { buildClient, type ClientOptions, type ScopedOverride } from "./client.ts";
 import type { TenantResolver } from "./context.ts";
 import { FieldsealConfigurationError, FieldsealNotSupported } from "./errors.ts";
 import { FIELD_MAP_VERSION, type FieldMap, resolveMap } from "./fieldmap.ts";
-import { rejectForbiddenShapes } from "./visitor/reject.ts";
+import { analyzeOperation } from "./visitor/reject.ts";
 import { applyReads } from "./visitor/read.ts";
+import { applyRewrites } from "./visitor/rewrite.ts";
+import { verifyResult } from "./visitor/verify.ts";
 import { applyWrites, type WriteCtx } from "./visitor/write.ts";
 
 export interface FieldsealExtensionOptions {
@@ -133,9 +143,11 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
           }
 
           // 3. Refuse before doing any work: a shape that will not be served
-          //    should not first have its operands encrypted.
-          rejectForbiddenShapes(resolved, operation, args, map, {
-            equalityRewritable: false,
+          //    should not first have its operands encrypted or fingerprinted.
+          //    The same walk plans the rewrites, so a refusal and a rewrite can
+          //    never disagree about what a `where` site is.
+          const intents = analyzeOperation(resolved, operation, args, map, {
+            verify: !inCandidateScope(),
           });
 
           // 4. Encrypt and derive.
@@ -148,11 +160,20 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
           };
           applyWrites(resolved, args, writeCtx);
 
+          // 5. Rewrite equality/`in` onto the sibling index, and take on the
+          //    §7.5 debt each rewrite creates.
+          const obligations = applyRewrites(intents, {
+            client,
+            operation,
+            rootArgs: args,
+            context: contextOpts,
+          });
+
           // 6. The await the sync core cannot do (L4 lands with warm(), PR3).
           const result = await query(args);
 
           // 7. Decrypt.
-          return applyReads(resolved, result, {
+          const decrypted = applyReads(resolved, result, {
             client,
             map,
             operation,
@@ -161,6 +182,12 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
             exposeIndexColumns,
             onPlaintextRead: opts.onPlaintextRead,
           });
+
+          // 8. Discharge the obligations: a blind index is a filter, never an
+          //    answer (spec §7.5). Nothing is recorded inside candidateScope().
+          return obligations.length === 0
+            ? decrypted
+            : verifyResult(decrypted, obligations);
       },
     },
   };

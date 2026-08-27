@@ -31,8 +31,25 @@ export function keyProvider(): StaticKeyProvider {
 
 export type Extended = ReturnType<typeof makeClient>["prisma"];
 
-export function makeClient(overrides: Partial<FieldsealExtensionOptions> = {}) {
-  const base = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: DB_URL }) });
+export function makeClient(
+  overrides: Partial<FieldsealExtensionOptions> = {},
+  /**
+   * Options for the *Prisma* client, not the extension. `omit` is the one that
+   * matters: it is configured here and never appears in an operation's
+   * arguments, which is why the §7.5 projection check has to run on the result.
+   *
+   * Cast back to the default `PrismaClient` so the helpers below still accept
+   * it. That does lose the type-level effect of `omit` (the generated result
+   * type would drop the column), which costs nothing here because every caller
+   * goes through `loose()` anyway -- and the point of the option is a *runtime*
+   * shape the extension cannot see.
+   */
+  clientOptions: Record<string, unknown> = {},
+) {
+  const base = new PrismaClient({
+    adapter: new PrismaBetterSqlite3({ url: DB_URL }),
+    ...clientOptions,
+  } as never) as unknown as PrismaClient;
   const opts: FieldsealExtensionOptions = {
     fieldMap: fieldsealFieldMap,
     keyProvider: keyProvider(),

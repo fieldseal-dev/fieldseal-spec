@@ -218,6 +218,75 @@ describe("what $allOperations can see", () => {
     expect(call.keys).not.toContain("take");
   });
 
+  it("refuses to widen findFirst's LIMIT -- `take` must be 1 or -1", async () => {
+    // The other half of the pin above, and the fact that decides the shape of
+    // L2. `docs/13` §2 said an index-rewritten findFirst "MUST be rewritten as
+    // an over-fetch (findMany + verify + first) or refused" -- and this is why
+    // the first option does not exist. An extension also cannot turn one
+    // operation into another (`query` is bound to the one it was called for),
+    // so findFirst over a rewritten predicate is refused.
+    const { client } = spy();
+    const p = client as { patient: { findFirst: (a: unknown) => Promise<unknown> } };
+    await expect(p.patient.findFirst({ where: { plainName: "x" }, take: 3 })).rejects.toThrow(
+      /'take' argument that isn't 1 or -1/,
+    );
+    await expect(p.patient.findFirst({ where: { plainName: "x" }, take: 1 })).resolves.not.toThrow();
+  });
+
+  it("applies `distinct` below the extension, over the candidate rows", async () => {
+    // So a row `distinct` kept may be one §7.5 then drops, while the row it
+    // discarded would have matched. That is why `distinct` is refused beside a
+    // rewritten filter rather than post-processed.
+    await base.visit.deleteMany({});
+    await base.referral.deleteMany({});
+    await base.patient.deleteMany({});
+    for (const [id, name] of [["d1", "same"], ["d2", "same"], ["d3", "other"]] as const) {
+      await base.patient.create({
+        data: {
+          id,
+          email: Buffer.from(id),
+          note: Buffer.from("n"),
+          age: Buffer.from("1"),
+          plainName: name,
+        } as never,
+      });
+    }
+    const { seen, client } = spy();
+    const rows = (await (
+      client as { patient: { findMany: (a: unknown) => Promise<unknown[]> } }
+    ).patient.findMany({ distinct: ["plainName"] })) as unknown[];
+    expect(seen.some((s) => s.keys.includes("distinct"))).toBe(true);
+    expect(rows).toHaveLength(2); // three rows in, two out: the dedup already ran
+  });
+
+  it("does not surface a client-level `omit` in args -- only in the result", async () => {
+    // The projection hazard that no argument-side check can see, which is why
+    // the §7.5 projection check runs on the returned row. If this ever starts
+    // appearing in `args`, an earlier and clearer refusal becomes possible.
+    const omitted = new PrismaClient({
+      adapter: new PrismaBetterSqlite3({ url: DB_URL }),
+      omit: { patient: { email: true } },
+    } as never);
+    const seen: Array<Record<string, unknown>> = [];
+    const client = omitted.$extends({
+      name: "omit-spy",
+      query: {
+        async $allOperations({ args, query }: never) {
+          seen.push({ ...(args as Record<string, unknown>) });
+          return (query as (x: unknown) => Promise<unknown>)(args);
+        },
+      },
+    } as never);
+    const rows = (await (
+      client as unknown as { patient: { findMany: (a: unknown) => Promise<unknown[]> } }
+    ).patient.findMany({ where: { plainName: "same" } })) as Array<Record<string, unknown>>;
+
+    expect(Object.keys(seen[0] ?? {})).toEqual(["where"]);
+    expect(seen[0]).not.toHaveProperty("omit");
+    expect(rows[0]).not.toHaveProperty("email");
+    await omitted.$disconnect();
+  });
+
   it("passes each member of a $transaction through individually", async () => {
     const { seen, client } = spy();
     const p = client as {

@@ -31,6 +31,13 @@ model Patient {
   age       Bytes
   /// @fieldseal(encrypted, storage: "base64", column_uuid: "018f3c2e-0000-7000-8000-000000000007")
   nickname  String?
+  /// The nullable indexed column: `not: null` beside an equality is only a
+  /// legal Prisma filter on a nullable column, and this is also the one index
+  /// whose source is stored as base64 text rather than raw bytes.
+  /// @fieldseal(index: "nickname", index_id: "exact", idf: "hmac-sha512",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
+  nicknameBidx Bytes?
   /// @fieldseal(encrypted, as: "datetime", column_uuid: "018f3c2e-0000-7000-8000-000000000008")
   born      Bytes?
   /// @fieldseal(encrypted, as: "boolean", column_uuid: "018f3c2e-0000-7000-8000-000000000009")
@@ -44,6 +51,7 @@ model Patient {
   referrals Referral[]
 
   @@index([emailBidx])
+  @@index([nicknameBidx])
 }
 
 // Deliberately NO @fieldseal declarations: this model exists so the tests can
@@ -58,11 +66,20 @@ model Referral {
 
 /// @fieldseal(table_uuid: "018f3c2e-0000-7000-8000-0000000000bb")
 model Visit {
-  id        String  @id @default(uuid())
-  patient   Patient @relation(fields: [patientId], references: [id])
-  patientId String
+  id         String  @id @default(uuid())
+  patient    Patient @relation(fields: [patientId], references: [id])
+  patientId  String
   /// @fieldseal(encrypted, column_uuid: "018f3c2e-0000-7000-8000-000000000004")
-  reason    Bytes
+  reason     Bytes
+  /// The indexed encrypted column on the far side of a to-many relation: the
+  /// second of the two `where` sites §7.5 re-verification can reach, since an
+  /// `include`d relation's rows come back nested in their parents.
+  /// @fieldseal(index: "reason", index_id: "exact", idf: "hmac-sha512",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
+  reasonBidx Bytes?
+
+  @@index([reasonBidx])
 }
 
 /// @fieldseal(table_uuid: "018f3c2e-0000-7000-8000-0000000000cc")

@@ -3,14 +3,15 @@
 Transparent field-level encryption at rest for Prisma. Design:
 [`docs/13-adapter-prisma.md`](../../docs/13-adapter-prisma.md).
 
-**Status: L1, and not usable in production.** Values encrypt and decrypt
-transparently and blind-index siblings are derived on write. The **L2 query
-path is not in this release** — the index rewrite and the spec §7.5
-re-verification that makes it correct land together, because a rewrite without
-re-verification returns collision rows as matches. Until then, equality on an
-encrypted column is **refused**, not approximated. Nothing here is frozen: the
-suite identifier is provisional (spec §4.8), Gate 0b is open, and the project
-does not invite adoption.
+**Status: L1 + L2(b), and not usable in production.** Values encrypt and decrypt
+transparently, blind-index siblings are derived on write, and equality and
+membership are rewritten onto the declared index with the spec §7.5
+re-verification that makes the rewrite correct — but **only where the rows come
+back to be checked**, which in Prisma is two places (see
+[Querying an indexed column](#querying-an-indexed-column)). Everywhere the
+database answers instead, the shape is refused rather than approximated.
+Nothing here is frozen: the suite identifier is provisional (spec §4.8), Gate 0b
+is open, and the project does not invite adoption.
 
 **AD-1 (spec §11.3): this package contains no cryptography.** It calls the
 core's published operations and nothing else. Installing it pulls in
@@ -138,6 +139,108 @@ fires on the `0xFF01` path, for the same reason.)
 
 ---
 
+## Querying an indexed column
+
+A declared index makes equality and membership serveable:
+
+```ts
+await prisma.patient.findMany({ where: { email: "ada@example.com" } });
+await prisma.patient.findMany({ where: { email: { in: ["a@x.com", "b@x.com"] } } });
+```
+
+The predicate never reaches the database as written — the suite is randomized,
+so comparing against ciphertext matches nothing. It is rewritten onto the
+sibling (`emailBidx`), which is spec §7.10's supported membership shape and is
+what spec §10.2 permits for Prisma as of G13.
+
+### The index is a filter, never an answer
+
+Spec §7.4 **mandates** collisions: the truncation band is chosen so that every
+index value corresponds to at least two distinct plaintexts, because that
+ambiguity is the privacy mechanism. So the database returns a *superset*, and
+the adapter decrypts the candidates and drops the ones that do not hold the
+value (spec §7.5) before you see them.
+
+That is only possible where the rows come back. Measured against Prisma 7.10.0
+(the classification, with the evidence, is
+[`docs/13` §2.0](../../docs/13-adapter-prisma.md)), exactly **two** `where`
+sites in Prisma's surface qualify:
+
+1. the top-level `where` of **`findMany`**, and
+2. a relation `where` under **`include` / `select`**, whose matched rows arrive
+   nested inside their parents.
+
+Everywhere else the database computes the answer and only the answer comes
+back — `count`, `aggregate`, `groupBy`, `findFirst` (its `LIMIT 1` is applied
+below the extension and cannot be widened: Prisma refuses a `take` on
+`findFirst` that is not 1 or -1), `updateMany`, `deleteMany`, `update`,
+`delete`, `upsert`, relation filters (`some`/`every`/`none`/`is`), `_count`,
+and the filters nested writes carry. Those are **refused**, and each refusal
+names what to run instead. `take`, `skip`, `cursor` and `distinct` are refused
+*beside* a rewritten filter for the same reason: the database applies them to
+the candidate set before re-verification shrinks it.
+
+This is narrower than the Django adapter, which can serve `count()`,
+`first()` and `get()` by materializing the bucket itself. A Prisma extension
+cannot: `query` is bound to the operation it was called for, so an operation
+whose result is a number cannot be turned into a row fetch.
+
+**Pagination built directly on an indexed encrypted column is incorrect**
+(spec §7.5). The correct pattern is over-fetch → decrypt → filter → paginate:
+fetch the verified rows with `findMany` and slice them in application code.
+
+### Equality is the index's own equality
+
+**On a column whose declared normalizer is not `identity`, an equality lookup
+is equality under that normalizer, not byte equality of the plaintext.** With
+`nfc-casefold-v1`, a query for `ada@example.com` can return a row stored as
+`Ada@Example.COM`. That is spec §7.5's rule (G19), and it is why
+`mode: "insensitive"` is refused rather than mapped onto the index: the column
+has exactly one equality, and no second, differently-folded one may be offered
+beside it.
+
+### `candidateScope` — the documented opt-out
+
+When bucket semantics are what you want, say so:
+
+```ts
+import { candidateScope } from "@fieldseal/prisma";
+
+const approx = await candidateScope(() =>
+  prisma.patient.count({ where: { email: "ada@example.com" } }),
+);
+```
+
+Inside the callback, §7.5 re-verification is **off** and every shape above is
+served. What comes back is the raw candidate set: a superset of the answer, and
+decrypt-and-compare becomes yours. `count` returns the bucket size; a
+`take`-limited page can hold rows that do not match and miss ones that do; and
+**`deleteMany` deletes the whole bucket, which is not recoverable** — the test
+suite measures each of these rather than describing them. It mirrors the Django
+adapter's `.candidates()`, which lifts the same family.
+
+Three caveats:
+
+- **The scope is the callback, not the next call.** Everything awaited inside
+  it is unverified. The idiom is one operation per scope.
+- **It must be awaited from `candidateScope` itself.** A Prisma client method
+  returns a lazy promise that dispatches nothing until something awaits it, so
+  a callback that merely *constructs* a promise and returns it unawaited would
+  escape the scope. `candidateScope` awaits inside for exactly this reason.
+  The boundary is dispatch, not construction — which also means a promise
+  constructed *before* the scope but first awaited *inside* it dispatches
+  inside and is served at bucket semantics (measured). Construct the operation
+  inside the callback, and nowhere else.
+- **It does not lift everything.** Ordering, grouping, `DISTINCT` and
+  byte-reading aggregates over an encrypted column stay refused (G20) — bucket
+  semantics are a meaningful thing to accept, ciphertext order is not. Nor does
+  it lift `not`/`notIn` (spec §7.10 has no row for negated membership; G21
+  [#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87) is open),
+  equality on a column with no declared index, or `findUnique` on an encrypted
+  column.
+
+---
+
 ## Coverage matrix
 
 What the code does **today**, each row verified by the test named in it — not
@@ -170,13 +273,28 @@ the target matrix in `docs/13` §6.
 | Tenant-bound column, no tenant | ✅ refuses the write | `refuses the write when no tenant is resolvable` |
 | Wrong tenant reading a row | ✅ raises — the binding is cryptographic, not a filter | `cannot be read under a different tenant…` |
 | Tampered ciphertext | ✅ raises; never returns garbage | `raises rather than returning garbage` |
-| **`where` equality / `in` on an encrypted column** | 🛑 **refused in this release** — L2 rewrite + §7.5 re-verification land together | `refuses rather than comparing against a randomized envelope` |
+| **`findMany` equality / `in` on an indexed encrypted column** | ✅ rewritten onto the sibling + §7.5 re-verified | `finds the row by its plaintext value`, `rewrites \`in\` as spec §7.10 membership`, `returns only the true match when the bucket holds another row` |
+| Equality on a column with **no declared index** | 🛑 refused — nothing to rewrite onto | `refuses on a column with no declared index…` |
+| Equality under a **non-identity normalizer** | ⚠️ equality *under that normalizer* — a query for `ada@…` returns a row stored `Ada@Example.COM` (spec §7.5, G19) | `a query for the lowercase value returns the row stored mixed-case` |
+| A relation `where` under `include`/`select` | ✅ rewritten + re-verified in the nested rows, at any depth incl. a to-one hop | `filters the nested rows and re-verifies them`, `verifies through a to-one hop in the path` |
+| Bucketed unindexable values sharing one index value | ✅ separated by §7.5's raw-bytes fallback | `returns only the queried value, though both share one index value` |
+| **`findFirst`/`findFirstOrThrow`** on a rewritten filter | 🛑 refused — the `LIMIT 1` is applied below the extension and cannot be widened (`take` must be 1 or -1) | `names findFirst's invisible LIMIT…`, `measures why findFirst is refused…` |
+| **`count`, `aggregate`, `groupBy`** on a rewritten filter | 🛑 refused — the database answers over the §7.4 bucket; measured overcount 2 vs 1 | `measures why count is refused: it counts the bucket` |
+| **`updateMany`, `deleteMany`, `update`, `delete`, `upsert`** on a rewritten filter | 🛑 refused — would write to or delete rows that do not match; measured `deleteMany` = 2 of 2 | `measures why deleteMany is refused…` |
+| `take`, `skip`, `cursor`, `distinct` beside a rewritten filter | 🛑 refused — applied to the candidate set before §7.5 shrinks it; the page holds the collision and misses the match | `measures why \`take\` is refused…`, `refuses \`distinct\` even on a plaintext column` |
+| A `take` on the **parent** of a nested obligation | ✅ served — dropping child rows cannot change which parents matched | `a \`take\` on the *parent* is fine…` |
+| An encrypted term under `OR` / `NOT` | 🛑 refused — a returned row may be there for the other branch, so §7.5 cannot attribute it | `refuses \`OR\`…` |
+| Relation filters (`some`/`every`/`none`/`is`, unwrapped to-one) naming an encrypted column | 🛑 refused — the rewrite lands in a join the database answers (spec §10.2: a path the surface does not reach) | `refuses the \`some\` form` (5-way sweep) |
+| `_count` whose relation filter names an encrypted column | 🛑 refused — computed in the database | `refuses a \`_count\` whose relation filter…` |
+| A projection that drops the column being verified (`select`, query `omit`, **client-level `omit`**) | 🛑 refused on the result — the client-level form never appears in `args` at all | `refuses a *client-level* omit…` |
+| `candidateScope(fn)` | ⚠️ serves every row above at **bucket semantics**; §7.5 becomes the caller's | `candidateScope: what it hands over, and what it does not` (13 tests) |
+| `candidateScope` over G20 shapes, `not`/`notIn`, an unindexed column, `findUnique` | 🛑 still refused | `does NOT lift the G20 family…`, `does NOT lift \`notIn\` or \`not\`…` |
 | `contains`, `startsWith`, `endsWith`, `lt`/`gte`, `search` | 🛑 refused (spec §7.1, §4.7) | `refuses \`contains\`…` (8-way sweep) |
 | `mode: "insensitive"` | 🛑 refused — the column has exactly one equality (G19) | `refuses \`mode: insensitive\`…` |
 | `not`, `notIn` (non-null operands) | 🛑 refused — an exclusion's false negatives are unrecoverable | `explains notIn as an exclusion asymmetry…` |
 | An unrecognised filter operator | 🛑 hard error — fails closed, never passed through | `fails closed on an operator it does not recognise` |
 | Filtering the index sibling directly | 🛑 refused — cannot re-verify a filter it did not construct | `refuses a filter on the index sibling directly` |
-| `findUnique` on an encrypted column or its sibling | 🛑 refused — neither can be unique (spec §7.10) | `refuses findUnique on an encrypted column…` |
+| `findUnique` on an encrypted column or its sibling | 🛑 refused — neither can be unique (spec §7.10); use `findMany` + equality | `refuses findUnique on an encrypted column…` |
 | `orderBy` over an encrypted column | 🛑 refused (G20) — sorts envelope bytes | `refuses orderBy…` |
 | `distinct`, `groupBy.by`, `having` over one | 🛑 refused (G20) — one group per row, wrong counts | `refuses distinct…`, `refuses groupBy…` |
 | `distinct` on the **index sibling** | ⚠️ served — deduplicates by index value, §7.4 collisions included: a filter-grade answer, not an exact one | `serves distinct on the index sibling…` |
@@ -289,7 +407,7 @@ npm run build                    # dist/, and the generator bin
 npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma db push               # the fixture SQLite database
-npm test                         # 129 tests
+npm test                         # 209 tests
 npm run typecheck
 ```
 

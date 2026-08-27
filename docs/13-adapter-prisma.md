@@ -4,6 +4,8 @@
 
 **Conformance target (spec §10.1):** L0 ✅ · L1 ✅ · L2 (b) ⚠️ with mandatory throws · L3 partial (tenant via args/ALS) ⚠️ · L3-row ❌ · L4 ✅ (`$allOperations` is async — best-in-class KMS integration).
 
+**Built as of 2026-08-27:** L0, L1 and L2(b). L2 is served at the two `where` sites §2.0 identifies and refused everywhere the database answers first, which is narrower than the Django adapter's L2 — §2.0 states why, and §6 does not claim parity. L4 and the cross-language producer are the next increment.
+
 **Hard rule:** zero cryptography; only the core's published operations from `@fieldseal/core`. (Seven, not the five this line long claimed: `encrypt`, `decrypt`, `blindIndex`, `isCiphertext`, `rotate`, `unindexableMarker`, and the async `warm` — `unindexableMarker` is the one §9's `bucket` row needs.)
 
 ---
@@ -84,19 +86,132 @@ Pipeline per operation:
 ```
 1. model === undefined (raw ops)  → passthrough (+ warning hook) or throw if strictRaw
 2. look up field map; nothing encrypted on this model → passthrough
-3. REJECT pass: walk args for forbidden shapes (§4) → throw FieldsealNotSupported
+3. ANALYSE pass: walk args once — refuse the forbidden shapes (§4) and plan the
+   rewrites. One walk, so a refusal and a rewrite can never disagree about what
+   a `where` site is.
 4. WRITE pass: walk data/create/update/upsert trees, encrypt declared fields,
    derive + set sibling index fields
-5. WHERE pass: rewrite equality/not predicates on encrypted fields onto sibling
-   index fields (blind_index of the plaintext parameter)
+5. WHERE pass: rewrite equality/in predicates on encrypted fields onto sibling
+   index fields (blind_index of the plaintext parameter), recording one §7.5
+   obligation per rewrite
 6. await query(args)              // async — KMS warm-up can await here (L4)
 7. READ pass: decrypt declared fields in the result tree (recursively, since
    include nests relations)
-8. RE-VERIFY pass: for any query that used an index rewrite, decrypt-and-compare
-   and drop collision rows (spec §7.5 — the index is a filter, never an answer)
+8. RE-VERIFY pass: discharge the obligations — decrypt-and-compare and drop
+   collision rows (spec §7.5 — the index is a filter, never an answer)
 ```
 
-**The `findFirst` LIMIT hazard (pinned, 2026-08-27).** `findFirst` reaches the extension carrying **only `where`** — Prisma applies the `LIMIT 1` *below* the extension, invisibly in `args` (pinned by `tests/prisma-private-api.test.ts`). So an index-rewritten `findFirst` has the database return **one candidate** before the §7.5 re-verify pass can run: a §7.4 collision is returned as a wrong row, and a true match that sorted behind it is a miss. When the L2 rewrite lands, `findFirst` over an indexed column MUST be rewritten as an over-fetch (`findMany` + verify + first) or refused — it cannot be served by pattern-matching `take`, because there is no `take` to see.
+### 2.0 Which `where` sites step 8 can reach (measured, 2026-08-27)
+
+Steps 5 and 8 are one feature, and the question that decides its scope is the
+Django LIMIT audit's (`docs/07` §7) asked of Prisma: **who answers this query
+before §7.5 runs?** Measured against 7.10.0 (local audit
+`internal/prisma-l2-audit-2026-08-27.md`, **not in the repo** — `internal/` is
+gitignored; the durable evidence is the test suite, which pins every number
+cited here in `tests/prisma-private-api.test.ts`, `tests/l2.test.ts` and
+`tests/l2-refusals.test.ts`): exactly **two** `where` sites in
+Prisma's surface select rows that come back to the extension:
+
+1. the top-level `where` of **`findMany`**, and
+2. a relation `where` under **`include`/`select`**, whose matched rows arrive
+   nested inside their parents (at any depth; a to-one hop may sit in the path
+   even though a to-one's own `where` is not a filter).
+
+Everywhere else the database computes the answer and only the answer comes back:
+`count` → a number, `aggregate` → an object, `groupBy` → groups, `updateMany` /
+`deleteMany` → a count, `update` / `delete` / `upsert` → the row they chose,
+relation filters → the *parent* rows, `_count` → a number. Spec §10.2 settles
+all of them in one clause: an adapter that cannot guarantee the rewrite, *"or a
+filter path its interception surface does not reach"*, MUST reject.
+
+**The `findFirst` LIMIT hazard (pinned, 2026-08-27; resolved as *refuse*).**
+`findFirst` reaches the extension carrying **only `where`** — Prisma applies the
+`LIMIT 1` *below* the extension, invisibly in `args`. So an index-rewritten
+`findFirst` has the database return **one candidate** before the §7.5 re-verify
+pass can run: a §7.4 collision comes back as a wrong row, and a true match that
+sorted behind it comes back as `null`. This paragraph previously said the
+adapter MUST rewrite it "as an over-fetch (`findMany` + verify + first) or
+refuse". **The over-fetch is not available**, measured the same day:
+
+```
+prisma.patient.findFirst({ where: …, take: 3 })
+→ Input error. The 'findFirst' operation cannot be used with a 'take'
+  argument that isn't 1 or -1
+```
+
+and an extension cannot turn one operation into another — `query` is bound to
+the operation it was invoked for, and a `query` component has no client handle.
+So `findFirst`/`findFirstOrThrow` over a rewritten predicate is **refused**, and
+the refusal names `findMany` as the shape to run instead. Both halves are pinned
+in `tests/prisma-private-api.test.ts`.
+
+**Consequence for the coverage claim, stated plainly:** this adapter's L2 is
+narrower than the Django adapter's. Django serves `count()`, `exists()`, `get()`
+and `first()` by materializing the bucket inside its own `QuerySet`; a Prisma
+extension cannot, so those are refusals here. The matrix in §6 says so rather
+than implying parity.
+
+**The hazards that travel with a rewritten filter.** `take`, `skip`, `cursor`
+and `distinct` are applied by the database to the candidate set *before* §7.5
+shrinks it, so each is refused at the level carrying the obligation — and only
+at that level: a `take` on the parent of a *nested* obligation is served,
+because dropping child rows cannot change which parents matched. `distinct` is
+measured rather than assumed: `findMany({ distinct: ["plainName"] })` over four
+rows returned three, so the dedup had already run and the row it discarded
+cannot be recovered by dropping the one it kept.
+
+**An encrypted term under `OR` or `NOT`** is refused for the Django reason: a
+returned row may be present because the *other* branch matched, so a failed
+check is not a sound reason to drop it, and deciding correctly would mean
+evaluating the whole predicate in application code. `AND` is fine — every
+returned row satisfies every term.
+
+**§7.5 needs the column it verifies against**, and three things take it away: a
+`select` that does not name it, a query-level `omit`, and a **client-level**
+`omit` passed to `new PrismaClient({ omit: … })`. The third is invisible in
+`args` (measured: the operation arrives as a bare `{ where }` and the row simply
+comes back without the key), so the check runs on the **returned row** rather
+than on the arguments — that catches all three and fails closed on the one that
+cannot be predicted.
+
+### 2.2 The §7.5 opt-out: `candidateScope(fn)`
+
+Django's escape hatch is a queryset method (`docs/12` §3.2, decision C). Prisma
+has nothing to chain — an operation is one call with a plain arguments object —
+so the scope is a callback, in the same shape and for the same reason as
+`tenantScope`: an `AsyncLocalStorage` survives `await`.
+
+```ts
+const approximate = await candidateScope(() =>
+  prisma.patient.count({ where: { email: v } }),
+);
+```
+
+Inside it nothing is recorded, step 8 does not run, and every shape §2.0 refuses
+is served over the §7.4 bucket. Django's rule on what an escape hatch lifts
+holds here: it hands over the *verification* family, **not** the G20 family,
+because bucket semantics are a meaningful thing for a caller to accept and
+ciphertext order has no semantics to accept.
+
+Three decisions worth recording:
+
+- **It lifts mutations too** — `deleteMany` inside the scope deletes the whole
+  bucket. That is parity with Django, whose `.candidates().delete()` does the
+  same today; refusing here would be a silent divergence between two shipped
+  adapters, which is the failure G23 was filed about. The consequence is
+  measured in the test suite and stated in the README, not softened.
+- **It does not lift `not`/`notIn`.** Django's `.candidates()` does lift its
+  `exclude()` analogue, and the difference is deliberate: there the rewrite
+  happens in the field layer whether the queryset verifies or not, so lifting it
+  costs nothing, while here the rewrite is the adapter's own and spec §7.10 has
+  a row for membership and none for negated membership. Serving it inside the
+  scope would be deciding **G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87))** by engineering judgment.
+- **It must await inside the scope.** A Prisma client method returns a lazy
+  promise that dispatches nothing until something calls `.then`, so a
+  synchronous `storage.run(true, fn)` would exit the scope before the query ran
+  and re-verify anyway — an opt-out that silently does nothing, which is worse
+  than not having one. Found by the first draft doing exactly that; the
+  "measures why" tests fail if it regresses.
 
 ### 2.1 The args-tree visitor — typed, not string-surgery
 
@@ -104,7 +219,12 @@ Pipeline per operation:
 
 Write-tree coverage (each an explicit visitor case + test): `create.data`, `createMany.data[]`, `update.data`, `updateMany.data`, `upsert.create/update`, nested relation writes (`data.<rel>.create|createMany|update|upsert|connectOrCreate.create`), and `set`/`unset` forms on supported field types.
 
-Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`/`is`/`isNot` — **and the unwrapped to-one form**, where the target's where sits directly under the relation key) recursively, **the filters nested relation writes carry** (`update`/`updateMany`/`upsert`/`connectOrCreate` `where`, `deleteMany`'s payload, and the `connect`/`disconnect`/`delete`/`set` unique inputs — walked exactly as the top-level where is, because the write pass encrypts their payloads and must never touch their filters), `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, which §7.10 now states normatively per G12; the rewrite target is `findFirst` with equality + re-verify).
+Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`/`is`/`isNot` — **and the unwrapped to-one form**, where the target's where sits directly under the relation key) recursively, **the filters nested relation writes carry** (`update`/`updateMany`/`upsert`/`connectOrCreate` `where`, `deleteMany`'s payload, and the `connect`/`disconnect`/`delete`/`set` unique inputs — walked exactly as the top-level where is, because the write pass encrypts their payloads and must never touch their filters), `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, which §7.10 now states normatively per G12; the shape to run instead is `findMany` with equality + re-verify, and take the first row).
+
+**Walked is not the same as rewritten, and this list previously conflated them.** Every shape above is *visited*; §2.0 decides which of them can be *served*. The two the earlier draft got wrong:
+
+- **Relation filters are not rewritten** (`some`/`every`/`none`/`is`/`isNot` and the unwrapped to-one form). The rewrite would land in a join or subquery the database resolves, and only the *parent* rows come back — §7.5 re-verification needs the encrypted column's decrypted value, which lives on the other model. They are refused, with the join to run instead named in the message: query the owning model directly (keeping the column in the projection, or there is nothing to verify against) and filter by the resulting ids. Django refused the same analogue for the same reason (`docs/12`, `_refuse_traversal`), and spec §10.2 requires it rather than permitting it — *"a filter path its interception surface does not reach"* MUST be rejected. This closes the open item the plan carried as "the relation-filter case still needs deciding": it is settled by §10.2's existing text, not by a new spec decision, so no gap issue was filed.
+- **`.not` is not rewritten either**, and neither is `notIn` — see the §4 table and **G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87))**, which is open. The exclusion drops rows §7.5 never sees, and a filter's false positives are recoverable where an exclusion's false negatives are not.
 
 ## 3. Read path
 
@@ -129,8 +249,21 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | `aggregate` (`_min`/`_max`/`_sum`/`_avg`) on an encrypted field | Spec §7.10 — the shapes that read envelope bytes. Plain `_count: { field: true }` is deliberately **not** here: it reads null-ness alone and is served, exact under §10.2's NULL-preservation invariant (G23, [#89](https://github.com/fieldseal-dev/fieldseal-spec/issues/89)) |
 | `cursor` on an encrypted field | Pagination on ciphertext is incorrect (spec §7.5) |
 | Raw ops (`$queryRaw`, `$executeRaw`) when `strictRaw: true` | Parameters are never encrypted by any ORM (spec §10.2); default is passthrough + warning hook, strict deployments opt into throwing |
-| `findUnique` naming an encrypted or index field | Neither can be unique (spec §7.10, G12); rewrite target is `findFirst` + re-verify |
-| `where.<encrypted>` with **no declared index** | Equality without an index cannot be served (randomized suite) — throw with "declare a blind index or filter after fetch" |
+| `findUnique` naming an encrypted or index field | Neither can be unique (spec §7.10, G12); the shape to run is `findMany` + equality + re-verify, and take the first row. Structural, so `candidateScope` does not lift it |
+| `where.<encrypted>` with **no declared index** | Equality without an index cannot be served (randomized suite) — throw with "declare a blind index or filter after fetch". Not lifted by `candidateScope`: there is nothing to rewrite onto |
+
+**The L2 rows — refused because the answer is computed before §7.5 can run** (§2.0 has the measurements; all of these are lifted by `candidateScope`, which is what it is for):
+
+| Shape carrying a rewritten equality | Why |
+|---|---|
+| `findFirst` / `findFirstOrThrow` | The `LIMIT 1` is applied below the extension and cannot be widened (`take` must be 1 or -1) — the database returns one candidate |
+| `count`, `aggregate`, `groupBy` | Answered over the §7.4 bucket; an extension cannot turn them into a row fetch. Measured: 2 where the verified answer is 1 |
+| `updateMany`, `deleteMany`, `update`, `delete`, `upsert` | The statement acts on rows that never come back. Measured: `deleteMany` removed 2 of 2, one of them holding a different value |
+| `take` / `skip` / `cursor` / `distinct` **at the level carrying the obligation** | Applied to the candidate set before §7.5 shrinks it. A `take` on the *parent* of a nested obligation is served |
+| An encrypted term under `OR` / `NOT` | A returned row may be there because the other branch matched; §7.5 cannot attribute it |
+| Relation filters (`some`/`every`/`none`/`is`/`isNot`, unwrapped to-one) | Resolved as a join or subquery; only the parent rows come back (§2.1) |
+| `_count` whose relation filter names an encrypted field | Computed in the database |
+| A projection that drops the column being verified (`select`, query `omit`, client-level `omit`) | §7.5 has nothing to compare. Checked on the **result**, because the client-level form never appears in `args` |
 
 `in:` with a declared index is rewritten to `emailBidx: { in: [bidx(v1), bidx(v2), …] }` — membership is exactly what spec §7.10 supports ("N indexes OR'd"), and it is the one shape the existing library breaks on that this adapter upgrades rather than merely rejects. **Conflict resolved (G13, issue #13, 2026-08-09):** §10.2's Prisma bullet now scopes its MUST — reject `in:` *unless* the adapter rewrites it to the declared blind index with §7.5 re-verification, and reject whenever the rewrite cannot be guaranteed (no declared index, or a filter path the interception surface does not reach). This adapter's rewrite is conformant to §10.2's letter as of that change, so the coverage matrix no longer carries it as a deviation. `contains:`/`startsWith:` stay unconditional rejections, and §10.2 now says explicitly that a §7.9 prefix index is queried through its own declared predicate rather than by rewriting `startsWith:` — do not add that rewrite here.
 
@@ -178,10 +311,13 @@ it was checking.
 | Path | Behavior |
 |---|---|
 | `create`, `createMany`, `update`, `updateMany`, `upsert`, nested writes | ✅ encrypts + index siblings |
-| `findMany/findFirst/count` with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (the `in:` rewrite is conformant to §10.2 as of G13; no deviation remains) |
+| **`findMany`** with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (the `in:` rewrite is conformant to §10.2 as of G13; no deviation remains) |
+| A relation `where` under `include`/`select` | ✅ rewritten + re-verified in the nested rows, at any depth |
+| `findFirst` / `count` with the same predicate | 🛑 refused — the database answers before §7.5 runs, and an extension cannot turn one operation into another. This row said `findMany/findFirst/count` until the L2 build measured it (§2.0); the correction is a narrowing of the claim, not of the requirement |
+| `candidateScope(fn)` | ⚠️ serves all of the above at §7.4 bucket semantics, §7.5 handed to the caller (§2.2) |
 | Backfill (`tools/backfill`, docs/15) | ✅ per-row `update`/batched `updateMany` **through the extension** — traverses the §2 pipeline. **Confirmed 2026-08-27**: `create` and `updateMany` issued on the extended client both traverse `$allOperations` in full. The obligation to state is that the backfill must hold the **extended** client — the base client bypasses the pipeline silently, which is the failure this row exists to prevent |
 | All §4 shapes | 🛑 throw |
-| `delete`/`deleteMany` by encrypted field | ✅ via index rewrite where declared; 🛑 otherwise |
+| `delete`/`deleteMany` by encrypted field | 🛑 refused — the rows the statement removes never come back for §7.5 to check, and an over-deletion is not recoverable. Measured: the bucket held 2, one of them a different value. This row read "✅ via index rewrite where declared" before the L2 build; `candidateScope` is the way to take those semantics deliberately |
 | Raw SQL | ⚠️ passthrough + warning (default) / 🛑 throw (`strictRaw`) |
 | Result decryption incl. `include` nesting | ✅ |
 | `groupBy` on non-encrypted fields of a model containing encrypted fields | ✅ untouched |
