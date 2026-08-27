@@ -126,7 +126,7 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | `mode: "insensitive"` | Case folding is the normalizer's job, not the query's |
 | `orderBy` naming an encrypted field | The existing library deletes it with a `console.error` — this adapter throws (spec §10.2 named this case for Prisma from the start; G20 ([#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)) generalized it to every ORM, alongside grouping, `DISTINCT` and aggregates over ciphertext — the extension's visitor must refuse those shapes too) |
 | `distinct`, `groupBy.by`, `having` on an encrypted field | Grouping by randomized ciphertext is meaningless (index-column grouping with the §7.10 collision caveat is the documented alternative) |
-| `aggregate` (`_min`/`_max`/`_sum`/`_avg`) on an encrypted field | Spec §7.10 |
+| `aggregate` (`_min`/`_max`/`_sum`/`_avg`) on an encrypted field | Spec §7.10 — the shapes that read envelope bytes. Plain `_count: { field: true }` is deliberately **not** here: it reads null-ness alone and is served, exact under §10.2's NULL-preservation invariant (G23, [#89](https://github.com/fieldseal-dev/fieldseal-spec/issues/89)) |
 | `cursor` on an encrypted field | Pagination on ciphertext is incorrect (spec §7.5) |
 | Raw ops (`$queryRaw`, `$executeRaw`) when `strictRaw: true` | Parameters are never encrypted by any ORM (spec §10.2); default is passthrough + warning hook, strict deployments opt into throwing |
 | `findUnique` naming an encrypted or index field | Neither can be unique (spec §7.10, G12); rewrite target is `findFirst` + re-verify |
