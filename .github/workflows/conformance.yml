@@ -172,6 +172,74 @@ jobs:
           python -m ruff check src tests
           python -m mypy --strict src/fieldseal_django
 
+  prisma-adapter:
+    name: Prisma adapter (L1) on SQLite
+    runs-on: ubuntu-24.04
+    # SQLite only for now. docs/13 §7 asks for a Postgres leg as well, for
+    # Bytes/bytea fidelity, and it lands with the L2 query path -- the shapes
+    # that actually compile differently per backend are the ones this release
+    # refuses. Recorded here rather than left to be noticed.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # The core comes from this checkout, not from a registry: the adapter is
+      # verified against the core it ships beside. `dist/` is gitignored and
+      # the package has no `prepare` script, so the build is explicit.
+      - name: Build the TypeScript core
+        working-directory: core/typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install the adapter
+        working-directory: adapters/prisma
+        run: npm install --no-audit --no-fund
+
+      - name: Build the adapter and its generator
+        working-directory: adapters/prisma
+        run: npm run build
+
+      # The fixture's Prisma client, field map and database. The field map is
+      # produced by the same buildFieldMap/renderModule the generator calls;
+      # `tests/generator.test.ts` covers the generator's RPC path end to end.
+      - name: Generate the fixture
+        working-directory: adapters/prisma
+        run: |
+          npx prisma generate
+          node tests/fixture/build.ts
+          npx prisma db push
+
+      - name: Run the suite
+        working-directory: adapters/prisma
+        run: npm test
+
+      - name: Typecheck (sources and tests)
+        working-directory: adapters/prisma
+        run: npm run typecheck
+
+      # AD-1 (spec §11.3): zero cryptography in an adapter. Asserted rather
+      # than asked for in review, because it is the kind of rule that decays
+      # one convenient import at a time.
+      #
+      # The pattern must include `from`, not only `import`/`require`: the
+      # ordinary form is `import { randomBytes } from "node:crypto"`, and a
+      # first draft of this step matched neither it nor anything else useful.
+      # Confirmed to fire on that line and to stay silent on the real tree.
+      # Still a tripwire, not a proof -- a dynamic `import()` built from a
+      # variable would pass it.
+      - name: No cryptographic code in the adapter
+        working-directory: adapters/prisma
+        run: |
+          if grep -rnE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"](node:)?(crypto|argon2|bcrypt|libsodium[^'\"]*|tweetnacl|sodium-native)['\"]" src/; then
+            echo "AD-1 violation: an adapter must contain no cryptographic code (spec §11.3)."
+            exit 1
+          fi
+          echo "AD-1 holds: no cryptographic imports in adapters/prisma/src."
+
   vectors-reproducible:
     name: Vectors match a fresh generation
     runs-on: ubuntu-24.04
