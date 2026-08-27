@@ -4,36 +4,61 @@
 
 **Conformance target (spec §10.1):** L0 ✅ · L1 ✅ · L2 (b) ⚠️ with mandatory throws · L3 partial (tenant via args/ALS) ⚠️ · L3-row ❌ · L4 ✅ (`$allOperations` is async — best-in-class KMS integration).
 
-**Hard rule:** zero cryptography; only the five core operations plus `warm` from `@fieldseal/core`.
+**Hard rule:** zero cryptography; only the core's published operations from `@fieldseal/core`. (Seven, not the five this line long claimed: `encrypt`, `decrypt`, `blindIndex`, `isCiphertext`, `rotate`, `unindexableMarker`, and the async `warm` — `unindexableMarker` is the one §9's `bucket` row needs.)
 
 ---
 
 ## 1. Declaration surface
 
-Prisma has no schema extension point, so declaration is `///` doc comments read from the DMMF (`docs/04` §3):
+Prisma has no schema extension point, so declaration is `///` doc comments, read by a **build-time generator** (see the DMMF bullet below — the runtime route this document originally specified does not exist in Prisma 7):
 
 ```prisma
+generator fieldseal {
+  provider = "fieldseal-prisma-generator"
+  output   = "../src/generated"
+}
+
+/// @fieldseal(table_uuid: "018f3c2e-…")
 model Patient {
   id        String @id @default(uuid())
   /// @fieldseal(encrypted, column_uuid: "018f3c2e-…")
   email     Bytes
   /// @fieldseal(index: "email", index_id: "exact", idf: "argon2id",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15, projected_population: 100000)
-  emailBidx Bytes
+  emailBidx Bytes?
 
   @@index([emailBidx])
 }
-/// @fieldseal(table_uuid: "018f3c2e-…") — model-level comment on Patient
 ```
 
+The sibling is `Bytes?` and the model-level annotation sits *above* `model`, which is
+where Prisma's parser attaches model documentation.
+
 - **Column type:** `Bytes` (→ `bytea`) is the default and recommendation (spec §3.3). `String` columns with base64 are supported for migration compatibility with `prisma-field-encryption` deployments, gated behind an explicit `storage: "base64"` annotation and the documented 33% overhead warning. This choice covers the *envelope* column only: the blind-index sibling is governed by spec §7.11, where `Bytes` of length exactly `⌈b/8⌉` is a MUST and base64 is not among the alternatives — an index column may be raw bytes or lowercase hex, nothing else, because its bytes are compared rather than round-tripped.
-- **DMMF availability:** Prisma 7's Rust-free client changed DMMF exposure (`docs/04` §3) — the extension constructor takes an explicit `dmmf` option, with auto-detection attempted first and a clear error telling the user to pass it when detection fails. **[VERIFY at implementation: the supported way to obtain DMMF in current Prisma 7.x.]**
+- **Declarations reach the adapter through a build-time generator, not at runtime.** This paragraph previously described reading the `///` comments "from the DMMF at runtime", with a `dmmf` constructor option as the fallback. **That is not possible in Prisma 7** — measured against 7.10.0 on 2026-08-27, and the flag is resolved as *corrected*, not confirmed:
+  - `Prisma.dmmf` no longer exists. The generated namespace exports `DMMF` as a **type** only, so the previous design would have read `undefined` without failing.
+  - The client's private `_runtimeDataModel` carries the model and relation graph — `{name, kind, type, relationName}` — and **no `documentation` field** on any model or field. The annotations are simply not in it.
+  - They survive at runtime only inside `_engineConfig.inlineSchema`, the raw schema text, which is equally private.
+
+  So the two things this adapter needs live in two different places, and neither has a public route. The declarations are therefore read where they *are* available and the route is supported: the package ships a **Prisma generator** (`fieldseal-prisma-generator`), which Prisma spawns at `prisma generate` and hands the full DMMF — documentation *and* relation graph, from Prisma's own parser. It emits one frozen field map that the extension imports.
+
+  Two consequences, both improvements on the original design. A malformed declaration fails **`prisma generate`** rather than the first request, which is the Prisma analogue of Django's startup system checks and is what "never a runtime skip" was reaching for. And the declarations arrive together with the relation graph §2.1's visitor walks, from one source rather than two. An explicit `fieldMap` option remains the escape hatch the `dmmf` option used to be.
+
+- **Prisma 7 removed `url` from the schema's `datasource` block.** Connection configuration moves to `prisma.config.ts`, and the client takes a **driver adapter** in its constructor. Every schema example in this document and in `docs/04` §3 predates that change.
+
+- **A multi-line `///` declaration arrives as one string with embedded newlines**, the `/// ` prefix stripped, so the annotation grammar must handle continuation lines — the example above already spans three.
+
+- **Logical type (`as:`).** The Prisma column type is the **storage** type — `Bytes` because it holds an envelope — so it cannot also declare what the value *is*. Django never needed this: `Encrypted(models.EmailField())` composes an inner field carrying the logical type, and Prisma has no equivalent. Each encrypted column therefore declares `as: "string" | "bytes" | "int" | "float" | "boolean" | "datetime"`, defaulting to `string`. `docs/14` §3 already names this as the adapter decision no core test can see ("an `IntegerField` is not self-evidently `b"42"`"), which is why the cross-language producer must exercise every declared type rather than only text.
+
+- **The index sibling MUST be declared optional** (`emailBidx Bytes?`). Prisma's generated `create` input requires every non-optional column, so a required sibling would force callers to supply the one value the adapter refuses to accept from them — index bytes are derived. A NULL value also has no index, so the column must accept NULL regardless. The generator refuses a required sibling.
 - The index sibling is a plain (non-unique) `@@index` column: `truncate_bits` must sit inside the §7.4 band (9–15 bits for P = 100,000), which **mandates collisions** — a `@unique` sibling would reject legitimate distinct emails, which spec §7.10 now forbids outright (G12 resolved 2026-08-09), and the index is a filter, never an answer (spec §7.5).
-- Annotation parsing happens once at extension construction, producing a frozen per-model **field map**: `{ model → { encryptedFields, indexFields, tableUuid, contexts } }`. A malformed annotation is a construction-time error, never a runtime skip. The parsed declarations feed core-client construction (§2), where the §7.6 cardinality gate applies: a declared index whose `projected_population` is below 2¹⁰ fails construction unless the extension options carry the explicit, logged `cardinalityOverride` declaration spec §7.6 requires — the override lives in code reviewed by humans, never in a schema comment.
+- Annotation parsing happens once at **`prisma generate`**, producing a frozen per-model **field map**: `{ model → { encrypted, indexes, relations, tableUuid } }`, emitted as a committed module the extension imports. **Every model in the schema is emitted, declared or not** — an undeclared model still carries the relation edges the visitor walks (a write can reach an encrypted column *through* it), and a model absent from the map is refused at runtime as staleness rather than passed through, because an unmapped model is a bypass around the pipeline for every declared model it relates to. A malformed annotation fails the generate, never a runtime skip — strictly better than the construction-time error this originally specified, because a schema that cannot be declared correctly never produces a client. The parsed declarations feed core-client construction (§2), where the §7.6 cardinality gate applies: a declared index whose `projected_population` is below 2¹⁰ fails construction unless the extension options carry the explicit, logged `cardinalityOverride` declaration spec §7.6 requires — the override lives in code reviewed by humans, never in a schema comment.
 
 ## 2. Extension architecture
 
-One Prisma Client Extension with a single `query.$allModels.$allOperations` component (the only component that can touch writes and filters — `docs/04` §3):
+One Prisma Client Extension with a single **top-level** `query.$allOperations` component (the only component that can touch writes and filters — `docs/04` §3).
+
+**Top-level, not under `$allModels`** — measured against Prisma 7.10.0 on 2026-08-27, and it is the difference between seeing raw operations and not. `query.$allModels.$allOperations` wraps model operations only; `$queryRaw` and `$executeRaw` are client-level and never reach it, so pipeline step 1 below is unreachable from there and `strictRaw` would silently do nothing:
 
 ```ts
 export function fieldsealExtension(opts: {
@@ -41,10 +66,12 @@ export function fieldsealExtension(opts: {
   readMode?: ReadMode;             // Django adapter, docs/12 §7): only the extension sees the parsed
   allowedSuites: number[];         // schema annotations, so only it can hand the core the complete
   writeSuite: number;              // IndexDeclaration registry that construction-time validation
-  cache?: CachePolicy;             // (docs/09 §2 — §7.6 gate, §7.4 band) must run against
+  cache?: CachePolicy;             // forwarded to EnvelopeKeyProvider, never to the client:
+                                   // `docs/09` §2 refuses a `cache` key on Fieldseal itself
   cardinalityOverride?: { table: string; field: string; reason: string;
                           approvedBy: string; date: string }[];   // spec §7.6 logged override
-  dmmf?: DMMF.Document;
+  fieldMap: FieldMap;              // the generator's output; replaces the `dmmf` option,
+                                   // which had nothing to read in Prisma 7
   tenant?: (args, model, operation) => Uint8Array | null;   // or AsyncLocalStorage accessor
   strictRaw?: boolean;             // default false: raw ops pass through with a warning hook
 }): PrismaExtension
@@ -69,19 +96,21 @@ Pipeline per operation:
    and drop collision rows (spec §7.5 — the index is a filter, never an answer)
 ```
 
+**The `findFirst` LIMIT hazard (pinned, 2026-08-27).** `findFirst` reaches the extension carrying **only `where`** — Prisma applies the `LIMIT 1` *below* the extension, invisibly in `args` (pinned by `tests/prisma-private-api.test.ts`). So an index-rewritten `findFirst` has the database return **one candidate** before the §7.5 re-verify pass can run: a §7.4 collision is returned as a wrong row, and a true match that sorted behind it is a miss. When the L2 rewrite lands, `findFirst` over an indexed column MUST be rewritten as an over-fetch (`findMany` + verify + first) or refused — it cannot be served by pattern-matching `take`, because there is no `take` to see.
+
 ### 2.1 The args-tree visitor — typed, not string-surgery
 
 `docs/04` §3 calls the existing library's JSON-path approach "the correctness cliff." This adapter's visitor is **schema-driven**: it walks the args tree *guided by the DMMF model graph* (which relation fields exist, which scalars are encrypted), so nested `create`/`connectOrCreate`/`upsert`/nested `update` under relation keys are visited by construction rather than by path-pattern luck. Every leaf it cannot classify against the schema is a **hard error**, not a passthrough — unknown arg shapes fail closed.
 
 Write-tree coverage (each an explicit visitor case + test): `create.data`, `createMany.data[]`, `update.data`, `updateMany.data`, `upsert.create/update`, nested relation writes (`data.<rel>.create|createMany|update|upsert|connectOrCreate.create`), and `set`/`unset` forms on supported field types.
 
-Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`) recursively, `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, which §7.10 now states normatively per G12; the rewrite target is `findFirst` with equality + re-verify).
+Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`, `.not` (scalar form), `AND`/`OR`/`NOT` arrays recursively, relation filters (`some`/`every`/`none`/`is`/`isNot` — **and the unwrapped to-one form**, where the target's where sits directly under the relation key) recursively, **the filters nested relation writes carry** (`update`/`updateMany`/`upsert`/`connectOrCreate` `where`, `deleteMany`'s payload, and the `connect`/`disconnect`/`delete`/`set` unique inputs — walked exactly as the top-level where is, because the write pass encrypts their payloads and must never touch their filters), `cursor.<field>` (rejected — cursor on randomized ciphertext is meaningless; see §4), and `findUnique.where` naming an encrypted or index field (rejected — Prisma requires a unique column there, and neither randomized ciphertext nor a collision-mandated truncated index can be unique, which §7.10 now states normatively per G12; the rewrite target is `findFirst` with equality + re-verify).
 
 ## 3. Read path
 
 Decryption happens on the awaited result (step 7), not via `result.compute` — computed fields cannot be used in `where`/`orderBy` and cannot replace stored values (`docs/04` §3). The visitor mirrors `include` nesting using the DMMF relation graph. Because `select`/`include` cannot be mutated by extensions (`docs/04` §3, Prisma docs verbatim), there is no hidden-column problem for values (ciphertext lives in the field's own column), but **sibling index columns appear in results**: the read pass strips `*Bidx` fields from returned objects unless `exposeIndexColumns: true`, so application code never accidentally depends on index bytes.
 
-**Re-verification compares under spec §7.5's rule (G19 [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), resolved 2026-08-26):** `normalize(stored)` against `normalize(queried)` under the index's declared normalizer, on the normalizer's output bytes — using the core's public `normalize`, never a reimplementation. The extension MUST document the consequence §7.5 states: on a non-`identity` column an equality filter is equality under that normalizer (a query for `ada@example.com` can return `Ada@Example.com`), and no second, differently-folded equality may be offered — which is the reason `mode: "insensitive"` is on the §5 rejection list rather than being mapped onto the index.
+**Re-verification compares under spec §7.5's rule (G19 [#78](https://github.com/fieldseal-dev/fieldseal-spec/issues/78), resolved 2026-08-26):** `normalize(stored)` against `normalize(queried)` under the index's declared normalizer, on the normalizer's output bytes — using the core's public `normalize`, never a reimplementation. The extension MUST document the consequence §7.5 states: on a non-`identity` column an equality filter is equality under that normalizer (a query for `ada@example.com` can return `Ada@Example.com`), and no second, differently-folded equality may be offered — which is the reason `mode: "insensitive"` is on the §4 rejection list rather than being mapped onto the index.
 
 Read modes: core modes apply as-is; `permissive` fires the extension's `onPlaintextRead` hook with model/field (never the value) per spec §10.3.
 
@@ -105,6 +134,40 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 
 `in:` with a declared index is rewritten to `emailBidx: { in: [bidx(v1), bidx(v2), …] }` — membership is exactly what spec §7.10 supports ("N indexes OR'd"), and it is the one shape the existing library breaks on that this adapter upgrades rather than merely rejects. **Conflict resolved (G13, issue #13, 2026-08-09):** §10.2's Prisma bullet now scopes its MUST — reject `in:` *unless* the adapter rewrites it to the declared blind index with §7.5 re-verification, and reject whenever the rewrite cannot be guaranteed (no declared index, or a filter path the interception surface does not reach). This adapter's rewrite is conformant to §10.2's letter as of that change, so the coverage matrix no longer carries it as a deviation. `contains:`/`startsWith:` stay unconditional rejections, and §10.2 now says explicitly that a §7.9 prefix index is queried through its own declared predicate rather than by rewriting `startsWith:` — do not add that rewrite here.
 
+## 4.1 Declaration checks (the Django §5 analogue)
+
+`docs/12` §5 gives Django a table of `Exxx`/`Wxxx` system checks that run at startup.
+Prisma has no check framework, and this adapter answers the same need **one step
+earlier**, at `prisma generate`, where a schema that cannot be declared correctly never
+produces a client at all. Every problem in a schema is reported in one run, not the first
+one found.
+
+Deliberately **no `Exxx` identifiers.** Those are `django.core.checks` message ids, not
+exception codes, and Django's own *runtime* refusals carry none either. Identity here is
+the message, which must name the site (`Model.field`), the rule, and the fix.
+
+| Refused at `prisma generate` | Why |
+|---|---|
+| No `table_uuid` on a model with an encrypted column | Spec §6.1 binds key derivation to the surrogate; it MUST NOT be derived from a name, because a rename would make every existing row undecryptable |
+| Missing or malformed `column_uuid` | Same |
+| An index naming a column that is not encrypted on the same model | An index sibling with no source indexes nothing |
+| **Two index siblings over one column** | Spec §7.5 (G19): a column has exactly one equality, under its declared normalizer, and an adapter MUST NOT offer a second beside it |
+| A **required** index sibling | Prisma's generated `create` input would force callers to supply a derived value the adapter refuses to accept from them |
+| An index sibling that is not `Bytes` | Spec §7.11 — index bytes are compared, not round-tripped; base64 is not among the permitted representations |
+| A `String` value column without `storage: "base64"`, or `base64` on a `Bytes` column | Raw envelope bytes are not text; base64 on `Bytes` pays the 33% overhead for nothing |
+| An unknown `normalize`, `idf`, `as` or `on_unindexable` | The identifier **is** the definition: an implementation that does not know it cannot derive the same value |
+| A half-specified Argon2 cost | A cost given in one dimension is not a cost |
+| An unterminated or malformed `@fieldseal(...)` | Ignoring it would leave the column unencrypted with nothing raised |
+| `@unique`/`@id` on an encrypted column or sibling, or membership in `@@unique`/`@@id` | Spec §7.10: a randomized envelope makes the constraint never fire; a §7.4-collision-mandated sibling makes it fire on legitimate distinct values — delayed data loss |
+
+The gates that are **not** here are the ones that belong to the core and run at client
+construction against the assembled registry: the §7.4 truncation band, the §7.6
+cardinality gate, the Argon2id minima, and the §7.2 bucket ceremony. A second copy of a
+gate is a copy that can disagree with the one that matters, and `docs/07` §7 records what
+that costs — the Python core had drifted to enforcing *none* of its declaration-time
+gates while `docs/10` §4 specified all of them, unnoticed because the adapter looked like
+it was checking.
+
 ## 5. Tenant context and L4
 
 - Tenant bytes come from either the `tenant` callback (inspecting args — e.g., a `tenantId` scalar present in the write) or an `AsyncLocalStorage` accessor set by request middleware. Both are documented side channels (spec §10 L3 ⚠️ for Prisma). Fail-closed rule as in the Django adapter: tenant-bound columns with no resolvable tenant throw, never silently encrypt tenantless.
@@ -116,13 +179,13 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 |---|---|
 | `create`, `createMany`, `update`, `updateMany`, `upsert`, nested writes | ✅ encrypts + index siblings |
 | `findMany/findFirst/count` with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (the `in:` rewrite is conformant to §10.2 as of G13; no deviation remains) |
-| Backfill (`tools/backfill`, docs/15) | ✅ per-row `update`/batched `updateMany` **through the extension** — traverses the §2 pipeline, asserted by a coverage test **[VERIFY at implementation: this is the proposed path; docs/04 §11 verified only the Django/SQLAlchemy backfill writes]** |
+| Backfill (`tools/backfill`, docs/15) | ✅ per-row `update`/batched `updateMany` **through the extension** — traverses the §2 pipeline. **Confirmed 2026-08-27**: `create` and `updateMany` issued on the extended client both traverse `$allOperations` in full. The obligation to state is that the backfill must hold the **extended** client — the base client bypasses the pipeline silently, which is the failure this row exists to prevent |
 | All §4 shapes | 🛑 throw |
 | `delete`/`deleteMany` by encrypted field | ✅ via index rewrite where declared; 🛑 otherwise |
 | Raw SQL | ⚠️ passthrough + warning (default) / 🛑 throw (`strictRaw`) |
 | Result decryption incl. `include` nesting | ✅ |
 | `groupBy` on non-encrypted fields of a model containing encrypted fields | ✅ untouched |
-| Middleware-order hazard: other extensions registered *after* fieldseal see ciphertext | ⚠️ documented — fieldseal must be the **last** `$extends` so it runs closest to the engine **[VERIFY extension composition order semantics at implementation]** |
+| Middleware-order hazard: other extensions registered *after* fieldseal see ciphertext | ⚠️ documented — fieldseal must be the **last** `$extends` so it runs closest to the engine. **Confirmed 2026-08-27**, and the mechanism is worth stating because "last" reading like "runs last" is exactly backwards: the extension registered **first** is **outermost**, so the one registered last sits innermost, closest to the engine. Pinned by `tests/prisma-private-api.test.ts` so a Prisma change cannot invert it quietly |
 
 ## 7. Test plan
 

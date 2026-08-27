@@ -1,0 +1,53 @@
+{
+  "name": "@fieldseal/prisma",
+  "version": "0.1.0-provisional",
+  "description": "Transparent field-level encryption at rest for Prisma -- fieldseal adapter. Provisional suite only; not independently reviewed; not for production use.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "fieldseal-prisma-generator": "./dist/generator/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "test": "vitest run",
+    "prisma:generate": "prisma generate --schema tests/fixture/schema.prisma"
+  },
+  "//": [
+    "AD-1 (spec §11.3): zero cryptography in this package. The only calls into",
+    "@fieldseal/core are its published operations plus warm(), and the only",
+    "reason any cipher exists in this tree is transitively, through the core.",
+    "A direct crypto dependency here is a conformance failure, not a style",
+    "question -- CI asserts it rather than trusting review."
+  ],
+  "dependencies": {
+    "@fieldseal/core": "file:../../core/typescript"
+  },
+  "peerDependencies": {
+    "@prisma/client": ">=7.10.0 <8"
+  },
+  "devDependencies": {
+    "@prisma/adapter-better-sqlite3": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@prisma/generator-helper": "7.10.0",
+    "@prisma/internals": "^7.10.0",
+    "@types/node": "^24.3.0",
+    "prisma": "7.10.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.0.0"
+  }
+}
