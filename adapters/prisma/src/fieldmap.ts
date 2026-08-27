@@ -97,7 +97,15 @@ export interface RelationDecl {
 
 export interface ModelMap {
   readonly model: string;
-  readonly tableUuid: string;
+  /**
+   * `null` on a model with no declarations of its own. Every model is in the
+   * map, declared or not, because the relation graph must be walkable from
+   * anywhere: a write can reach an encrypted column through a model that
+   * declares nothing (`appointment.create({ data: { patient: { create: … } } })`),
+   * and a map that omits the undeclared model makes that write a silent
+   * plaintext bypass.
+   */
+  readonly tableUuid: string | null;
   readonly encrypted: readonly EncryptedFieldDecl[];
   readonly indexes: readonly IndexFieldDecl[];
   readonly relations: readonly RelationDecl[];
@@ -112,12 +120,17 @@ export interface ModelMap {
  * quietly treated as plaintext.
  */
 export interface FieldMap {
-  readonly version: 1;
+  readonly version: 2;
   readonly generator: string;
   readonly models: readonly ModelMap[];
 }
 
-export const FIELD_MAP_VERSION = 1 as const;
+// Version 2: every model in the schema is in the map (undeclared ones as
+// relation-only entries with `tableUuid: null`), and the extension refuses an
+// operation on a model the map does not carry. A version-1 map omitted
+// undeclared models, which made any of them a silent bypass around the
+// pipeline for the declared models they relate to.
+export const FIELD_MAP_VERSION = 2 as const;
 
 /** Indexed view of the map, built once at extension construction. */
 export interface ResolvedMap {

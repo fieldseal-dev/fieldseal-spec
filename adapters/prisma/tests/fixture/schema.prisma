@@ -1,9 +1,11 @@
 // Test fixture schema.
 //
-// Covers, deliberately: an indexed encrypted column, an unindexed one, a
-// non-text logical value, a tenant-bound column, a bucketed column, a plaintext
-// column on a model that also has encrypted ones, and both directions of a
-// relation so nested writes and `include` nesting are exercised.
+// Covers, deliberately: an indexed encrypted column, an unindexed one, every
+// non-text logical value type, a tenant-bound column, a bucketed column, a
+// plaintext column on a model that also has encrypted ones, both directions of
+// a relation so nested writes and `include` nesting are exercised, and a model
+// with no declarations at all (Referral) so the walk *through* an undeclared
+// model is exercised -- the topology every real schema has.
 
 generator client {
   provider = "prisma-client"
@@ -29,10 +31,29 @@ model Patient {
   age       Bytes
   /// @fieldseal(encrypted, storage: "base64", column_uuid: "018f3c2e-0000-7000-8000-000000000007")
   nickname  String?
+  /// @fieldseal(encrypted, as: "datetime", column_uuid: "018f3c2e-0000-7000-8000-000000000008")
+  born      Bytes?
+  /// @fieldseal(encrypted, as: "boolean", column_uuid: "018f3c2e-0000-7000-8000-000000000009")
+  active    Bytes?
+  /// @fieldseal(encrypted, as: "float", column_uuid: "018f3c2e-0000-7000-8000-00000000000a")
+  score     Bytes?
+  /// @fieldseal(encrypted, as: "bytes", column_uuid: "018f3c2e-0000-7000-8000-00000000000b")
+  blob      Bytes?
   plainName String
   visits    Visit[]
+  referrals Referral[]
 
   @@index([emailBidx])
+}
+
+// Deliberately NO @fieldseal declarations: this model exists so the tests can
+// prove that writes, reads and filters that reach Patient *through* it still
+// traverse the pipeline. Dropping it from the field map made it a bypass.
+model Referral {
+  id        String  @id @default(uuid())
+  source    String
+  patient   Patient @relation(fields: [patientId], references: [id])
+  patientId String
 }
 
 /// @fieldseal(table_uuid: "018f3c2e-0000-7000-8000-0000000000bb")

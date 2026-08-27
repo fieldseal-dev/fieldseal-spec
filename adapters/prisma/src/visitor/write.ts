@@ -80,7 +80,13 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
     const label = `${model.model}.${enc.field}`;
     const written = unwrapSet(row[enc.field], label);
 
-    if (written === null || written === undefined) {
+    // Prisma's contract for `undefined` is "do not touch this field" -- so the
+    // sibling is not touched either. Writing NULL to it here would desync the
+    // index from a ciphertext that stays behind, and every later lookup for
+    // the row would miss.
+    if (written === undefined) continue;
+
+    if (written === null) {
       // NULL is an absence, not a value: it stays NULL, and the sibling with
       // it, so `where: { field: null }` keeps working as plain SQL.
       const idx = model.indexBySource.get(enc.field);
@@ -105,7 +111,19 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
     const target = ctx.map.byModel.get(rel.model);
     if (target === undefined) continue;
     for (const [nestedOp, payload] of Object.entries(value)) {
-      if (nestedOp === "connect" || nestedOp === "disconnect" || nestedOp === "delete") continue;
+      // Link and delete shapes write no ciphertext. Their payloads are unique
+      // inputs or filters over existing rows -- `set` replaces links by unique
+      // input, `deleteMany`'s payload IS a where -- and the reject pass has
+      // already walked every one of them for encrypted columns.
+      if (
+        nestedOp === "connect" ||
+        nestedOp === "disconnect" ||
+        nestedOp === "delete" ||
+        nestedOp === "deleteMany" ||
+        nestedOp === "set"
+      ) {
+        continue;
+      }
       if (nestedOp === "connectOrCreate") {
         for (const item of asArray(payload)) {
           if (isRecord(item)) encryptRow(target, item["create"], ctx);
@@ -128,7 +146,7 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
         }
         continue;
       }
-      if (nestedOp === "create" || nestedOp === "createMany" || nestedOp === "set") {
+      if (nestedOp === "create" || nestedOp === "createMany") {
         for (const item of asArray(payload)) {
           if (isRecord(item) && Array.isArray(item["data"])) {
             for (const r of item["data"]) encryptRow(target, r, ctx);
@@ -168,12 +186,19 @@ function deriveIndex(
   }
 }
 
-/** `update` accepts `{ set: value }` as well as a bare value. */
+/**
+ * `update` accepts `{ set: value }` as well as a bare value.
+ *
+ * Only a *plain* object can be the `{ set }` / atomic-operation wrapper.
+ * Anything with a prototype of its own -- a `Date` for `as: "datetime"`, a
+ * caller's value class -- is a value, and if it is the wrong value the codec
+ * refuses it with the type it actually saw, which is the honest error.
+ */
 function unwrapSet(value: unknown, label: string): unknown {
-  if (!isRecord(value)) return value;
+  if (!isPlainRecord(value)) return value;
   const keys = Object.keys(value);
   if (keys.length === 1 && keys[0] === "set") return value["set"];
-  if (value instanceof Uint8Array) return value;
+  if (keys.length === 0) return value; // let the codec name the mismatch
   // `increment`, `multiply`, `push`, ... all ask the database to compute a new
   // value from the stored one, which is an envelope.
   throw new FieldsealNotSupported(
@@ -183,6 +208,12 @@ function unwrapSet(value: unknown, label: string): unknown {
       `§10.2). Read the row, compute in application code, and write the value ` +
       `back with \`set\`.`,
   );
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

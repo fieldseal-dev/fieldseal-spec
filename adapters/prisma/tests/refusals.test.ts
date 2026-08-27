@@ -14,8 +14,9 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { FieldsealNotSupported } from "../src/index.ts";
-import { clearDb, loose, makeClient } from "./helpers.ts";
+import { FieldsealNotSupported, fieldsealExtension } from "../src/index.ts";
+import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
+import { clearDb, keyProvider, loose, makeClient, SUITE } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
 
@@ -285,6 +286,185 @@ describe("G20: ordering, grouping, distinct and aggregates over ciphertext", () 
   it("allows _count over rows, which counts rows rather than reading bytes", async () => {
     await seed();
     expect(await prisma.patient.count()).toBe(2);
+  });
+});
+
+// -------------------------------------------- nested writes carry filters ----
+
+describe("filters inside nested relation writes", () => {
+  const withVisit = async () => {
+    const row = await lp["patient"]!["create"]!({
+      data: {
+        email: "a@x.com",
+        note: "n",
+        age: 1,
+        plainName: "A",
+        visits: { create: [{ reason: "checkup" }] },
+      },
+    });
+    return row.id as string;
+  };
+
+  it("measures why: the unextended client serves the nested filter and matches nothing", async () => {
+    const id = await withVisit();
+    // The filter compares a plaintext operand against an envelope column:
+    // valid SQL, zero rows touched, no error -- the docs/04 §3 class, one
+    // nesting level down where the top-level walk cannot see it.
+    await base.patient.update({
+      where: { id },
+      data: {
+        visits: {
+          updateMany: {
+            where: { reason: Buffer.from("checkup") },
+            data: { reason: Buffer.from("changed") },
+          },
+        },
+      },
+    });
+    const visit = await prisma.visit.findFirst({ where: { patientId: id } });
+    expect(visit?.reason).toBe("checkup"); // silently unchanged
+  });
+
+  it("refuses a nested updateMany.where naming an encrypted column", async () => {
+    const id = await withVisit();
+    await expect(
+      lp["patient"]!["update"]!({
+        where: { id },
+        data: {
+          visits: {
+            updateMany: { where: { reason: "checkup" }, data: { reason: "changed" } },
+          },
+        },
+      }),
+    ).rejects.toThrow(FieldsealNotSupported);
+  });
+
+  it("refuses a nested deleteMany whose payload filters an encrypted column", async () => {
+    const id = await withVisit();
+    await expect(
+      lp["patient"]!["update"]!({
+        where: { id },
+        data: { visits: { deleteMany: { reason: { contains: "check" } } } },
+      }),
+    ).rejects.toThrow(FieldsealNotSupported);
+  });
+
+  it("serves a nested deleteMany over plaintext columns -- it writes no ciphertext", async () => {
+    const id = await withVisit();
+    await lp["patient"]!["update"]!({
+      where: { id },
+      data: { visits: { deleteMany: {} } },
+    });
+    expect(await prisma.visit.count({ where: { patientId: id } })).toBe(0);
+  });
+
+  it("serves nested update when its where stays off encrypted columns", async () => {
+    const id = await withVisit();
+    const visit = await prisma.visit.findFirst({ where: { patientId: id } });
+    await lp["patient"]!["update"]!({
+      where: { id },
+      data: {
+        visits: { update: { where: { id: visit!.id }, data: { reason: "changed" } } },
+      },
+    });
+    const back = await prisma.visit.findFirst({ where: { patientId: id } });
+    expect(back?.reason).toBe("changed");
+  });
+});
+
+// ------------------------------------ shapes that are exact over envelopes ----
+
+describe("exact shapes stay served", () => {
+  it("serves literal-NULL equality -- the write path guarantees NULL stays NULL", async () => {
+    await lp["patient"]!["create"]!({
+      data: { email: "a@x.com", note: "n", age: 1, plainName: "A", nickname: null },
+    });
+    await lp["patient"]!["create"]!({
+      data: { email: "b@x.com", note: "n", age: 2, plainName: "B", nickname: "Bee" },
+    });
+    const noNick = (await lp["patient"]!["findMany"]!({
+      where: { nickname: null },
+    })) as Array<{ plainName: string }>;
+    expect(noNick.map((r) => r.plainName)).toEqual(["A"]);
+
+    const viaEquals = (await lp["patient"]!["findMany"]!({
+      where: { nickname: { equals: null } },
+    })) as Array<{ plainName: string }>;
+    expect(viaEquals.map((r) => r.plainName)).toEqual(["A"]);
+
+    const notNull = (await lp["patient"]!["findMany"]!({
+      where: { nickname: { not: null } },
+    })) as Array<{ plainName: string }>;
+    expect(notNull.map((r) => r.plainName)).toEqual(["B"]);
+  });
+
+  it("serves _count over an encrypted field -- it counts non-NULL rows, reads no bytes", async () => {
+    await lp["patient"]!["create"]!({
+      data: { email: "a@x.com", note: "n", age: 1, plainName: "A", nickname: "Ada" },
+    });
+    await lp["patient"]!["create"]!({
+      data: { email: "b@x.com", note: "n", age: 2, plainName: "B", nickname: null },
+    });
+    const agg = (await lp["patient"]!["aggregate"]!({
+      _count: { email: true, nickname: true },
+    } as never)) as { _count: { email: number; nickname: number } };
+    expect(agg._count.email).toBe(2);
+    expect(agg._count.nickname).toBe(1); // exact: NULL stayed NULL on write
+  });
+
+  it("serves distinct on the index sibling, which deduplicates by bucket", async () => {
+    // The documented alternative to `distinct` on the value column. The caveat
+    // is measured here: one value -> one bucket -> one row back, and a §7.4
+    // collision would merge *distinct* values the same way. A filter-grade
+    // answer, not an exact one, and the README matrix says so.
+    await lp["patient"]!["create"]!({
+      data: { email: "same@x.com", note: "n", age: 1, plainName: "A" },
+    });
+    await lp["patient"]!["create"]!({
+      data: { email: "same@x.com", note: "n", age: 2, plainName: "B" },
+    });
+    const rows = (await lp["patient"]!["findMany"]!({
+      distinct: ["emailBidx"],
+    })) as unknown[];
+    expect(rows).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------- the undeclared model ----
+
+describe("models with no declarations of their own", () => {
+  it("refuses a filter that reaches an encrypted column through one", async () => {
+    await expect(
+      lp["referral"]!["findMany"]!({ where: { patient: { email: "a@x.com" } } }),
+    ).rejects.toThrow(FieldsealNotSupported);
+  });
+
+  it("refuses an operation on a model the field map does not carry", async () => {
+    // A stale or edited map: the model exists in the client but not the map.
+    // Passing it through would reopen the undeclared-model bypass, so it is a
+    // configuration error instead.
+    const ext = fieldsealExtension({
+      fieldMap: {
+        ...fieldsealFieldMap,
+        models: fieldsealFieldMap.models.filter((m) => m.model !== "Referral"),
+      },
+      keyProvider: keyProvider(),
+      allowedSuites: [SUITE],
+      writeSuite: SUITE,
+      armProvisionalSuites: true,
+      unindexableOverride: [
+        { model: "Person", field: "legalName", reason: "test", approvedBy: "test", date: "2026-08-27" },
+      ],
+      onWarning: () => {},
+    });
+    await expect(
+      ext.query.$allOperations({
+        model: "Referral",
+        operation: "findMany",
+        args: {},
+        query: async () => [],
+      }),
+    ).rejects.toThrow(/not in the field map/);
   });
 });
 

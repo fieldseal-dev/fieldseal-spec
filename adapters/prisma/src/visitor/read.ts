@@ -17,6 +17,7 @@ import type { Fieldseal } from "@fieldseal/core";
 
 import { fromBytes, fromColumn } from "../codec.ts";
 import { buildContext, type ContextOptions } from "../context.ts";
+import { FieldsealConfigurationError } from "../errors.ts";
 import type { ResolvedMap, ResolvedModel } from "../fieldmap.ts";
 
 export interface ReadCtx {
@@ -43,8 +44,32 @@ export function applyReads(model: ResolvedModel, result: unknown, ctx: ReadCtx):
     const stored = result[enc.field];
     if (stored === null || stored === undefined) continue;
 
-    const envelope = fromColumn(stored, enc);
-    if (envelope === null) continue;
+    let envelope = fromColumn(stored, enc);
+    if (envelope === null) {
+      // The stored value's JS type contradicts the declaration (raw bytes on a
+      // base64 column, or the reverse). Passing it through would hand the
+      // caller the stored representation as if it were the value -- in every
+      // read mode, including strict. Misconfiguration is refused, not served.
+      throw new FieldsealConfigurationError(
+        `${model.model}.${enc.field}: the stored value is ` +
+          `${stored instanceof Uint8Array ? "raw bytes" : `a ${typeof stored}`} but ` +
+          `the declaration says storage: "${enc.storage}". Either the schema's ` +
+          `storage: annotation changed after rows were written, or the column ` +
+          `holds data this adapter did not write. Fix the declaration, or ` +
+          `migrate the column; the mismatch is refused rather than returned.`,
+      );
+    }
+
+    // A base64 column holding a legacy *plaintext* row -- the migration case
+    // base64 storage exists for -- must reach the core as the stored string's
+    // own bytes. Decoding it as base64 first would mangle the value before the
+    // core's read-mode policy (spec §10.3) ever sees it: strict must raise
+    // NOT_CIPHERTEXT and permissive must return the actual value, and both
+    // judgements are the core's to make, not this visitor's.
+    if (enc.storage === "base64" && !ctx.client.isCiphertext(envelope)) {
+      // fromColumn already proved `stored` is a string on a base64 column.
+      envelope = Buffer.from(stored as string, "utf8");
+    }
 
     // In `permissive`, the core returns a plaintext value unchanged rather than
     // raising; the hook reports model and field, never the value (spec §10.3).

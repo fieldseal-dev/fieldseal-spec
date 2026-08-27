@@ -42,6 +42,8 @@ export interface FieldInput {
   readonly kind: string;
   readonly isList: boolean;
   readonly isRequired: boolean;
+  readonly isUnique?: boolean | undefined;
+  readonly isId?: boolean | undefined;
   readonly relationName?: string | undefined;
   readonly documentation?: string | null | undefined;
 }
@@ -50,6 +52,10 @@ export interface ModelInput {
   readonly name: string;
   readonly documentation?: string | null | undefined;
   readonly fields: readonly FieldInput[];
+  /** `@@unique([...])` groups, as the DMMF reports them. */
+  readonly uniqueFields?: readonly (readonly string[])[] | undefined;
+  /** `@@id([...])`, when the model declares a compound primary key. */
+  readonly primaryKey?: { readonly fields: readonly string[] } | null | undefined;
 }
 
 /**
@@ -57,8 +63,14 @@ export interface ModelInput {
  * with four mistakes reports four -- the property that makes Django's check
  * framework worth having, and the reason this returns a list rather than
  * failing at the first bad field.
+ *
+ * A model with no declarations resolves to a relation-only entry
+ * (`tableUuid: null`, nothing encrypted) rather than being dropped: the
+ * relation graph must be walkable from *every* model, because a write can
+ * reach an encrypted column through a model that declares nothing, and a map
+ * that omits it turns that write into a silent plaintext bypass.
  */
-export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap | null {
+export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap {
   const problems: string[] = [];
   const site = (field?: string): Site =>
     field === undefined ? { model: model.name } : { model: model.name, field };
@@ -108,11 +120,12 @@ export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap | null
     }
   }
 
-  // A model that declares nothing is not this adapter's business, even if it
-  // carries some other doc comment.
+  // A model that declares nothing still contributes its relation edges: the
+  // visitors must be able to walk *through* it to the declared models it
+  // touches. Everything else about it is left alone.
   if (!sawDeclaration) {
     if (problems.length > 0) throw new FieldsealConfigurationError(problems.join("\n"));
-    return null;
+    return { model: model.name, tableUuid: null, encrypted: [], indexes: [], relations };
   }
 
   const tableUuid = collect(() => requiredUuid(modelAnns, "table_uuid", site()));
@@ -145,6 +158,25 @@ export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap | null
     }
     seenSources.set(decl.source, decl.field);
     indexes.push(decl);
+  }
+
+  // Compound uniqueness is the same hazard as @unique, spread across columns:
+  // an encrypted member randomizes the tuple (the constraint never fires), a
+  // sibling member makes §7.4 collisions violate it (legitimate rows refused).
+  const constrained = new Set([...encryptedNames, ...indexes.map((i) => i.field)]);
+  const groups: Array<readonly string[]> = [...(model.uniqueFields ?? [])];
+  if (model.primaryKey != null) groups.push(model.primaryKey.fields);
+  for (const group of groups) {
+    const hit = group.find((name) => constrained.has(name));
+    if (hit !== undefined) {
+      problems.push(
+        `${siteLabel(site(hit))}: "${hit}" is part of a @@unique or @@id ` +
+          `constraint, and neither an encrypted column nor a blind-index ` +
+          `sibling may be (spec §7.10). A randomized envelope makes the tuple ` +
+          `never repeat, so the constraint never fires; a truncated index's ` +
+          `mandated §7.4 collisions make it fire on legitimate distinct values.`,
+      );
+    }
   }
 
   if (problems.length > 0) throw new FieldsealConfigurationError(problems.join("\n"));
@@ -182,6 +214,16 @@ function encryptedField(ann: Annotation, f: FieldInput, site: Site): EncryptedFi
       `${siteLabel(site)}: storage: "base64" on a Bytes column would base64 the ` +
         `envelope and then store the ASCII as bytes, paying the 33% overhead ` +
         `for nothing. Drop the storage option, or make the column String.`,
+    );
+  }
+  if (f.isUnique === true || f.isId === true) {
+    throw new FieldsealConfigurationError(
+      `${siteLabel(site)}: an encrypted column cannot be @unique or @id (spec ` +
+        `§7.10). The suite is randomized -- every write of one value stores a ` +
+        `different envelope (spec §4.4) -- so the constraint never fires and ` +
+        `never helps, while Prisma generates a typed findUnique surface for a ` +
+        `query the adapter must refuse. Drop the attribute; equality lives on ` +
+        `the blind-index sibling, as a filter (spec §7.5).`,
     );
   }
   // `as:` is the *logical* type. The Prisma column type is the storage type --
@@ -232,6 +274,15 @@ function indexField(ann: Annotation, f: FieldInput, site: Site): IndexFieldDecl 
         `non-optional column, so a required sibling makes callers pass the one ` +
         `value this adapter refuses to accept from them (it is derived). A NULL ` +
         `value also has no index, so the column must accept NULL regardless.`,
+    );
+  }
+  if (f.isUnique === true || f.isId === true) {
+    throw new FieldsealConfigurationError(
+      `${siteLabel(site)}: a blind-index sibling cannot be @unique or @id. ` +
+        `truncate_bits must sit inside the spec §7.4 band, which *mandates* ` +
+        `collisions, so a UNIQUE constraint here starts rejecting legitimate ` +
+        `distinct values as the table fills -- a delayed data-loss bug, and ` +
+        `spec §7.10 forbids it outright. Use a plain @@index.`,
     );
   }
 

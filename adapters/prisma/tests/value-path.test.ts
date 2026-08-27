@@ -4,8 +4,15 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { FieldsealNotSupported, tenantScope } from "../src/index.ts";
-import { clearDb, loose, makeClient, rawColumn } from "./helpers.ts";
+import {
+  FieldsealConfigurationError,
+  FieldsealNotSupported,
+  FieldsealUnindexable,
+  fieldsealExtension,
+  tenantScope,
+} from "../src/index.ts";
+import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
+import { clearDb, keyProvider, loose, makeClient, rawColumn, SUITE } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
 const lp = loose(prisma);
@@ -122,6 +129,191 @@ describe("write then read", () => {
 
     const raw = await rawColumn(base, "Visit", "reason", withVisits!.visits[0]!.id);
     expect(Buffer.from(raw as Uint8Array).toString("utf8")).not.toContain("checkup");
+  });
+});
+
+describe("undefined in a payload", () => {
+  it("touches nothing: not the value, and not the sibling", async () => {
+    // Prisma's contract for `undefined` is "do not touch this field". Reading
+    // it as NULL would null the sibling while the ciphertext stays -- a
+    // desynced index whose every later lookup silently misses.
+    const row = await lp["patient"]!["create"]!({ data: patient() });
+    const sibBefore = Buffer.from(
+      (await rawColumn(base, "Patient", "emailBidx", row.id)) as Uint8Array,
+    );
+    const envBefore = Buffer.from(
+      (await rawColumn(base, "Patient", "email", row.id)) as Uint8Array,
+    );
+
+    await lp["patient"]!["update"]!({
+      where: { id: row.id },
+      data: { email: undefined, note: "still updates other fields" },
+    });
+
+    const sibAfter = Buffer.from(
+      (await rawColumn(base, "Patient", "emailBidx", row.id)) as Uint8Array,
+    );
+    const envAfter = Buffer.from(
+      (await rawColumn(base, "Patient", "email", row.id)) as Uint8Array,
+    );
+    expect(sibAfter.equals(sibBefore)).toBe(true);
+    expect(envAfter.equals(envBefore)).toBe(true);
+    const back = await prisma.patient.findUnique({ where: { id: row.id } });
+    expect(back?.email).toBe("ada@example.com");
+    expect(back?.note).toBe("still updates other fields");
+  });
+});
+
+describe("every declared `as:` type round-trips as itself", () => {
+  it("int comes back as a number", async () => {
+    const row = await lp["patient"]!["create"]!({ data: patient({ age: 36 }) });
+    const back = await prisma.patient.findUnique({ where: { id: row.id } });
+    expect(back?.age).toBe(36);
+  });
+
+  it("datetime accepts a bare Date and returns a Date", async () => {
+    // The natural write form -- not `{ set: … }`. A Date is a value, not an
+    // atomic-operation wrapper, and the visitor must not confuse the two.
+    const born = new Date("1990-12-02T10:20:30.000Z");
+    const row = await lp["patient"]!["create"]!({ data: patient({ born }) });
+    const back = await prisma.patient.findUnique({ where: { id: row.id } });
+    expect(back?.born).toBeInstanceOf(Date);
+    expect((back?.born as unknown as Date).getTime()).toBe(born.getTime());
+  });
+
+  it("boolean and float come back as themselves", async () => {
+    const row = await lp["patient"]!["create"]!({
+      data: patient({ active: true, score: 1.5 }),
+    });
+    const back = await prisma.patient.findUnique({ where: { id: row.id } });
+    expect(back?.active).toBe(true);
+    expect(back?.score).toBe(1.5);
+  });
+
+  it("bytes come back byte-for-byte", async () => {
+    const blob = Buffer.from([0, 1, 2, 254, 255]);
+    const row = await lp["patient"]!["create"]!({ data: patient({ blob }) });
+    const back = await prisma.patient.findUnique({ where: { id: row.id } });
+    expect(Buffer.from(back?.blob as Uint8Array).equals(blob)).toBe(true);
+  });
+
+  it("a wrong-typed object gets the codec's refusal, naming the type it saw", async () => {
+    // A Date written to an `as: "string"` column is a type mismatch, and the
+    // error must say so -- not misread the Date as an arithmetic update.
+    await expect(
+      lp["patient"]!["create"]!({ data: patient({ note: new Date() }) }),
+    ).rejects.toThrow(/declared `as: "string"`/);
+  });
+});
+
+describe("reaching Patient through the undeclared Referral model", () => {
+  it("a nested write is still encrypted", async () => {
+    const ref = await lp["referral"]!["create"]!({
+      data: { source: "web", patient: { create: patient() } },
+    });
+    const withPatient = await prisma.referral.findUnique({
+      where: { id: ref.id },
+      include: { patient: true },
+    });
+    const raw = await rawColumn(base, "Patient", "email", withPatient!.patient.id);
+    expect(Buffer.from(raw as Uint8Array).toString("utf8")).not.toContain("ada@example.com");
+  });
+
+  it("an included read is still decrypted", async () => {
+    const ref = await lp["referral"]!["create"]!({
+      data: { source: "web", patient: { create: patient() } },
+    });
+    const back = await prisma.referral.findUnique({
+      where: { id: ref.id },
+      include: { patient: true },
+    });
+    expect(back?.patient.email).toBe("ada@example.com");
+  });
+});
+
+describe("a stored value that is not an envelope (spec §10.3)", () => {
+  const plantLegacyNickname = async (): Promise<string> => {
+    const row = await lp["patient"]!["create"]!({ data: patient() });
+    // A pre-migration row: the *plaintext* sits in the base64 column.
+    await base.$executeRawUnsafe(
+      `UPDATE "Patient" SET "nickname" = ? WHERE "id" = ?`,
+      "Ada",
+      row.id,
+    );
+    return row.id as string;
+  };
+
+  it("strict mode raises the core's NOT_CIPHERTEXT, never returns it", async () => {
+    const id = await plantLegacyNickname();
+    await expect(prisma.patient.findUnique({ where: { id } })).rejects.toThrow(
+      /ciphertext|envelope/i,
+    );
+  });
+
+  it("permissive mode returns the actual legacy value, not its base64 decode", async () => {
+    // The migration scenario base64 storage exists for. Decoding the stored
+    // string as base64 first would hand back mojibake while the hook reports a
+    // clean plaintext read.
+    const id = await plantLegacyNickname();
+    const seen: string[] = [];
+    const { base: b2, prisma: permissive } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: (model, field) => seen.push(`${model}.${field}`),
+    });
+    const back = await permissive.patient.findUnique({ where: { id } });
+    expect(back?.nickname).toBe("Ada");
+    expect(seen).toContain("Patient.nickname");
+    await b2.$disconnect();
+  });
+
+  it("a stored type that contradicts the declaration is a configuration error", async () => {
+    // Prisma's own row deserializer refuses a BLOB in a TEXT column (P2023)
+    // before the read pass ever sees it, so on a real query this branch is
+    // defence in depth. It is still asserted directly, because the read pass
+    // must not depend on a Prisma implementation detail to avoid handing back
+    // the stored representation as if it were the value.
+    const ext = fieldsealExtension({
+      fieldMap: fieldsealFieldMap,
+      keyProvider: keyProvider(),
+      allowedSuites: [SUITE],
+      writeSuite: SUITE,
+      armProvisionalSuites: true,
+      unindexableOverride: [
+        { model: "Person", field: "legalName", reason: "test", approvedBy: "test", date: "2026-08-27" },
+      ],
+      onWarning: () => {},
+    });
+    await expect(
+      ext.query.$allOperations({
+        model: "Patient",
+        operation: "findUnique",
+        args: { where: { id: "x" } },
+        query: async () => ({ id: "x", nickname: Buffer.from([1, 2, 3]) }),
+      }),
+    ).rejects.toThrow(FieldsealConfigurationError);
+  });
+});
+
+describe("unindexable values (docs/09 §7.2)", () => {
+  it("refuse mode raises FieldsealUnindexable carrying the code point and offset", async () => {
+    // U+0378 is unassigned in every published Unicode version.
+    const err = await lp["patient"]!["create"]!({
+      data: patient({ email: "a͸@example.com" }),
+    }).then(
+      () => null,
+      (e) => e as FieldsealUnindexable,
+    );
+    expect(err).toBeInstanceOf(FieldsealUnindexable);
+    expect(err?.detail.codePoint).toBe("U+0378");
+    expect(err?.message).toMatch(/cannot index yet/);
+  });
+
+  it("bucket mode stores the real value and derives the reserved marker", async () => {
+    const row = await lp["person"]!["create"]!({ data: { legalName: "X͸Y" } });
+    const back = await prisma.person.findUnique({ where: { id: row.id } });
+    expect(back?.legalName).toBe("X͸Y"); // encrypt does not normalize
+    const sibling = await rawColumn(base, "Person", "legalNameBidx", row.id);
+    expect(sibling).not.toBeNull(); // the §7.2 marker's index, not the value's
   });
 });
 

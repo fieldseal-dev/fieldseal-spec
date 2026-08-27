@@ -72,6 +72,16 @@ export function buildContext(
   operation: string,
   opts: ContextOptions,
 ): FieldContext {
+  // Only models with declarations reach here, and the generator refuses a
+  // declared model without a table_uuid; a null here is an edited or stale map.
+  if (model.tableUuid === null) {
+    throw new FieldsealConfigurationError(
+      `fieldseal: ${model.model}.${field.field} is declared encrypted but the ` +
+        `field map carries no table_uuid for ${model.model}. The generator ` +
+        `emits both together, so the map is stale or was edited -- re-run ` +
+        `\`prisma generate\`.`,
+    );
+  }
   const tenant = field.tenantBound
     ? requireTenant(model, field, args, operation, opts)
     : null;

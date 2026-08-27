@@ -26,8 +26,11 @@ export function buildFieldMap(datamodel: Datamodel, generator: string): FieldMap
   const problems: string[] = [];
   for (const m of datamodel.models) {
     try {
-      const resolved = resolveModel(m, parseAnnotations);
-      if (resolved !== null) models.push(resolved);
+      // Every model is emitted, declared or not: an undeclared model still
+      // carries relation edges the visitors must walk, and a model missing
+      // from the map is refused at runtime as staleness rather than passed
+      // through (the bypass a dropped model used to be).
+      models.push(resolveModel(m, parseAnnotations));
     } catch (e) {
       problems.push(e instanceof Error ? e.message : String(e));
     }
