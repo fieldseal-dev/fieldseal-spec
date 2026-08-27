@@ -18,7 +18,7 @@ import type { Fieldseal } from "@fieldseal/core";
 import { fromBytes, fromColumn } from "../codec.ts";
 import { buildContext, type ContextOptions } from "../context.ts";
 import { FieldsealConfigurationError } from "../errors.ts";
-import type { ResolvedMap, ResolvedModel } from "../fieldmap.ts";
+import { relationTarget, type ResolvedMap, type ResolvedModel } from "../fieldmap.ts";
 
 export interface ReadCtx {
   readonly client: Fieldseal;
@@ -89,11 +89,13 @@ export function applyReads(model: ResolvedModel, result: unknown, ctx: ReadCtx):
     for (const idx of model.indexes) delete result[idx.field];
   }
 
+  // A relation target the map does not carry is refused, not skipped: only a
+  // stale or edited map can miss, and skipping would hand the caller raw
+  // envelope bytes for that model's columns as if they were values.
   for (const rel of model.relations) {
     const nested = result[rel.field];
     if (nested === null || nested === undefined) continue;
-    const target = ctx.map.byModel.get(rel.model);
-    if (target !== undefined) applyReads(target, nested, ctx);
+    applyReads(relationTarget(ctx.map, model, rel), nested, ctx);
   }
 
   return result;
