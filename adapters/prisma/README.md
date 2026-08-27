@@ -227,6 +227,10 @@ Three caveats:
   returns a lazy promise that dispatches nothing until something awaits it, so
   a callback that merely *constructs* a promise and returns it unawaited would
   escape the scope. `candidateScope` awaits inside for exactly this reason.
+  The boundary is dispatch, not construction — which also means a promise
+  constructed *before* the scope but first awaited *inside* it dispatches
+  inside and is served at bucket semantics (measured). Construct the operation
+  inside the callback, and nowhere else.
 - **It does not lift everything.** Ordering, grouping, `DISTINCT` and
   byte-reading aggregates over an encrypted column stay refused (G20) — bucket
   semantics are a meaningful thing to accept, ciphertext order is not. Nor does
@@ -403,7 +407,7 @@ npm run build                    # dist/, and the generator bin
 npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma db push               # the fixture SQLite database
-npm test                         # 205 tests
+npm test                         # 209 tests
 npm run typecheck
 ```
 

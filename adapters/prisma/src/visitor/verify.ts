@@ -38,8 +38,11 @@ import { bytesOf, hex, normalizeOrNull, type Obligation, operandOf } from "./rew
 /**
  * Drop every candidate row that does not hold one of the queried values.
  *
- * Returns the result to hand back to the caller: a new array at the top level,
- * with nested relation arrays filtered in place.
+ * Returns the result to hand back to the caller. The mutation is deliberately
+ * asymmetric: a **new** array at the top level, while nested relation arrays
+ * are replaced on their parent row objects **in place** -- so the input tree is
+ * not left untouched. The extension owns the result at this point; nothing
+ * else holds a reference.
  */
 export function verifyResult(result: unknown, obligations: readonly Obligation[]): unknown {
   const top = obligations.filter((o) => o.resultPath.length === 0);
@@ -61,14 +64,24 @@ export function verifyResult(result: unknown, obligations: readonly Obligation[]
     }
     rows = rows.filter((row) => matchesAll(row, top));
   }
-  for (const o of nested) pruneNested(rows, o, 0);
+  // Obligations sharing a result path are discharged together, so that the
+  // projection check in `matchesAll` sees all of them per row (see below).
+  const groups = new Map<string, Obligation[]>();
+  for (const o of nested) {
+    const key = JSON.stringify(o.resultPath);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [o]);
+    else group.push(o);
+  }
+  for (const group of groups.values()) pruneNested(rows, group, 0);
   return rows;
 }
 
-/** Walk `resultPath` and filter the relation array it names. */
-function pruneNested(node: unknown, o: Obligation, depth: number): void {
+/** Walk the shared `resultPath` and filter the relation array it names. */
+function pruneNested(node: unknown, group: readonly Obligation[], depth: number): void {
+  const o = group[0]!;
   if (Array.isArray(node)) {
-    for (const row of node) pruneNested(row, o, depth);
+    for (const row of node) pruneNested(row, group, depth);
     return;
   }
   if (!isRecord(node)) return;
@@ -76,7 +89,7 @@ function pruneNested(node: unknown, o: Obligation, depth: number): void {
   const child = node[key];
   if (child === null || child === undefined) return;
   if (depth < o.resultPath.length - 1) {
-    pruneNested(child, o, depth + 1);
+    pruneNested(child, group, depth + 1);
     return;
   }
   if (!Array.isArray(child)) {
@@ -90,33 +103,43 @@ function pruneNested(node: unknown, o: Obligation, depth: number): void {
         `adapter refuses rather than returning the rows unchecked.`,
     );
   }
-  node[key] = child.filter((row) => matchesOne(row, o));
+  node[key] = child.filter((row) => matchesAll(row, group));
 }
 
 function matchesAll(row: unknown, obligations: readonly Obligation[]): boolean {
+  if (!isRecord(row)) return false;
+  // Every obligation's column-presence is checked before any value comparison.
+  // Otherwise the projection error would be data-dependent: a row dropped for
+  // a mismatch on an earlier obligation would skip a later obligation's
+  // missing-column throw, so the same projection mistake would yield an empty
+  // result on one dataset and this error on another. (Never an unverified row
+  // either way -- a row that skips the check was excluded for a real mismatch
+  // -- but the error contract should not depend on what the bucket held.)
+  for (const o of obligations) assertComparable(row, o);
   for (const o of obligations) {
-    if (!matchesOne(row, o)) return false;
+    if (!holdsTarget(row, o)) return false;
   }
   return true;
 }
 
-function matchesOne(row: unknown, o: Obligation): boolean {
-  if (!isRecord(row)) return false;
-  if (!(o.field in row)) {
-    throw new FieldsealNotSupported(
-      `${o.model}.${o.field}: this query filtered on the column's blind index, ` +
-        `and spec §7.5 requires the candidate rows to be decrypted and compared ` +
-        `before they are treated as results -- but the column is not in the ` +
-        `returned rows, so there is nothing to compare. Something projected it ` +
-        `away: a \`select\` that does not name it, a query-level \`omit\`, or a ` +
-        `client-level \`omit: { ${lower(o.model)}: { ${o.field}: true } }\` on ` +
-        `\`new PrismaClient(...)\` -- the last of which the extension cannot see ` +
-        `in the arguments at all, which is why this is refused here rather than ` +
-        `earlier. Include the column in the projection (\`select: { …, ` +
-        `${o.field}: true }\`), or filter on something else and compare after ` +
-        `decryption.`,
-    );
-  }
+function assertComparable(row: Record<string, unknown>, o: Obligation): void {
+  if (o.field in row) return;
+  throw new FieldsealNotSupported(
+    `${o.model}.${o.field}: this query filtered on the column's blind index, ` +
+      `and spec §7.5 requires the candidate rows to be decrypted and compared ` +
+      `before they are treated as results -- but the column is not in the ` +
+      `returned rows, so there is nothing to compare. Something projected it ` +
+      `away: a \`select\` that does not name it, a query-level \`omit\`, or a ` +
+      `client-level \`omit: { ${lower(o.model)}: { ${o.field}: true } }\` on ` +
+      `\`new PrismaClient(...)\` -- the last of which the extension cannot see ` +
+      `in the arguments at all, which is why this is refused here rather than ` +
+      `earlier. Include the column in the projection (\`select: { …, ` +
+      `${o.field}: true }\`), or filter on something else and compare after ` +
+      `decryption.`,
+  );
+}
+
+function holdsTarget(row: Record<string, unknown>, o: Obligation): boolean {
   const value = row[o.field];
   // NULL never equals an indexed target. A NULL row cannot reach a verified
   // result set through the rewrite at all -- the sibling is NULL exactly when

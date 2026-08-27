@@ -72,7 +72,13 @@ export interface RewriteIntent {
   readonly resultPath: readonly string[] | null;
 }
 
-/** One rewritten predicate's §7.5 debt, discharged by `verify.ts`. */
+/**
+ * One rewritten *operator's* §7.5 debt, discharged by `verify.ts`.
+ *
+ * Per operator, not per field: a row must satisfy every obligation, so the
+ * conjunction a caller wrote (`{ equals: A, in: [...] }`) stays a conjunction
+ * through verification.
+ */
 export interface Obligation {
   readonly resultPath: readonly string[];
   readonly model: string;
@@ -118,11 +124,20 @@ export function applyRewrites(
     const idxCtx = indexContext(fieldCtx, intent.idx.indexId);
 
     const predicates: unknown[] = [];
-    const normalized = new Set<string>();
-    const raw = new Set<string>();
+    // One target set -- and so one obligation -- PER OPERATOR, never a union
+    // across them. `{ equals: A, in: [B] }` is a conjunction, and `place()`
+    // rewrites it as one; an obligation holding {A, B} would verify the
+    // disjunction instead, so when §7.4 collides bidx(A) with bidx(B) -- the
+    // event the truncation band mandates at scale -- a row holding only B
+    // survives both the SQL and §7.5 and is returned as a verified match for a
+    // filter whose true answer excludes it. `verify.ts` requires every
+    // obligation to hold, which restores the conjunction.
+    const perOp: Array<{ normalized: Set<string>; raw: Set<string> }> = [];
 
     for (const { op, values } of intent.ops) {
       const derived: Uint8Array[] = [];
+      const normalized = new Set<string>();
+      const raw = new Set<string>();
       for (const value of values) {
         const operand = operandOf(value, intent.enc, label);
         try {
@@ -140,6 +155,7 @@ export function applyRewrites(
       // `in: []` matches nothing in SQL and must keep doing so; the obligation
       // with empty target sets drops every row, which agrees.
       predicates.push(op === "in" ? { in: derived } : derived[0]);
+      perOp.push({ normalized, raw });
     }
 
     if (intent.residual === null) delete intent.node[intent.enc.field];
@@ -147,15 +163,17 @@ export function applyRewrites(
     place(intent.node, intent.idx.field, predicates);
 
     if (intent.resultPath !== null) {
-      obligations.push({
-        resultPath: intent.resultPath,
-        model: intent.model.model,
-        field: intent.enc.field,
-        enc: intent.enc,
-        normalizer: intent.idx.normalize,
-        normalized,
-        raw,
-      });
+      for (const { normalized, raw } of perOp) {
+        obligations.push({
+          resultPath: intent.resultPath,
+          model: intent.model.model,
+          field: intent.enc.field,
+          enc: intent.enc,
+          normalizer: intent.idx.normalize,
+          normalized,
+          raw,
+        });
+      }
     }
   }
   return obligations;

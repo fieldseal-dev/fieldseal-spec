@@ -357,6 +357,17 @@ describe("candidateScope: what it hands over, and what it does not", () => {
     );
   });
 
+  it("covers a promise constructed OUTSIDE the scope but first awaited inside -- the boundary is dispatch", async () => {
+    // A Prisma promise is lazy: construction dispatches nothing, so nothing is
+    // analyzed or refused here even though no scope is open yet...
+    await seedWithCollision();
+    const constructedOutside = lp["patient"]!["count"]!({ where: { email: ADA } });
+    // ...and awaiting it inside the scope dispatches it inside, where it is
+    // served at bucket semantics. The scope covers whatever dispatches within
+    // it, in both directions; the README says to construct inside the callback.
+    expect(await candidateScope(() => constructedOutside)).toBe(2);
+  });
+
   it("covers operations awaited concurrently inside the callback", async () => {
     await seedWithCollision();
     const [a, b] = (await candidateScope(() =>

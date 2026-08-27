@@ -105,8 +105,11 @@ Pipeline per operation:
 
 Steps 5 and 8 are one feature, and the question that decides its scope is the
 Django LIMIT audit's (`docs/07` §7) asked of Prisma: **who answers this query
-before §7.5 runs?** Measured against 7.10.0 — full evidence in
-`internal/prisma-l2-audit-2026-08-27.md` — exactly **two** `where` sites in
+before §7.5 runs?** Measured against 7.10.0 (local audit
+`internal/prisma-l2-audit-2026-08-27.md`, **not in the repo** — `internal/` is
+gitignored; the durable evidence is the test suite, which pins every number
+cited here in `tests/prisma-private-api.test.ts`, `tests/l2.test.ts` and
+`tests/l2-refusals.test.ts`): exactly **two** `where` sites in
 Prisma's surface select rows that come back to the extension:
 
 1. the top-level `where` of **`findMany`**, and

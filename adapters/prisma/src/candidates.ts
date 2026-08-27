@@ -42,6 +42,15 @@
  * idiom is therefore one operation per scope. A wide callback silently takes
  * §7.5 off operations the caller never meant to opt out of, and nothing in the
  * adapter can tell the difference.
+ *
+ * **The boundary is dispatch, not construction.** A Prisma promise is lazy, so
+ * the scope covers whatever *dispatches* while it is open -- and that cuts both
+ * ways (both measured): a promise constructed inside the callback but returned
+ * unawaited escapes the scope (the caveat `candidateScope` itself closes by
+ * awaiting), and a promise constructed *outside* the scope but first awaited
+ * *inside* it dispatches inside and is served at bucket semantics, even though
+ * the caller wrote it where verification looked to be on. Construct the
+ * operation inside the callback, and nowhere else.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";

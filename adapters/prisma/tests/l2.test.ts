@@ -235,6 +235,62 @@ describe("re-verification drops the §7.4 collisions", () => {
   });
 });
 
+// ------------------------------- two operators on one field (conjunction) ----
+
+describe("two rewritable operators on one field stay a conjunction", () => {
+  // Prisma reads `{ equals: A, in: [...] }` as A AND membership, and the
+  // rewrite compiles it that way. §7.5 must verify the same conjunction: one
+  // obligation *per operator*, never a union of their targets -- a union would
+  // verify the disjunction, and the case where that difference is observable
+  // is exactly a §7.4 collision between the two operators' targets (below).
+
+  it("serves the satisfiable conjunction", async () => {
+    await seed();
+    const rows = await lp["patient"]!["findMany"]!({
+      where: { email: { equals: "ada@example.com", in: ["ada@example.com", "alan@example.com"] } },
+    });
+    expect(names(rows)).toEqual(["1-ada"]);
+  });
+
+  // `COLLIDER` was found by brute force over the fixture's fixed keys: its
+  // 15-bit index value equals ada@example.com's (spec §7.4 mandates such pairs
+  // to exist; the fixture's truncation makes one findable in ~2^15 tries).
+  // The first test below re-derives both stored values and asserts they still
+  // collide, so a key or schema change fails loudly here instead of quietly
+  // turning the conjunction test into a vacuous empty-SQL-result test.
+  const COLLIDER = "c26819@example.com";
+
+  async function seedCollidingPair() {
+    const ada = await lp["patient"]!["create"]!({ data: patient("ada@example.com", "1-ada") });
+    const other = await lp["patient"]!["create"]!({ data: patient(COLLIDER, "0-collider") });
+    const a = Buffer.from((await rawColumn(base, "Patient", "emailBidx", ada.id as string)) as Uint8Array);
+    const b = Buffer.from((await rawColumn(base, "Patient", "emailBidx", other.id as string)) as Uint8Array);
+    expect(a.equals(b), "fixture drift: COLLIDER no longer collides -- re-derive it").toBe(true);
+  }
+
+  it("a §7.4 collision between the two operators' targets cannot smuggle a row through", async () => {
+    // email = ada AND email IN (collider): no value satisfies both, so the
+    // verified answer is [] -- but because the two targets share one index
+    // value, the rewritten SQL returns the whole bucket. An obligation that
+    // unioned the targets would accept both rows as verified matches.
+    await seedCollidingPair();
+    const rows = await lp["patient"]!["findMany"]!({
+      where: { email: { equals: "ada@example.com", in: [COLLIDER] } },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("measures why: with §7.5 off the SQL admits the whole shared bucket", async () => {
+    await seedCollidingPair();
+    const candidates = await candidateScope(() =>
+      lp["patient"]!["findMany"]!({
+        where: { email: { equals: "ada@example.com", in: [COLLIDER] } },
+      }),
+    );
+    expect(names(candidates)).toEqual(["0-collider", "1-ada"]);
+  });
+});
+
 // ------------------------------------------ the bucket (docs/09 §7.2) ----
 
 describe("bucketed unindexable values are separated by §7.5's raw-bytes fallback", () => {
