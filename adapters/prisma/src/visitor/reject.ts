@@ -35,7 +35,7 @@
  */
 
 import { FieldsealNotSupported } from "../errors.ts";
-import type { ResolvedMap, ResolvedModel } from "../fieldmap.ts";
+import { relationTarget, type ResolvedMap, type ResolvedModel } from "../fieldmap.ts";
 
 /** Scalar filter operators, and why each is refused over an envelope. */
 const REFUSED_OPERATORS: Readonly<Record<string, string>> = {
@@ -122,8 +122,7 @@ function walkWriteWheres(model: ResolvedModel, row: unknown, ctx: Ctx, path: str
   for (const [key, value] of Object.entries(row)) {
     const rel = model.relationByField.get(key);
     if (rel === undefined || !isRecord(value)) continue;
-    const target = ctx.map.byModel.get(rel.model);
-    if (target === undefined) continue;
+    const target = relationTarget(ctx.map, model, rel);
     for (const [nestedOp, payload] of Object.entries(value)) {
       const p = `${path}.${key}.${nestedOp}`;
       // Unique inputs: shorthand equalities over the target's columns.
@@ -196,8 +195,8 @@ function walkWhere(model: ResolvedModel, node: unknown, ctx: Ctx, path: string):
 
     const rel = model.relationByField.get(key);
     if (rel !== undefined) {
-      const target = ctx.map.byModel.get(rel.model);
-      if (target !== undefined && isRecord(value)) {
+      if (isRecord(value)) {
+        const target = relationTarget(ctx.map, model, rel);
         // A to-many filter wraps the target's where in some/every/none, and a
         // to-one filter in is/isNot -- but a to-one filter may also BE the
         // target's where directly (`patient: { email: … }`), with no wrapper.
@@ -353,10 +352,7 @@ function walkOrderBy(model: ResolvedModel, node: unknown, ctx: Ctx): void {
     for (const [key, value] of Object.entries(entry)) {
       if (model.encryptedByField.has(key)) refuseOrder(model, key);
       const rel = model.relationByField.get(key);
-      if (rel !== undefined) {
-        const target = ctx.map.byModel.get(rel.model);
-        if (target !== undefined) walkOrderBy(target, value, ctx);
-      }
+      if (rel !== undefined) walkOrderBy(relationTarget(ctx.map, model, rel), value, ctx);
     }
   }
 }
@@ -467,9 +463,13 @@ function walkProjection(model: ResolvedModel, node: Record<string, unknown>, ctx
     }
     const rel = model.relationByField.get(key);
     if (rel === undefined || !isRecord(value)) continue;
-    const target = ctx.map.byModel.get(rel.model);
-    if (target === undefined) continue;
-    rejectForbiddenShapes(target, ctx.operation, value, ctx.map, ctx.opts);
+    rejectForbiddenShapes(
+      relationTarget(ctx.map, model, rel),
+      ctx.operation,
+      value,
+      ctx.map,
+      ctx.opts,
+    );
   }
 }
 

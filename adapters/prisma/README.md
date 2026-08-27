@@ -151,7 +151,7 @@ the target matrix in `docs/13` §6.
 | Nested `deleteMany`/`connect`/`disconnect`/`delete`/`set` off encrypted columns | ✅ served — they write no ciphertext | `serves a nested deleteMany over plaintext columns…` |
 | `undefined` in a payload | ✅ touches nothing — not the value, not the sibling (Prisma's "do not touch" contract) | `touches nothing: not the value, and not the sibling` |
 | **A model with no declarations** (relations to declared ones) | ✅ in the map as a relation-only entry; writes, reads and filters through it traverse the pipeline | `reaching Patient through the undeclared Referral model` |
-| A model missing from the field map | 🛑 refused — a stale or edited map, never a passthrough | `refuses an operation on a model the field map does not carry` |
+| A model missing from the field map — as the operation's model **or as a relation target** any walk reaches | 🛑 refused — a stale or edited map, never a passthrough; a skipped relation would write plaintext or return envelopes one hop down | `refuses an operation on a model the field map does not carry`, `refuses a nested write through a relation…` |
 | Database holds an envelope, never plaintext | ✅ | `stores an envelope in the database…` |
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `writes a different envelope every time…` |
 | `update` re-encrypts | ✅ including the `{ set: … }` form | `re-encrypts on update…`, `accepts the { set: value } update form` |
@@ -289,7 +289,7 @@ npm run build                    # dist/, and the generator bin
 npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma db push               # the fixture SQLite database
-npm test                         # 127 tests
+npm test                         # 129 tests
 npm run typecheck
 ```
 

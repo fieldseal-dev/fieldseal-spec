@@ -20,11 +20,12 @@ import type { Fieldseal } from "@fieldseal/core";
 import { toBytes, toColumn } from "../codec.ts";
 import { buildContext, type ContextOptions, indexContext } from "../context.ts";
 import { FieldsealNotSupported } from "../errors.ts";
-import type {
-  EncryptedFieldDecl,
-  IndexFieldDecl,
-  ResolvedMap,
-  ResolvedModel,
+import {
+  type EncryptedFieldDecl,
+  type IndexFieldDecl,
+  relationTarget,
+  type ResolvedMap,
+  type ResolvedModel,
 } from "../fieldmap.ts";
 import { unindexableError } from "../unindexable.ts";
 
@@ -105,11 +106,13 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
   }
 
   // Nested relation writes, reached through the schema rather than by path.
+  // A relation target the map does not carry is refused, not skipped: only a
+  // stale or edited map can miss (the generator emits every model), and
+  // skipping would write plaintext through the edge with nothing raised.
   for (const [key, value] of Object.entries(row)) {
     const rel = model.relationByField.get(key);
     if (rel === undefined || !isRecord(value)) continue;
-    const target = ctx.map.byModel.get(rel.model);
-    if (target === undefined) continue;
+    const target = relationTarget(ctx.map, model, rel);
     for (const [nestedOp, payload] of Object.entries(value)) {
       // Link and delete shapes write no ciphertext. Their payloads are unique
       // inputs or filters over existing rows -- `set` replaces links by unique

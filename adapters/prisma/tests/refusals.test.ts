@@ -14,7 +14,11 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { FieldsealNotSupported, fieldsealExtension } from "../src/index.ts";
+import {
+  FieldsealConfigurationError,
+  FieldsealNotSupported,
+  fieldsealExtension,
+} from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
 import { clearDb, keyProvider, loose, makeClient, SUITE } from "./helpers.ts";
 
@@ -439,14 +443,12 @@ describe("models with no declarations of their own", () => {
     ).rejects.toThrow(FieldsealNotSupported);
   });
 
-  it("refuses an operation on a model the field map does not carry", async () => {
-    // A stale or edited map: the model exists in the client but not the map.
-    // Passing it through would reopen the undeclared-model bypass, so it is a
-    // configuration error instead.
-    const ext = fieldsealExtension({
+  /** An extension over the fixture map with one model deliberately removed. */
+  const staleExt = (without: string) =>
+    fieldsealExtension({
       fieldMap: {
         ...fieldsealFieldMap,
-        models: fieldsealFieldMap.models.filter((m) => m.model !== "Referral"),
+        models: fieldsealFieldMap.models.filter((m) => m.model !== without),
       },
       keyProvider: keyProvider(),
       allowedSuites: [SUITE],
@@ -457,14 +459,60 @@ describe("models with no declarations of their own", () => {
       ],
       onWarning: () => {},
     });
+
+  it("refuses an operation on a model the field map does not carry", async () => {
+    // A stale or edited map: the model exists in the client but not the map.
+    // Passing it through would reopen the undeclared-model bypass, so it is a
+    // configuration error instead.
     await expect(
-      ext.query.$allOperations({
+      staleExt("Referral").query.$allOperations({
         model: "Referral",
         operation: "findMany",
         args: {},
         query: async () => [],
       }),
     ).rejects.toThrow(/not in the field map/);
+  });
+
+  it("refuses a nested write through a relation the field map does not carry", async () => {
+    // The top-model check alone does not close the stale-map hole: this write
+    // starts on a mapped model (Patient) and reaches an encrypted column on
+    // the omitted one (Visit.reason) one hop down. Skipping the unresolvable
+    // relation would store plaintext with nothing raised, so the walk refuses.
+    let reached = false;
+    await expect(
+      staleExt("Visit").query.$allOperations({
+        model: "Patient",
+        operation: "create",
+        args: {
+          data: {
+            email: "a@x.com",
+            note: "n",
+            age: 1,
+            plainName: "A",
+            visits: { create: [{ reason: "checkup" }] },
+          },
+        },
+        query: async (a) => {
+          reached = true;
+          return a;
+        },
+      }),
+    ).rejects.toThrow(FieldsealConfigurationError);
+    expect(reached).toBe(false); // refused before anything went to the engine
+  });
+
+  it("refuses a read whose result nests a relation the field map does not carry", async () => {
+    // The read-side half of the same hole: skipping the unresolvable relation
+    // would hand the caller raw envelope bytes as if they were values.
+    await expect(
+      staleExt("Visit").query.$allOperations({
+        model: "Patient",
+        operation: "findMany",
+        args: {},
+        query: async () => [{ id: "p1", visits: [{ id: "v1", reason: new Uint8Array([1]) }] }],
+      }),
+    ).rejects.toThrow(/Visit.*not in the field map|not in the field map/);
   });
 });
 
