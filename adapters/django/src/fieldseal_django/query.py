@@ -34,11 +34,14 @@ column itself (NULL plaintext is stored as NULL, never as an encrypted
 placeholder), so it is served with no obligation, in any combination.
 
 **A second refusal family, G20 ([#80]), is orthogonal to verification:** SQL
-that *computes on envelope bytes* -- `ORDER BY`, `GROUP BY`, `DISTINCT`,
-aggregate and function expressions -- is meaningless on every queryset,
+that *reads envelope bytes* -- `ORDER BY`, `GROUP BY`, `DISTINCT`, aggregate
+and function expressions over them -- is meaningless on every queryset,
 obligations or none, and `.candidates()` does not lift it. See the section
 comment above `order_by` for what was measured before those refusals were
-written.
+written. The one aggregate that reads no envelope bytes is carved out (G23,
+[#89]): a plain, non-distinct `Count(field)` counts null-ness alone, and the
+§10.2 NULL-preservation invariant (the same one that makes `__isnull` exact,
+above) makes it equal the plaintext count exactly, so it is served.
 """
 
 from __future__ import annotations
@@ -573,9 +576,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         if self._verifying:
             self._refuse_sql_answered("aggregate")
         for expr in (*args, *kwargs.values()):
-            hit = self._encrypted_ref(expr)
-            if hit is not None:
-                self._refuse_ciphertext_compute(hit, "aggregate")
+            self._check_computed_expression(expr, "aggregate")
         return super().aggregate(*args, **kwargs)
 
     def update(self, **kwargs: Any) -> int:
@@ -615,15 +616,17 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     #
     # A different refusal family from the ones above. Those protect §7.5
     # re-verification, apply only while `_verifying`, and are lifted by
-    # `.candidates()`. These refuse SQL that *computes on envelope bytes* --
-    # sorting, grouping, deduplicating, aggregating -- which is meaningless
-    # on every queryset, obligations or none, and `.candidates()` does not
-    # lift them: bucket semantics are a meaningful thing to accept for a
-    # filter; ciphertext order has no semantics to accept. Measured before
-    # the refusals were written: MIN() over ciphertext returns whichever
-    # envelope sorts first (decrypted cleanly, presented as the minimum),
-    # GROUP BY returns one group per row under keys that print identically,
-    # ORDER BY produces a stable-looking order with no meaning.
+    # `.candidates()`. These refuse SQL that *reads envelope bytes* --
+    # sorting, grouping, deduplicating, byte-reading aggregation -- which is
+    # meaningless on every queryset, obligations or none, and
+    # `.candidates()` does not lift them: bucket semantics are a meaningful
+    # thing to accept for a filter; ciphertext order has no semantics to
+    # accept. Measured before the refusals were written: MIN() over
+    # ciphertext returns whichever envelope sorts first (decrypted cleanly,
+    # presented as the minimum), GROUP BY returns one group per row under
+    # keys that print identically, ORDER BY produces a stable-looking order
+    # with no meaning. Plain non-distinct Count(field) reads no bytes and is
+    # exempt (G23) -- see _is_exempt_plain_count.
 
     def order_by(self, *field_names: Any) -> Any:
         """Refuses ordering that would sort envelope bytes.
@@ -639,6 +642,9 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             hit = self._encrypted_ref(item)
             if hit is not None:
                 self._refuse_ciphertext_order(hit, "order_by")
+            cond = self._encrypted_condition_ref(item)
+            if cond is not None:
+                self._refuse_ungoverned_condition(cond, "order_by")
         return super().order_by(*field_names)
 
     def distinct(self, *field_names: Any) -> Any:
@@ -673,9 +679,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                 # A bare column reference only selects the column, and the
                 # converter decrypts what comes back -- exact, so allowed.
                 continue
-            hit = self._encrypted_ref(expr)
-            if hit is not None:
-                self._refuse_ciphertext_compute(hit, method)
+            self._check_computed_expression(expr, method)
         if any(getattr(e, "contains_aggregate", False) for e in exprs):
             name = self._encrypted_values_select()
             if name is not None:
@@ -696,9 +700,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
 
         for item in items:
             if not isinstance(item, (str, F)):
-                hit = self._encrypted_ref(item)
-                if hit is not None:
-                    self._refuse_ciphertext_compute(hit, method)
+                self._check_computed_expression(item, method)
         if not self.query.distinct:
             return
         names = [i for i in items if isinstance(i, str)]
@@ -709,6 +711,119 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             field, _, _ = resolve_path(self.model, name)
             if isinstance(field, Encrypted):
                 self._refuse_distinct_over_ciphertext(name)
+
+    def _check_computed_expression(self, expr: Any, method: str) -> None:
+        """The three hazards a computed expression can carry, most specific
+        refusal first: reading envelope bytes; an encrypted column inside a
+        condition the queryset's filter path never sees (an aggregate's
+        `filter=`, a `When.condition`); and a `filter=` on the otherwise
+        served plain count."""
+        hit = self._encrypted_ref(expr)
+        if hit is not None and not self._is_plain_count_shape(expr):
+            self._refuse_ciphertext_compute(hit, method)
+        cond = self._encrypted_condition_ref(expr)
+        if cond is not None:
+            self._refuse_ungoverned_condition(cond, method)
+        if hit is not None and getattr(expr, "filter", None) is not None:
+            self._refuse_filtered_count(hit, method)
+
+    def _is_plain_count_shape(self, expr: Any) -> bool:
+        """The G23 carve-out ([#89]): a plain, non-distinct COUNT of a bare
+        column reads null-ness, never envelope bytes, and the spec §10.2
+        NULL-preservation invariant makes it exact -- a value is stored as
+        a non-NULL envelope and NULL stays NULL, so `COUNT(col)` over
+        envelopes equals `COUNT(col)` over the plaintexts.
+
+        Deliberately the bare shape only. `distinct=True` compares envelopes
+        and counts rows; `Count(Length(...))` reads bytes through the inner
+        function -- both fall back to the bytes refusal. A `filter=` is
+        judged separately by `_check_computed_expression`, so its refusal can
+        state its own (different) reason instead of a false bytes claim.
+        """
+        from django.db.models import Count, F
+
+        if not isinstance(expr, Count) or getattr(expr, "distinct", False):
+            return False
+        sources = expr.get_source_expressions()
+        if not sources or not isinstance(sources[0], F):
+            return False
+        return all(self._encrypted_ref(s) is None for s in sources[1:])
+
+    def _encrypted_condition_ref(self, expr: Any) -> tuple[Any, str] | None:
+        """The `(Encrypted field, path)` referenced inside a condition the
+        queryset's filter path never sees, or None.
+
+        An aggregate's `filter=` and a `When.condition` hold a `Q` that is
+        resolved when the *expression* compiles, not when `.filter()` runs --
+        so the lookup arrives without the §7.5 obligations and refusals this
+        queryset attaches. Measured before this walk existed: an equality
+        there compiled to an index-bucket match and was served unverified --
+        `Count("created", filter=Q(email=...))` returned bucket counts and a
+        `When(email=...)` branch fired on a bucket match, both silently.
+        `iter_reference_names` cannot see any of it, because a `Q` is a tree
+        of `(path, value)` tuples, not an expression.
+        """
+        from django.db.models import Q
+
+        from .fields import Encrypted
+
+        stack = [expr]
+        conditions: list[Any] = []
+        while stack:
+            node = stack.pop()
+            for attr in ("filter", "condition"):
+                q = getattr(node, attr, None)
+                if isinstance(q, Q):
+                    conditions.append(q)
+            getter = getattr(node, "get_source_expressions", None)
+            if getter is not None:
+                stack.extend(getter())
+        while conditions:
+            q = conditions.pop()
+            for child in q.children:
+                if isinstance(child, type(q)):
+                    conditions.append(child)
+                elif isinstance(child, tuple) and len(child) == 2:
+                    field, _, _ = resolve_path(self.model, str(child[0]))
+                    if isinstance(field, Encrypted):
+                        return field, str(child[0])
+                else:
+                    hit = self._encrypted_ref(child)
+                    if hit is not None:
+                        return hit
+        return None
+
+    def _refuse_ungoverned_condition(self, hit: tuple[Any, str],
+                                     method: str) -> None:
+        field, name = hit
+        raise FieldsealNotSupported(
+            f"`{method}()` places a condition on the encrypted column "
+            f"{field.model.__name__}.{field.name} inside an aggregate "
+            "`filter=` or a `When(...)`. Conditions there are resolved when "
+            "the expression compiles, outside the queryset's filter path "
+            "where this adapter attaches its refusals and spec §7.5 "
+            "obligations -- an equality here compiles to an index-bucket "
+            "match that is never re-verified, so the database counts or "
+            "branches on §7.4 collisions as if they were matches, silently. "
+            "Measured, not hypothetical: before this refusal, "
+            "Count(..., filter=Q(email=...)) returned bucket counts with "
+            "nothing raised. Put the condition on the queryset "
+            "(.filter(...)), where every lookup gets its governed treatment."
+        )
+
+    def _refuse_filtered_count(self, hit: tuple[Any, str],
+                               method: str) -> None:
+        field, name = hit
+        raise FieldsealNotSupported(
+            f"`{method}()` refuses Count({name!r}, filter=...). The count "
+            "itself reads only null-ness and is served bare (spec §7.10's "
+            "non-null-count row), but §10.2's carve-out is the plain shape "
+            "only, and a `filter=` condition lives outside the queryset's "
+            "governed filter path. Apply the condition to the queryset and "
+            "count the bare column -- "
+            f".filter(<condition>).aggregate(n=Count({name!r})) is the same "
+            "count -- or materialize and count in Python."
+        )
 
     def _encrypted_ref(self, item: Any) -> tuple[Any, str] | None:
         """The `(Encrypted field, path)` an ordering or expression item
@@ -744,6 +859,9 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             hit = self._encrypted_ref(item)
             if hit is not None:
                 self._refuse_ciphertext_order(hit, method)
+            cond = self._encrypted_condition_ref(item)
+            if cond is not None:
+                self._refuse_ungoverned_condition(cond, method)
 
     def _refuse_ciphertext_order(self, hit: tuple[Any, str],
                                  method: str) -> None:
@@ -766,15 +884,17 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         field, name = hit
         raise FieldsealNotSupported(
             f"`{method}()` references the encrypted column "
-            f"{field.model.__name__}.{field.name} inside an expression, so "
-            "the database would compute over envelope bytes. Measured, not "
-            "hypothetical: MIN() returns whichever envelope sorts first -- "
-            "it decrypts cleanly and is presented as the minimum -- SUM() "
-            "produces garbage the read path then misreports as "
-            "NOT_CIPHERTEXT, COUNT(DISTINCT) counts envelopes rather than "
-            "values, LENGTH() reports ciphertext size. Materialize the rows "
-            "and compute in Python after decryption; a non-null count is "
-            f".filter({name}__isnull=False).count()."
+            f"{field.model.__name__}.{field.name} inside an expression that "
+            "reads envelope bytes. Measured, not hypothetical: MIN() "
+            "returns whichever envelope sorts first -- it decrypts cleanly "
+            "and is presented as the minimum -- SUM() produces garbage the "
+            "read path then misreports as NOT_CIPHERTEXT, COUNT(DISTINCT) "
+            "counts envelopes rather than values, LENGTH() reports "
+            "ciphertext size. Materialize the rows and compute in Python "
+            "after decryption. (A plain, non-distinct "
+            f"Count({name!r}) is served -- it reads null-ness, not bytes, "
+            "and spec §7.10's non-null-count row makes it exact under the "
+            "NULL-preservation invariant.)"
         )
 
     def _refuse_ciphertext_grouping(self, name: str, method: str) -> None:

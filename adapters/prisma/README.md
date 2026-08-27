@@ -181,7 +181,7 @@ the target matrix in `docs/13` §6.
 | `distinct`, `groupBy.by`, `having` over one | 🛑 refused (G20) — one group per row, wrong counts | `refuses distinct…`, `refuses groupBy…` |
 | `distinct` on the **index sibling** | ⚠️ served — deduplicates by index value, §7.4 collisions included: a filter-grade answer, not an exact one | `serves distinct on the index sibling…` |
 | `_min`/`_max`/`_sum`/`_avg` over one | 🛑 refused (G20) — computes on bytes | `refuses aggregates…` |
-| `_count` over an encrypted field | ✅ served — counts non-NULL rows, reads no bytes, exact because NULL stays NULL | `serves _count over an encrypted field…` |
+| `_count` over an encrypted field | ✅ served — counts non-NULL rows, reads no bytes, exact under spec §10.2's NULL-preservation invariant (G23 [#89](https://github.com/fieldseal-dev/fieldseal-spec/issues/89), closed) | `serves _count over an encrypted field…` |
 | `cursor` on an encrypted column | 🛑 refused — ciphertext has no stable total order | `refuses cursor pagination…` |
 | Plaintext columns of the same model | ✅ untouched — filter, sort and group normally | `leaves filters on plaintext columns…`, `leaves orderBy and groupBy…` |
 | `count()` over rows | ✅ counts rows, reads no bytes | `allows _count over rows…` |

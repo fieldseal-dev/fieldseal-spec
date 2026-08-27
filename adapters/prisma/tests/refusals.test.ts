@@ -402,18 +402,23 @@ describe("exact shapes stay served", () => {
     expect(notNull.map((r) => r.plainName)).toEqual(["B"]);
   });
 
-  it("serves _count over an encrypted field -- it counts non-NULL rows, reads no bytes", async () => {
+  it("serves _count over an encrypted field -- it counts non-NULL rows, reads no bytes (G23)", async () => {
     await lp["patient"]!["create"]!({
       data: { email: "a@x.com", note: "n", age: 1, plainName: "A", nickname: "Ada" },
     });
     await lp["patient"]!["create"]!({
       data: { email: "b@x.com", note: "n", age: 2, plainName: "B", nickname: null },
     });
+    // The trap for a lazy evaluator: "" is a value, becomes an envelope,
+    // and counts -- absence is NULL and only NULL (spec §10.2, G23).
+    await lp["patient"]!["create"]!({
+      data: { email: "c@x.com", note: "n", age: 3, plainName: "C", nickname: "" },
+    });
     const agg = (await lp["patient"]!["aggregate"]!({
       _count: { email: true, nickname: true },
     } as never)) as { _count: { email: number; nickname: number } };
-    expect(agg._count.email).toBe(2);
-    expect(agg._count.nickname).toBe(1); // exact: NULL stayed NULL on write
+    expect(agg._count.email).toBe(3);
+    expect(agg._count.nickname).toBe(2); // exact: NULL stayed NULL on write
   });
 
   it("serves distinct on the index sibling, which deduplicates by bucket", async () => {
