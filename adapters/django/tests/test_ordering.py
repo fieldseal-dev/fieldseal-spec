@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 from django.db import models
-from django.db.models import Count, F, Min, Sum
+from django.db.models import Case, Count, F, Min, Q, Sum, Value, When
 from django.db.models.functions import Length
 from django.test.utils import isolate_apps
 
@@ -124,8 +124,9 @@ class TestAggregates:
     value, presented as the minimum. Nothing raised."""
 
     def test_aggregates_referencing_an_encrypted_column_refuse(self, rows):
-        for agg in (Min("age"), Sum("age"), Count("email", distinct=True),
-                    Count("email")):
+        # Plain Count("email") is deliberately absent: it reads null-ness,
+        # not bytes, and is served -- the G23 carve-out, tested below.
+        for agg in (Min("age"), Sum("age"), Count("email", distinct=True)):
             with pytest.raises(FieldsealNotSupported) as e:
                 Patient.objects.all().aggregate(x=agg)
             assert "envelope bytes" in str(e.value)
@@ -153,6 +154,149 @@ class TestAggregates:
         Visit.objects.create(patient=rows[0], reason="checkup")
         got = Patient.objects.all().annotate(n=Count("visit")).order_by("pk")
         assert [p.n for p in got] == [1, 0, 0]
+
+
+class TestPlainCountCarveOut:
+    """G23 (#89): plain non-distinct COUNT reads null-ness, never envelope
+    bytes, so under the §10.2 NULL-preservation invariant it is exact and
+    served. The shapes that DO read bytes -- distinct, an inner function, a
+    filtered form -- stay refused, and the shared exactness expectation
+    mirrors the Prisma suite so the two adapters cannot diverge again."""
+
+    @pytest.fixture
+    def noted(self):
+        return [
+            Patient.objects.create(email="a@x.com", age=1, note="first"),
+            Patient.objects.create(email="b@x.com", age=2, note="second"),
+            Patient.objects.create(email="c@x.com", age=3, note=None),
+        ]
+
+    def test_count_over_an_encrypted_column_is_served_and_exact(self, noted):
+        assert Patient.objects.all().aggregate(n=Count("note")) == {"n": 2}
+        # And the column on a NULL row contributes zero.
+        only_null = Patient.objects.filter(pk=noted[2].pk)
+        assert only_null.aggregate(n=Count("note")) == {"n": 0}
+
+    def test_the_empty_string_is_a_value_and_counts(self, noted):
+        # The trap for a lazy evaluator: '' is non-NULL, becomes an
+        # envelope, and counts -- absence is NULL and only NULL.
+        Patient.objects.create(email="d@x.com", age=4, note="")
+        assert Patient.objects.all().aggregate(n=Count("note")) == {"n": 3}
+
+    def test_writing_null_moves_the_count(self, noted):
+        # The update-path half of the invariant: value -> NULL must land as
+        # NULL, or the count silently desyncs.
+        p = noted[0]
+        p.note = None
+        p.save()
+        assert Patient.objects.all().aggregate(n=Count("note")) == {"n": 1}
+
+    def test_annotate_serves_the_same_shape(self, noted):
+        got = (Patient.objects.all()
+               .annotate(n=Count("note")).order_by("pk"))
+        assert [p.n for p in got] == [1, 1, 0]
+
+    def test_grouped_by_plaintext_stays_exact(self, noted):
+        got = (Patient.objects.all()
+               .values("created")
+               .annotate(n=Count("note")))
+        assert sum(r["n"] for r in got) == 2
+
+    def test_distinct_count_stays_refused(self, noted):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.all().aggregate(n=Count("note", distinct=True))
+
+    def test_count_of_a_function_over_ciphertext_stays_refused(self, noted):
+        # Count(Length(enc)) reads bytes through the inner function; the
+        # carve-out is the bare column only.
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.all().aggregate(n=Count(Length("note")))
+
+    def test_a_filtered_count_is_refused_with_its_own_reason(self, noted):
+        # Not the bytes message -- a filtered COUNT reads no envelope bytes,
+        # and claiming it does is the white lie §10.2's honesty rule outlaws.
+        # The honest reason: §10.2's carve-out is the plain shape only, and
+        # the same count is available with the condition on the queryset.
+        with pytest.raises(FieldsealNotSupported) as e:
+            Patient.objects.all().aggregate(
+                n=Count("note", filter=Q(created__isnull=False)))
+        assert "envelope bytes" not in str(e.value)
+        assert "is the same count" in str(e.value)
+
+    def test_the_refusal_message_names_the_carve_out(self, noted):
+        # The false "COUNT computes on bytes" claim is what G23 was filed
+        # on; the message that remains must point at the served shape.
+        with pytest.raises(FieldsealNotSupported) as e:
+            Patient.objects.all().aggregate(n=Count(Length("note")))
+        assert "is served" in str(e.value)
+
+    def test_the_sql_answered_rule_still_governs_verifying_querysets(
+            self, noted):
+        # On a queryset filtered by an encrypted column the database counts
+        # bucket matches (spec §7.4 collisions included), so the §7.5 rule
+        # refuses regardless of the carve-out.
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.filter(email="a@x.com").aggregate(
+                n=Count("note"))
+
+
+class TestUngovernedConditions:
+    """Conditions inside expressions -- an aggregate's `filter=`, a
+    `When.condition` -- are resolved when the expression compiles, outside
+    the queryset's filter path where the §7.5 obligations and refusals
+    attach. Measured before the refusal existed (found addressing the PR #91
+    review round): `Count("created", filter=Q(email=...))` was SERVED and
+    returned index-bucket counts, and a `When(email=...)` branch fired on a
+    bucket match -- both silently, with no re-verification. `Q` is a tree of
+    `(path, value)` tuples, not an expression, so `iter_reference_names`
+    never saw any of it."""
+
+    @pytest.fixture
+    def rows(self):
+        return [
+            Patient.objects.create(email="a@x.com", age=1, note="n"),
+            Patient.objects.create(email="b@x.com", age=2, note="n"),
+        ]
+
+    def test_encrypted_equality_in_an_aggregate_filter_refuses(self, rows):
+        # The measured hole: this served with bucket counts before the walk.
+        with pytest.raises(FieldsealNotSupported) as e:
+            Patient.objects.aggregate(
+                n=Count("created", filter=Q(email="a@x.com")))
+        assert "never re-verified" in str(e.value)
+        assert "envelope bytes" not in str(e.value)
+
+    def test_encrypted_equality_in_a_when_condition_refuses(self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.annotate(
+                x=Case(When(email="a@x.com", then=Value(1)),
+                       default=Value(0),
+                       output_field=models.IntegerField()))
+
+    def test_a_nested_q_is_walked_too(self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.aggregate(
+                n=Count("created",
+                        filter=Q(Q(created__isnull=False) | Q(email="x"))))
+
+    def test_ordering_by_a_conditional_over_an_encrypted_column_refuses(
+            self, rows):
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.order_by(
+                Case(When(email="a@x.com", then=Value(0)),
+                     default=Value(1),
+                     output_field=models.IntegerField()))
+
+    def test_plain_conditions_keep_working(self, rows):
+        got = Patient.objects.aggregate(
+            n=Count("pk", filter=Q(created__isnull=False)))
+        assert got == {"n": 2}
+        annotated = list(
+            Patient.objects.annotate(
+                x=Case(When(created__isnull=False, then=Value(1)),
+                       default=Value(0),
+                       output_field=models.IntegerField())))
+        assert [p.x for p in annotated] == [1, 1]
 
 
 class TestGroupingAndDistinct:

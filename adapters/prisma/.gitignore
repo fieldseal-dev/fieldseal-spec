@@ -1,0 +1,5 @@
+node_modules/
+dist/
+tests/fixture/generated/
+tests/fixture/*.db
+.tmp-gen-*/
