@@ -9,18 +9,20 @@
  * CI asserts this rather than trusting review, because it is the kind of rule
  * that decays one convenient import at a time.
  *
- * **Status: L1, and not usable in production.** Values encrypt and decrypt
- * transparently and index siblings are derived on write, but the L2 query path
- * -- the index rewrite and the spec §7.5 re-verification that makes it correct
- * -- is not in this release, and equality on an encrypted column is refused
- * rather than approximated. Nothing here is frozen: the suite identifier is
- * provisional (spec §4.8), Gate 0b is open, and the project does not invite
- * adoption.
+ * **Status: L1 + L2(b), and not usable in production.** Values encrypt and
+ * decrypt transparently, index siblings are derived on write, and equality and
+ * membership are rewritten onto the declared blind index with the spec §7.5
+ * re-verification that makes the rewrite correct -- but only where the rows
+ * come back to be checked. Everywhere the database answers instead, the shape
+ * is refused rather than approximated, and `candidateScope()` is the explicit
+ * opt-out. Nothing here is frozen: the suite identifier is provisional (spec
+ * §4.8), Gate 0b is open, and the project does not invite adoption.
  */
 
 export { fieldsealExtension } from "./extension.ts";
 export type { FieldsealExtensionOptions, QueryExtension } from "./extension.ts";
 
+export { candidateScope } from "./candidates.ts";
 export { getTenant, tenantScope } from "./context.ts";
 
 export {

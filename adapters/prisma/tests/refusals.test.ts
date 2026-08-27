@@ -127,10 +127,13 @@ describe("filter shapes that ciphertext cannot serve", () => {
   });
 });
 
-describe("equality without the L2 rewrite", () => {
-  it("refuses rather than comparing against a randomized envelope", async () => {
+describe("equality on an encrypted column", () => {
+  it("refuses on a column with no declared index, rather than comparing against a randomized envelope", async () => {
+    // `Patient.note` is encrypted and carries no index sibling, so there is
+    // nothing to rewrite the predicate onto. (`Patient.email` does carry one
+    // and is served -- see `l2.test.ts`.)
     await expect(
-      lp["patient"]!["findMany"]!({ where: { email: "ada@example.com" } }),
+      lp["patient"]!["findMany"]!({ where: { note: "n" } }),
     ).rejects.toThrow(FieldsealNotSupported);
   });
 
