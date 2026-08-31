@@ -44,6 +44,22 @@ def client_for(key: dict) -> Fieldseal:
         )
 
 
+#: The producer-document schemas this consumer understands.
+#:
+#: **Read, not assumed.** Until 2026-08-31 neither consumer looked at
+#: `doc["schema"]` at all: it wrote one into its own verdict and ignored the
+#: producer's. That was harmless while there was one schema and becomes the
+#: exact failure this family exists to catch the moment there are two -- a
+#: consumer that did not understand `cross/v2` would decrypt the envelopes,
+#: report `fail: 0`, and never touch the index half. A green run that skipped
+#: the more valuable assertion is worse than a red one.
+#:
+#: `v2` adds `index_cases` beside `cases`; `v1` documents stay valid and are
+#: recorded as carrying no index half rather than silently counting as if they
+#: had one.
+SCHEMAS = {"fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"}
+
+
 def ctx_from(c: dict) -> FieldContext:
     return FieldContext(
         table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
@@ -62,6 +78,17 @@ def consume(files: list[Path]) -> dict:
         doc = json.loads(f.read_text("utf-8"))
         producer = doc["producer"]["implementation"]
         producers.append(producer)
+        schema = doc.get("schema")
+        if schema not in SCHEMAS:
+            # Fail closed. An unrecognised schema may carry assertions this
+            # consumer cannot make, and silently checking only the half it
+            # understands is how a matrix reports green on a claim nobody
+            # tested.
+            pairs.append({"id": f"{producer}/document", "producer": producer,
+                          "status": "fail",
+                          "reason": f"unrecognised producer schema {schema!r}; "
+                                    f"this consumer reads {sorted(SCHEMAS)}"})
+            continue
         for case in doc["cases"]:
             entry: dict = {"id": case["id"], "producer": producer}
             try:

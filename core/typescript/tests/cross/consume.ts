@@ -64,6 +64,22 @@ const files = argv.filter((_, i) => i !== vFlag && i !== vFlag + 1);
 const keys = (JSON.parse(readFileSync(join(VECTORS, "keys", "test-keys.json"), "utf-8")) as { keys: Record<string, KeyEntry> }).keys;
 const clients = new Map(Object.entries(keys).map(([ref, k]) => [ref, clientFor(k)]));
 
+/**
+ * The producer-document schemas this consumer understands.
+ *
+ * **Read, not assumed.** Until 2026-08-31 neither consumer looked at
+ * `doc.schema` at all: it wrote one into its own verdict and ignored the
+ * producer's. Harmless with one schema, and the exact failure this family
+ * exists to catch the moment there are two -- a consumer that did not
+ * understand `cross/v2` would decrypt the envelopes, report `fail: 0`, and
+ * never touch the index half. A green run that skipped the more valuable
+ * assertion is worse than a red one.
+ *
+ * `v2` adds `index_cases` beside `cases`; `v1` documents stay valid and are
+ * recorded as carrying no index half rather than counting as if they had one.
+ */
+const SCHEMAS = new Set(["fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"]);
+
 interface Pair {
   id: string;
   producer: string;
@@ -75,11 +91,24 @@ const pairs: Pair[] = [];
 const producers: string[] = [];
 for (const f of files) {
   const doc = JSON.parse(readFileSync(f, "utf-8")) as {
+    schema?: string;
     producer: { implementation: string };
     cases: { id: string; key_ref: string; context: Record<string, string | null>; plaintext: string; envelope: string }[];
   };
   const producer = doc.producer.implementation;
   producers.push(producer);
+  if (doc.schema === undefined || !SCHEMAS.has(doc.schema)) {
+    // Fail closed. An unrecognised schema may carry assertions this consumer
+    // cannot make, and silently checking only the half it understands is how a
+    // matrix reports green on a claim nobody tested.
+    pairs.push({
+      id: `${producer}/document`,
+      producer,
+      status: "fail",
+      reason: `unrecognised producer schema ${String(doc.schema)}; this consumer reads ${[...SCHEMAS].join(", ")}`,
+    });
+    continue;
+  }
   for (const c of doc.cases) {
     try {
       const got = Buffer.from(clients.get(c.key_ref)!.decrypt(hex(c.envelope), ctxFrom(c.context))).toString("hex");
