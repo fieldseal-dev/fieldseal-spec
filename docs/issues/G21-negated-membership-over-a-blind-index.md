@@ -4,7 +4,9 @@
 **Blocks:** No stored byte, no derived value, no vector in any family. Prisma adapter L2: `notIn:` is on the §4 table as rewritable, and the adapter shipped the opposite behaviour pending this issue.
 **Found:** 2026-08-27, writing the Prisma adapter's throw list (WS-F PR1) against `docs/13` §4.
 
-**Status:** OPEN — filed, not decided. The adapter currently **refuses** `notIn:` and `.not`, which is the conservative reading; if this issue resolves the other way that refusal is lifted, and if it resolves as filed the `docs/13` §4 row changes to match.
+**Status:** CLOSED 2026-08-31 — tracker [#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87). **Closed as filed**, all four proposed steps taken: spec §7.10 gains a negated-membership/negated-equality row with the honest fallback; §10.2's `in:` permission is explicitly scoped and a new *All ORMs* negation bullet carries the adapter obligation; `docs/13` §4's combined row splits and §2.2's note stops citing this issue as open; `docs/12`'s `exclude()` row now points at the spec rather than reading as Django's own rule.
+
+**No code changed in either adapter, and that is the finding worth keeping.** Both already shipped the refusal — Django with the exact asymmetry argument in the message (`query.py:276`) and `test_exclude_refuses`; Prisma with `does NOT lift \`notIn\` or \`not\`` and `explains notIn as an exclusion asymmetry…`. The implementations were right and the specification was wrong, which is the reverse of the usual direction and the reason the conservative reading was worth shipping while the issue sat open.
 
 ## Gap
 

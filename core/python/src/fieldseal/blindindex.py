@@ -125,9 +125,10 @@ def normalize_nfc_casefold(value: str | bytes) -> bytes:
     stray = unicode.first_unassigned(text)
     if stray is not None:
         raise InvalidArgument(
-            f"value contains U+{stray:04X}, which is not assigned in Unicode "
-            f"{unicode.UNICODE_VERSION}; `nfc-casefold-v1` is pinned to that "
-            "version and cannot index a character it does not define")
+            f"value contains U+{stray.code_point:04X}, which is not "
+            f"assigned in Unicode {unicode.UNICODE_VERSION}; "
+            "`nfc-casefold-v1` is pinned to that version and cannot index a "
+            "character it does not define")
     folded = unicode.casefold_full(unicode.nfc(text))
     return unicode.nfc(folded).encode("utf-8")
 

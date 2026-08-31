@@ -21,7 +21,7 @@ is the caller's job (`blindindex._as_text`).
 from __future__ import annotations
 
 import bisect
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from ._tables import (
     _ASSIGNED,
@@ -43,6 +43,7 @@ __all__ = [
     "casefold_full",
     "nfc",
     "first_unassigned",
+    "Unassigned",
     "combining_class",
 ]
 
@@ -104,22 +105,48 @@ def combining_class(cp: int) -> int:
     return _ccc.get(cp, 0)
 
 
-def first_unassigned(text: str) -> Optional[int]:
-    """The first code point not assigned in the pinned Unicode version, or None.
+class Unassigned(NamedTuple):
+    """What `first_unassigned` found: the code point, and where it is.
+
+    `offset` is counted in **code points**, not UTF-16 units. In Python the two
+    coincide, because `str` iterates code points -- but the unit is part of the
+    contract, not an accident of this binding: the TypeScript core returns the
+    same number for the same string, and its natural unit is UTF-16. Stating
+    the unit is what keeps them agreeing. `docs/12` §10.2 renders this to a
+    person as "the Nth character", which is code points or it is wrong.
+
+    A NamedTuple: a caller may unpack `(code_point, offset)` or use the names,
+    and `stray.code_point` is what appears in a message rather than
+    `stray[0]`. (The previous return was a bare `int`, not a tuple -- an
+    earlier draft of this docstring claimed otherwise.)
+    """
+
+    code_point: int
+    offset: int
+
+
+def first_unassigned(text: str) -> Optional[Unassigned]:
+    """The first code point not assigned in the pinned Unicode version, and its
+    position, or None if every code point is assigned.
 
     Surrogates count as unassigned here. UnicodeData.txt does list them (as
     category Cs), but a lone surrogate has no UTF-8 encoding, so a normalizer
     that accepted one could not produce the bytes the index is derived from.
+
+    Exported from the package root because `docs/09` §7.1 requires it: an
+    adapter that still holds the text can refuse the value where it can be
+    attributed to a form field, instead of catching an exception from inside a
+    write and parsing its message for the character. G22 (#88).
     """
     _load()
     assert _lo is not None and _hi is not None
-    for ch in text:
+    for offset, ch in enumerate(text):
         cp = ord(ch)
         if 0xD800 <= cp <= 0xDFFF:
-            return cp
+            return Unassigned(cp, offset)
         i = bisect.bisect_right(_lo, cp) - 1
         if i < 0 or cp > _hi[i]:
-            return cp
+            return Unassigned(cp, offset)
     return None
 
 

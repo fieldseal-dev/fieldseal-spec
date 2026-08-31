@@ -12,6 +12,9 @@ import {
   tenantScope,
 } from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
+import { InvalidArgumentError, normalize } from "@fieldseal/core";
+
+import { unindexableError } from "../src/unindexable.ts";
 import { clearDb, keyProvider, loose, makeClient, rawColumn, setColumn, SUITE } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -291,17 +294,94 @@ describe("a stored value that is not an envelope (spec §10.3)", () => {
 });
 
 describe("unindexable values (docs/09 §7.2)", () => {
-  it("refuse mode raises FieldsealUnindexable carrying the code point and offset", async () => {
-    // U+0378 is unassigned in every published Unicode version.
-    const err = await lp["patient"]!["create"]!({
-      data: patient({ email: "a͸@example.com" }),
-    }).then(
+  /** The first code point `nfc-casefold-v1` refuses, and where it sits. */
+  const refusalFor = async (email: string): Promise<FieldsealUnindexable | null> =>
+    lp["patient"]!["create"]!({ data: patient({ email }) }).then(
       () => null,
       (e) => e as FieldsealUnindexable,
     );
+
+  it("refuse mode raises FieldsealUnindexable carrying the code point and offset", async () => {
+    // U+0378 is unassigned in every published Unicode version.
+    const err = await refusalFor("a͸@example.com");
     expect(err).toBeInstanceOf(FieldsealUnindexable);
     expect(err?.detail.codePoint).toBe("U+0378");
     expect(err?.message).toMatch(/cannot index yet/);
+
+    // **This assertion is the point of G22 (#88), and its absence is how the
+    // defect shipped.** The test carried "and offset" in its name and never
+    // checked it: the offset came from a regex over the core's error message
+    // that only ever matched the `identity`/bytes path, so on this path --
+    // `nfc-casefold-v1`, the only normalizer `on_unindexable` governs in
+    // practice -- `detail.offset` was always `null`, and `docs/12` §10.2
+    // requires the position as much as the character.
+    expect(err?.detail.offset).toBe(1);
+    expect(err?.message).toMatch(/at position 2/);
+  });
+
+  it("counts the position in characters, not UTF-16 units", async () => {
+    // The distinction only shows up past the BMP, which is why it is easy to
+    // get wrong and why the core's exported accessor fixes the unit rather
+    // than leaving each adapter to count. An emoji is one character to the
+    // person reading the message and two UTF-16 units to JavaScript; a message
+    // that said "position 3" here would be counting the wrong thing.
+    const err = await refusalFor("\u{1F510}͸@example.com");
+    expect(err).toBeInstanceOf(FieldsealUnindexable);
+    expect(err?.detail.offset).toBe(1);
+    expect(err?.message).toMatch(/at position 2/);
+  });
+
+  // The three tests below drive `unindexableError` directly. They are unit
+  // tests on purpose: two of the branches cannot be reached through the
+  // fixture at all (no column declares `identity`, and no column is `as:
+  // "bytes"` *and* indexed), and the first draft of the pass-through test
+  // tried to reach one through a `create()` and ended up asserting nothing.
+  it("passes the core's error through when the operand is not text", () => {
+    // Undecodable bytes have no characters to count, so "the Nth character"
+    // would be an invented number. `asText` returns null and the caller gets
+    // the core's own message.
+    const original = new InvalidArgumentError("nfc-casefold-v1 requires valid UTF-8 input");
+    const notUtf8 = new Uint8Array([0xff, 0xfe, 0xff]);
+    expect(unindexableError(original, "M.c", "name", notUtf8, "nfc-casefold-v1")).toBe(original);
+  });
+
+  it("passes the core's error through when the normalizer refuses no character", () => {
+    // A refusal with some other cause -- a string-level rule, a bug -- is not
+    // re-dressed as a data-quality problem the caller cannot act on. The
+    // previous version of this test fed a *clean value through `create()`*,
+    // which produced no error at all, so `expect(err).toBeNull()` passed
+    // without ever entering this branch: the same "a test name is not an
+    // assertion" trap this PR set out to fix (review round, #101).
+    const original = new InvalidArgumentError("something else entirely");
+    expect(unindexableError(original, "M.c", "name", "ada@example.com", "nfc-casefold-v1")).toBe(
+      original,
+    );
+  });
+
+  it("names the character the column's OWN normalizer refuses, not the unassigned one", () => {
+    // `identity` refuses unpaired surrogates and indexes unassigned code
+    // points perfectly well, so a normalizer-blind check misdiagnoses it.
+    // Reproduced before the fix: for this operand the wrap named U+0378 at
+    // position 1 -- a character that column indexes fine, at the wrong place
+    // -- while the real fault is the surrogate at position 3, and the remedy
+    // it offered was false twice over (review round, #101).
+    const operand = "͸a\uD800";
+    let core: unknown;
+    try {
+      normalize("identity", operand);
+    } catch (e) {
+      core = e;
+    }
+    const wrapped = unindexableError(core, "M.c", "name", operand, "identity");
+    expect(wrapped).toBeInstanceOf(FieldsealUnindexable);
+    const detail = (wrapped as FieldsealUnindexable).detail;
+    expect(detail.codePoint).toBe("U+D800");
+    expect(detail.offset).toBe(2);
+    // And a surrogate is not "a character we have not added support for yet":
+    // no Unicode version will ever assign one, so offering that remedy would
+    // be a lie the caller cannot act on.
+    expect((wrapped as Error).message).toMatch(/unpaired surrogate/);
+    expect((wrapped as Error).message).not.toMatch(/cannot index yet/);
   });
 
   it("bucket mode stores the real value and derives the reserved marker", async () => {
