@@ -115,9 +115,10 @@ class Unassigned(NamedTuple):
     the unit is what keeps them agreeing. `docs/12` §10.2 renders this to a
     person as "the Nth character", which is code points or it is wrong.
 
-    A tuple, so the older `(index, char)`-shaped call sites read unchanged and
-    a caller may unpack it; named, so `stray.code_point` is what appears in a
-    message rather than `stray[0]`.
+    A NamedTuple: a caller may unpack `(code_point, offset)` or use the names,
+    and `stray.code_point` is what appears in a message rather than
+    `stray[0]`. (The previous return was a bare `int`, not a tuple -- an
+    earlier draft of this docstring claimed otherwise.)
     """
 
     code_point: int

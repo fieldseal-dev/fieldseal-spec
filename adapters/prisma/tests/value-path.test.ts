@@ -12,6 +12,9 @@ import {
   tenantScope,
 } from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
+import { InvalidArgumentError, normalize } from "@fieldseal/core";
+
+import { unindexableError } from "../src/unindexable.ts";
 import { clearDb, keyProvider, loose, makeClient, rawColumn, setColumn, SUITE } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -328,14 +331,57 @@ describe("unindexable values (docs/09 §7.2)", () => {
     expect(err?.message).toMatch(/at position 2/);
   });
 
-  it("returns the core's own error when the value has no unindexable character", async () => {
-    // The refusal is attributed, not assumed. The old regex inferred
-    // "unindexable value" from a `U+` appearing anywhere in the message text;
-    // the accessor answers the actual question, so a refusal with some other
-    // cause is passed through untouched rather than re-dressed as a
-    // data-quality problem the caller cannot act on.
-    const err = await refusalFor("ada@example.com");
-    expect(err).toBeNull(); // a perfectly indexable value: no refusal at all
+  // The three tests below drive `unindexableError` directly. They are unit
+  // tests on purpose: two of the branches cannot be reached through the
+  // fixture at all (no column declares `identity`, and no column is `as:
+  // "bytes"` *and* indexed), and the first draft of the pass-through test
+  // tried to reach one through a `create()` and ended up asserting nothing.
+  it("passes the core's error through when the operand is not text", () => {
+    // Undecodable bytes have no characters to count, so "the Nth character"
+    // would be an invented number. `asText` returns null and the caller gets
+    // the core's own message.
+    const original = new InvalidArgumentError("nfc-casefold-v1 requires valid UTF-8 input");
+    const notUtf8 = new Uint8Array([0xff, 0xfe, 0xff]);
+    expect(unindexableError(original, "M.c", "name", notUtf8, "nfc-casefold-v1")).toBe(original);
+  });
+
+  it("passes the core's error through when the normalizer refuses no character", () => {
+    // A refusal with some other cause -- a string-level rule, a bug -- is not
+    // re-dressed as a data-quality problem the caller cannot act on. The
+    // previous version of this test fed a *clean value through `create()`*,
+    // which produced no error at all, so `expect(err).toBeNull()` passed
+    // without ever entering this branch: the same "a test name is not an
+    // assertion" trap this PR set out to fix (review round, #101).
+    const original = new InvalidArgumentError("something else entirely");
+    expect(unindexableError(original, "M.c", "name", "ada@example.com", "nfc-casefold-v1")).toBe(
+      original,
+    );
+  });
+
+  it("names the character the column's OWN normalizer refuses, not the unassigned one", () => {
+    // `identity` refuses unpaired surrogates and indexes unassigned code
+    // points perfectly well, so a normalizer-blind check misdiagnoses it.
+    // Reproduced before the fix: for this operand the wrap named U+0378 at
+    // position 1 -- a character that column indexes fine, at the wrong place
+    // -- while the real fault is the surrogate at position 3, and the remedy
+    // it offered was false twice over (review round, #101).
+    const operand = "͸a\uD800";
+    let core: unknown;
+    try {
+      normalize("identity", operand);
+    } catch (e) {
+      core = e;
+    }
+    const wrapped = unindexableError(core, "M.c", "name", operand, "identity");
+    expect(wrapped).toBeInstanceOf(FieldsealUnindexable);
+    const detail = (wrapped as FieldsealUnindexable).detail;
+    expect(detail.codePoint).toBe("U+D800");
+    expect(detail.offset).toBe(2);
+    // And a surrogate is not "a character we have not added support for yet":
+    // no Unicode version will ever assign one, so offering that remedy would
+    // be a lie the caller cannot act on.
+    expect((wrapped as Error).message).toMatch(/unpaired surrogate/);
+    expect((wrapped as Error).message).not.toMatch(/cannot index yet/);
   });
 
   it("bucket mode stores the real value and derives the reserved marker", async () => {

@@ -437,14 +437,23 @@ jobs:
           # suite is, so it is checked against the manifest rather than remembered.
           readme = (root / "README.md").read_text("utf-8")
           version = m["vector_suite_version"]
-          if f"suite `{version}`" not in readme:
-              fail.append(f"vectors/README.md does not name suite `{version}`, which is the manifest's version")
           counted = sum(
               len(json.loads((root / e["path"]).read_text("utf-8")).get("vectors", []))
               for e in m["files"]
           )
-          if f"{counted} vectors" not in readme:
-              fail.append(f"vectors/README.md does not state the pinned vector count ({counted})")
+          # Both facts must appear in the *status line itself*, not merely
+          # somewhere in the file. Two independent substring searches would let
+          # a correct-looking count that happens to appear elsewhere satisfy a
+          # status line that says something different (review round, #101).
+          status = [l for l in readme.splitlines() if l.startswith("*Status")]
+          if len(status) != 1:
+              fail.append(f"vectors/README.md should have exactly one line starting `*Status`, found {len(status)}")
+          else:
+              line = status[0]
+              if f"suite `{version}`" not in line:
+                  fail.append(f"vectors/README.md's status line does not name suite `{version}` (the manifest's version)")
+              if f"{counted} vectors" not in line:
+                  fail.append(f"vectors/README.md's status line does not state the pinned vector count ({counted})")
 
           if fail:
               print("::error::suite integrity checks failed")

@@ -109,7 +109,7 @@ Gate 0a (see below) opened on 2026-08-22. What exists under those directories to
   **145/145**, the second written without reading the first.
 - **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
   suite `0.4.0-provisional`.
-- **Two ORM adapters** — `adapters/django` (248 tests) and `adapters/prisma` (235 tests),
+- **Two ORM adapters** — `adapters/django` and `adapters/prisma`, each with a 200+-test suite,
   each running against SQLite and PostgreSQL in CI. Both are also cross-language
   *producers*: a row written through either adapter is decrypted by both cores in the N×N
   job, which is the central claim tested at the layer people actually deploy rather than

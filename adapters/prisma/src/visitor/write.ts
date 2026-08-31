@@ -193,7 +193,7 @@ function deriveIndex(
   try {
     return client.blindIndex(operand, indexContext(fieldCtx, idx.indexId, opts));
   } catch (e) {
-    throw unindexableError(e, label, encDecl.noun, operand);
+    throw unindexableError(e, label, encDecl.noun, operand, idx.normalize);
   }
 }
 
