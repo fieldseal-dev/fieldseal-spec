@@ -3,3 +3,4 @@ dist/
 tests/fixture/generated/
 tests/fixture/*.db
 .tmp-gen-*/
+.vitest-results.json

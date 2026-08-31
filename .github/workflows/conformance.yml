@@ -222,9 +222,29 @@ jobs:
           node tests/fixture/build.ts
           npx prisma db push
 
+      # Two reporters, one run: the default one so a failure is readable in the
+      # log, and the JSON one so the conformance report below scores the same
+      # run rather than paying for a second.
       - name: Run the suite
         working-directory: adapters/prisma
-        run: npm test
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=.vitest-results.json
+
+      # docs/14 §4. An adapter's report claims no L0 -- it runs no vector
+      # families, because it contains no cryptography -- and carries instead a
+      # `coverage_matrix` block that docs/14 §4 requires to mirror the README
+      # table. It is *parsed out of* the README and scored against this run, so
+      # a row naming a test that no longer exists fails the step. That is the
+      # anti-drift mechanism, and it caught a real gap on its first run: a
+      # refusal the matrix claimed and no test asserted.
+      - name: Conformance report (docs/14 §4)
+        working-directory: adapters/prisma
+        run: node --no-warnings=ExperimentalWarning tests/report.ts --results .vitest-results.json > conformance-prisma-adapter.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-prisma-adapter
+          path: adapters/prisma/conformance-prisma-adapter.json
 
       - name: Typecheck (sources and tests)
         working-directory: adapters/prisma
