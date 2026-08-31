@@ -343,6 +343,84 @@ describe("L4: warm() in the value path (docs/13 §5)", () => {
     await base.$disconnect();
   });
 
+  it("runs a second warm cycle when the next attempt needs a context the first never reached", async () => {
+    // Strict progress permits more than one cycle, and nothing tested that.
+    // The staging is a partial warm -- each cycle makes available only the
+    // first context it was handed, which is what a rate-limited or
+    // one-scope-at-a-time key service looks like:
+    //
+    //   attempt 1: builds the value context, misses          -> warm it
+    //   attempt 2: value serves, builds the index context,
+    //              misses -- a context cycle 1 never reached  -> warm it
+    //   attempt 3: both serve
+    //
+    // Two cycles, both productive. A one-cycle policy would raise on attempt 2
+    // for a key that one more warm makes available, and `pending()` is what
+    // tells the two cases apart: it is non-empty here and empty in the test
+    // below.
+    const available = new Set<string>();
+    const key = (ctx: ResolvedContext): string =>
+      `${Buffer.from(ctx.columnUuid).toString("hex")}/${ctx.purpose}`;
+    let warms = 0;
+    const provider: KeyProvider = {
+      encryptionKey(ctx: ResolvedContext) {
+        if (!available.has(key(ctx))) {
+          throw new KeyUnavailableError(KEY_ID, "staged: this context is not warmed yet");
+        }
+        const index = ctx.purpose.startsWith("index:");
+        return { key: new Uint8Array(index ? INDEX_KEY : DEK), keyId: new Uint8Array(KEY_ID) };
+      },
+      decryptionKeys(_header: EnvelopeHeader) {
+        return [new Uint8Array(DEK)];
+      },
+      async warm(contexts) {
+        warms++;
+        await Promise.resolve();
+        // Partial, deliberately: only the first context of the batch.
+        for (const ctx of contexts) {
+          available.add(key(ctx as ResolvedContext));
+          break;
+        }
+      },
+    };
+    const { prisma, base } = makeClient({ keyProvider: provider });
+    const row = await loose(prisma)["person"]!["create"]!({ data: { legalName: "Ada Lovelace" } });
+    expect(row["legalName"]).toBe("Ada Lovelace");
+    expect(warms).toBe(2);
+    await base.$disconnect();
+  });
+
+  it("propagates a warm() that fails rather than retrying around it", async () => {
+    // The key service being unreachable is the condition L4 most has to get
+    // right, because it is the one spec §8.1 warns the whole design creates:
+    // "the key service becomes a hard dependency in the read path". The warm
+    // rejection is what reaches the caller -- not the KEY_UNAVAILABLE that
+    // triggered it -- because it is the actionable cause, and the pass is not
+    // retried around a warm that did not happen.
+    let warms = 0;
+    const provider: KeyProvider = {
+      encryptionKey() {
+        throw new KeyUnavailableError(KEY_ID, "staged: cold");
+      },
+      decryptionKeys(_header: EnvelopeHeader) {
+        return [];
+      },
+      async warm() {
+        warms++;
+        await Promise.resolve();
+        throw new Error("KMS unreachable: connect ETIMEDOUT");
+      },
+    };
+    const { prisma, base } = makeClient({ keyProvider: provider });
+    await expect(
+      loose(prisma)["patient"]!["create"]!({
+        data: { email: "ada@example.com", note: "n", age: 36, plainName: "Ada" },
+      }),
+    ).rejects.toThrow(/KMS unreachable/);
+    expect(warms).toBe(1);
+    await base.$disconnect();
+  });
+
   it("gives up rather than looping when warming does not help", async () => {
     // Termination: a warm that returns without populating the cache leaves the
     // ledger with nothing new to warm, so the second attempt's miss is raised.

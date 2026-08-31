@@ -222,7 +222,7 @@ jobs:
 
       - name: Install the adapter
         working-directory: adapters/prisma
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Build the adapter and its generator
         working-directory: adapters/prisma
@@ -527,7 +527,7 @@ jobs:
         if: matrix.impl == 'prisma'
         working-directory: adapters/prisma
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
       # build.ts first, as in the prisma-adapter job: it derives the schema
       # the Postgres leg generates from, and the two steps ordered differently

@@ -369,6 +369,8 @@ the target matrix in `docs/13` §6.
 | **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 | **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out; warm accounting is per pass, so an eviction between the write and read passes is retried rather than misread as an unproductive warm | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…`, `warms again for the read pass…` |
+| Warm cycles beyond the first | ✅ a cycle runs whenever the next attempt needs a context no earlier cycle warmed — strict progress, bounded by the contexts one pass can build | `runs a second warm cycle when the next attempt needs a context the first never reached` |
+| The key service is unreachable when L4 tries to warm | 🛑 the warm failure propagates, and the pass is not retried around a warm that did not happen — spec §8.1's "hard dependency in the read path", surfaced as the actionable cause rather than as the `KEY_UNAVAILABLE` that triggered it | `propagates a warm() that fails rather than retrying around it` |
 | The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
 | A pass that throws leaves the argument and result trees as it found them | ✅ journalled and rolled back, which is what makes the retry safe | `writes each column exactly once when the write pass is retried`, `decrypts each column exactly once…` |
 
@@ -494,7 +496,7 @@ npm run build                    # dist/, and the generator bin
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma generate              # the fixture's Prisma client
 npx prisma db push               # the fixture database
-npm test                         # 233 tests
+npm test                         # 235 tests
 npm run typecheck
 
 # The same suite against Postgres. `build.ts` derives schema.postgres.prisma
