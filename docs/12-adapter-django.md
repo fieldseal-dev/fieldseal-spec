@@ -187,6 +187,8 @@ Shipped in the package README, kept in sync with tests by generating both from o
 
 ## 8. Test plan
 
+**The index half, 2026-08-31 (`cross/v2`).** The producer also emits five *index* cases: the blind-index sibling column as the database holds it, plus the declaration read off the model's own `BlindIndex(...)` rather than restated. A consumer in another language re-derives each one. This is the half `docs/07` §7 calls the more valuable assertion — a mismatched index is a **silent lookup miss**, so the row stays stored and decryptable and simply stops being findable, and the envelope half stays green through it. The case only an adapter can produce is the last: a value `nfc-casefold-v1` refuses, where the field stored the §7.2 reserved marker by itself because `Person.legal_name` declares `on_unindexable="bucket"`. A core alone cannot demonstrate that — it has no column declaration and no write path.
+
 - **Path matrix tests:** one integration test per row of §6, against Postgres and SQLite in CI (binary column behavior differs; both are supported targets).
 - **Refusal tests:** every §3.3 lookup and every 🛑 row asserts the typed exception, not a generic error.
 - **Ordering regression:** a model with index-before-encrypted declaration must fail E001; a model without the check bypassed must produce correct sibling values under `bulk_create`.

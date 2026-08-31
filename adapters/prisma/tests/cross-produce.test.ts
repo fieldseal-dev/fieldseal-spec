@@ -45,11 +45,46 @@ interface CrossCase {
   envelope: string;
 }
 
+interface IndexCase {
+  id: string;
+  key_ref: string;
+  declaration: {
+    index_id: string;
+    idf: string;
+    normalize: string;
+    truncate_bits: number;
+    projected_population: number;
+    on_unindexable: string;
+    unindexable_override?: { reason: string; approved_by: string; date: string };
+  };
+  context: {
+    table_uuid: string;
+    column_uuid: string;
+    tenant_id: string | null;
+    // Carried for the same reason `CrossCase` carries it: read from the
+    // document rather than assumed, so a future row_id-present case is
+    // checked against the context the producer actually used.
+    row_id: string | null;
+    purpose: string;
+  };
+  value_text?: string;
+  value_bytes?: string;
+  value_marker?: boolean;
+  index: string;
+}
+
 interface CrossDoc {
   schema: string;
-  producer: { implementation: string; version: string; commit: string; produced_at: string };
+  producer: {
+    implementation: string;
+    version: string;
+    commit: string;
+    produced_at: string;
+    limitations?: Array<{ shape: string; reason: string }>;
+  };
   suite_id: string;
   cases: CrossCase[];
+  index_cases: IndexCase[];
 }
 
 interface KeyEntry {
@@ -93,11 +128,14 @@ describe("cross-language producer (docs/14 §3)", () => {
     doc = produce();
   });
 
-  it("is a well-formed cross/v1 document", () => {
+  it("is a well-formed cross/v2 document", () => {
     // The schema is the point: every existing consumer reads this file
     // unmodified, so the adapter joins the N x N matrix as one more producer
     // rather than needing a bespoke checker.
-    expect(doc.schema).toBe("fieldseal-vectors/cross/v1");
+    // v2 because it carries the index half. A producer emitting index cases
+    // MUST say so in the schema: a v1-era consumer handed a v2 document would
+    // decrypt every envelope, report `fail: 0`, and never touch the indexes.
+    expect(doc.schema).toBe("fieldseal-vectors/cross/v2");
     expect(doc.producer.implementation).toBe("prisma");
     expect(doc.suite_id).toBe("0xFF01");
     expect(doc.cases.length).toBeGreaterThan(0);
@@ -130,6 +168,117 @@ describe("cross-language producer (docs/14 §3)", () => {
       const got = Buffer.from(client.decrypt(H(c.envelope), ctx)).toString("hex");
       expect(got, c.id).toBe(c.plaintext);
     }
+  });
+
+  it("derives every index case from the shared key material alone", () => {
+    // The half `docs/07` §7 calls the more valuable one. A mismatched blind
+    // index is a **silent lookup miss**: the row is stored, decryptable, and
+    // simply stops being findable, so nothing in the envelope half above would
+    // notice. What a consumer has is the declaration, the context and the
+    // key_ref -- so that is all this rebuilds from.
+    const material = keys();
+    for (const c of doc.index_cases) {
+      const k = material[c.key_ref]!;
+      const suiteId = parseInt(k.suite_id.slice(2), 16);
+      const d = c.declaration;
+      const client = new Fieldseal(
+        {
+          keyProvider: new StaticKeyProvider({
+            dek: H(k.tenant_dek),
+            indexKey: H(k.tenant_index_key),
+            keyId: H(k.key_id),
+          }),
+          allowedSuites: [suiteId],
+          writeSuite: suiteId,
+          indexes: [
+            {
+              tableUuid: H(c.context.table_uuid),
+              columnUuid: H(c.context.column_uuid),
+              indexId: d.index_id,
+              idf: d.idf as "hmac-sha512",
+              normalize: d.normalize as "nfc-casefold-v1",
+              truncateBits: d.truncate_bits,
+              projectedPopulation: d.projected_population,
+              onUnindexable: d.on_unindexable as "refuse" | "bucket",
+              ...(d.unindexable_override !== undefined
+                ? {
+                    unindexableOverride: {
+                      reason: d.unindexable_override.reason,
+                      approvedBy: d.unindexable_override.approved_by,
+                      date: d.unindexable_override.date,
+                    },
+                  }
+                : {}),
+            },
+          ],
+          onWarning: () => {},
+        },
+        { armProvisionalSuites: true },
+      );
+      const ctx = {
+        tableUuid: H(c.context.table_uuid),
+        columnUuid: H(c.context.column_uuid),
+        tenantId: c.context.tenant_id === null ? null : H(c.context.tenant_id),
+        rowId: c.context.row_id === null ? null : H(c.context.row_id),
+        purpose: c.context.purpose,
+      };
+      // docs/08 §4.7's MUST, asserted here as the consumers assert it: the
+      // derivation string comes from `purpose` and the registry lookup from
+      // `index_id`, so a producer disagreeing with itself would otherwise fail
+      // as "no blind index is declared", naming neither cause nor case.
+      expect(c.context.purpose, c.id).toBe(`index:${d.index_id}`);
+      const value =
+        c.value_text !== undefined
+          ? c.value_text
+          : c.value_bytes !== undefined
+            ? H(c.value_bytes)
+            : undefined;
+      if (c.value_marker !== true && value === undefined) {
+        throw new Error(`${c.id}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
+      }
+      const got = Buffer.from(
+        c.value_marker === true ? client.unindexableMarker(ctx) : client.blindIndex(value!, ctx),
+      ).toString("hex");
+      expect(got, c.id).toBe(c.index);
+    }
+  });
+
+  it("stores the §7.2 marker for a value the normalizer refuses, unasked", () => {
+    // The case only an adapter can produce. Nothing in the write asked for a
+    // marker: the extension derived it because `Person.legalName` declares
+    // `on_unindexable: "bucket"` and U+0378 is unassigned in every published
+    // Unicode version. A core alone cannot demonstrate this -- it has no
+    // column declaration and no write path.
+    const marker = doc.index_cases.find((c) => c.value_marker === true);
+    expect(marker, "no marker case").toBeDefined();
+    expect(marker!.declaration.on_unindexable).toBe("bucket");
+    expect(marker!.value_text).toBeUndefined();
+    expect(marker!.index, "the marker case carries no index value").toBeTruthy();
+    // docs/09 §7.2 gates bucket mode behind a recorded approval, and a
+    // consumer cannot construct the client without it.
+    expect(marker!.declaration.unindexable_override).toBeDefined();
+  });
+
+  it("lands the fold pair on one index value", () => {
+    // `nfc-casefold-v1` MUST merge them, and spec §7.5's re-verification rule
+    // is built on its doing so. Two rows written through the adapter in
+    // different cases, one index value.
+    const lower = doc.index_cases.find((c) => c.id.endsWith("/email-exact"))!;
+    const upper = doc.index_cases.find((c) => c.id.endsWith("/email-fold"))!;
+    expect(lower.value_text).not.toBe(upper.value_text);
+    expect(upper.index).toBe(lower.index);
+  });
+
+  it("declares the context shapes it cannot produce", () => {
+    // docs/08 §4.7: an adapter producer's coverage axis is the decisions it
+    // owns, and the shapes it structurally cannot reach are declared rather
+    // than left absent. `row_id`-present closes itself the day L3-row ships.
+    const shapes = (doc.producer.limitations ?? []).map((l) => l.shape);
+    expect(shapes).toContain("row_id-present");
+    // Named in the #103 review: no fixture model declares an index on a
+    // tenant-bound column, so the §5.2 sibling-key scope is only cross-checked
+    // on the index path by the core producers. Declared, not hidden.
+    expect(shapes).toContain("tenant-bound index");
   });
 
   it("covers the decisions no core test reaches", () => {

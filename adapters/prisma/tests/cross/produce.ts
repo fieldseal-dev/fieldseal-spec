@@ -31,6 +31,15 @@
  * file unmodified**, so this adapter joins the N x N matrix as one more
  * producer rather than needing a bespoke checker.
  *
+ * **The index half (`cross/v2`)** carries the same argument one step further,
+ * and `docs/07` §7 calls it the more valuable assertion: a blind index the
+ * *adapter* wrote must be derivable by a core in another language, because a
+ * mismatched index is a **silent lookup miss** rather than an error. The row
+ * is stored, decryptable, and simply stops being findable -- nothing raises,
+ * and the envelope half above stays green through it. The declaration that
+ * reaches the artifact is the generated field map's own, read rather than
+ * restated, so a consumer re-derives from what this schema actually declares.
+ *
  * Key material is resolved by `key_ref` against `vectors/keys/test-keys.json`,
  * the same public file the core producers use, so no key is embedded here.
  *
@@ -65,6 +74,20 @@ const KEY_REF = "tenant-a-dek-v1";
 /** The tenant `TenantDoc.body` is written under -- the corpus's own default. */
 const TENANT = "tenant-0001";
 
+/**
+ * The docs/09 §7.2 ceremony for `Person.legalName`'s bucketed index.
+ *
+ * One constant, used both to configure the extension and to fill the index
+ * case's `declaration`: a consumer must be able to build a client this
+ * declaration constructs under, and a ceremony restated in two places is one
+ * that can differ between the producer and what it claims to have produced.
+ */
+const BUCKET_CEREMONY = {
+  reason: "Cross producer: exercises the §7.2 bucket path on an indexed column.",
+  approvedBy: "adapters/prisma cross producer",
+  date: "2026-08-31",
+} as const;
+
 interface KeyEntry {
   suite_id: string;
   key_id: string;
@@ -98,6 +121,22 @@ function uuids(model: string, field: string): { table: string; column: string } 
 function storageOf(model: string, field: string): "binary" | "base64" {
   const m = fieldsealFieldMap.models.find((x) => x.model === model);
   return m?.encrypted?.find((e) => e.field === field)?.storage ?? "binary";
+}
+
+interface IndexCase {
+  id: string;
+  key_ref: string;
+  declaration: Record<string, unknown>;
+  context: {
+    table_uuid: string;
+    column_uuid: string;
+    tenant_id: string | null;
+    row_id: null;
+    purpose: string;
+  };
+  value_text?: string;
+  value_marker?: boolean;
+  index: string;
 }
 
 interface Case {
@@ -157,15 +196,7 @@ async function main(): Promise<number> {
       // Spec §4.8: writing under a provisional suite is an affirmative act here
       // as everywhere.
       armProvisionalSuites: true,
-      unindexableOverride: [
-        {
-          model: "Person",
-          field: "legalName",
-          reason: "Cross producer: exercises the §7.2 bucket path on an indexed column.",
-          approvedBy: "adapters/prisma cross producer",
-          date: "2026-08-31",
-        },
-      ],
+      unindexableOverride: [{ model: "Person", field: "legalName", ...BUCKET_CEREMONY }],
       onWarning: () => {},
     }),
   ) as unknown as Record<string, { create(a: unknown): Promise<Record<string, unknown>> }>;
@@ -311,27 +342,147 @@ async function main(): Promise<number> {
     null,
   );
 
+  // --- the index half -----------------------------------------------------
+  //
+  // Each case is the *sibling column as the database holds it*, read through
+  // the same raw path the envelopes take. What a consumer checks is that the
+  // bytes this adapter wrote are the bytes its own derivation produces from
+  // the same declaration -- which is the assertion that a lookup written by
+  // one stack finds rows written by the other.
+  const indexCases: IndexCase[] = [];
+
+  async function indexCase(
+    caseId: string,
+    model: string,
+    table: string,
+    field: string,
+    id: string,
+    value: string | null,
+    // Threaded rather than hardcoded, mirroring `record` above. Every index
+    // case is tenantless today because no fixture model declares an index on
+    // a `tenant_bound` column -- a gap named in `producer.limitations` rather
+    // than hidden behind a literal `null` that would silently disagree with
+    // what the adapter stored the day one exists (#103 review).
+    tenant: string | null = null,
+  ): Promise<void> {
+    const m = fieldsealFieldMap.models.find((x) => x.model === model)!;
+    const idx = m.indexes!.find((i) => i.source === field)!;
+    const enc = m.encrypted!.find((e) => e.field === field)!;
+    const rows = await base.$queryRawUnsafe<Array<Record<string, unknown>>>(
+      `SELECT "${idx.field}" AS v FROM "${table}" WHERE "id" = ${postgres ? "$1" : "?"}`,
+      id,
+    );
+    const stored = rows[0]?.["v"];
+    if (!(stored instanceof Uint8Array)) {
+      throw new Error(`cross/produce: ${model}.${idx.field} is not bytes (spec §7.11)`);
+    }
+    const declaration: Record<string, unknown> = {
+      index_id: idx.indexId,
+      idf: idx.idf,
+      idf_params: {},
+      normalize: idx.normalize,
+      truncate_bits: idx.truncateBits,
+      projected_population: idx.projectedPopulation,
+      on_unindexable: idx.onUnindexable,
+    };
+    if (idx.onUnindexable === "bucket") {
+      // docs/09 §7.2's ceremony lives in code, passed to fieldsealExtension --
+      // never in a schema comment -- so it is restated from the same constant
+      // this producer configures the extension with.
+      declaration["unindexable_override"] = {
+        reason: BUCKET_CEREMONY.reason,
+        approved_by: BUCKET_CEREMONY.approvedBy,
+        date: BUCKET_CEREMONY.date,
+      };
+    }
+    indexCases.push({
+      id: `cross/prisma/index/${caseId}`,
+      key_ref: KEY_REF,
+      declaration,
+      context: {
+        table_uuid: m.tableUuid!.replace(/-/g, ""),
+        column_uuid: enc.columnUuid.replace(/-/g, ""),
+        tenant_id: tenant === null ? null : Buffer.from(tenant, "utf8").toString("hex"),
+        row_id: null,
+        purpose: `index:${idx.indexId}`,
+      },
+      ...(value === null ? { value_marker: true as const } : { value_text: value }),
+      index: Buffer.from(stored).toString("hex"),
+    });
+  }
+
+  // The workhorse, a fold pair that must merge, and a non-ASCII value: an
+  // index that agreed on ASCII and disagreed here would be a UTF-8 handling
+  // divergence whose only symptom is a lookup that stops finding the row.
+  await indexCase("email-exact", "Patient", "Patient", "email", p1id, "ada@example.com");
+  const f1 = await prisma["patient"]!.create({
+    data: { email: "ADA@EXAMPLE.COM", note: "n", age: 7, plainName: "Fold" },
+  });
+  await indexCase("email-fold", "Patient", "Patient", "email", f1["id"] as string, "ADA@EXAMPLE.COM");
+  const f2 = await prisma["patient"]!.create({
+    data: { email: "renée@example.com", note: "n", age: 8, plainName: "Renee" },
+  });
+  await indexCase("email-non-ascii", "Patient", "Patient", "email", f2["id"] as string, "renée@example.com");
+
+  // An index whose *source* column is base64 text while the sibling stays raw
+  // bytes (spec §7.11). Storage form and index form are independent, and only
+  // an adapter can get that pairing wrong.
+  await indexCase("nickname-base64-source", "Patient", "Patient", "nickname", p1id, "Ada");
+
+  // An ordinary value on the bucketed column, and then the case only an
+  // adapter produces: a value the normalizer refuses, where the extension
+  // stored the §7.2 reserved marker by itself, with no caller asking for it.
+  await indexCase("legal-name", "Person", "Person", "legalName", person["id"] as string, "Ada Lovelace");
+  const bucketed = await prisma["person"]!.create({ data: { legalName: "Ada\u0378 Lovelace" } });
+  await indexCase("bucket-marker", "Person", "Person", "legalName", bucketed["id"] as string, null);
+
   await base.$disconnect();
 
   const pkg = JSON.parse(readFileSync(join(ADAPTER, "package.json"), "utf-8")) as {
     version: string;
   };
   const out = {
-    schema: "fieldseal-vectors/cross/v1",
+    schema: "fieldseal-vectors/cross/v2",
     producer: {
       implementation: "prisma",
       version: pkg.version,
       commit: commit(),
       produced_at: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
+      // docs/08 §4.7: an adapter producer declares the context shapes it
+      // cannot produce, so the gap is visible in the artifact rather than
+      // absent from it. This one closes itself the day L3-row ships.
+      limitations: [
+        {
+          shape: "row_id-present",
+          reason:
+            "L3-row binding is not in v0: the extension runs before the query, " +
+            "so a database-generated id does not exist yet (docs/13 §8)",
+        },
+        {
+          shape: "tenant-bound index",
+          reason:
+            "no model in this fixture declares an index on a tenant_bound " +
+            "column, so the §5.2 sibling-key scope is exercised on the index " +
+            "path only by the core producers (raised in the #103 review)",
+        },
+        {
+          shape: "normalizer:identity, normalizer:digits-only-v1",
+          reason:
+            "every indexed column in this schema declares nfc-casefold-v1; " +
+            "the other two registry normalizers are covered by the core producers",
+        },
+      ],
     },
     suite_id: key.suite_id,
+    index_cases: indexCases,
     cases,
   };
 
   mkdirSync(dirname(resolve(outPath)), { recursive: true });
   writeFileSync(outPath, JSON.stringify(out, null, 1) + "\n");
   console.error(
-    `wrote ${outPath} (${out.cases.length} cases, producer prisma@${out.producer.commit.slice(0, 12)})`,
+    `wrote ${outPath} (${out.cases.length} cases, ${out.index_cases.length} index cases, ` +
+      `producer prisma@${out.producer.commit.slice(0, 12)})`,
   );
   return 0;
 }
