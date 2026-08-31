@@ -9,6 +9,7 @@
  */
 
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { StaticKeyProvider } from "@fieldseal/core";
 
 import { fieldsealExtension, type FieldsealExtensionOptions } from "../src/index.ts";
@@ -23,7 +24,38 @@ export const KEY_ID = H("0102030405060708090a0b0c0d0e0f10");
 
 export const SUITE = 0xff01;
 
-export const DB_URL = "file:./tests/fixture/fixture.db";
+/**
+ * Which database the suite runs against.
+ *
+ * The house rule is "never treat one database backend as representative", and
+ * it exists because Django's `bulk_update` builds a different expression tree
+ * on Postgres than on SQLite. It weighs differently here -- this adapter builds
+ * no SQL at all -- but the surface it does depend on is exactly the one that
+ * differs: an encrypted column is `Bytes`, which is a SQLite `BLOB` and a
+ * Postgres `bytea`, and a `storage: "base64"` column is text on both. That is
+ * the round trip worth running twice.
+ */
+export type Backend = "sqlite" | "postgres";
+export const BACKEND: Backend =
+  process.env["FIELDSEAL_TEST_DB"] === "postgres" ? "postgres" : "sqlite";
+
+export const DB_URL =
+  BACKEND === "postgres"
+    ? (process.env["DATABASE_URL"] ??
+      "postgresql://postgres:postgres@localhost:5432/fieldseal_test")
+    : "file:./tests/fixture/fixture.db";
+
+/** A bound parameter, 1-based. SQLite takes `?`; Postgres takes `$n`. */
+export function ph(n: number): string {
+  return BACKEND === "postgres" ? `$${String(n)}` : "?";
+}
+
+/** The driver adapter for `BACKEND`. Prisma 7 takes one; the schema has no url. */
+export function driverAdapter(): unknown {
+  return BACKEND === "postgres"
+    ? new PrismaPg({ connectionString: DB_URL })
+    : new PrismaBetterSqlite3({ url: DB_URL });
+}
 
 export function keyProvider(): StaticKeyProvider {
   return new StaticKeyProvider({ dek: DEK, indexKey: INDEX_KEY, keyId: KEY_ID });
@@ -47,7 +79,7 @@ export function makeClient(
   clientOptions: Record<string, unknown> = {},
 ) {
   const base = new PrismaClient({
-    adapter: new PrismaBetterSqlite3({ url: DB_URL }),
+    adapter: driverAdapter(),
     ...clientOptions,
   } as never) as unknown as PrismaClient;
   const opts: FieldsealExtensionOptions = {
@@ -133,8 +165,30 @@ export async function rawColumn(
   id: string,
 ): Promise<unknown> {
   const rows = await base.$queryRawUnsafe<Array<Record<string, unknown>>>(
-    `SELECT "${column}" AS v FROM "${table}" WHERE "id" = ?`,
+    `SELECT "${column}" AS v FROM "${table}" WHERE "id" = ${ph(1)}`,
     id,
   );
   return rows[0]?.["v"] ?? null;
+}
+
+/**
+ * Write a column as the database holds it, bypassing the extension.
+ *
+ * The counterpart of `rawColumn`, and the only way to plant state the adapter
+ * could not have produced: a forged index value, a legacy plaintext row, a
+ * flipped tag byte. Centralised so the placeholder dialect lives in one place
+ * rather than in every test that plants something.
+ */
+export async function setColumn(
+  base: PrismaClient,
+  table: string,
+  column: string,
+  id: string,
+  value: unknown,
+): Promise<void> {
+  await base.$executeRawUnsafe(
+    `UPDATE "${table}" SET "${column}" = ${ph(1)} WHERE "id" = ${ph(2)}`,
+    value,
+    id,
+  );
 }

@@ -43,6 +43,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { StaticKeyProvider } from "@fieldseal/core";
 
 import { fieldsealExtension, tenantScope } from "../../src/index.ts";
@@ -130,8 +131,16 @@ async function main(): Promise<number> {
   if (key === undefined) throw new Error(`cross/produce: no key ${KEY_REF} in test-keys.json`);
   const suiteId = parseInt(key.suite_id.slice(2), 16);
 
+  // The producer runs on whichever backend the suite is running on: the bytes
+  // in a `bytea` and the bytes in a `BLOB` are the same claim, and a leg that
+  // only ever produced from SQLite would leave the other untested.
+  const postgres = process.env["FIELDSEAL_TEST_DB"] === "postgres";
+  const url = postgres
+    ? (process.env["DATABASE_URL"] ??
+      "postgresql://postgres:postgres@localhost:5432/fieldseal_test")
+    : `file:${join(ADAPTER, "tests", "fixture", "fixture.db")}`;
   const base = new PrismaClient({
-    adapter: new PrismaBetterSqlite3({ url: `file:${join(ADAPTER, "tests", "fixture", "fixture.db")}` }),
+    adapter: postgres ? new PrismaPg({ connectionString: url }) : new PrismaBetterSqlite3({ url }),
   } as never) as unknown as PrismaClient;
 
   const prisma = base.$extends(
@@ -180,7 +189,7 @@ async function main(): Promise<number> {
     id: string,
   ): Promise<Uint8Array> {
     const rows = await base.$queryRawUnsafe<Array<Record<string, unknown>>>(
-      `SELECT "${field}" AS v FROM "${table}" WHERE "id" = ?`,
+      `SELECT "${field}" AS v FROM "${table}" WHERE "id" = ${postgres ? "$1" : "?"}`,
       id,
     );
     const stored = rows[0]?.["v"];

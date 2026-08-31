@@ -331,7 +331,7 @@ it was checking.
 
 ## 7. Test plan
 
-- **Visitor conformance:** a generated test sweep — for every operation × every arg shape in §2.1 and §4, assert encrypt/rewrite/throw exactly as specified, against SQLite (fast matrix) and Postgres (Bytes/`bytea` fidelity) in CI.
+- **Visitor conformance:** a test sweep — for every operation × every arg shape in §2.1 and §4, assert encrypt/rewrite/throw exactly as specified, against SQLite (fast matrix) and Postgres (Bytes/`bytea` fidelity) in CI. **Both legs built, 2026-08-31**, and measured on both before the CI wiring was written rather than after. Two notes worth keeping: a datasource `provider` must be a string literal, so the Postgres leg needs its own schema file — derived from `schema.prisma` by `tests/fixture/build.ts` and gitignored, because a second *committed* schema drifts apart exactly where the second backend was supposed to catch something — and the four raw-SQL sites the tests use to plant state the adapter could not have produced (a forged index value, a legacy plaintext row, a flipped tag byte) needed one `setColumn` helper, since SQLite binds `?` and Postgres binds `$n`.
 - **Zero-silent-failure regression:** the three failure shapes documented from `prisma-field-encryption` (`in:`, `contains:`, `orderBy`) each get a test asserting a **throw**, guarding the single most important behavioral difference (`docs/04` §3).
 - **Unknown-shape fail-closed:** feed the visitor an arg tree with a fabricated operator; assert hard error.
 - **Re-verification:** constructed truncation collision must be filtered from results.
