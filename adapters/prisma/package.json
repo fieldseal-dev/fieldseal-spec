@@ -25,7 +25,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
-    "prisma:generate": "prisma generate --schema tests/fixture/schema.prisma"
+    "prisma:generate": "prisma generate",
+    "cross:produce": "node --no-warnings=ExperimentalWarning tests/cross/produce.ts",
+    "report": "node --no-warnings=ExperimentalWarning tests/report.ts"
   },
   "//": [
     "AD-1 (spec §11.3): zero cryptography in this package. The only calls into",
@@ -42,9 +44,10 @@
   },
   "devDependencies": {
     "@prisma/adapter-better-sqlite3": "7.10.0",
+    "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@prisma/generator-helper": "7.10.0",
-    "@prisma/internals": "^7.10.0",
+    "@prisma/internals": "7.10.0",
     "@types/node": "^24.3.0",
     "prisma": "7.10.0",
     "typescript": "~5.9.3",

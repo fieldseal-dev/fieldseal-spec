@@ -19,6 +19,7 @@ import { fromBytes, fromColumn } from "../codec.ts";
 import { buildContext, type ContextOptions } from "../context.ts";
 import { FieldsealConfigurationError } from "../errors.ts";
 import { relationTarget, type ResolvedMap, type ResolvedModel } from "../fieldmap.ts";
+import type { Journal } from "../journal.ts";
 
 export interface ReadCtx {
   readonly client: Fieldseal;
@@ -27,6 +28,8 @@ export interface ReadCtx {
   readonly rootArgs: unknown;
   readonly context: ContextOptions;
   readonly exposeIndexColumns: boolean;
+  /** Every mutation below is recorded before it is applied -- `journal.ts`. */
+  readonly journal: Journal;
   /** Reported per plaintext read in non-strict modes (spec §10.3). */
   readonly onPlaintextRead?: ((model: string, field: string) => void) | undefined;
 }
@@ -78,15 +81,17 @@ export function applyReads(model: ResolvedModel, result: unknown, ctx: ReadCtx):
     }
 
     const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
-    result[enc.field] = fromBytes(
-      ctx.client.decrypt(envelope, fieldCtx),
-      enc,
-      `${model.model}.${enc.field}`,
+    ctx.journal.set(
+      result,
+      enc.field,
+      fromBytes(ctx.client.decrypt(envelope, fieldCtx), enc, `${model.model}.${enc.field}`),
     );
   }
 
   if (!ctx.exposeIndexColumns) {
-    for (const idx of model.indexes) delete result[idx.field];
+    for (const idx of model.indexes) {
+      if (idx.field in result) ctx.journal.remove(result, idx.field);
+    }
   }
 
   // A relation target the map does not carry is refused, not skipped: only a

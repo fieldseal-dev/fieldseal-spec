@@ -3,3 +3,5 @@ dist/
 tests/fixture/generated/
 tests/fixture/*.db
 .tmp-gen-*/
+.vitest-results.json
+tests/fixture/schema.postgres.prisma
