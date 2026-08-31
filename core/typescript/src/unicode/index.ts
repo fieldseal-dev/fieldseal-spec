@@ -147,7 +147,7 @@ export function combiningClass(cp: number): number {
  * JavaScript string a lone surrogate reaches here as its own code point,
  * which is exactly the case that must be refused.
  */
-export interface UnassignedCodePoint {
+export interface Unassigned {
   /** The offending code point, e.g. `0x0378`. */
   readonly codePoint: number;
   /**
@@ -171,7 +171,7 @@ export interface UnassignedCodePoint {
   readonly offset: number;
 }
 
-export function firstUnassigned(text: string): UnassignedCodePoint | undefined {
+export function firstUnassigned(text: string): Unassigned | undefined {
   const { lo, hi } = load();
   let offset = 0;
   for (const ch of text) {

@@ -133,7 +133,7 @@ export function normalize(id: NormalizerId, input: string | Uint8Array): Uint8Ar
 }
 
 export { UNICODE_VERSION, caseFoldFull, firstUnassigned, nfc };
-export type { UnassignedCodePoint } from "./unicode/index.ts";
+export type { Unassigned } from "./unicode/index.ts";
 
 /** @deprecated the pin now covers normalization as well as folding; use
  * `UNICODE_VERSION`. Kept so the conformance harness keeps building across

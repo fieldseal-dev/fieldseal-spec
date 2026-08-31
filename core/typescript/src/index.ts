@@ -68,6 +68,6 @@ export type { NormalizerId } from "./normalize.ts";
 // "not assigned in Unicode 17.0.0" needs the version the check was made
 // against, and reading it from a constant of its own is how two copies drift.
 export { firstUnassigned, UNICODE_VERSION } from "./normalize.ts";
-export type { UnassignedCodePoint } from "./normalize.ts";
+export type { Unassigned } from "./normalize.ts";
 export { SUITE_FF01, SUITE_FF02, FMT_VER, isProvisionalId, registeredSuiteIds } from "./registry.ts";
 export type { Suite } from "./registry.ts";
