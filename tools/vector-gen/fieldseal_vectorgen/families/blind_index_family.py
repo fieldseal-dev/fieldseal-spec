@@ -81,6 +81,32 @@ COLLISION_PAIRS = [
 ]
 
 
+def declared_cost(idf_name: str, ik: bytes) -> dict:
+    """The cost an Argon2id vector was generated at, `{}` for an IDF with none.
+
+    Carried on **every** shape, assertion vectors included, not only the
+    primitive ones. A harness derives at the cost the vector declares rather
+    than at its own default (docs/08 §4.4, issue #62) -- and both cores treat a
+    missing block as a malformed vector rather than as "the minimum", which is
+    the whole point: a vector at a raised cost must test the core, not the
+    harness. While this family was held out nothing iterated its assertion
+    vectors, so the omission cost nothing and was invisible; promoting it into
+    the suite is what made it reachable. Found by promoting the family, which
+    is a fair argument for not leaving vectors unrun.
+    """
+    if idf_name != "argon2id":
+        return {}
+    return {
+        "version": ARGON2_VERSION, "time_cost": ARGON2_TIME_COST,
+        "memory_kib": ARGON2_MEMORY_KIB,
+        "parallelism": ARGON2_PARALLELISM,
+        "output_len": ARGON2_OUTPUT_LEN,
+        # Asserted separately so an HKDF-step bug and an Argon2-step bug are
+        # distinguishable at the point of failure.
+        "salt": argon2_salt(ik).hex(),
+    }
+
+
 def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
     ctx = FieldContext(suite_id=SUITE, table_uuid=I.TABLE_UUID,
                        column_uuid=I.COLUMN_UUID, purpose="encrypt",
@@ -121,15 +147,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             },
         }
         if idf_name == "argon2id":
-            vec["idf_params"] = {
-                "version": ARGON2_VERSION, "time_cost": ARGON2_TIME_COST,
-                "memory_kib": ARGON2_MEMORY_KIB,
-                "parallelism": ARGON2_PARALLELISM,
-                "output_len": ARGON2_OUTPUT_LEN,
-                # Asserted separately so an HKDF-step bug and an Argon2-step
-                # bug are distinguishable at the point of failure.
-                "salt": argon2_salt(ik).hex(),
-            }
+            vec["idf_params"] = declared_cost(idf_name, ik)
             vec["provisional_on"] = ["G2"]
         if provisional_on:
             vec["provisional_on"] = vec.get("provisional_on", []) + [provisional_on]
@@ -158,6 +176,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             "suite_id": suite_str(SUITE),
             "inputs": {
                 "idf": idf_name,
+                "idf_params": declared_cost(idf_name, ik),
                 "index_key": ik.hex(),
                 "normalize": NORMALIZER,
                 "plaintext_preimage_a": pre_a,
@@ -183,6 +202,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "suite_id": suite_str(SUITE),
         "inputs": {
             "idf": idf_name,
+            "idf_params": declared_cost(idf_name, ik),
             "index_key": ik.hex(),
             "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
             "index_id": index_id,
@@ -211,6 +231,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "suite_id": suite_str(SUITE),
         "inputs": {
             "idf": idf_name,
+            "idf_params": declared_cost(idf_name, ik),
             "index_key": ik.hex(),
             "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
             "index_id": index_id,
@@ -231,17 +252,14 @@ def generate_hmac() -> dict:
     return wrapper("blind-index", _vectors("email-eq", "hmac-sha512", idf_hmac))
 
 
-ARGON2ID_HELD_OUT = (
-    "Held pending a project decision (docs/18 D-15). The generator's Argon2id "
-    "primitive is checked against libsodium's seven published known answers "
-    "(empty K and X) at every run, and the TypeScript core reproduces these "
-    "values through an independent backend; the original ground for the "
-    "hold-out is met. Counting the family is the project's call, recorded in "
-    "docs/07 §7 and MANIFEST.json, not the generator's."
-)
-
-
 def generate_argon2id() -> dict:
-    return wrapper("blind-index",
-                   _vectors("ssn-eq", "argon2id", idf_argon2id),
-                   held_out_reason=ARGON2ID_HELD_OUT)
+    """Pinned since suite 0.6.0-provisional (docs/07 §7, 2026-08-31).
+
+    Held out until then pending a project decision (docs/18 D-15), not a
+    technical gap: the generator has checked its Argon2id primitive against
+    libsodium's seven published known answers at every run since 2026-08-23,
+    and the expected values did not move on promotion. What the hold-out did
+    cost is visible in `declared_cost` above -- eight of these nineteen
+    vectors were malformed and no harness could say so, because none ran them.
+    """
+    return wrapper("blind-index", _vectors("ssn-eq", "argon2id", idf_argon2id))

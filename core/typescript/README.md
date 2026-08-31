@@ -189,5 +189,7 @@ npm run build       # tsc → dist/
 npm run typecheck
 ```
 
-The harness iterates `vectors/MANIFEST.json` `files` only; the held-out
-`blind-index/argon2id.json` is reported as `not-run` and never counted.
+The harness iterates `vectors/MANIFEST.json` `files` only and never
+`held_out`. As of suite `0.6.0-provisional` the suite holds nothing out —
+`blind-index/argon2id.json` was the last entry and is now pinned and counted
+(`docs/07` §7), so a green run reports `held_out: 0`.

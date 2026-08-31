@@ -484,9 +484,11 @@ def test_a_raised_argon2_cost_reaches_the_derivation():
 
     This asserts that the declared parameters are what the primitive is
     invoked with. It asserts nothing about whether that primitive matches
-    another core's: the Argon2id family is held out pending G2, and
-    cross-core agreement at a raised cost is a vector obligation recorded
-    there.
+    another core's -- that is a vector obligation, and since 2026-08-31 the
+    vectors carry it: `blind-index/argon2id.json` is pinned into the suite and
+    both cores derive its values at the cost each vector declares. Cross-core
+    agreement at a *raised* cost is still not covered by a vector; only the
+    minima are shipped.
     """
     pytest.importorskip("argon2.low_level",
                         reason="the argon2 extra is not installed")

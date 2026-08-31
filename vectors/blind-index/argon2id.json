@@ -1,9 +1,9 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.5.0-provisional",
+  "vector_suite_version": "0.6.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
-  "status": "held-out",
+  "status": "pinned",
   "vectors": [
     {
       "id": "blind-index/argon2id/ascii-email-b15",
@@ -464,6 +464,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "alice@example.com",
@@ -484,6 +492,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ΐ@example.com",
@@ -504,6 +520,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ΰ@example.com",
@@ -524,6 +548,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ǰ@example.com",
@@ -544,6 +576,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "straße@example.com",
@@ -564,6 +604,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "rené@example.com",
@@ -584,6 +632,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
         "index_id": "ssn-eq",
@@ -615,6 +671,14 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
         "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
         "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
         "index_id": "ssn-eq",
@@ -638,7 +702,5 @@
       }
     }
   ],
-  "retired": [],
-  "held_out_reason": "Held pending a project decision (docs/18 D-15). The generator's Argon2id primitive is checked against libsodium's seven published known answers (empty K and X) at every run, and the TypeScript core reproduces these values through an independent backend; the original ground for the hold-out is met. Counting the family is the project's call, recorded in docs/07 §7 and MANIFEST.json, not the generator's.",
-  "conformance": "MUST NOT be counted toward any conformance claim (docs/14 §4)."
+  "retired": []
 }

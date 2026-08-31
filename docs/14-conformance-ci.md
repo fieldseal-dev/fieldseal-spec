@@ -80,7 +80,7 @@ Every harness (core or adapter) emits `conformance-report.json`:
     { "id": "envelope/ff02/basic-roundtrip", "status": "skipped", "reason": "suite 0xFF02 not implemented" }
   ],
   "held_out": [
-    { "path": "blind-index/argon2id.json", "status": "not-run", "reason": "held out of the suite; primitive unverified against any external known-answer source" }
+    { "path": "<family>.json", "status": "not-run", "reason": "why the suite does not count it, and what would unblock it" }
   ],
   "out_of_band": [
     { "id": "spec/3.5/length-bound", "status": "pass", "method": "unit test asserting 2^31 refused with LENGTH_EXCEEDED" }
@@ -125,7 +125,7 @@ A pinned decision records where an implementation had to choose with nothing beh
 
 `environment.unicode_platform` is recorded alongside `crypto_backend` for the same reason: the `nfc-casefold-v1` normalizer's output depends on the Unicode version the core folds with, and two cores on different versions can disagree on a stored index value without any vector noticing (docs/18 D-10(b)). As of 2026-08-23 the Python core folds with the interpreter's table (CPython 3.14: Unicode 16.0) and the TypeScript core with a vendored one (17.0).
 
-`held_out` mirrors `MANIFEST.json`'s held-out list. A harness MUST iterate the manifest's `files` and MUST NOT iterate `held_out`; the block is reported so that a held-out family is *visibly* not run rather than silently absent. `status` is `not-run`, never `pass` or `skipped` — "skipped" already means "this implementation does not claim that suite," which is a different statement and one that a reader could mistake for a capability gap rather than a suite-integrity decision. An implementation MAY exercise a held-out family in its own development, and MUST NOT report the result here.
+`held_out` mirrors `MANIFEST.json`'s held-out list, and is an empty array when the suite holds nothing out — which is the case from `0.6.0-provisional`, so the block above is an illustration of the shape rather than a description of the current suite. (`blind-index/argon2id.json` filled this example until it was pinned on 2026-08-31; `docs/07` §7.) A harness MUST iterate the manifest's `files` and MUST NOT iterate `held_out`; the block is reported so that a held-out family is *visibly* not run rather than silently absent. `status` is `not-run`, never `pass` or `skipped` — "skipped" already means "this implementation does not claim that suite," which is a different statement and one that a reader could mistake for a capability gap rather than a suite-integrity decision. An implementation MAY exercise a held-out family in its own development, and MUST NOT report the result here.
 
 `provisional_suites` is `true` whenever any identifier in `suites_supported` falls in spec §4.8's reserved `0xFF00`–`0xFFFF` range. It exists so that a report cannot be quoted as evidence of conformance to a frozen format when no format has been frozen (PRD §8, Gate 0b).
 

@@ -39,7 +39,7 @@ from fieldseal.blindindex import (  # noqa: E402
     Argon2Params,
     CardinalityOverride,
     IndexDeclaration,
-    idf_hmac_sha512,
+    idf,
     truncate,
 )
 from fieldseal.context import aad, canonical_context  # noqa: E402
@@ -267,15 +267,24 @@ def run_commitment(doc: dict, results: list[dict]) -> None:
             _record(results, v["id"], ok)
 
 
-def _blind_index_primitive(idf: str, index_key_bytes: bytes,
-                           normalized: bytes, b_bits: int) -> tuple[bytes, bytes]:
-    if idf != "hmac-sha512":
-        # blind-index/argon2id.json is held out (MANIFEST.held_out) pending
-        # G2, so no Argon2id vector reaches this harness. When one does, it
-        # dispatches through `blindindex.idf` with the declaration's cost --
-        # which `_argon2_params` now reads from the vector (#62).
-        raise ValueError(f"harness runs hmac-sha512 only; got {idf}")
-    raw = idf_hmac_sha512(index_key_bytes, normalized)
+def _blind_index_primitive(which: str, index_key_bytes: bytes,
+                           normalized: bytes, b_bits: int,
+                           argon2: Argon2Params | None = None,
+                           ) -> tuple[bytes, bytes]:
+    """`(raw, truncated)` for either IDF, at the cost the vector declares.
+
+    Dispatches through the core's own `blindindex.idf` rather than calling a
+    primitive directly, so the vector exercises the dispatch an adapter goes
+    through instead of a harness-local shortcut. Until suite 0.6.0-provisional
+    this refused anything but HMAC, because `blind-index/argon2id.json` was
+    held out and no Argon2id vector could reach it; the family is pinned now
+    (docs/07 §7).
+
+    `argon2` is the vector's declared cost, not this core's default. Deriving
+    at the default would make a vector at a *raised* cost fail against a
+    correct core and point the failure at the primitive (issue #62).
+    """
+    raw = idf(which, index_key_bytes, normalized, argon2)
     return raw, truncate(raw, b_bits)
 
 
@@ -285,12 +294,13 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
         if v.get("assertion") == "equal":
             i = v["inputs"]
             norm = NORMALIZERS[i["normalize"]]
+            cost = _argon2_params(i)
             _, a = _blind_index_primitive(i["idf"], H(i["index_key"]),
                                           norm(i["plaintext_preimage_a"]),
-                                          i["truncate_bits"])
+                                          i["truncate_bits"], cost)
             _, b = _blind_index_primitive(i["idf"], H(i["index_key"]),
                                           norm(i["plaintext_preimage_b"]),
-                                          i["truncate_bits"])
+                                          i["truncate_bits"], cost)
             ok = (a.hex() == v["expected"]["index_a"]
                   and b.hex() == v["expected"]["index_b"]
                   and (a == b) == v["expected"]["must_be_equal"])
@@ -304,7 +314,8 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
             i = v["inputs"]
             _, got = _blind_index_primitive(i["idf"], H(i["index_key"]),
                                             H(i["reserved_preimage"]),
-                                            i["truncate_bits"])
+                                            i["truncate_bits"],
+                                            _argon2_params(i))
             ctx = _ctx_from(i["context"], sid)
             caller = FieldContext(
                 table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
@@ -351,7 +362,8 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
         normalized = NORMALIZERS[v["normalize"]](v["plaintext_preimage"])
         raw, stored = _blind_index_primitive(v["idf"], H(v["index_key"]),
                                              H(v["plaintext"]),
-                                             v["truncate_bits"])
+                                             v["truncate_bits"],
+                                             _argon2_params(v))
         exp = v["expected"]
         checks = {
             "normalizer": normalized.hex() == v["plaintext"],
@@ -500,6 +512,7 @@ RUNNERS = {
     "kdf/index-key.json": run_kdf,
     "commitment/ff01.json": run_commitment,
     "blind-index/hmac-sha512.json": run_blind_index,
+    "blind-index/argon2id.json": run_blind_index,
     "envelope/ff01.json": run_envelope,
     "errors/format.json": run_errors,
     "errors/policy.json": run_errors,
@@ -706,9 +719,11 @@ def run() -> dict:
             "the vector's config; a raised FieldsealError is matched by code, "
             "a non-Fieldseal exception is a failure. The blind_index cases "
             "pass the preimage bytes and the vector's index_declaration.",
-            "blind-index/argon2id.json is held out (MANIFEST.held_out) and was "
-            "not iterated; it is reported as not-run. Nothing about Argon2id "
-            "contributes to this report's summary.",
+            "blind-index/argon2id.json is pinned as of suite "
+            "0.6.0-provisional (docs/07 §7) and is iterated like any other "
+            "family; Argon2id now contributes to this report's summary. Each "
+            "vector derives at the cost it declares in idf_params, not at "
+            "this core's default (docs/08 §4.4).",
         ],
         "results": results,
         "held_out": held,

@@ -17,11 +17,36 @@ def test_vector(result):
 def test_held_out_families_are_not_run():
     """A held-out family must be reported as not-run, never as passed or
     skipped -- 'skipped' already means 'this implementation does not claim that
-    suite', which is a different statement (docs/14 §4)."""
+    suite', which is a different statement (docs/14 §4).
+
+    The suite holds nothing out as of 0.6.0-provisional, so this guards the
+    rule rather than a case. It used to also assert that
+    `blind-index/argon2id.json` was the held-out family; that assertion is now
+    `test_argon2id_family_is_pinned_and_run` below, which is the same fact
+    from the other side.
+    """
     for h in REPORT["held_out"]:
         assert h["status"] == "not-run"
-    assert any(h["path"] == "blind-index/argon2id.json"
-               for h in REPORT["held_out"])
+
+
+def test_argon2id_family_is_pinned_and_run():
+    """Argon2id is derived and counted, not merely present.
+
+    The family was held out of the suite until 2026-08-31 (docs/07 §7), which
+    meant this core's harness never derived an Argon2id index -- it refused
+    anything but HMAC. A report that counted the file without running it, or a
+    harness that quietly fell back to HMAC, would both look green here, so
+    assert on derived results rather than on the manifest.
+    """
+    ids = {r["id"] for r in REPORT["results"] if r["status"] == "pass"}
+    argon2 = {i for i in ids if i.startswith("blind-index/argon2id/")}
+    assert argon2, "no Argon2id vector was run"
+    # The assertion shapes are the ones the hold-out hid: they carried no
+    # idf_params until the family was promoted, and both cores treat a missing
+    # cost as malformed rather than as "the minimum" (docs/08 §4.4, #62).
+    assert any(i.endswith("/unindexable-marker-b15") for i in argon2)
+    assert any(i.endswith("/unindexable-bucketed-b15") for i in argon2)
+    assert not REPORT["held_out"]
 
 
 def test_l0_not_claimed_against_a_frozen_format():

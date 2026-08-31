@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/keys/v1",
-  "vector_suite_version": "0.5.0-provisional",
+  "vector_suite_version": "0.6.0-provisional",
   "spec_version": "0.1-draft",
   "banner": "PUBLIC TEST MATERIAL. Every value in this file is published in a public repository and is known to everyone. It exists so that cross-implementation producers and consumers share key material by reference (key_ref) instead of embedding it per file. No value here may ever be used outside a test, and an implementation that accepts it outside FIELDSEAL_TEST_MODE is misconfigured, not conformant.",
   "keys": {
