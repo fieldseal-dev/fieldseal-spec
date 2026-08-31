@@ -359,7 +359,8 @@ the target matrix in `docs/13` §6.
 | Legacy plaintext row on a base64 column | 🛑 strict raises NOT_CIPHERTEXT / ⚠️ permissive returns the actual value and fires `onPlaintextRead` | `a stored value that is not an envelope…` |
 | Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
 | Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
-| `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction | fixture supplies it; see `helpers.ts` |
+| `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction, naming the column | `refuses \`on_unindexable: "bucket"\` without the §7.2 ceremony`, `constructs once the ceremony is supplied in code` |
+| A §7.6 / §7.2 override naming a column with no declared index, or naming one twice | 🛑 refused — a recorded human approval pointing at the wrong place, while the column it was meant for stays ungated | `refuses an override that names a column with no declared index`, `refuses the same column listed twice in one override` |
 | **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 | **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…` |
@@ -485,13 +486,36 @@ that process.
 ```bash
 npm ci
 npm run build                    # dist/, and the generator bin
-npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
-npx prisma db push               # the fixture SQLite database
-npm test                         # 209 tests
+npx prisma generate              # the fixture's Prisma client
+npx prisma db push               # the fixture database
+npm test                         # 232 tests
 npm run typecheck
+npm run cross:produce -- --out ../../cross-prisma.json   # the cross-language artifact
+npm run --silent report > conformance-prisma-adapter.json  # the docs/14 §4 report
 ```
 
 `@fieldseal/core` is a `file:` dependency on this repository's own core, so the
 adapter is verified against the core it ships beside, not against a release.
 `core/typescript` must be built first — its `dist/` is gitignored.
+
+### The conformance report
+
+`npm run report` runs the suite and emits the `docs/14` §4 conformance report.
+An adapter's report claims no `L0` — this package runs no vector families,
+because it contains no cryptography — and carries instead a `coverage_matrix`
+block that `docs/14` §4 requires to mirror this README's table.
+
+It is **generated from the table above**, not written to match it: the
+generator parses the rows, resolves each row's cited test names against the
+run, and takes the row's status from those tests. A row that names a test which
+no longer exists, or that claims behaviour and cites no test at all, fails the
+report and turns CI red. That is what "the claim and the docs cannot drift
+apart" has to mean to mean anything — and on its first run it found a row
+claiming a refusal and pointing at a fixture instead of a test.
+
+`pinned_decisions` is this adapter's own list, and the first entry is the one
+no core report can carry: **the codec's renderings**. `as: "int"` becoming
+`b"45"` is a decision this package makes, nothing in the spec or the vector
+suite pins it, and a consumer in another language that decoded it differently
+would decrypt successfully and read the wrong value.
