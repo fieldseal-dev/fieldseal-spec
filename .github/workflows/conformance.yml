@@ -506,6 +506,13 @@ jobs:
       # declaration and its rendering is an adapter choice. This leg exercises
       # all six of them, plus the base64 storage form, which Django's fixture
       # does not carry.
+      #
+      # This leg produces from SQLite. The bytea production path is not
+      # untested for that: the prisma-adapter postgres leg runs the producer
+      # through its own guard (tests/cross-produce.test.ts, which inherits
+      # FIELDSEAL_TEST_DB) and decrypts every case. What the N x N artifact
+      # does not carry is a postgres-PRODUCED document for the Python core to
+      # consume -- stated so the gap is a known one, not an assumed coverage.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.impl == 'prisma'
         with:
@@ -522,12 +529,16 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run build
+      # build.ts first, as in the prisma-adapter job: it derives the schema
+      # the Postgres leg generates from, and the two steps ordered differently
+      # in two jobs is exactly the drift a future Postgres enablement would
+      # trip over.
       - name: Generate the fixture
         if: matrix.impl == 'prisma'
         working-directory: adapters/prisma
         run: |
-          npx prisma generate
           node tests/fixture/build.ts
+          npx prisma generate
           npx prisma db push
       - name: Produce (prisma)
         if: matrix.impl == 'prisma'
