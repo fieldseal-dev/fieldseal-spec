@@ -293,6 +293,53 @@ def test_lone_surrogate_is_refused_distinguishably():
     assert msgs[0] != msgs[1]
 
 
+def test_first_unassigned_is_on_the_package_root():
+    """docs/09 §7.1 requires cores to export the assigned-code-point check
+    "for adapters that hold the text earlier and can give a better-sited
+    error". It lived in `fieldseal.unicode` and never reached this root, so
+    the MUST had no public surface at all (G22, #88). `UNICODE_VERSION` is
+    exported with it: an adapter rendering "not assigned in Unicode 17.0.0"
+    needs the version the check was made against, and a constant of its own
+    is how two copies drift apart."""
+    import fieldseal
+
+    assert "first_unassigned" in fieldseal.__all__
+    assert "UNICODE_VERSION" in fieldseal.__all__
+    assert fieldseal.first_unassigned("plain ascii") is None
+
+
+def test_first_unassigned_reports_the_position_in_code_points():
+    """The half the export existed without.
+
+    Before G22 the check returned the code point alone, so an adapter could
+    name the character and not where it was -- and `docs/12` §10.2 requires
+    both, because "somewhere in this field" is not something a person can act
+    on. The Prisma adapter recovered the offset by regex over the core's error
+    message, which never matched on the `nfc-casefold-v1` path that
+    `on_unindexable` actually governs, so the shipped message named the
+    character and silently dropped the position.
+
+    **The unit is code points, not UTF-16 units**, and the astral cases are
+    here because that is the only place the two differ. The TypeScript core
+    returns the same numbers for the same strings; that agreement is a
+    cross-core property no vector can express (an unpaired surrogate has no
+    UTF-8 encoding, so `blind-index/` cannot key one), which is why it is
+    asserted here and in `tests/unicode.test.ts` rather than in the suite."""
+    from fieldseal import first_unassigned
+
+    assert first_unassigned("\u0378") == (0x378, 0)
+    assert first_unassigned("a\ud800b") == (0xD800, 1)
+    assert first_unassigned("a\udc00b") == (0xDC00, 1)
+    # One astral character ahead of the fault: code-point index 1, UTF-16
+    # index 2. A core that counted UTF-16 units would say 2 here.
+    assert first_unassigned("\U0001F510\u0378") == (0x378, 1)
+    assert first_unassigned("\U0001F510\U0001F510\ufdd0") == (0xFDD0, 2)
+    # Named access, so a message reads `stray.code_point` rather than `[0]`.
+    stray = first_unassigned("\U0001F510\u0378")
+    assert stray is not None
+    assert (stray.code_point, stray.offset) == (0x378, 1)
+
+
 def test_identity_normalizer_refuses_lone_surrogates_as_invalid_argument():
     """The same refusal on the byte-transparent path, and typed the same way.
 

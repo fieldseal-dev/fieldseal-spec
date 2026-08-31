@@ -4,7 +4,13 @@
 **Blocks:** No stored byte, no derived value, no vector in any family. `docs/13` §9's message requirement, which the Prisma adapter currently satisfies by regex over `InvalidArgumentError.message`.
 **Found:** 2026-08-27, writing the Prisma adapter's unindexable-value path (WS-F PR1).
 
-**Status:** OPEN — filed, not applied. The adapter ships the workaround with the reason written at the call site.
+**Status:** CLOSED 2026-08-31 — tracker [#88](https://github.com/fieldseal-dev/fieldseal-spec/issues/88). Closed **with a correction to this issue's own proposed direction**, found while implementing it.
+
+Step 1 above says "Signature as it already exists: text in, the first unassigned or surrogate code point and its offset out." **That was wrong about both cores.** Neither returned an offset — `first_unassigned` was `Optional[int]` and `firstUnassigned` was `number | undefined`, the code point alone. So exporting the function unchanged would have satisfied the letter of §7.1 and left `docs/12` §10.2's requirement to name the character *and its position* exactly as unmet as before.
+
+Worse, and measured rather than reasoned: the Prisma adapter's offset regex (`/\\bat index (\\d+)\\b/`) matched only the `identity`/bytes path's message. On `nfc-casefold-v1` — the normalizer every indexed column declares, and the only one `on_unindexable` governs in practice — *neither* core's message carries an offset at all. The shipped refusal therefore named the character and silently dropped the position: `{"codePoint":"U+0378","offset":null}`. That was a live defect in shipped code, and the issue as filed would not have fixed it.
+
+**What closed it:** both cores' checks now return the code point **and its offset in code points** (`Unassigned(code_point, offset)` / `UnassignedCodePoint`), both export it and `UNICODE_VERSION` from the package root, and the Prisma adapter calls it instead of parsing prose — both regexes deleted. The two cores were verified to agree byte-for-byte on nine inputs including the astral cases where a UTF-16 count would diverge. Django's `locate_unindexable` keeps its normalizer-aware probe, deliberately: the accessor answers `nfc-casefold-v1`'s rule, and an `identity` column refuses a strictly narrower set. Point 4 was followed as the issue recommended — no `docs/14` §4 `out_of_band` entry, because an export's presence is directly testable per core and a report key would legitimise a divergence rather than record an unobservable one.
 
 ## Gap
 

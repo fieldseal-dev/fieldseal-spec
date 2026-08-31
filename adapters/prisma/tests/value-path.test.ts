@@ -291,17 +291,51 @@ describe("a stored value that is not an envelope (spec §10.3)", () => {
 });
 
 describe("unindexable values (docs/09 §7.2)", () => {
-  it("refuse mode raises FieldsealUnindexable carrying the code point and offset", async () => {
-    // U+0378 is unassigned in every published Unicode version.
-    const err = await lp["patient"]!["create"]!({
-      data: patient({ email: "a͸@example.com" }),
-    }).then(
+  /** The first code point `nfc-casefold-v1` refuses, and where it sits. */
+  const refusalFor = async (email: string): Promise<FieldsealUnindexable | null> =>
+    lp["patient"]!["create"]!({ data: patient({ email }) }).then(
       () => null,
       (e) => e as FieldsealUnindexable,
     );
+
+  it("refuse mode raises FieldsealUnindexable carrying the code point and offset", async () => {
+    // U+0378 is unassigned in every published Unicode version.
+    const err = await refusalFor("a͸@example.com");
     expect(err).toBeInstanceOf(FieldsealUnindexable);
     expect(err?.detail.codePoint).toBe("U+0378");
     expect(err?.message).toMatch(/cannot index yet/);
+
+    // **This assertion is the point of G22 (#88), and its absence is how the
+    // defect shipped.** The test carried "and offset" in its name and never
+    // checked it: the offset came from a regex over the core's error message
+    // that only ever matched the `identity`/bytes path, so on this path --
+    // `nfc-casefold-v1`, the only normalizer `on_unindexable` governs in
+    // practice -- `detail.offset` was always `null`, and `docs/12` §10.2
+    // requires the position as much as the character.
+    expect(err?.detail.offset).toBe(1);
+    expect(err?.message).toMatch(/at position 2/);
+  });
+
+  it("counts the position in characters, not UTF-16 units", async () => {
+    // The distinction only shows up past the BMP, which is why it is easy to
+    // get wrong and why the core's exported accessor fixes the unit rather
+    // than leaving each adapter to count. An emoji is one character to the
+    // person reading the message and two UTF-16 units to JavaScript; a message
+    // that said "position 3" here would be counting the wrong thing.
+    const err = await refusalFor("\u{1F510}͸@example.com");
+    expect(err).toBeInstanceOf(FieldsealUnindexable);
+    expect(err?.detail.offset).toBe(1);
+    expect(err?.message).toMatch(/at position 2/);
+  });
+
+  it("returns the core's own error when the value has no unindexable character", async () => {
+    // The refusal is attributed, not assumed. The old regex inferred
+    // "unindexable value" from a `U+` appearing anywhere in the message text;
+    // the accessor answers the actual question, so a refusal with some other
+    // cause is passed through untouched rather than re-dressed as a
+    // data-quality problem the caller cannot act on.
+    const err = await refusalFor("ada@example.com");
+    expect(err).toBeNull(); // a perfectly indexable value: no refusal at all
   });
 
   it("bucket mode stores the real value and derives the reserved marker", async () => {

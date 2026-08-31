@@ -31,6 +31,17 @@ decides index values, so a second copy that drifts is a silent lookup miss
 normalizer until one is refused. Refusal under `nfc-casefold-v1` is a per
 -code-point property (unassigned, or an unpaired surrogate), so probing one
 character at a time gives the same answer as probing the whole string.
+
+**Why the probe stays now that `fieldseal.first_unassigned` is exported**
+(G22, #88, closed 2026-08-31). The accessor returns the code point and its
+offset directly, and it is the right call for an adapter that knows it is on
+the `nfc-casefold-v1` path -- the Prisma adapter now uses it. This function
+is normalizer-*aware*, which is a strictly larger question: `identity`
+refuses unpaired surrogates and accepts unassigned code points, so on an
+`identity` column the accessor would name a character that column indexes
+perfectly well. Probing the declared normalizer answers what this column
+actually refuses. Two paths where one would do is worse than one slower
+path that is right for every column.
 """
 
 from __future__ import annotations

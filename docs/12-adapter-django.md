@@ -239,6 +239,8 @@ it's a recently added character we haven't added support for yet.
 
 The support path has to be real. "Contact support" is only honest if support can actually store the value, which means an operator can move that column to `bucket`, or store the row through a path that does not derive the index.
 
+**Where rule 1's two halves come from.** `fieldseal.first_unassigned(text)` returns the offending code point and its offset, in code points — the unit this section's own example counts. It is exported from the package root for exactly this (`docs/09` §7.1; G22, [#88](https://github.com/fieldseal-dev/fieldseal-spec/issues/88)), so no adapter needs to parse an error message to build the message above, and no adapter needs a second copy of the Unicode assignment table — a second copy that drifts is a silent lookup miss, not a wrong message. This adapter's `locate_unindexable` keeps its normalizer-aware probe rather than calling the accessor directly, and deliberately: the accessor answers `nfc-casefold-v1`'s refusal rule, while a column may declare a normalizer whose rule is narrower (`identity` refuses surrogates and accepts unassigned code points). Probing the declared normalizer is the general answer; the accessor is the right one for any adapter that knows it is on the `nfc-casefold-v1` path.
+
 ### 10.3 Choosing per column
 
 The answer differs by column and a single rule is wrong somewhere:

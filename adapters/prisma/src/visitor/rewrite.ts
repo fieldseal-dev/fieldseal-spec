@@ -149,7 +149,7 @@ export function applyRewrites(
           // docs/13 §9: an unindexable operand under `refuse` propagates. It
           // MUST NOT become a query that returns zero rows -- that is the
           // silent miss this adapter exists to prevent, with a different cause.
-          throw unindexableError(e, label, intent.enc.noun);
+          throw unindexableError(e, label, intent.enc.noun, operand);
         }
         const n = normalizeOrNull(intent.idx.normalize, operand);
         if (n === null) raw.add(hex(bytesOf(operand)));

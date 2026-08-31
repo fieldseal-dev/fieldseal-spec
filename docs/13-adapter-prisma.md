@@ -345,6 +345,8 @@ No `row_id` binding (extension runs before the query; DB-generated IDs don't exi
 
 ## 9. Unindexable values (docs/09 §7.2 — normative for this adapter)
 
+**The message's character and position come from `firstUnassigned`, not from the core's error text** (G22, [#88](https://github.com/fieldseal-dev/fieldseal-spec/issues/88), closed 2026-08-31). The extension throws rather than renders, but the thrown `FieldsealUnindexable` carries what `docs/12` §10.2 needs, and until G22 closed it carried only half: the offset was recovered by a regex over the core's message that matched only the `identity`/bytes path, so on `nfc-casefold-v1` — the normalizer every indexed column here declares — `detail.offset` was always `null` and the rendered message named the character without saying where it was. Measured before the fix rather than reasoned about: `{"codePoint":"U+0378","offset":null}`. The offset is counted in **code points**, so an astral character ahead of the fault counts as one position, not two.
+
 `encrypt` does not normalize and `blindIndex` does, so a value containing a code point the pinned Unicode version does not define **stores but cannot be fingerprinted**. Each indexed field declares `on_unindexable` in its `///` annotation (§1); the extension's behaviour follows from it. This is the obligation `docs/09` §7.1 refers to.
 
 | `on_unindexable` | Write path | Query path |

@@ -64,10 +64,22 @@ describe("vendored Unicode tables", () => {
 
   it("recognises code points the pin does not define", () => {
     expect(firstUnassigned("plain ascii")).toBeUndefined();
-    expect(firstUnassigned("͸")).toBe(0x378); // unassigned in every version so far
-    expect(firstUnassigned("﷐")).toBe(0xfdd0); // noncharacter
-    expect(firstUnassigned("a\uD800b")).toBe(0xd800); // lone surrogate: no UTF-8 form
+    // unassigned in every version so far
+    expect(firstUnassigned("͸")).toEqual({ codePoint: 0x378, offset: 0 });
+    expect(firstUnassigned("﷐")).toEqual({ codePoint: 0xfdd0, offset: 0 }); // noncharacter
+    // lone surrogate: no UTF-8 form
+    expect(firstUnassigned("a\uD800b")).toEqual({ codePoint: 0xd800, offset: 1 });
     expect(firstUnassigned("\u{16EA0}")).toBeUndefined(); // Beria Erfe, added in 17.0
+
+    // The offset is counted in CODE POINTS, not UTF-16 units, and the two
+    // differ the moment an astral character precedes the fault. G22 (#88)
+    // exports this accessor precisely so an adapter does not have to recover
+    // the position by parsing an error message, and `docs/12` §10.2 renders it
+    // to a person as "the Nth character" -- which is code points or it is
+    // wrong. `encodeUtf8Strict`'s own message still reports a UTF-16 index and
+    // deliberately still does; it is the bytes path and its reader is an
+    // operator, not a form.
+    expect(firstUnassigned("\u{1F510}͸")).toEqual({ codePoint: 0x378, offset: 1 });
   });
 });
 
@@ -128,9 +140,9 @@ describe("nfc-casefold-v1 collides case variants", () => {
     // malformed values can share an index.
     expect(() => NT("a\uD800b")).toThrow(InvalidArgumentError);
     expect(() => NT("a\uDC00b")).toThrow(InvalidArgumentError);
-    expect(firstUnassigned("a\uD800b")).toBe(0xd800);
-    expect(firstUnassigned("a\uDC00b")).toBe(0xdc00);
-    expect(firstUnassigned("a\uD800b")).not.toBe(firstUnassigned("a\uDC00b"));
+    expect(firstUnassigned("a\uD800b")).toEqual({ codePoint: 0xd800, offset: 1 });
+    expect(firstUnassigned("a\uDC00b")).toEqual({ codePoint: 0xdc00, offset: 1 });
+    expect(firstUnassigned("a\uD800b")).not.toEqual(firstUnassigned("a\uDC00b"));
   });
 
   it("a legitimate U+FFFD is ordinary text, not an error", () => {
