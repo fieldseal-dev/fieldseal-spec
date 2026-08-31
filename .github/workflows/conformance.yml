@@ -173,21 +173,37 @@ jobs:
           python -m mypy --strict src/fieldseal_django
 
   prisma-adapter:
-    name: Prisma adapter (L1 + L2) on SQLite
+    name: Prisma adapter (L1 + L2 + L4) on ${{ matrix.db }}
     runs-on: ubuntu-24.04
-    # Still SQLite only, and this comment previously said the Postgres leg
-    # would land "with the L2 query path". L2 has landed and the leg has not,
-    # so the deferral is restated with its actual reason rather than left as a
-    # promise that quietly expired.
-    #
-    # The house rule is "never treat one database backend as representative"
-    # (it exists because Django's `bulk_update` builds a different expression
-    # tree on Postgres). What makes it weigh less here: this adapter builds no
-    # SQL. The L2 rewrite replaces one filter operand with another on a `Bytes`
-    # column, and PR1's write/read tests already exercise `Bytes` round trips
-    # per backend -- the backend-sensitive surface is the column type, not the
-    # predicate. It is still an untested claim, and the leg lands with the
-    # cross-language producer in the next increment (docs/13 §7).
+    # Both backends. The house rule is "never treat one database backend as
+    # representative", and it exists because Django's `bulk_update` builds a
+    # different expression tree on Postgres. It weighs differently here --
+    # this adapter builds no SQL at all -- but the surface it *does* depend on
+    # is exactly the one that differs: an encrypted column is `Bytes`, which is
+    # a SQLite BLOB and a Postgres bytea, and `storage: "base64"` is text on
+    # both. Until now that was an argument for deferring the leg; it is a
+    # better argument for running it, because the claim it tests is narrow
+    # enough to be checkable.
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    # The service starts for both legs -- Actions has no conditional
+    # `services` -- so a broken image pin fails the SQLite leg too. Same
+    # digest as the Django job, resolved from the registry there.
+    services:
+      postgres:
+        image: postgres:17@sha256:0b657ff48d7f76a1e907f381b1693eb4f2bf54c1d2df4feb6743d7dc601768dd
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fieldseal_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      FIELDSEAL_TEST_DB: ${{ matrix.db }}
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fieldseal_test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -206,27 +222,53 @@ jobs:
 
       - name: Install the adapter
         working-directory: adapters/prisma
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Build the adapter and its generator
         working-directory: adapters/prisma
         run: npm run build
 
-      # The fixture's Prisma client, field map and database. The field map is
+      # The fixture's field map, Prisma client and database. The field map is
       # produced by the same buildFieldMap/renderModule the generator calls;
       # `tests/generator.test.ts` covers the generator's RPC path end to end.
+      #
+      # `build.ts` runs FIRST now, because it also derives
+      # `schema.postgres.prisma` from `schema.prisma` -- a datasource provider
+      # must be a string literal, so the Postgres leg needs its own schema
+      # file, and deriving it beats committing a second one that drifts.
       - name: Generate the fixture
         working-directory: adapters/prisma
         run: |
-          npx prisma generate
           node tests/fixture/build.ts
+          npx prisma generate
           npx prisma db push
 
+      # Two reporters, one run: the default one so a failure is readable in the
+      # log, and the JSON one so the conformance report below scores the same
+      # run rather than paying for a second.
       - name: Run the suite
         working-directory: adapters/prisma
-        run: npm test
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=.vitest-results.json
+
+      # docs/14 §4. An adapter's report claims no L0 -- it runs no vector
+      # families, because it contains no cryptography -- and carries instead a
+      # `coverage_matrix` block that docs/14 §4 requires to mirror the README
+      # table. It is *parsed out of* the README and scored against this run, so
+      # a row naming a test that no longer exists fails the step. That is the
+      # anti-drift mechanism, and it caught a real gap on its first run: a
+      # refusal the matrix claimed and no test asserted.
+      - name: Conformance report (docs/14 §4)
+        working-directory: adapters/prisma
+        run: node --no-warnings=ExperimentalWarning tests/report.ts --results .vitest-results.json > conformance-prisma-adapter.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-prisma-adapter-${{ matrix.db }}
+          path: adapters/prisma/conformance-prisma-adapter.json
 
       - name: Typecheck (sources and tests)
+        if: matrix.db == 'sqlite'
         working-directory: adapters/prisma
         run: npm run typecheck
 
@@ -408,7 +450,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        impl: [python, typescript, django]
+        impl: [python, typescript, django, prisma]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -458,6 +500,51 @@ jobs:
         working-directory: adapters/django
         run: PYTHONPATH=. python tests/cross_produce.py --out ../../cross-django.json
 
+      # The Prisma adapter as a producer. The same three adapter-owned
+      # decisions as Django's leg, and one more that only exists here: Prisma's
+      # schema type is the *storage* type, so the logical type is an `as:`
+      # declaration and its rendering is an adapter choice. This leg exercises
+      # all six of them, plus the base64 storage form, which Django's fixture
+      # does not carry.
+      #
+      # This leg produces from SQLite. The bytea production path is not
+      # untested for that: the prisma-adapter postgres leg runs the producer
+      # through its own guard (tests/cross-produce.test.ts, which inherits
+      # FIELDSEAL_TEST_DB) and decrypts every case. What the N x N artifact
+      # does not carry is a postgres-PRODUCED document for the Python core to
+      # consume -- stated so the gap is a known one, not an assumed coverage.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.impl == 'prisma'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the TypeScript core
+        if: matrix.impl == 'prisma'
+        working-directory: core/typescript
+        run: |
+          npm ci
+          npm run build
+      - name: Install and build the adapter
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      # build.ts first, as in the prisma-adapter job: it derives the schema
+      # the Postgres leg generates from, and the two steps ordered differently
+      # in two jobs is exactly the drift a future Postgres enablement would
+      # trip over.
+      - name: Generate the fixture
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: |
+          node tests/fixture/build.ts
+          npx prisma generate
+          npx prisma db push
+      - name: Produce (prisma)
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: npm run --silent cross:produce -- --out ../../cross-prisma.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cross-${{ matrix.impl }}
@@ -488,7 +575,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
       - name: Consume every producer (python)
         if: matrix.consumer == 'python'
-        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json cross-django.json --verdict verdict-python.json
+        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json cross-django.json cross-prisma.json --verdict verdict-python.json
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.consumer == 'typescript'
@@ -503,7 +590,7 @@ jobs:
       - name: Consume every producer (typescript)
         if: matrix.consumer == 'typescript'
         working-directory: core/typescript
-        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json ../../cross-django.json --verdict ../../verdict-typescript.json
+        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json ../../cross-django.json ../../cross-prisma.json --verdict ../../verdict-typescript.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

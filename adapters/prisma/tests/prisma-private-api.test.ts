@@ -20,14 +20,13 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { DB_URL } from "./helpers.ts";
+import { driverAdapter } from "./helpers.ts";
 import { PrismaClient } from "./fixture/generated/prisma/client.ts";
 import * as NS from "./fixture/generated/prisma/internal/prismaNamespace.ts";
 
-const base = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: DB_URL }) });
+const base = new PrismaClient({ adapter: driverAdapter() } as never);
 afterAll(async () => {
   await base.$disconnect();
 });
@@ -264,7 +263,7 @@ describe("what $allOperations can see", () => {
     // the §7.5 projection check runs on the returned row. If this ever starts
     // appearing in `args`, an earlier and clearer refusal becomes possible.
     const omitted = new PrismaClient({
-      adapter: new PrismaBetterSqlite3({ url: DB_URL }),
+      adapter: driverAdapter(),
       omit: { patient: { email: true } },
     } as never);
     const seen: Array<Record<string, unknown>> = [];
