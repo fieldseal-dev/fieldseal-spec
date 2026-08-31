@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Fieldseal } from "../../src/api.ts";
+import type { IndexDeclaration } from "../../src/blindindex.ts";
 import type { FieldContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
 import { StaticKeyProvider } from "../../src/keyprovider.ts";
@@ -30,7 +31,50 @@ interface KeyEntry {
   tenant_index_key: string;
 }
 
-function clientFor(k: KeyEntry): Fieldseal {
+interface IndexCase {
+  id: string;
+  key_ref: string;
+  declaration: {
+    index_id: string;
+    idf: string;
+    normalize: string;
+    truncate_bits: number;
+    projected_population: number;
+    on_unindexable: string;
+    unindexable_override?: { reason: string; approved_by: string; date: string };
+  };
+  context: Record<string, string | null>;
+  value_text?: string;
+  value_bytes?: string;
+  value_marker?: boolean;
+  index: string;
+}
+
+/** The producer's declaration block, as this core's registry wants it. */
+function declOf(c: IndexCase): IndexDeclaration {
+  const d = c.declaration;
+  return {
+    tableUuid: hex(c.context.table_uuid!),
+    columnUuid: hex(c.context.column_uuid!),
+    indexId: d.index_id,
+    idf: d.idf as IndexDeclaration["idf"],
+    normalize: d.normalize as IndexDeclaration["normalize"],
+    truncateBits: d.truncate_bits,
+    projectedPopulation: d.projected_population,
+    onUnindexable: d.on_unindexable as NonNullable<IndexDeclaration["onUnindexable"]>,
+    ...(d.unindexable_override !== undefined
+      ? {
+          unindexableOverride: {
+            reason: d.unindexable_override.reason,
+            approvedBy: d.unindexable_override.approved_by,
+            date: d.unindexable_override.date,
+          },
+        }
+      : {}),
+  };
+}
+
+function clientFor(k: KeyEntry, indexes: IndexDeclaration[] = []): Fieldseal {
   const suiteId = parseInt(k.suite_id.slice(2), 16);
   // Decrypt needs no §4.8 arming; strict mode so a non-envelope producer
   // value fails loudly instead of passing through.
@@ -38,6 +82,7 @@ function clientFor(k: KeyEntry): Fieldseal {
     keyProvider: new StaticKeyProvider({ dek: hex(k.tenant_dek), keyId: hex(k.key_id), indexKey: hex(k.tenant_index_key) }),
     allowedSuites: [suiteId],
     writeSuite: suiteId,
+    indexes,
     onWarning: () => {},
   });
 }
@@ -83,6 +128,16 @@ const SCHEMAS = new Set(["fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/
 interface Pair {
   id: string;
   producer: string;
+  /**
+   * Which half of the claim this pair checked.
+   *
+   * Recorded because the two fail for different reasons and want different
+   * reading: an envelope mismatch is a decrypt problem, an index mismatch is
+   * a **silent lookup miss** in production -- nothing would have raised, the
+   * row would just have stopped being findable. A summary that could not tell
+   * them apart would report the more serious one as the less serious.
+   */
+  kind: "envelope" | "index";
   status: "pass" | "fail";
   reason?: string;
 }
@@ -94,6 +149,7 @@ for (const f of files) {
     schema?: string;
     producer: { implementation: string };
     cases: { id: string; key_ref: string; context: Record<string, string | null>; plaintext: string; envelope: string }[];
+    index_cases?: IndexCase[];
   };
   const producer = doc.producer.implementation;
   producers.push(producer);
@@ -104,6 +160,7 @@ for (const f of files) {
     pairs.push({
       id: `${producer}/document`,
       producer,
+      kind: "envelope",
       status: "fail",
       reason: `unrecognised producer schema ${String(doc.schema)}; this consumer reads ${[...SCHEMAS].join(", ")}`,
     });
@@ -112,22 +169,70 @@ for (const f of files) {
   for (const c of doc.cases) {
     try {
       const got = Buffer.from(clients.get(c.key_ref)!.decrypt(hex(c.envelope), ctxFrom(c.context))).toString("hex");
-      if (got === c.plaintext) pairs.push({ id: c.id, producer, status: "pass" });
-      else pairs.push({ id: c.id, producer, status: "fail", reason: "plaintext differs" });
+      if (got === c.plaintext) pairs.push({ id: c.id, producer, kind: "envelope", status: "pass" });
+      else pairs.push({ id: c.id, producer, kind: "envelope", status: "fail", reason: "plaintext differs" });
     } catch (e) {
       const code = e instanceof FieldsealError ? e.code : String(e);
-      pairs.push({ id: c.id, producer, status: "fail", reason: `decrypt raised ${code}` });
+      pairs.push({ id: c.id, producer, kind: "envelope", status: "fail", reason: `decrypt raised ${code}` });
+    }
+  }
+
+  // The index half. A v1 producer carries none, and that is recorded rather
+  // than passed over: "this producer emits no index cases" and "this consumer
+  // did not check them" must not look the same in a verdict.
+  const indexCases = doc.index_cases ?? [];
+  if (indexCases.length === 0) {
+    pairs.push({
+      id: `${producer}/index-half`,
+      producer,
+      kind: "index",
+      status: "pass",
+      reason: `producer emits ${doc.schema}, which carries no index cases`,
+    });
+  }
+  for (const c of indexCases) {
+    try {
+      // A client per case, carrying that case's declaration. Construction is
+      // where §7.4's band and §7.6's gate run, so a declaration the producer
+      // could build and this core refuses is itself a divergence worth
+      // failing on -- and it fails here, named, rather than as a mismatch.
+      const client = clientFor(keys[c.key_ref]!, [declOf(c)]);
+      const ctx = ctxFrom(c.context);
+      const got = Buffer.from(
+        c.value_marker === true
+          ? client.unindexableMarker(ctx)
+          : client.blindIndex(c.value_text !== undefined ? c.value_text : hex(c.value_bytes!), ctx),
+      ).toString("hex");
+      if (got === c.index) pairs.push({ id: c.id, producer, kind: "index", status: "pass" });
+      else {
+        pairs.push({
+          id: c.id,
+          producer,
+          kind: "index",
+          status: "fail",
+          reason: `index differs: derived ${got}, producer said ${c.index}`,
+        });
+      }
+    } catch (e) {
+      const code = e instanceof FieldsealError ? e.code : String(e);
+      pairs.push({ id: c.id, producer, kind: "index", status: "fail", reason: `derivation raised ${code}` });
     }
   }
 }
 
 const npass = pairs.filter((p) => p.status === "pass").length;
 const verdict = {
-  schema: "fieldseal-conformance-cross/v1",
+  schema: "fieldseal-conformance-cross/v2",
   consumer: "typescript",
   producers,
   pairs,
-  summary: { pass: npass, fail: pairs.length - npass, skipped: 0 },
+  summary: {
+    pass: npass,
+    fail: pairs.length - npass,
+    skipped: 0,
+    envelope: pairs.filter((p) => p.kind === "envelope").length,
+    index: pairs.filter((p) => p.kind === "index").length,
+  },
 };
 mkdirSync(dirname(verdictPath), { recursive: true });
 writeFileSync(verdictPath, JSON.stringify(verdict, null, 1) + "\n");

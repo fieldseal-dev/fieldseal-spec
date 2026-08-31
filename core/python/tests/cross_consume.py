@@ -23,14 +23,19 @@ REPO = Path(__file__).resolve().parents[3]
 VECTORS = REPO / "vectors"
 sys.path.insert(0, str(REPO / "core" / "python" / "src"))
 
-from fieldseal import FieldContext, Fieldseal  # noqa: E402
+from fieldseal import (  # noqa: E402
+    CardinalityOverride,
+    FieldContext,
+    Fieldseal,
+    IndexDeclaration,
+)
 from fieldseal.errors import FieldsealWarning  # noqa: E402
 from fieldseal.keyprovider import StaticKeyProvider  # noqa: E402
 
 H = bytes.fromhex
 
 
-def client_for(key: dict) -> Fieldseal:
+def client_for(key: dict, indexes: list | None = None) -> Fieldseal:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FieldsealWarning)
         return Fieldseal(
@@ -39,6 +44,7 @@ def client_for(key: dict) -> Fieldseal:
                 H(key["tenant_index_key"])),
             allowed_suites={int(key["suite_id"], 16)},
             write_suite=int(key["suite_id"], 16),
+            indexes=indexes or [],
             # Decrypt needs no §4.8 arming; strict mode so a non-envelope
             # producer value fails loudly instead of passing through.
         )
@@ -58,6 +64,25 @@ def client_for(key: dict) -> Fieldseal:
 #: recorded as carrying no index half rather than silently counting as if they
 #: had one.
 SCHEMAS = {"fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"}
+
+
+def decl_of(case: dict) -> IndexDeclaration:
+    """The producer's declaration block, as this core's registry wants it."""
+    d, ctx = case["declaration"], case["context"]
+    override = d.get("unindexable_override")
+    return IndexDeclaration(
+        table_uuid=H(ctx["table_uuid"]),
+        column_uuid=H(ctx["column_uuid"]),
+        index_id=d["index_id"],
+        idf=d["idf"],
+        normalize=d["normalize"],
+        truncate_bits=d["truncate_bits"],
+        projected_population=d["projected_population"],
+        on_unindexable=d["on_unindexable"],
+        unindexable_override=None if override is None else CardinalityOverride(
+            reason=override["reason"], approved_by=override["approved_by"],
+            date=override["date"]),
+    )
 
 
 def ctx_from(c: dict) -> FieldContext:
@@ -90,7 +115,8 @@ def consume(files: list[Path]) -> dict:
                                     f"this consumer reads {sorted(SCHEMAS)}"})
             continue
         for case in doc["cases"]:
-            entry: dict = {"id": case["id"], "producer": producer}
+            entry: dict = {"id": case["id"], "producer": producer,
+                           "kind": "envelope"}
             try:
                 got = clients[case["key_ref"]].decrypt(
                     H(case["envelope"]), ctx_from(case["context"]))
@@ -103,13 +129,60 @@ def consume(files: list[Path]) -> dict:
                 entry["status"] = "fail"
                 entry["reason"] = repr(exc)
             pairs.append(entry)
+
+        # The index half. A v1 producer carries none, and that is recorded
+        # rather than passed over: "this producer emits no index cases" and
+        # "this consumer did not check them" must not look the same.
+        index_cases = doc.get("index_cases", [])
+        if not index_cases:
+            pairs.append({
+                "id": f"{producer}/index-half", "producer": producer,
+                "kind": "index", "status": "pass",
+                "reason": f"producer emits {doc.get('schema')}, which carries "
+                          "no index cases"})
+        for case in index_cases:
+            entry = {"id": case["id"], "producer": producer, "kind": "index"}
+            try:
+                # A client per case, carrying that case's declaration.
+                # Construction is where §7.4's band and §7.6's gate run, so a
+                # declaration the producer could build and this core refuses is
+                # itself a divergence worth failing on -- named, rather than
+                # surfacing as a mismatch.
+                client = client_for(keys[case["key_ref"]], [decl_of(case)])
+                ctx = ctx_from(case["context"])
+                if case.get("value_marker"):
+                    got = client.unindexable_marker(ctx)
+                else:
+                    value = (case["value_text"] if "value_text" in case
+                             else H(case["value_bytes"]))
+                    got = client.blind_index(value, ctx)
+                if got.hex() == case["index"]:
+                    entry["status"] = "pass"
+                else:
+                    entry["status"] = "fail"
+                    entry["reason"] = (f"index differs: derived {got.hex()}, "
+                                       f"producer said {case['index']}")
+            except Exception as exc:  # noqa: BLE001 - a verdict reports, not raises
+                entry["status"] = "fail"
+                entry["reason"] = repr(exc)
+            pairs.append(entry)
+
     npass = sum(p["status"] == "pass" for p in pairs)
     return {
-        "schema": "fieldseal-conformance-cross/v1",
+        "schema": "fieldseal-conformance-cross/v2",
         "consumer": "python",
         "producers": producers,
         "pairs": pairs,
-        "summary": {"pass": npass, "fail": len(pairs) - npass, "skipped": 0},
+        "summary": {
+            "pass": npass, "fail": len(pairs) - npass, "skipped": 0,
+            # Which half each pair checked. The two fail for different reasons
+            # and want different reading: an envelope mismatch is a decrypt
+            # problem, an index mismatch is a *silent lookup miss* in
+            # production -- nothing would have raised, the row would just have
+            # stopped being findable.
+            "envelope": sum(p["kind"] == "envelope" for p in pairs),
+            "index": sum(p["kind"] == "index" for p in pairs),
+        },
     }
 
 

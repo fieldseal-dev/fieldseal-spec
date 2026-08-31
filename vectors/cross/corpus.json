@@ -1,9 +1,9 @@
 {
   "schema": "fieldseal-vectors/cross-corpus/v1",
-  "vector_suite_version": "0.4.0-provisional",
+  "vector_suite_version": "0.5.0-provisional",
   "spec_version": "0.1-draft",
   "suite_id": "0xFF01",
-  "note": "Producer inputs only (docs/08 §4.7). A producer encrypts every case through its production path -- runtime CSPRNG for msg_seed and nonce, no test-mode injection -- resolving key_ref against keys/test-keys.json, and emits cross/<impl> files whose envelopes every other implementation must decrypt.",
+  "note": "Producer inputs only (docs/08 §4.7). A producer encrypts every case through its production path -- runtime CSPRNG for msg_seed and nonce, no test-mode injection -- resolving key_ref against keys/test-keys.json, and emits cross/<impl> files whose envelopes every other implementation must decrypt. `index_cases` are the other half: a producer registers each `declaration` on its client and derives the index through its production path, and every consumer re-derives and compares byte-exact -- a mismatched index is a silent lookup miss, not an error, so nothing else in the matrix would notice.",
   "cases": [
     {
       "case": "size-empty",
@@ -196,6 +196,223 @@
         "purpose": "encrypt"
       },
       "plaintext": "313233343536373839"
+    }
+  ],
+  "index_cases": [
+    {
+      "case": "exact-ascii",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "alice@example.com"
+    },
+    {
+      "case": "exact-non-ascii",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "grüße@example.com"
+    },
+    {
+      "case": "fold-pair-lower",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "ada@example.com"
+    },
+    {
+      "case": "fold-pair-upper",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "ADA@EXAMPLE.COM"
+    },
+    {
+      "case": "nfc-pair-composed",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "café@example.com"
+    },
+    {
+      "case": "nfc-pair-decomposed",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "café@example.com"
+    },
+    {
+      "case": "exact-tenant-absent",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": null,
+        "row_id": null,
+        "purpose": "index:exact"
+      },
+      "value_text": "alice@example.com"
+    },
+    {
+      "case": "wide-b30",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "wide",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 30,
+        "projected_population": 5000000000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:wide"
+      },
+      "value_text": "alice@example.com"
+    },
+    {
+      "case": "identity-bytes",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "raw",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "identity",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "16fd27068baf433b82eb8c7fada847da",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:raw"
+      },
+      "value_bytes": "0001feff"
+    },
+    {
+      "case": "bucket-marker",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "bucketed",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "bucket",
+        "unindexable_override": {
+          "reason": "Cross corpus: exercises the §7.2 reserved marker.",
+          "approved_by": "tools/vector-gen",
+          "date": "2026-08-31"
+        }
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "16fd27068baf433b82eb8c7fada847da",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:bucketed"
+      },
+      "value_marker": true
     }
   ]
 }
