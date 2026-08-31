@@ -66,6 +66,19 @@ def client_for(key: dict, indexes: list | None = None) -> Fieldseal:
 SCHEMAS = {"fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"}
 
 
+def _value_of(case: dict) -> str | bytes:
+    """The operand a case derives from -- exactly one of `value_text` /
+    `value_bytes` / `value_marker` per docs/08 §4.7, named rather than left to
+    a bare `KeyError`. The same helper the producers carry."""
+    if "value_text" in case:
+        return case["value_text"]
+    if "value_bytes" in case:
+        return H(case["value_bytes"])
+    raise ValueError(
+        f"{case['id']}: no value_text, value_bytes or value_marker "
+        "(docs/08 §4.7)")
+
+
 def decl_of(case: dict) -> IndexDeclaration:
     """The producer's declaration block, as this core's registry wants it."""
     d, ctx = case["declaration"], case["context"]
@@ -174,9 +187,7 @@ def consume(files: list[Path]) -> dict:
                 if case.get("value_marker"):
                     got = client.unindexable_marker(ctx)
                 else:
-                    value = (case["value_text"] if "value_text" in case
-                             else H(case["value_bytes"]))
-                    got = client.blind_index(value, ctx)
+                    got = client.blind_index(_value_of(case), ctx)
                 if got.hex() == case["index"]:
                     entry["status"] = "pass"
                 else:

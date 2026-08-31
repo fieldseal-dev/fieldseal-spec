@@ -55,6 +55,25 @@ def _commit() -> str:
         return "unknown"
 
 
+def _value_of(case: dict) -> str | bytes:
+    """The operand a case derives from.
+
+    Exactly one of `value_text` / `value_bytes` / `value_marker` is present per
+    docs/08 §4.7. A case violating that gets a named error rather than a bare
+    `KeyError` -- and the corpus is generated, so what this guards against is a
+    *generator* change, which is exactly the kind that should say what it
+    broke. Mirrors `cross_consume.py` and the TypeScript producer: the sides of
+    one contract should read the same (raised in the #103 review).
+    """
+    if "value_text" in case:
+        return case["value_text"]
+    if "value_bytes" in case:
+        return H(case["value_bytes"])
+    raise ValueError(
+        f"{case['case']}: no value_text, value_bytes or value_marker "
+        "(docs/08 §4.7)")
+
+
 def decl_of(case: dict) -> IndexDeclaration:
     """The corpus's declaration block, as the core's registry wants it.
 
@@ -144,7 +163,7 @@ def produce() -> dict:
             # values into one before the core saw them, which is the false
             # match the text path exists to prevent. `value_bytes` is only for
             # an `identity` column, where the bytes *are* the value.
-            value = c["value_text"] if "value_text" in c else H(c["value_bytes"])
+            value = _value_of(c)
             index = client.blind_index(value, ctx)
         entry = {
             "id": f"cross/python/index/{c['case']}",

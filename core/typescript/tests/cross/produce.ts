@@ -62,6 +62,22 @@ interface IndexCase {
   value_marker?: boolean;
 }
 
+/**
+ * The operand a case derives from.
+ *
+ * Exactly one of `value_text` / `value_bytes` / `value_marker` is present per
+ * docs/08 §4.7. A case violating that gets a named error rather than a
+ * non-null assertion's confusing one -- and the corpus is generated, so the
+ * violation this guards against is a *generator* change, which is exactly the
+ * kind that should say what it broke. Mirrors `consume.ts`'s helper: the two
+ * sides of one contract should read the same (raised in the #103 review).
+ */
+function valueOf(c: IndexCase): string | Uint8Array {
+  if (c.value_text !== undefined) return c.value_text;
+  if (c.value_bytes !== undefined) return hex(c.value_bytes);
+  throw new Error(`${c.case}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
+}
+
 /** The corpus's declaration, as the core's registry wants it. */
 function declOf(c: IndexCase): IndexDeclaration {
   const d = c.declaration;
@@ -167,15 +183,12 @@ const doc = {
     // normalizer refuses. It goes through its own operation, not `blindIndex`.
     const index = c.value_marker === true
       ? client.unindexableMarker(ctx)
-      : client.blindIndex(
-          // Text as text, never its encoding (spec §7.1 / G16 part A): a
-          // producer that encoded first would have collapsed two distinct
-          // values into one before the core saw them, which is the false
-          // match the text path exists to prevent. `value_bytes` is only for
-          // an `identity` column, where the bytes *are* the value.
-          c.value_text !== undefined ? c.value_text : hex(c.value_bytes!),
-          ctx,
-        );
+      : // Text as text, never its encoding (spec §7.1 / G16 part A): a
+        // producer that encoded first would have collapsed two distinct values
+        // into one before the core saw them, which is the false match the text
+        // path exists to prevent. `value_bytes` is only for an `identity`
+        // column, where the bytes *are* the value.
+        client.blindIndex(valueOf(c), ctx);
     return {
       id: `cross/typescript/index/${c.case}`,
       key_ref: c.key_ref,
