@@ -26,6 +26,15 @@ That schema is deliberate: **every existing consumer reads this file
 unmodified**, so the Django adapter joins the N×N matrix as one more producer
 rather than needing a bespoke checker.
 
+**The index half (`cross/v2`)** is the same argument one step further, and
+`docs/07` §7 calls it the more valuable assertion. A blind index the *adapter*
+wrote must be derivable by a core in another language, because a mismatched
+index is a **silent lookup miss** rather than an error -- the row is stored,
+decryptable, and simply stops being findable. Nothing raises, and the envelope
+half above would stay green through it. The declaration reaching the artifact
+is the model's own `BlindIndex(...)`, read off the field rather than restated,
+so a consumer re-derives from what this deployment actually declared.
+
 Key material is resolved by `key_ref` against `vectors/keys/test-keys.json`,
 the same public file the core producers use, so no key is embedded here.
 """
@@ -144,6 +153,68 @@ def _case(case_id: str, model: object, field_name: str, pk: int,
     }
 
 
+def _index_case(case_id: str, model: object, field_name: str, pk: int,
+                value: str | None, tenant: bytes | None) -> dict:
+    """One index case: the sibling column as the database holds it, plus the
+    declaration the model actually carries.
+
+    `value=None` means the write was of a value the normalizer refuses, so the
+    adapter stored the §7.2 reserved marker instead -- a derivation with no
+    plaintext, which the consumer reproduces through `unindexable_marker`.
+    """
+    field = model._meta.get_field(field_name)  # type: ignore[attr-defined]
+    idx = field.index
+    # `Encrypted.index_column("x")` is declared as `x_bidx` by convention in
+    # this fixture -- `docs/12` §1.2 requires the sibling to be declared
+    # explicitly and below its source, and the fixture names them this way.
+    # The convention is the fixture's, not the adapter's.
+    sibling = model._meta.get_field(f"{field_name}_bidx")  # type: ignore[attr-defined]
+    raw = _raw_column(model._meta.db_table, sibling.column, pk)  # type: ignore[attr-defined]
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        # Spec §7.11: an index column is raw bytes of length ceil(b/8). A text
+        # column here would mean the sibling was declared wrong, and a
+        # `bytes(...)` on it dies with a bare TypeError that names nothing.
+        raise TypeError(
+            f"{model._meta.label}.{sibling.column} holds "  # type: ignore[attr-defined]
+            f"{type(raw).__name__}, not bytes (spec §7.11)")
+    ctx = field.fieldseal_context()  # type: ignore[attr-defined]
+
+    decl: dict = {
+        "index_id": idx.index_id,
+        "idf": idx.idf,
+        "idf_params": {},
+        "normalize": idx.normalize,
+        "truncate_bits": idx.truncate_bits,
+        "projected_population": idx.projected_population,
+        "on_unindexable": idx.on_unindexable,
+    }
+    if idx.unindexable_override is not None:
+        ov = idx.unindexable_override
+        decl["unindexable_override"] = {
+            "reason": ov.reason, "approved_by": ov.approved_by,
+            "date": ov.date,
+        }
+
+    case: dict = {
+        "id": f"cross/django/index/{case_id}",
+        "key_ref": KEY_REF,
+        "declaration": decl,
+        "context": {
+            "table_uuid": ctx.table_uuid.hex(),
+            "column_uuid": ctx.column_uuid.hex(),
+            "tenant_id": None if tenant is None else tenant.hex(),
+            "row_id": None,
+            "purpose": f"index:{idx.index_id}",
+        },
+    }
+    if value is None:
+        case["value_marker"] = True
+    else:
+        case["value_text"] = value
+    case["index"] = bytes(raw).hex()
+    return case
+
+
 def produce() -> dict:
     keys = json.loads(
         (VECTORS / "keys" / "test-keys.json").read_text("utf-8"))["keys"]
@@ -188,20 +259,83 @@ def produce() -> dict:
 
     # A column whose index is bucketed -- the ciphertext is ordinary, and this
     # asserts that being unindexable changes nothing about the envelope.
-    row = Person.objects.create(legal_name="Ada Lovelace")
-    cases.append(_case("indexed-column", Person, "legal_name", row.pk,
+    person = Person.objects.create(legal_name="Ada Lovelace")
+    cases.append(_case("indexed-column", Person, "legal_name", person.pk,
                        b"Ada Lovelace", None))
 
+    # --- the index half ---------------------------------------------------
+    #
+    # Each case is the *sibling column as the database holds it*, read through
+    # a cursor. What a consumer checks is that the bytes this adapter wrote are
+    # the bytes its own derivation produces from the same declaration -- which
+    # is the assertion that a lookup written by one stack finds rows written by
+    # the other.
+    index_cases: list[dict] = []
+
+    # The workhorse. Patient.email declares exact / hmac-sha512 /
+    # nfc-casefold-v1 / b=15.
+    p1 = Patient.objects.create(email="ada@example.com", note="n", age=1)
+    index_cases.append(_index_case("email-exact", Patient, "email", p1.pk,
+                                   "ada@example.com", None))
+
+    # The same value written in a different case. `nfc-casefold-v1` MUST land
+    # both on one index value, and spec §7.5's re-verification rule is built on
+    # their doing so -- checked transitively, since each side is compared
+    # against the consumer's own derivation.
+    p2 = Patient.objects.create(email="ADA@EXAMPLE.COM", note="n", age=2)
+    index_cases.append(_index_case("email-fold", Patient, "email", p2.pk,
+                                   "ADA@EXAMPLE.COM", None))
+
+    # Non-ASCII through the adapter's own codec: an index that agreed on ASCII
+    # and disagreed here would be a UTF-8 handling divergence, and the lookup
+    # miss it caused would be silent.
+    p3 = Patient.objects.create(email="renée@example.com", note="n", age=3)
+    index_cases.append(_index_case("email-non-ascii", Patient, "email", p3.pk,
+                                   "renée@example.com", None))
+
+    # An ordinary value on the bucketed column: `on_unindexable: "bucket"`
+    # changes nothing for a value the normalizer accepts.
+    index_cases.append(_index_case("legal-name", Person, "legal_name",
+                                   person.pk, "Ada Lovelace", None))
+
+    # And the case only an adapter can produce: a value the normalizer refuses.
+    # The adapter stored the §7.2 reserved marker in the sibling *by itself* --
+    # no caller asked for it -- and a consumer reproduces it through
+    # `unindexable_marker`. U+0378 is unassigned in every published version.
+    bucketed = Person.objects.create(legal_name="Ada\u0378 Lovelace")
+    index_cases.append(_index_case("bucket-marker", Person, "legal_name",
+                                   bucketed.pk, None, None))
+
     return {
-        "schema": "fieldseal-vectors/cross/v1",
+        "schema": "fieldseal-vectors/cross/v2",
         "producer": {
             "implementation": "django",
             "version": "0.1.0.dev0",
             "commit": _commit(),
+            # docs/08 §4.7: an adapter producer declares the context shapes
+            # and normalizers it cannot produce, so the gap is visible in the
+            # artifact rather than absent from it. The first closes itself the
+            # day L3-row ships.
+            "limitations": [
+                {"shape": "row_id-present",
+                 "reason": "L3-row binding is not in v0: Django cannot see the "
+                           "primary key at INSERT with identity keys "
+                           "(docs/12 §4)"},
+                {"shape": "tenant-bound index",
+                 "reason": "no model in this fixture declares a BlindIndex on "
+                           "a tenant_bound column, so the §5.2 sibling-key "
+                           "scope is exercised on the index path only by the "
+                           "core producers (raised in the #103 review)"},
+                {"shape": "normalizer:identity, normalizer:digits-only-v1",
+                 "reason": "every indexed column in this fixture declares "
+                           "nfc-casefold-v1; the other two are covered by the "
+                           "core producers"},
+            ],
             "produced_at": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(timespec="seconds"),
         },
         "suite_id": key["suite_id"],
+        "index_cases": index_cases,
         "cases": cases,
     }
 
@@ -214,6 +348,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(doc, indent=1) + "\n", "utf-8")
     print(f"wrote {args.out} ({len(doc['cases'])} cases, "
+          f"{len(doc['index_cases'])} index cases, "
           f"producer django@{doc['producer']['commit'][:12]})",
           file=sys.stderr)
     return 0
