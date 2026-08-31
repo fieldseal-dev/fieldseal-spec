@@ -29,7 +29,8 @@
     "vectors": "node --no-warnings=ExperimentalWarning tests/run_vectors.ts",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "cross:produce": "node --no-warnings=ExperimentalWarning tests/cross/produce.ts",
-    "cross:consume": "node --no-warnings=ExperimentalWarning tests/cross/consume.ts"
+    "cross:consume": "node --no-warnings=ExperimentalWarning tests/cross/consume.ts",
+    "bench:argon2": "node --no-warnings=ExperimentalWarning tests/bench/argon2-eventloop.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
