@@ -21,7 +21,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { candidateScope, FieldsealNotSupported } from "../src/index.ts";
-import { clearDb, loose, makeClient, rawColumn } from "./helpers.ts";
+import { clearDb, loose, makeClient, rawColumn, setColumn } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
 const lp = loose(prisma);
@@ -55,11 +55,7 @@ async function seed() {
  */
 async function forge(table: "Patient" | "Visit", column: string, onto: string, like: string) {
   const value = (await rawColumn(base, table, column, like)) as Uint8Array;
-  await base.$executeRawUnsafe(
-    `UPDATE "${table}" SET "${column}" = ? WHERE "id" = ?`,
-    Buffer.from(value),
-    onto,
-  );
+  await setColumn(base, table, column, onto, Buffer.from(value));
 }
 
 const names = (rows: unknown): string[] =>

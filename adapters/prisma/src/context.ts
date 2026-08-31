@@ -55,6 +55,16 @@ export type TenantResolver = (
 
 export interface ContextOptions {
   readonly resolver?: TenantResolver | undefined;
+  /**
+   * Told about every `FieldContext` this module builds (L4, `warm.ts`).
+   *
+   * This module is the single place a context is constructed -- `buildContext`
+   * makes the value context and `indexContext` derives the index one from it --
+   * so recording here records all of them. That is what makes `warm()`-on-miss
+   * able to name the keys an operation needs without a second walk of the
+   * arguments: the passes themselves report what they asked for.
+   */
+  readonly record?: ((ctx: FieldContext) => void) | undefined;
 }
 
 /**
@@ -85,13 +95,15 @@ export function buildContext(
   const tenant = field.tenantBound
     ? requireTenant(model, field, args, operation, opts)
     : null;
-  return {
+  const ctx: FieldContext = {
     tableUuid: uuidBytes(model.tableUuid),
     columnUuid: uuidBytes(field.columnUuid),
     tenantId: tenant,
     rowId: null,
     purpose: "encrypt",
   };
+  opts.record?.(ctx);
+  return ctx;
 }
 
 function requireTenant(
@@ -129,8 +141,19 @@ function requireTenant(
  * index value under one identity and a ciphertext under another, and nothing
  * would raise -- the lookup would simply stop finding the row.
  */
-export function indexContext(ctx: FieldContext, indexId: string): FieldContext {
-  return { ...ctx, purpose: `index:${indexId}` };
+export function indexContext(
+  ctx: FieldContext,
+  indexId: string,
+  opts: ContextOptions = {},
+): FieldContext {
+  const derived: FieldContext = { ...ctx, purpose: `index:${indexId}` };
+  // Recorded separately from the value context it came from: spec §5.2 makes
+  // the index key a *sibling* of the tenant DEK rather than a child, so a
+  // provider that warmed only the value context would leave every indexed
+  // lookup stalled -- the failure Django's warm tests name as "a slow query
+  // rather than a cold cache".
+  opts.record?.(derived);
+  return derived;
 }
 
 /** 8-4-4-4-12 hex -> the 16 bytes spec §6.1 derives from. */

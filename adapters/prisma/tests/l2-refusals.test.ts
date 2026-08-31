@@ -24,7 +24,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { candidateScope, FieldsealNotSupported } from "../src/index.ts";
-import { clearDb, loose, makeClient, rawColumn } from "./helpers.ts";
+import { clearDb, loose, makeClient, rawColumn, setColumn } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
 const lp = loose(prisma);
@@ -51,11 +51,7 @@ async function seedWithCollision() {
   const grace = await lp["patient"]!["create"]!({ data: patient("grace@example.com", "0-grace") });
   await lp["patient"]!["create"]!({ data: patient("alan@example.com", "2-alan") });
   const value = (await rawColumn(base, "Patient", "emailBidx", ada.id as string)) as Uint8Array;
-  await base.$executeRawUnsafe(
-    `UPDATE "Patient" SET "emailBidx" = ? WHERE "id" = ?`,
-    Buffer.from(value),
-    grace.id as string,
-  );
+  await setColumn(base, "Patient", "emailBidx", grace.id as string, Buffer.from(value));
   return { ada: ada.id as string, grace: grace.id as string };
 }
 

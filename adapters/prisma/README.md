@@ -139,6 +139,60 @@ fires on the `0xFF01` path, for the same reason.)
 
 ---
 
+## Key acquisition in the value path (L4)
+
+Every field hook in Django, SQLAlchemy, Hibernate and GORM is synchronous, so
+`docs/09` §8.2 confines KMS unwrapping to `warm()` and forbids the value path
+from blocking on the network. The consequence is exact: an
+`EnvelopeKeyProvider` deployment whose cache is cold serves `KEY_UNAVAILABLE`
+for **every** operation until something warms it — and in a sync adapter that
+something is an operator, a management command, or a startup hook that guessed
+the right tenants.
+
+Prisma does not have to guess. `$allOperations` is `async` and runs **before
+the query engine acquires a connection**, so on a `KEY_UNAVAILABLE` the
+extension awaits `client.warm(…)` for the contexts this operation actually
+named and runs the pass again. That is spec §10.1's L4, and it is why the matrix
+marks it reachable for Prisma and for almost nothing else.
+
+```ts
+fieldsealExtension({ …, warmOnKeyMiss: true })  // the default
+```
+
+Three things worth being precise about:
+
+- **The core's rule is not bent.** `encrypt`, `decrypt` and `blindIndex` are
+  still synchronous and still refuse a cache miss. What changed is what the
+  *adapter* does with the refusal — it awaits between two synchronous core
+  calls. `tests/l4.test.ts` instruments the key provider and fails the run if an
+  unwrap is ever observed from inside a synchronous core call, so a regression
+  that "fixed" L4 by making the core block on the network would be caught.
+- **It is reactive, not a pre-flight check.** There is no cache-membership
+  probe, and there should not be one: a §5.5 cache can evict between the probe
+  and the use, and `encryptionKey` used as a probe would advance the §5.5 use
+  counter for a key nobody used. The miss is the signal.
+- **It gives up rather than looping.** A cycle runs only if the next attempt
+  needs a context no previous cycle warmed. A miss on a context that *was* just
+  warmed means warming did not help (key destroyed, wrong tenant, an eviction
+  faster than the pass), and the error is raised — blocking a query on
+  repeated KMS round trips is the availability failure spec §8.1 warns about.
+  The accounting is per **pass**, not per operation: the write pass and the
+  read pass each keep their own ledger, because a §5.5 cache can evict between
+  them — the write pass's own derivations advance the use counter — and the
+  warm that saved the write pass says nothing about the read side's misses.
+
+Set `warmOnKeyMiss: false` to keep the stricter property that no query ever
+blocks on the key service. The option is inert either way unless the provider
+implements `warm`, so `StaticKeyProvider` and `DerivedKeyProvider` deployments
+are unaffected.
+
+**Retrying a pass is only safe because the failed attempt leaves nothing
+behind.** Every mutation the visitors make is journalled and rolled back before
+a retry (`src/journal.ts`); without it the retry would read the envelope the
+first attempt wrote as if it were the caller's value and encrypt it twice.
+
+---
+
 ## Querying an indexed column
 
 A declared index makes equality and membership serveable:
@@ -256,6 +310,7 @@ the target matrix in `docs/13` §6.
 | **A model with no declarations** (relations to declared ones) | ✅ in the map as a relation-only entry; writes, reads and filters through it traverse the pipeline | `reaching Patient through the undeclared Referral model` |
 | A model missing from the field map — as the operation's model **or as a relation target** any walk reaches | 🛑 refused — a stale or edited map, never a passthrough; a skipped relation would write plaintext or return envelopes one hop down | `refuses an operation on a model the field map does not carry`, `refuses a nested write through a relation…` |
 | Database holds an envelope, never plaintext | ✅ | `stores an envelope in the database…` |
+| **Both database backends** — an encrypted column is a SQLite `BLOB` and a Postgres `bytea`; `storage: "base64"` is text on both | ✅ the whole suite runs on each as a separate CI leg | `stores an envelope in the database…`, `round-trips through a String column…` |
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `writes a different envelope every time…` |
 | `update` re-encrypts | ✅ including the `{ set: … }` form | `re-encrypts on update…`, `accepts the { set: value } update form` |
 | `update` with `increment`/arithmetic | 🛑 refused — the database would compute on an envelope | `refuses an arithmetic update…` |
@@ -309,10 +364,15 @@ the target matrix in `docs/13` §6.
 | Legacy plaintext row on a base64 column | 🛑 strict raises NOT_CIPHERTEXT / ⚠️ permissive returns the actual value and fires `onPlaintextRead` | `a stored value that is not an envelope…` |
 | Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
 | Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
-| `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction | fixture supplies it; see `helpers.ts` |
-| **Cross-language: a row written here, read by another core** | ❌ not yet — the cross producer is the next increment | — |
+| `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction, naming the column | `refuses \`on_unindexable: "bucket"\` without the §7.2 ceremony`, `constructs once the ceremony is supplied in code` |
+| A §7.6 / §7.2 override naming a column with no declared index, or naming one twice | 🛑 refused — a recorded human approval pointing at the wrong place, while the column it was meant for stays ungated | `refuses an override that names a column with no declared index`, `refuses the same column listed twice in one override` |
+| **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
-| L4 (`warm()` in the value path) | ❌ next increment | — |
+| **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out; warm accounting is per pass, so an eviction between the write and read passes is retried rather than misread as an unproductive warm | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…`, `warms again for the read pass…` |
+| Warm cycles beyond the first | ✅ a cycle runs whenever the next attempt needs a context no earlier cycle warmed — strict progress, bounded by the contexts one pass can build | `runs a second warm cycle when the next attempt needs a context the first never reached` |
+| The key service is unreachable when L4 tries to warm | 🛑 the warm failure propagates, and the pass is not retried around a warm that did not happen — spec §8.1's "hard dependency in the read path", surfaced as the actionable cause rather than as the `KEY_UNAVAILABLE` that triggered it | `propagates a warm() that fails rather than retrying around it` |
+| The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
+| A pass that throws leaves the argument and result trees as it found them | ✅ journalled and rolled back, which is what makes the retry safe | `writes each column exactly once when the write pass is retried`, `decrypts each column exactly once…` |
 
 Legend: ✅ intercepted correctly · ⚠️ works with a documented caveat ·
 🛑 refuses rather than degrading · ❌ not implemented.
@@ -342,6 +402,35 @@ an aggregate result, so that particular hazard is not silently reachable there
 even without this adapter. The refusal is still right — it names the reason and
 does not depend on a Prisma implementation detail — but the base64 case is where
 it bites.
+
+---
+
+## Cross-language: what this adapter stores, read by another language
+
+The project's central claim is that a value encrypted by one implementation is
+decryptable by another. The core-level harness proves that for the cores. What
+it cannot prove is that the bytes an *adapter* puts in a column are those bytes,
+because the decisions between an application value and the stored column belong
+to the adapter and to nothing the cores test — the codec's rendering, the
+storage form, and how the context is assembled.
+
+So `tests/cross/produce.ts` writes rows through the **real extension** (real
+`create()`, runtime CSPRNG, no test-mode injection), reads the raw columns back
+through `$queryRawUnsafe`, and emits the standard `fieldseal-vectors/cross/v1`
+document that every existing consumer already reads:
+
+```
+npm run cross:produce -- --out ../../cross-prisma.json
+```
+
+CI adds it to the N×N matrix as one more producer, and the Python core decrypts
+it. Prisma carries one decision the other adapters do not: its schema type is
+the **storage** type, so the logical type is an `as:` declaration and its
+rendering is an adapter choice — the producer exercises all six, plus the base64
+storage form, and the test asserts the expected plaintext rather than merely
+round-tripping it. A consumer that expected a platform integer encoding or a
+locale-aware date would decrypt successfully and read the wrong value, which is
+exactly the failure no round trip catches.
 
 ---
 
@@ -404,13 +493,52 @@ that process.
 ```bash
 npm ci
 npm run build                    # dist/, and the generator bin
-npx prisma generate              # the fixture's Prisma client
 node tests/fixture/build.ts      # the fixture's field map
-npx prisma db push               # the fixture SQLite database
-npm test                         # 209 tests
+npx prisma generate              # the fixture's Prisma client
+npx prisma db push               # the fixture database
+npm test                         # 235 tests
 npm run typecheck
+
+# The same suite against Postgres. `build.ts` derives schema.postgres.prisma
+# from schema.prisma, so re-run it (and `prisma generate`) when switching.
+export FIELDSEAL_TEST_DB=postgres
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fieldseal_test
+node tests/fixture/build.ts && npx prisma generate && npx prisma db push && npm test
+npm run cross:produce -- --out ../../cross-prisma.json   # the cross-language artifact
+npm run --silent report > conformance-prisma-adapter.json  # the docs/14 §4 report
 ```
 
 `@fieldseal/core` is a `file:` dependency on this repository's own core, so the
 adapter is verified against the core it ships beside, not against a release.
 `core/typescript` must be built first — its `dist/` is gitignored.
+
+**Both backends run in CI as separate legs.** This adapter builds no SQL, so
+the backend-sensitive surface is narrow — an encrypted column is a `Bytes`
+column, which is a SQLite `BLOB` and a Postgres `bytea` — but that is exactly
+the round trip the whole design rests on, and "never treat one database backend
+as representative" is a house rule. A datasource `provider` must be a string
+literal, so the Postgres leg needs its own schema file;
+`tests/fixture/build.ts` derives it from `schema.prisma` and it is gitignored,
+because a second *committed* schema would drift apart precisely where the
+second backend was supposed to catch something.
+
+### The conformance report
+
+`npm run report` runs the suite and emits the `docs/14` §4 conformance report.
+An adapter's report claims no `L0` — this package runs no vector families,
+because it contains no cryptography — and carries instead a `coverage_matrix`
+block that `docs/14` §4 requires to mirror this README's table.
+
+It is **generated from the table above**, not written to match it: the
+generator parses the rows, resolves each row's cited test names against the
+run, and takes the row's status from those tests. A row that names a test which
+no longer exists, or that claims behaviour and cites no test at all, fails the
+report and turns CI red. That is what "the claim and the docs cannot drift
+apart" has to mean to mean anything — and on its first run it found a row
+claiming a refusal and pointing at a fixture instead of a test.
+
+`pinned_decisions` is this adapter's own list, and the first entry is the one
+no core report can carry: **the codec's renderings**. `as: "int"` becoming
+`b"45"` is a decision this package makes, nothing in the spec or the vector
+suite pins it, and a consumer in another language that decoded it differently
+would decrypt successfully and read the wrong value.

@@ -131,6 +131,17 @@ A pinned decision records where an implementation had to choose with nothing beh
 
 Rules: `fail > 0` ⇒ no level claimable ⇒ CI red. An `out_of_band` entry that is not `pass` counts as a failure for level-claim purposes on the same terms. `claimed_levels` must be consistent with the vector families passed (L0 requires every family the implementation's suites reach; adapter levels additionally require the adapter's own integration matrix green — adapters attach a `coverage_matrix` block mirroring their README table so the claim and the docs cannot drift apart). `environment.crypto_backend` is recorded because FIPS conversations turn on it (PRD CL-9).
 
+### An adapter's report (first built: `adapters/prisma`, 2026-08-31)
+
+An adapter report is the same `fieldseal-conformance/v1` document with a different centre of gravity, and the differences are worth stating because the first one built raised all of them:
+
+- **It claims no `L0` and carries no `results`.** An adapter contains no cryptography (AD-1, spec §11.3), so it runs no vector families; the families and the six mandatory `pinned_decisions` keys belong to the core beneath it. The report says so in `harness_notes` rather than leaving the empty `results` array to be interpreted.
+- **`pinned_decisions` becomes the adapter's own list**, under the "MAY add keys for pins of its own" clause. The Prisma adapter declares five, and the first is the one no core report can carry: **`codec-renderings`**, the mapping from a declared logical type to plaintext bytes (`int` → decimal ASCII, `datetime` → ISO-8601 UTC, and so on). Nothing in the spec or the vector suite pins it, and a consumer in another language that decoded one differently would decrypt successfully and read the **wrong value** — the one failure a round trip cannot catch. The others pin the storage forms, the `where` sites L2 can verify, the L4 warm policy, and an error-code divergence between the two adapters that no vector can see.
+- **`coverage_matrix` is generated *from* the README, not written to match it.** The generator parses the adapter's own coverage-matrix table, resolves each row's cited test names against the run, and takes the row's status from those tests. A row naming a test that no longer exists, or claiming behaviour and citing no test at all, **fails the report** — which is what "so the claim and the docs cannot drift apart" has to mean if it is to mean anything. On its first run it found a row (`on_unindexable: "bucket"` without the §7.2 ceremony) that claimed a refusal and pointed at a fixture instead of a test; the refusal was real and is now asserted.
+- **`claimed_levels` is boolean and some levels are not.** Spec §10.1 marks Prisma's L3 ⚠️ partial — tenant binding through a documented side channel — and there is no ⚠️ to record. It is recorded `false`, with the reason in `harness_notes`: under-claiming is the safe direction, and the note is what keeps `false` from being read as "not implemented".
+
+Row status is `pass` / `fail` / `not-implemented` (an honest ❌ row, e.g. L3-row binding) / `unverified` (a claim with no cited test — always a report failure). `environment` gains `database` and `orm`, since an adapter's behaviour is a property of both.
+
 Reports are uploaded as artifacts on every run; `conformance.yml` assembles the latest per-implementation reports into `bench/conformance-summary.md` (committed by CI on release tags only, so history is release-granular and the working tree stays quiet).
 
 ## 5. Release and versioning discipline

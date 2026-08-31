@@ -33,6 +33,7 @@
  */
 
 import { FieldsealNotSupported } from "../errors.ts";
+import type { Journal } from "../journal.ts";
 import { bytesOf, hex, normalizeOrNull, type Obligation, operandOf } from "./rewrite.ts";
 
 /**
@@ -44,7 +45,11 @@ import { bytesOf, hex, normalizeOrNull, type Obligation, operandOf } from "./rew
  * not left untouched. The extension owns the result at this point; nothing
  * else holds a reference.
  */
-export function verifyResult(result: unknown, obligations: readonly Obligation[]): unknown {
+export function verifyResult(
+  result: unknown,
+  obligations: readonly Obligation[],
+  journal: Journal,
+): unknown {
   const top = obligations.filter((o) => o.resultPath.length === 0);
   const nested = obligations.filter((o) => o.resultPath.length > 0);
 
@@ -73,15 +78,20 @@ export function verifyResult(result: unknown, obligations: readonly Obligation[]
     if (group === undefined) groups.set(key, [o]);
     else group.push(o);
   }
-  for (const group of groups.values()) pruneNested(rows, group, 0);
+  for (const group of groups.values()) pruneNested(rows, group, 0, journal);
   return rows;
 }
 
 /** Walk the shared `resultPath` and filter the relation array it names. */
-function pruneNested(node: unknown, group: readonly Obligation[], depth: number): void {
+function pruneNested(
+  node: unknown,
+  group: readonly Obligation[],
+  depth: number,
+  journal: Journal,
+): void {
   const o = group[0]!;
   if (Array.isArray(node)) {
-    for (const row of node) pruneNested(row, group, depth);
+    for (const row of node) pruneNested(row, group, depth, journal);
     return;
   }
   if (!isRecord(node)) return;
@@ -89,7 +99,7 @@ function pruneNested(node: unknown, group: readonly Obligation[], depth: number)
   const child = node[key];
   if (child === null || child === undefined) return;
   if (depth < o.resultPath.length - 1) {
-    pruneNested(child, group, depth + 1);
+    pruneNested(child, group, depth + 1, journal);
     return;
   }
   if (!Array.isArray(child)) {
@@ -103,7 +113,7 @@ function pruneNested(node: unknown, group: readonly Obligation[], depth: number)
         `adapter refuses rather than returning the rows unchecked.`,
     );
   }
-  node[key] = child.filter((row) => matchesAll(row, group));
+  journal.set(node, key, child.filter((row) => matchesAll(row, group)));
 }
 
 function matchesAll(row: unknown, obligations: readonly Obligation[]): boolean {
