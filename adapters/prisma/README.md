@@ -467,11 +467,20 @@ bloat.
 trade security for availability; a KMS outage affects every query touching an
 encrypted field.
 
-**Argon2id blind indexes cost 10–100 ms per query term**, and `blindIndex` is
-**synchronous** — on Node that blocks the event loop for the duration. Spec
-§11.1 permits an async companion and the core does not ship one in v0
-(`docs/11` §2). Prefer `hmac-sha512` where the §7.3 domain class permits. This
-is a product constraint, not tuning.
+**Argon2id blind indexes cost ~44 ms per query term and `blindIndex` is
+synchronous, so on Node they stall the whole process** — not just the query
+that asked for one. Measured through this extension on 2026-08-31: a
+`findMany` on a table with **no encrypted column at all** went from p99
+0.8 ms to **352 ms** under eight concurrent Argon2id-indexed lookups. The
+event loop took **1 turn in 871 ms** during twenty derivations.
+
+Prefer `hmac-sha512` wherever the §7.3 domain table permits — microseconds
+rather than milliseconds. Where the domain requires Argon2id, the core has
+committed to an async companion on the strength of that benchmark
+(`docs/11` §2) and it is not built yet; when it is, a deployment using it
+must also size `UV_THREADPOOL_SIZE` at or above its concurrent-derivation
+count, because the async form moves the cost to the libuv threadpool rather
+than removing it. This is a product constraint, not tuning.
 
 **Application caches hold plaintext** (spec §10.2, "All ORMs"). Any cache
 sitting outside the extension stores decrypted values.
