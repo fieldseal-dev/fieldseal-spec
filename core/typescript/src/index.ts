@@ -59,5 +59,15 @@ export type { IndexDeclaration, IdfId, Argon2Params, CardinalityOverride, Valida
 export { indexRegistryKey, validateIndexDeclaration } from "./blindindex.ts";
 export { NORMALIZER_IDS, normalize } from "./normalize.ts";
 export type { NormalizerId } from "./normalize.ts";
+// docs/09 §7.1, normative: "Cores MUST still export the assigned-code-point
+// check (`first_unassigned` / `firstUnassigned`) for adapters that hold the
+// text earlier and can give a better-sited error." That MUST had never reached
+// a package root -- `normalize.ts` re-exported it and the `exports` map stops
+// at `./dist/index.js`, so it was unreachable by construction rather than by
+// omission. G22 (#88). `UNICODE_VERSION` travels with it: an adapter rendering
+// "not assigned in Unicode 17.0.0" needs the version the check was made
+// against, and reading it from a constant of its own is how two copies drift.
+export { firstUnassigned, UNICODE_VERSION } from "./normalize.ts";
+export type { Unassigned } from "./normalize.ts";
 export { SUITE_FF01, SUITE_FF02, FMT_VER, isProvisionalId, registeredSuiteIds } from "./registry.ts";
 export type { Suite } from "./registry.ts";

@@ -88,7 +88,7 @@ export function normalizeNfcCasefoldV1(input: string | Uint8Array): Uint8Array {
     // normalization yet, so a core built against a later UCD would index it
     // differently. Refusing is visible; disagreeing is not.
     throw new InvalidArgumentError(
-      `value contains U+${stray.toString(16).toUpperCase().padStart(4, "0")}, which is not assigned in ` +
+      `value contains U+${stray.codePoint.toString(16).toUpperCase().padStart(4, "0")}, which is not assigned in ` +
         `Unicode ${UNICODE_VERSION}; \`nfc-casefold-v1\` is pinned to that version and cannot index a ` +
         "character it does not define",
     );
@@ -133,6 +133,7 @@ export function normalize(id: NormalizerId, input: string | Uint8Array): Uint8Ar
 }
 
 export { UNICODE_VERSION, caseFoldFull, firstUnassigned, nfc };
+export type { Unassigned } from "./unicode/index.ts";
 
 /** @deprecated the pin now covers normalization as well as folding; use
  * `UNICODE_VERSION`. Kept so the conformance harness keeps building across

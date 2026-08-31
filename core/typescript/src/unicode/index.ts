@@ -147,11 +147,36 @@ export function combiningClass(cp: number): number {
  * JavaScript string a lone surrogate reaches here as its own code point,
  * which is exactly the case that must be refused.
  */
-export function firstUnassigned(text: string): number | undefined {
+export interface Unassigned {
+  /** The offending code point, e.g. `0x0378`. */
+  readonly codePoint: number;
+  /**
+   * Its position **in code points**, not in UTF-16 units.
+   *
+   * The unit is load-bearing and is stated because the two are not the same
+   * number: `"\u{1F510}\u0378"` faults at code-point index 1 and UTF-16 index
+   * 2. Code points is the choice because it is what a person counting
+   * characters in a form field means (`docs/12` §10.2 renders this as "the Nth
+   * character"), and because it is the one unit every target language can
+   * agree on -- UTF-16 offsets are an artifact of this binding's string type
+   * and Python's `str` cannot produce them without extra work.
+   *
+   * `encodeUtf8Strict`'s own message reports a UTF-16 index, and deliberately
+   * still does: that is the bytes path, its exception is addressed to whoever
+   * wired the column, and changing published error text is not this
+   * accessor's job. An adapter that wants a position should call this rather
+   * than read that message -- which is the whole reason `docs/09` §7.1 asks
+   * for the export.
+   */
+  readonly offset: number;
+}
+
+export function firstUnassigned(text: string): Unassigned | undefined {
   const { lo, hi } = load();
+  let offset = 0;
   for (const ch of text) {
     const cp = ch.codePointAt(0)!;
-    if (cp >= 0xd800 && cp <= 0xdfff) return cp;
+    if (cp >= 0xd800 && cp <= 0xdfff) return { codePoint: cp, offset };
     // upper bound: last range whose start is <= cp
     let a = 0;
     let b = lo.length - 1;
@@ -165,7 +190,8 @@ export function firstUnassigned(text: string): number | undefined {
         b = mid - 1;
       }
     }
-    if (found < 0 || cp > hi[found]!) return cp;
+    if (found < 0 || cp > hi[found]!) return { codePoint: cp, offset };
+    offset++;
   }
   return undefined;
 }
