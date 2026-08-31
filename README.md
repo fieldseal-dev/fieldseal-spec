@@ -103,14 +103,26 @@ www/                   the fieldseal.dev site — Hugo, no theme, no JavaScript;
 internal/              namespace-placeholder packages (npm, PyPI), not a product
 ```
 
-Gate 0a (see below) opened on 2026-08-22, and what exists under those directories is: two
-cores, `core/python` and `core/typescript`, each passing the pinned vector suite 42/42, the
-second written without reading the first; the vectors themselves and the generator that
-emits them (`tools/vector-gen`). Every other directory — the remaining cores, every adapter,
-the backfill and leakage tools, `bench/`, `examples/` — holds only a README describing what
-lands there. See [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) for the
-plan and [`docs/18-m2-report.md`](docs/18-m2-report.md) for what the two cores' agreement
-does and does not establish.
+Gate 0a (see below) opened on 2026-08-22. What exists under those directories today:
+
+- **Two cores** — `core/python` and `core/typescript`, each passing the pinned vector suite
+  **145/145**, the second written without reading the first.
+- **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
+  suite `0.4.0-provisional`.
+- **Two ORM adapters** — `adapters/django` (248 tests) and `adapters/prisma` (235 tests),
+  each running against SQLite and PostgreSQL in CI. Both are also cross-language
+  *producers*: a row written through either adapter is decrypted by both cores in the N×N
+  job, which is the central claim tested at the layer people actually deploy rather than
+  only between cores.
+
+The remaining cores, the other five adapters, the backfill and leakage tools, `bench/` and
+`examples/` hold only a README describing what lands there.
+
+**None of it is frozen.** Every suite identifier is provisional (spec §4.8), Gate 0b is
+open, and the project does not invite adoption — see the two gates below. For the plan see
+[`docs/07-implementation-plan.md`](docs/07-implementation-plan.md), and for what the two
+cores' agreement does and does not establish see
+[`docs/18-m2-report.md`](docs/18-m2-report.md).
 
 ## Design commitments
 

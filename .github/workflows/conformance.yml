@@ -431,12 +431,27 @@ jobs:
                   if sid and not sid.upper().startswith("0XFF"):
                       fail.append(f"{v['id']}: suite_id {sid} is outside the §4.8 provisional range")
 
+          # The published status line must not go stale, and it has: it sat at
+          # `0.2.0-provisional` / 111 vectors while the manifest was already at
+          # 0.4.0-provisional / 125. A reader takes the README's word for what the
+          # suite is, so it is checked against the manifest rather than remembered.
+          readme = (root / "README.md").read_text("utf-8")
+          version = m["vector_suite_version"]
+          if f"suite `{version}`" not in readme:
+              fail.append(f"vectors/README.md does not name suite `{version}`, which is the manifest's version")
+          counted = sum(
+              len(json.loads((root / e["path"]).read_text("utf-8")).get("vectors", []))
+              for e in m["files"]
+          )
+          if f"{counted} vectors" not in readme:
+              fail.append(f"vectors/README.md does not state the pinned vector count ({counted})")
+
           if fail:
               print("::error::suite integrity checks failed")
               for f in fail:
                   print(f"  - {f}")
               sys.exit(1)
-          print(f"OK: {len(pinned)} pinned, {len(m.get('support', []))} support, {len(held)} held out, all provisional.")
+          print(f"OK: {len(pinned)} pinned ({counted} vectors), {len(m.get('support', []))} support, {len(held)} held out, all provisional; README current.")
           PY
 
   # docs/14 §3: the N x N cross-implementation job -- the one that matters.
