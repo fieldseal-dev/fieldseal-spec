@@ -78,10 +78,11 @@ Three artifacts:
 | [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: eight self-contained question cards, ground rules, outreach log. Answering one is a complete contribution. |
 | [`docs/17-m2-implementer-brief.md`](docs/17-m2-implementer-brief.md) | The handoff for building a second core in isolation: the independence rule as a protocol, not a sentence. |
 | [`docs/18-m2-report.md`](docs/18-m2-report.md) | What came back from that handoff: the TypeScript core's result against the pinned suite (42/42, nothing tuned), the isolation statement, and twenty recorded ambiguities — including that the commitment formula is not in the spec. |
+| [`docs/19-what-encrypted-search-costs.md`](docs/19-what-encrypted-search-costs.md) | **Written for non-specialists.** What searching an encrypted field actually costs, measured on two machines: the blocking version stops a Node server dead, and the bill lands on requests that touch no encrypted data at all. No cryptography background assumed. |
 
 All of these are published at **[fieldseal.dev/docs](https://fieldseal.dev/docs/)** if you would rather read them in a browser. The site is built from `docs/` in this repository — there is exactly one copy of the specification text, so the published version cannot drift from the source.
 
-**Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct.**
+**Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct. Start with [what encrypted search costs](docs/19-what-encrypted-search-costs.md) if you want to know what adopting it would do to your application** — that one is written to be read without the other two.
 
 ## Repository layout
 
