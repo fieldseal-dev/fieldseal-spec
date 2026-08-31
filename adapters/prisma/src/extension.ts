@@ -167,13 +167,24 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
           }
 
           // The ledger is what makes L4 need no second walk: `context.ts`
-          // reports every context the passes build, index-key siblings
-          // included, and that is exactly the set to warm. Per operation, since
-          // what an operation needs is what it named.
-          const ledger = l4 ? new ContextLedger() : null;
-          const contextOpts: ContextOptions = {
-            resolver: opts.tenant,
-            ...(ledger !== null ? { record: (c: FieldContext) => ledger.add(c) } : {}),
+          // reports every context a pass builds, index-key siblings included,
+          // and that is exactly the set to warm. Per PASS, not per operation:
+          // the §5.5 cache can evict between the write pass and the read pass
+          // (the write pass's own derivations advance the use counter), and a
+          // warm that saved the write pass says nothing about the read side's
+          // misses. One shared ledger made the read-pass retry depend on WHERE
+          // the write-pass miss landed -- a miss on the operation's last
+          // context marked everything warmed, and the read pass then raised
+          // KEY_UNAVAILABLE for a row already committed.
+          const passScope = (): { ledger: ContextLedger | null; context: ContextOptions } => {
+            const ledger = l4 ? new ContextLedger() : null;
+            return {
+              ledger,
+              context: {
+                resolver: opts.tenant,
+                ...(ledger !== null ? { record: (c: FieldContext) => ledger.add(c) } : {}),
+              },
+            };
           };
 
           // 3. Refuse before doing any work: a shape that will not be served
@@ -190,13 +201,14 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
           // 4 + 5, under one journal and one retry. Together, because step 5
           // can miss a key after step 4 has already encrypted the payload: two
           // separate retries would re-run step 4 over its own ciphertext.
+          const writePass = passScope();
           const argsJournal = new Journal();
           const writeCtx: WriteCtx = {
             client,
             map,
             operation,
             rootArgs: args,
-            context: contextOpts,
+            context: writePass.context,
             journal: argsJournal,
           };
           let obligations: Obligation[] = [];
@@ -210,13 +222,13 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
                 client,
                 operation,
                 rootArgs: args,
-                context: contextOpts,
+                context: writePass.context,
                 journal: argsJournal,
               });
             },
             argsJournal,
             client,
-            ledger,
+            writePass.ledger,
           );
 
           // 6. The await a sync adapter cannot do. `warm.ts` has already used
@@ -234,10 +246,14 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
           }
           argsJournal.commit();
 
-          // 7 + 8, under their own journal and their own retry. A miss here is
-          // on the decrypt side and the rows are already in hand, so the retry
-          // costs a warm and a second pass over the result -- never a second
-          // query, which for a write would be a second row.
+          // 7 + 8, under their own journal, their own retry, and their own
+          // ledger -- a context the write pass warmed may have been evicted
+          // while the query ran, and carrying its warmed mark across would
+          // misread that miss as "warming did not help". A miss here is on the
+          // decrypt side and the rows are already in hand, so the retry costs
+          // a warm and a second pass over the result -- never a second query,
+          // which for a write would be a second row.
+          const readPass = passScope();
           const resultJournal = new Journal();
           return await runPass(
             () => {
@@ -247,7 +263,7 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
                 map,
                 operation,
                 rootArgs: args,
-                context: contextOpts,
+                context: readPass.context,
                 exposeIndexColumns,
                 onPlaintextRead: opts.onPlaintextRead,
                 journal: resultJournal,
@@ -261,7 +277,7 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
             },
             resultJournal,
             client,
-            ledger,
+            readPass.ledger,
           );
       },
     },

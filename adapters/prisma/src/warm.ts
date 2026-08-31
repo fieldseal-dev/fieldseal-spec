@@ -38,12 +38,21 @@
  *
  * Each cycle warms every context the failed attempt asked for. A further cycle
  * runs only if the next attempt asks for a context no previous cycle warmed --
- * strict progress, over a set an operation can only build finitely many
- * members of. If an attempt fails on a context that *was* already warmed, the
- * warm did not help (key destroyed, wrong tenant, an eviction faster than the
- * operation) and the error is raised rather than retried, because blocking a
- * query on repeated KMS round trips is the availability failure spec §8.1's
- * "the key service becomes a hard dependency in the read path" warns about.
+ * strict progress, over a set a pass can only build finitely many members of.
+ * If an attempt fails on a context that *was* already warmed, the warm did not
+ * help (key destroyed, wrong tenant, an eviction faster than the pass) and the
+ * error is raised rather than retried, because blocking a query on repeated
+ * KMS round trips is the availability failure spec §8.1's "the key service
+ * becomes a hard dependency in the read path" warns about.
+ *
+ * The accounting is **per pass, never per operation**. The write pass and the
+ * read pass each keep their own ledger, because the §5.5 cache can evict
+ * between them -- the write pass's own derivations advance the use counter,
+ * and the query engine's round trip runs between the two -- and a warm that
+ * saved the write pass says nothing about the read side's misses. A ledger
+ * shared across the passes made the read-pass retry depend on where the
+ * write-pass miss happened to land, and raised `KEY_UNAVAILABLE` for a row
+ * the database had already committed.
  */
 
 import { FieldsealError, type FieldContext, type Fieldseal, type KeyProvider } from "@fieldseal/core";
@@ -69,12 +78,14 @@ export function isKeyUnavailable(e: unknown): boolean {
 }
 
 /**
- * Every `FieldContext` one operation built, and which of them have been warmed.
+ * Every `FieldContext` one **pass** built, and which of them have been warmed.
  *
- * Filled by `context.ts` as the passes run, which is why L4 needs no second
- * walk of the arguments to find out what keys an operation wants: the passes
- * report what they asked for, including the index-key siblings (spec §5.2),
- * which a warm derived from value contexts alone would miss.
+ * Filled by `context.ts` as the pass runs, which is why L4 needs no second
+ * walk of the arguments to find out what keys a pass wants: the pass reports
+ * what it asked for, including the index-key siblings (spec §5.2), which a
+ * warm derived from value contexts alone would miss. One ledger per pass, not
+ * per operation -- see "Termination" above for why sharing one across the
+ * write and read passes was a bug.
  */
 export class ContextLedger {
   readonly #seen = new Map<string, FieldContext>();
