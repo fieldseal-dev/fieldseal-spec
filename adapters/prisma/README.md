@@ -139,6 +139,56 @@ fires on the `0xFF01` path, for the same reason.)
 
 ---
 
+## Key acquisition in the value path (L4)
+
+Every field hook in Django, SQLAlchemy, Hibernate and GORM is synchronous, so
+`docs/09` §8.2 confines KMS unwrapping to `warm()` and forbids the value path
+from blocking on the network. The consequence is exact: an
+`EnvelopeKeyProvider` deployment whose cache is cold serves `KEY_UNAVAILABLE`
+for **every** operation until something warms it — and in a sync adapter that
+something is an operator, a management command, or a startup hook that guessed
+the right tenants.
+
+Prisma does not have to guess. `$allOperations` is `async` and runs **before
+the query engine acquires a connection**, so on a `KEY_UNAVAILABLE` the
+extension awaits `client.warm(…)` for the contexts this operation actually
+named and runs the pass again. That is spec §10.1's L4, and it is why the matrix
+marks it reachable for Prisma and for almost nothing else.
+
+```ts
+fieldsealExtension({ …, warmOnKeyMiss: true })  // the default
+```
+
+Three things worth being precise about:
+
+- **The core's rule is not bent.** `encrypt`, `decrypt` and `blindIndex` are
+  still synchronous and still refuse a cache miss. What changed is what the
+  *adapter* does with the refusal — it awaits between two synchronous core
+  calls. `tests/l4.test.ts` instruments the key provider and fails the run if an
+  unwrap is ever observed from inside a synchronous core call, so a regression
+  that "fixed" L4 by making the core block on the network would be caught.
+- **It is reactive, not a pre-flight check.** There is no cache-membership
+  probe, and there should not be one: a §5.5 cache can evict between the probe
+  and the use, and `encryptionKey` used as a probe would advance the §5.5 use
+  counter for a key nobody used. The miss is the signal.
+- **It gives up rather than looping.** A cycle runs only if the next attempt
+  needs a context no previous cycle warmed. A miss on a context that *was* just
+  warmed means warming did not help (key destroyed, wrong tenant, an eviction
+  faster than the operation), and the error is raised — blocking a query on
+  repeated KMS round trips is the availability failure spec §8.1 warns about.
+
+Set `warmOnKeyMiss: false` to keep the stricter property that no query ever
+blocks on the key service. The option is inert either way unless the provider
+implements `warm`, so `StaticKeyProvider` and `DerivedKeyProvider` deployments
+are unaffected.
+
+**Retrying a pass is only safe because the failed attempt leaves nothing
+behind.** Every mutation the visitors make is journalled and rolled back before
+a retry (`src/journal.ts`); without it the retry would read the envelope the
+first attempt wrote as if it were the caller's value and encrypt it twice.
+
+---
+
 ## Querying an indexed column
 
 A declared index makes equality and membership serveable:
@@ -312,7 +362,9 @@ the target matrix in `docs/13` §6.
 | `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction | fixture supplies it; see `helpers.ts` |
 | **Cross-language: a row written here, read by another core** | ❌ not yet — the cross producer is the next increment | — |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
-| L4 (`warm()` in the value path) | ❌ next increment | — |
+| **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…` |
+| The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
+| A pass that throws leaves the argument and result trees as it found them | ✅ journalled and rolled back, which is what makes the retry safe | `writes each column exactly once when the write pass is retried`, `decrypts each column exactly once…` |
 
 Legend: ✅ intercepted correctly · ⚠️ works with a documented caveat ·
 🛑 refuses rather than degrading · ❌ not implemented.

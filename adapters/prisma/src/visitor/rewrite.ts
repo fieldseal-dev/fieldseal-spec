@@ -46,6 +46,7 @@ import { InvalidArgumentError, normalize } from "@fieldseal/core";
 import { toBytes } from "../codec.ts";
 import { buildContext, type ContextOptions, indexContext } from "../context.ts";
 import type { EncryptedFieldDecl, IndexFieldDecl, ResolvedModel } from "../fieldmap.ts";
+import type { Journal } from "../journal.ts";
 import { unindexableError } from "../unindexable.ts";
 
 /** One rewritable predicate, as the analysis walk found it. */
@@ -96,6 +97,8 @@ export interface RewriteCtx {
   readonly operation: string;
   readonly rootArgs: unknown;
   readonly context: ContextOptions;
+  /** Every mutation below is recorded before it is applied -- `journal.ts`. */
+  readonly journal: Journal;
 }
 
 /**
@@ -121,7 +124,7 @@ export function applyRewrites(
       ctx.operation,
       ctx.context,
     );
-    const idxCtx = indexContext(fieldCtx, intent.idx.indexId);
+    const idxCtx = indexContext(fieldCtx, intent.idx.indexId, ctx.context);
 
     const predicates: unknown[] = [];
     // One target set -- and so one obligation -- PER OPERATOR, never a union
@@ -158,9 +161,9 @@ export function applyRewrites(
       perOp.push({ normalized, raw });
     }
 
-    if (intent.residual === null) delete intent.node[intent.enc.field];
-    else intent.node[intent.enc.field] = intent.residual;
-    place(intent.node, intent.idx.field, predicates);
+    if (intent.residual === null) ctx.journal.remove(intent.node, intent.enc.field);
+    else ctx.journal.set(intent.node, intent.enc.field, intent.residual);
+    place(intent.node, intent.idx.field, predicates, ctx.journal);
 
     if (intent.resultPath !== null) {
       for (const { normalized, raw } of perOp) {
@@ -187,14 +190,25 @@ export function applyRewrites(
  * Two values cannot sit under one key, so the extras go into the node's `AND`,
  * where they mean the same thing.
  */
-function place(node: Record<string, unknown>, sibling: string, predicates: unknown[]): void {
+function place(
+  node: Record<string, unknown>,
+  sibling: string,
+  predicates: unknown[],
+  journal: Journal,
+): void {
   const [first, ...rest] = predicates;
-  node[sibling] = first;
+  journal.set(node, sibling, first);
   for (const extra of rest) {
     const existing = node["AND"];
-    const arr = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
+    // A **copy** of the caller's array, never a `push` into it. Two reasons,
+    // and the second is the load-bearing one: an in-place append is a mutation
+    // of an object the journal cannot restore by putting a key back, so a
+    // rolled-back pass would leave the caller's own `AND` array one element
+    // longer than they wrote it. (The first reason stands on its own -- an
+    // extension has no business appending to an array its caller still holds.)
+    const arr = existing === undefined ? [] : Array.isArray(existing) ? [...existing] : [existing];
     arr.push({ [sibling]: extra });
-    node["AND"] = arr;
+    journal.set(node, "AND", arr);
   }
 }
 
