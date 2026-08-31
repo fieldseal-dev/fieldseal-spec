@@ -27,7 +27,8 @@
     "test": "vitest run",
     "prisma:generate": "prisma generate",
     "cross:produce": "node --no-warnings=ExperimentalWarning tests/cross/produce.ts",
-    "report": "node --no-warnings=ExperimentalWarning tests/report.ts"
+    "report": "node --no-warnings=ExperimentalWarning tests/report.ts",
+    "bench:argon2": "node --no-warnings=ExperimentalWarning tests/bench/argon2-request-path.ts"
   },
   "//": [
     "AD-1 (spec §11.3): zero cryptography in this package. The only calls into",
