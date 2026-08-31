@@ -44,10 +44,10 @@
   },
   "devDependencies": {
     "@prisma/adapter-better-sqlite3": "7.10.0",
-    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@prisma/generator-helper": "7.10.0",
-    "@prisma/internals": "^7.10.0",
+    "@prisma/internals": "7.10.0",
     "@types/node": "^24.3.0",
     "prisma": "7.10.0",
     "typescript": "~5.9.3",
