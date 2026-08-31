@@ -174,8 +174,12 @@ Three things worth being precise about:
 - **It gives up rather than looping.** A cycle runs only if the next attempt
   needs a context no previous cycle warmed. A miss on a context that *was* just
   warmed means warming did not help (key destroyed, wrong tenant, an eviction
-  faster than the operation), and the error is raised — blocking a query on
+  faster than the pass), and the error is raised — blocking a query on
   repeated KMS round trips is the availability failure spec §8.1 warns about.
+  The accounting is per **pass**, not per operation: the write pass and the
+  read pass each keep their own ledger, because a §5.5 cache can evict between
+  them — the write pass's own derivations advance the use counter — and the
+  warm that saved the write pass says nothing about the read side's misses.
 
 Set `warmOnKeyMiss: false` to keep the stricter property that no query ever
 blocks on the key service. The option is inert either way unless the provider
@@ -364,7 +368,7 @@ the target matrix in `docs/13` §6.
 | A §7.6 / §7.2 override naming a column with no declared index, or naming one twice | 🛑 refused — a recorded human approval pointing at the wrong place, while the column it was meant for stays ungated | `refuses an override that names a column with no declared index`, `refuses the same column listed twice in one override` |
 | **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
-| **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…` |
+| **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out; warm accounting is per pass, so an eviction between the write and read passes is retried rather than misread as an unproductive warm | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…`, `warms again for the read pass…` |
 | The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
 | A pass that throws leaves the argument and result trees as it found them | ✅ journalled and rolled back, which is what makes the retry safe | `writes each column exactly once when the write pass is retried`, `decrypts each column exactly once…` |
 
@@ -490,7 +494,7 @@ npm run build                    # dist/, and the generator bin
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma generate              # the fixture's Prisma client
 npx prisma db push               # the fixture database
-npm test                         # 232 tests
+npm test                         # 233 tests
 npm run typecheck
 
 # The same suite against Postgres. `build.ts` derives schema.postgres.prisma

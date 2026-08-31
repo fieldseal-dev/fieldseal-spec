@@ -303,6 +303,46 @@ describe("L4: warm() in the value path (docs/13 §5)", () => {
     await base.$disconnect();
   });
 
+  it("warms again for the read pass when the cache evicts between the passes", async () => {
+    // Warm accounting is per pass, not per operation. The §5.5 cache can evict
+    // between the write pass and the read pass -- the write pass's own
+    // derivations advance the use counter, and the query engine's round trip
+    // runs between the two -- and the warm that saved the write pass says
+    // nothing about the read side's misses.
+    //
+    // The staging is the regression's exact shape: the write-pass miss lands on
+    // the operation's LAST context (the value key serves, the index derivation
+    // misses), so the warm cycle marks every context the pass built. With one
+    // per-operation ledger the read-pass miss then found nothing pending and
+    // raised KEY_UNAVAILABLE -- for a row the database had already committed,
+    // when one more warm would have served it. A miss on the FIRST context
+    // masked the bug, because contexts recorded during the successful retry
+    // were never marked warmed.
+    let phase = 0; // 0 = cold; 1 = encrypt keys cached; 2 = cached again
+    let served = 0;
+    const provider: KeyProvider = {
+      encryptionKey(ctx: ResolvedContext) {
+        if (phase < 1 && served++ >= 1) {
+          throw new KeyUnavailableError(KEY_ID, "staged: evicted");
+        }
+        const index = ctx.purpose.startsWith("index:");
+        return { key: new Uint8Array(index ? INDEX_KEY : DEK), keyId: new Uint8Array(KEY_ID) };
+      },
+      decryptionKeys(_header: EnvelopeHeader) {
+        return phase < 2 ? [] : [new Uint8Array(DEK)];
+      },
+      async warm() {
+        phase++;
+        await Promise.resolve();
+      },
+    };
+    const { prisma, base } = makeClient({ keyProvider: provider });
+    const row = await loose(prisma)["person"]!["create"]!({ data: { legalName: "Ada Lovelace" } });
+    expect(row["legalName"]).toBe("Ada Lovelace");
+    expect(phase).toBe(2); // one warm per pass that missed, never one per operation
+    await base.$disconnect();
+  });
+
   it("gives up rather than looping when warming does not help", async () => {
     // Termination: a warm that returns without populating the cache leaves the
     // ledger with nothing new to warm, so the second attempt's miss is raised.
