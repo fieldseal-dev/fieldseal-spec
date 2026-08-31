@@ -467,12 +467,14 @@ bloat.
 trade security for availability; a KMS outage affects every query touching an
 encrypted field.
 
-**Argon2id blind indexes cost ~44 ms per query term and `blindIndex` is
+**Argon2id blind indexes cost ~44–70 ms per query term and `blindIndex` is
 synchronous, so on Node they stall the whole process** — not just the query
 that asked for one. Measured through this extension on 2026-08-31: a
 `findMany` on a table with **no encrypted column at all** went from p99
 0.8 ms to **352 ms** under eight concurrent Argon2id-indexed lookups. The
-event loop took **1 turn in 871 ms** during twenty derivations.
+event loop took **1 turn** during twenty derivations — measured on two
+machines, an x86-64 desktop (871 ms) and an arm64 Mac (1373 ms). The
+per-call cost is hardware-dependent; the total stall is not.
 
 Prefer `hmac-sha512` wherever the §7.3 domain table permits — microseconds
 rather than milliseconds. Where the domain requires Argon2id, the core has

@@ -23,12 +23,15 @@
  * ## The instrument, and why the obvious one is wrong
  *
  * `perf_hooks.monitorEventLoopDelay` is the natural choice and it **cannot see
- * this**. Measured on Node 24.16 (Windows, 2026-08-31): ten `argon2Sync` calls
- * blocking the loop for a solid **428 ms** produced `count = 3, max = 15.84 ms`
- * -- a plausible-looking number, 27x too small, floored at the platform timer
- * granularity. A histogram of delays between samples cannot report a stall
- * during which no sample was taken. Believing it would have concluded that the
- * sync path is fine.
+ * this**. It is now recorded on every run beside the real measurement, so the
+ * claim is checkable rather than asserted, and both shapes of its failure have
+ * been observed on Node 24.16 / Windows: a 428 ms block reported
+ * `count = 3, max = 15.84 ms` (27x too small, and equal to that platform's
+ * timer granularity), and an 893 ms block reported **`count = 0, max = 0`**.
+ * A histogram of delays *between samples* cannot report a stall during which
+ * no sample was taken -- so it either says nothing or says something
+ * comfortable, and never says what happened. Believing either would have
+ * concluded that the sync path is fine.
  *
  * `setInterval` fails for a related reason: on Windows it cannot fire faster
  * than ~15.6 ms, so "ticks per elapsed millisecond" measures the clock rather
@@ -45,6 +48,7 @@
 
 import { argon2, argon2Sync } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -84,6 +88,19 @@ interface LoopResult {
   gapP50: number | null;
   gapP99: number | null;
   gapMax: number | null;
+  /**
+   * What `perf_hooks.monitorEventLoopDelay` says about the same window.
+   *
+   * Recorded **beside** the real measurement rather than instead of it, so the
+   * claim that this instrument cannot see a full stall is testable on every
+   * machine the benchmark runs on instead of resting on one. On the first
+   * Windows run it reported `count = 3, max = 15.84 ms` for a 428 ms block --
+   * 27x too small, and suspiciously equal to that platform's timer
+   * granularity, which is exactly why it should not be asserted from one
+   * platform.
+   */
+  monitorCount: number;
+  monitorMaxMs: number;
 }
 
 /**
@@ -96,6 +113,7 @@ interface LoopResult {
  */
 async function withLoopProbe(work: () => Promise<void>): Promise<LoopResult> {
   const gaps: number[] = [];
+  const monitor = monitorEventLoopDelay({ resolution: 1 });
   let stop = false;
   let last = process.hrtime.bigint();
   const turn = (): void => {
@@ -107,11 +125,13 @@ async function withLoopProbe(work: () => Promise<void>): Promise<LoopResult> {
   setImmediate(turn);
   await sleep(50); // let the loop settle before the window opens
   gaps.length = 0;
+  monitor.enable();
   last = process.hrtime.bigint();
 
   const t = process.hrtime.bigint();
   await work();
   const wallMs = Number(process.hrtime.bigint() - t) / 1e6;
+  monitor.disable();
   stop = true;
   await sleep(5);
 
@@ -124,6 +144,8 @@ async function withLoopProbe(work: () => Promise<void>): Promise<LoopResult> {
     gapP50: q(0.5),
     gapP99: q(0.99),
     gapMax: gaps.length === 0 ? null : gaps[gaps.length - 1]!,
+    monitorCount: monitor.count,
+    monitorMaxMs: monitor.max / 1e6,
   };
 }
 
@@ -145,18 +167,35 @@ async function threadpoolProbe(
   windowMs: number,
 ): Promise<{ samples: number; p50: number | null; p99: number | null; max: number | null }> {
   const lat: number[] = [];
+  const inflight: Array<Promise<void>> = [];
   let stop = false;
+  // **Open-loop**, at a fixed 100 Hz. The first version of this probe awaited
+  // each read before issuing the next, which is coordinated omission -- the
+  // same trap this file's Class B design correctly avoids and this probe fell
+  // into. Under saturation it issued fewer reads exactly when they were
+  // slowest, so the loaded cases were scored from a handful of samples (2, on
+  // the first Windows run) and their percentiles meant nothing. Found by
+  // running the benchmark on a second machine and noticing the sample counts
+  // collapse precisely where the latency was worst.
   const probe = (async (): Promise<void> => {
+    const period = 10;
+    let next = Date.now();
     while (!stop) {
+      next += period;
       const t = process.hrtime.bigint();
-      try {
-        await readFile(fileURLToPath(import.meta.url));
-      } catch {
-        /* the file is only a payload; a read error is not the measurement */
-      }
-      lat.push(Number(process.hrtime.bigint() - t) / 1e6);
-      await sleep(5);
+      inflight.push(
+        readFile(fileURLToPath(import.meta.url))
+          .then(() => {
+            lat.push(Number(process.hrtime.bigint() - t) / 1e6);
+          })
+          .catch(() => {
+            /* the file is only a payload; a read error is not a sample */
+          }),
+      );
+      const wait = next - Date.now();
+      if (wait > 0) await sleep(wait);
     }
+    await Promise.all(inflight);
   })();
   const until = Date.now() + windowMs;
   const load =
@@ -270,7 +309,8 @@ async function main(): Promise<number> {
 
   const line = (l: string, r: LoopResult): string =>
     `${l.padEnd(26)} wall ${r.wallMs.toFixed(0).padStart(5)} ms | turns ${String(r.turns).padStart(7)} | ` +
-    `max gap ${r.gapMax === null ? "  n/a (never ran)" : `${r.gapMax.toFixed(2)} ms`}`;
+    `max gap ${(r.gapMax === null ? "n/a (never ran)" : `${r.gapMax.toFixed(2)} ms`).padStart(15)} | ` +
+    `monitorEventLoopDelay says max ${r.monitorMaxMs.toFixed(2)} ms over ${String(r.monitorCount)} samples`;
 
   console.log(`Argon2id at spec §7.3 minima (t=3, m=32 MiB, p=1) -- ${report.environment.runtime}, ${report.environment.os}`);
   console.log(`per call: sync ${cost.sync.toFixed(1)} ms | async ${cost.async.toFixed(1)} ms\n`);
