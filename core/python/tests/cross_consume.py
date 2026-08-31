@@ -110,7 +110,7 @@ def consume(files: list[Path]) -> dict:
             # understands is how a matrix reports green on a claim nobody
             # tested.
             pairs.append({"id": f"{producer}/document", "producer": producer,
-                          "status": "fail",
+                          "kind": "document", "status": "fail",
                           "reason": f"unrecognised producer schema {schema!r}; "
                                     f"this consumer reads {sorted(SCHEMAS)}"})
             continue
@@ -135,14 +135,35 @@ def consume(files: list[Path]) -> dict:
         # "this consumer did not check them" must not look the same.
         index_cases = doc.get("index_cases", [])
         if not index_cases:
+            # v1 means "this producer carries no index half" and is a pass.
+            # v2 means "this producer carries one" -- so v2 with an empty array
+            # is a producer that lost its index cases to a bug, and passing it
+            # would be precisely the silent skip this half exists to close.
+            v1 = schema == "fieldseal-vectors/cross/v1"
             pairs.append({
                 "id": f"{producer}/index-half", "producer": producer,
-                "kind": "index", "status": "pass",
-                "reason": f"producer emits {doc.get('schema')}, which carries "
-                          "no index cases"})
+                "kind": "document", "status": "pass" if v1 else "fail",
+                "reason": (f"producer emits {schema}, which carries no index "
+                           "cases") if v1 else
+                          (f"producer emits {schema}, which declares an index "
+                           "half, but `index_cases` is empty")})
+            continue
         for case in index_cases:
             entry = {"id": case["id"], "producer": producer, "kind": "index"}
             try:
+                # docs/08 §4.7, normative: the derivation string comes from
+                # `purpose` and the registry lookup from `index_id`, so a
+                # producer that disagreed with itself would derive against one
+                # and register under the other. It fails either way -- but as
+                # "no blind index is declared", which names neither the case
+                # nor the disagreement. Checked here so the reason is the
+                # cause.
+                want = f"index:{case['declaration']['index_id']}"
+                if case["context"]["purpose"] != want:
+                    raise ValueError(
+                        f"purpose {case['context']['purpose']!r} disagrees "
+                        f"with index_id {case['declaration']['index_id']!r} "
+                        f"(docs/08 §4.7)")
                 # A client per case, carrying that case's declaration.
                 # Construction is where §7.4's band and §7.6's gate run, so a
                 # declaration the producer could build and this core refuses is
@@ -182,6 +203,10 @@ def consume(files: list[Path]) -> dict:
             # stopped being findable.
             "envelope": sum(p["kind"] == "envelope" for p in pairs),
             "index": sum(p["kind"] == "index" for p in pairs),
+            # A document-level pair checked neither half -- an unreadable
+            # schema, or an index half a producer declared and did not deliver.
+            # Counting it as either would report a check that never ran.
+            "document": sum(p["kind"] == "document" for p in pairs),
         },
     }
 

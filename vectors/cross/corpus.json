@@ -389,6 +389,27 @@
       "value_bytes": "0001feff"
     },
     {
+      "case": "digits-only",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "digits",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "digits-only-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "16fd27068baf433b82eb8c7fada847da",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:digits"
+      },
+      "value_text": "+1 (555) 010-9999"
+    },
+    {
       "case": "bucket-marker",
       "key_ref": "tenant-a-dek-v1",
       "declaration": {

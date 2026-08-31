@@ -98,6 +98,7 @@ def _index_cases() -> list[tuple]:
     # with the width: at b=30 it needs P >= 2^31.
     wide = _decl("wide", "nfc-casefold-v1", 30, 5_000_000_000)
     raw = _decl("raw", "identity", 15, 100_000)
+    digits = _decl("digits", "digits-only-v1", 15, 100_000)
     bucketed = _decl("bucketed", "nfc-casefold-v1", 15, 100_000, "bucket")
 
     return [
@@ -127,6 +128,13 @@ def _index_cases() -> list[tuple]:
         # `identity` takes the bytes as they are: no normalization, so this is
         # the case where the value is given as bytes rather than as text.
         ("identity-bytes", a, raw, _idx_ctx("raw", CB, t), {"value_bytes": b"\x00\x01\xfe\xff".hex()}),
+        # `digits-only-v1`, the third registry normalizer. Added in the #103
+        # review round: docs/08 §4.7's own new rule asks for one case per
+        # normalizer the producer supports, and the corpus covered two of
+        # three -- the cores violated the rule this change introduced. The
+        # value carries separators the normalizer strips, so a core that
+        # skipped the stripping would derive differently.
+        ("digits-only", a, digits, _idx_ctx("digits", CB, t), {"value_text": "+1 (555) 010-9999"}),
         # The §7.2 reserved marker -- a derivation with no plaintext at all.
         # The consumer calls `unindexable_marker(ctx)`, not `blind_index`.
         ("bucket-marker", a, bucketed, _idx_ctx("bucketed", CB, t), {"value_marker": True}),
@@ -171,7 +179,11 @@ def generate() -> dict:
     by_key: dict[tuple, dict] = {}
     for _slug, _ref, decl, ctx, _val in index_cases:
         key = (ctx["table_uuid"], ctx["column_uuid"], decl["index_id"])
-        assert by_key.setdefault(key, decl) == decl, f"conflicting declaration for {key}"
+        if by_key.setdefault(key, decl) != decl:
+            raise AssertionError(
+                "conflicting declarations for "
+                f"{key[0]}/{key[1]}/{key[2]} -- two index cases share a "
+                "registry key and disagree about its parameters")
         assert ctx["purpose"] == f"index:{decl['index_id']}", (
             f"{_slug}: purpose and index_id disagree")
 

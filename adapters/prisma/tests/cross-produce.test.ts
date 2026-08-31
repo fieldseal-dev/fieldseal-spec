@@ -57,8 +57,18 @@ interface IndexCase {
     on_unindexable: string;
     unindexable_override?: { reason: string; approved_by: string; date: string };
   };
-  context: { table_uuid: string; column_uuid: string; tenant_id: string | null; purpose: string };
+  context: {
+    table_uuid: string;
+    column_uuid: string;
+    tenant_id: string | null;
+    // Carried for the same reason `CrossCase` carries it: read from the
+    // document rather than assumed, so a future row_id-present case is
+    // checked against the context the producer actually used.
+    row_id: string | null;
+    purpose: string;
+  };
   value_text?: string;
+  value_bytes?: string;
   value_marker?: boolean;
   index: string;
 }
@@ -209,13 +219,25 @@ describe("cross-language producer (docs/14 §3)", () => {
         tableUuid: H(c.context.table_uuid),
         columnUuid: H(c.context.column_uuid),
         tenantId: c.context.tenant_id === null ? null : H(c.context.tenant_id),
-        rowId: null,
+        rowId: c.context.row_id === null ? null : H(c.context.row_id),
         purpose: c.context.purpose,
       };
+      // docs/08 §4.7's MUST, asserted here as the consumers assert it: the
+      // derivation string comes from `purpose` and the registry lookup from
+      // `index_id`, so a producer disagreeing with itself would otherwise fail
+      // as "no blind index is declared", naming neither cause nor case.
+      expect(c.context.purpose, c.id).toBe(`index:${d.index_id}`);
+      const value =
+        c.value_text !== undefined
+          ? c.value_text
+          : c.value_bytes !== undefined
+            ? H(c.value_bytes)
+            : undefined;
+      if (c.value_marker !== true && value === undefined) {
+        throw new Error(`${c.id}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
+      }
       const got = Buffer.from(
-        c.value_marker === true
-          ? client.unindexableMarker(ctx)
-          : client.blindIndex(c.value_text!, ctx),
+        c.value_marker === true ? client.unindexableMarker(ctx) : client.blindIndex(value!, ctx),
       ).toString("hex");
       expect(got, c.id).toBe(c.index);
     }
@@ -231,6 +253,7 @@ describe("cross-language producer (docs/14 §3)", () => {
     expect(marker, "no marker case").toBeDefined();
     expect(marker!.declaration.on_unindexable).toBe("bucket");
     expect(marker!.value_text).toBeUndefined();
+    expect(marker!.index, "the marker case carries no index value").toBeTruthy();
     // docs/09 §7.2 gates bucket mode behind a recorded approval, and a
     // consumer cannot construct the client without it.
     expect(marker!.declaration.unindexable_override).toBeDefined();
@@ -252,6 +275,10 @@ describe("cross-language producer (docs/14 §3)", () => {
     // than left absent. `row_id`-present closes itself the day L3-row ships.
     const shapes = (doc.producer.limitations ?? []).map((l) => l.shape);
     expect(shapes).toContain("row_id-present");
+    // Named in the #103 review: no fixture model declares an index on a
+    // tenant-bound column, so the §5.2 sibling-key scope is only cross-checked
+    // on the index path by the core producers. Declared, not hidden.
+    expect(shapes).toContain("tenant-bound index");
   });
 
   it("covers the decisions no core test reaches", () => {

@@ -358,6 +358,12 @@ async function main(): Promise<number> {
     field: string,
     id: string,
     value: string | null,
+    // Threaded rather than hardcoded, mirroring `record` above. Every index
+    // case is tenantless today because no fixture model declares an index on
+    // a `tenant_bound` column -- a gap named in `producer.limitations` rather
+    // than hidden behind a literal `null` that would silently disagree with
+    // what the adapter stored the day one exists (#103 review).
+    tenant: string | null = null,
   ): Promise<void> {
     const m = fieldsealFieldMap.models.find((x) => x.model === model)!;
     const idx = m.indexes!.find((i) => i.source === field)!;
@@ -396,7 +402,7 @@ async function main(): Promise<number> {
       context: {
         table_uuid: m.tableUuid!.replace(/-/g, ""),
         column_uuid: enc.columnUuid.replace(/-/g, ""),
-        tenant_id: null,
+        tenant_id: tenant === null ? null : Buffer.from(tenant, "utf8").toString("hex"),
         row_id: null,
         purpose: `index:${idx.indexId}`,
       },
@@ -451,6 +457,19 @@ async function main(): Promise<number> {
           reason:
             "L3-row binding is not in v0: the extension runs before the query, " +
             "so a database-generated id does not exist yet (docs/13 §8)",
+        },
+        {
+          shape: "tenant-bound index",
+          reason:
+            "no model in this fixture declares an index on a tenant_bound " +
+            "column, so the §5.2 sibling-key scope is exercised on the index " +
+            "path only by the core producers (raised in the #103 review)",
+        },
+        {
+          shape: "normalizer:identity, normalizer:digits-only-v1",
+          reason:
+            "every indexed column in this schema declares nfc-casefold-v1; " +
+            "the other two registry normalizers are covered by the core producers",
         },
       ],
     },

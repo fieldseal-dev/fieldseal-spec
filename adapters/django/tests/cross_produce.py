@@ -164,8 +164,19 @@ def _index_case(case_id: str, model: object, field_name: str, pk: int,
     """
     field = model._meta.get_field(field_name)  # type: ignore[attr-defined]
     idx = field.index
+    # `Encrypted.index_column("x")` is declared as `x_bidx` by convention in
+    # this fixture -- `docs/12` §1.2 requires the sibling to be declared
+    # explicitly and below its source, and the fixture names them this way.
+    # The convention is the fixture's, not the adapter's.
     sibling = model._meta.get_field(f"{field_name}_bidx")  # type: ignore[attr-defined]
     raw = _raw_column(model._meta.db_table, sibling.column, pk)  # type: ignore[attr-defined]
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        # Spec §7.11: an index column is raw bytes of length ceil(b/8). A text
+        # column here would mean the sibling was declared wrong, and a
+        # `bytes(...)` on it dies with a bare TypeError that names nothing.
+        raise TypeError(
+            f"{model._meta.label}.{sibling.column} holds "  # type: ignore[attr-defined]
+            f"{type(raw).__name__}, not bytes (spec §7.11)")
     ctx = field.fieldseal_context()  # type: ignore[attr-defined]
 
     decl: dict = {
@@ -301,14 +312,24 @@ def produce() -> dict:
             "implementation": "django",
             "version": "0.1.0.dev0",
             "commit": _commit(),
-            # docs/08 §4.7: an adapter producer declares the context shapes it
-            # cannot produce, so the gap is visible in the artifact rather than
-            # absent from it. This one closes itself the day L3-row ships.
+            # docs/08 §4.7: an adapter producer declares the context shapes
+            # and normalizers it cannot produce, so the gap is visible in the
+            # artifact rather than absent from it. The first closes itself the
+            # day L3-row ships.
             "limitations": [
                 {"shape": "row_id-present",
                  "reason": "L3-row binding is not in v0: Django cannot see the "
                            "primary key at INSERT with identity keys "
                            "(docs/12 §4)"},
+                {"shape": "tenant-bound index",
+                 "reason": "no model in this fixture declares a BlindIndex on "
+                           "a tenant_bound column, so the §5.2 sibling-key "
+                           "scope is exercised on the index path only by the "
+                           "core producers (raised in the #103 review)"},
+                {"shape": "normalizer:identity, normalizer:digits-only-v1",
+                 "reason": "every indexed column in this fixture declares "
+                           "nfc-casefold-v1; the other two are covered by the "
+                           "core producers"},
             ],
             "produced_at": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(timespec="seconds"),

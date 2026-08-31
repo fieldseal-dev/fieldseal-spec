@@ -50,6 +50,20 @@ interface IndexCase {
   index: string;
 }
 
+/**
+ * The operand a case derives from.
+ *
+ * Exactly one of `value_text` / `value_bytes` / `value_marker` is present per
+ * docs/08 §4.7, and a case violating that gets a named error rather than a
+ * non-null assertion's confusing one -- a producer in another language is
+ * exactly who would violate it.
+ */
+function valueOf(c: IndexCase): string | Uint8Array {
+  if (c.value_text !== undefined) return c.value_text;
+  if (c.value_bytes !== undefined) return hex(c.value_bytes);
+  throw new Error(`${c.id}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
+}
+
 /** The producer's declaration block, as this core's registry wants it. */
 function declOf(c: IndexCase): IndexDeclaration {
   const d = c.declaration;
@@ -131,13 +145,17 @@ interface Pair {
   /**
    * Which half of the claim this pair checked.
    *
-   * Recorded because the two fail for different reasons and want different
+   * Recorded because they fail for different reasons and want different
    * reading: an envelope mismatch is a decrypt problem, an index mismatch is
    * a **silent lookup miss** in production -- nothing would have raised, the
    * row would just have stopped being findable. A summary that could not tell
    * them apart would report the more serious one as the less serious.
+   *
+   * `"document"` is a pair that checked *neither* half -- an unreadable
+   * schema, or an index half a producer declared and did not deliver.
+   * Counting it as either would report a check that never ran.
    */
-  kind: "envelope" | "index";
+  kind: "envelope" | "index" | "document";
   status: "pass" | "fail";
   reason?: string;
 }
@@ -160,7 +178,7 @@ for (const f of files) {
     pairs.push({
       id: `${producer}/document`,
       producer,
-      kind: "envelope",
+      kind: "document",
       status: "fail",
       reason: `unrecognised producer schema ${String(doc.schema)}; this consumer reads ${[...SCHEMAS].join(", ")}`,
     });
@@ -182,16 +200,35 @@ for (const f of files) {
   // did not check them" must not look the same in a verdict.
   const indexCases = doc.index_cases ?? [];
   if (indexCases.length === 0) {
+    // v1 means "this producer carries no index half" and is a pass. v2 means
+    // "this producer carries one" -- so v2 with an empty array is a producer
+    // that lost its index cases to a bug, and passing it would be precisely
+    // the silent skip this half exists to close.
+    const v1 = doc.schema === "fieldseal-vectors/cross/v1";
     pairs.push({
       id: `${producer}/index-half`,
       producer,
-      kind: "index",
-      status: "pass",
-      reason: `producer emits ${doc.schema}, which carries no index cases`,
+      kind: "document",
+      status: v1 ? "pass" : "fail",
+      reason: v1
+        ? `producer emits ${doc.schema}, which carries no index cases`
+        : `producer emits ${String(doc.schema)}, which declares an index half, but \`index_cases\` is empty`,
     });
+    continue;
   }
   for (const c of indexCases) {
     try {
+      // docs/08 §4.7, normative: the derivation string comes from `purpose`
+      // and the registry lookup from `index_id`, so a producer that disagreed
+      // with itself would derive against one and register under the other. It
+      // fails either way -- but as "no blind index is declared", which names
+      // neither the case nor the disagreement. Checked here so the reason is
+      // the cause.
+      if (c.context.purpose !== `index:${c.declaration.index_id}`) {
+        throw new Error(
+          `purpose ${String(c.context.purpose)} disagrees with index_id ${c.declaration.index_id} (docs/08 §4.7)`,
+        );
+      }
       // A client per case, carrying that case's declaration. Construction is
       // where §7.4's band and §7.6's gate run, so a declaration the producer
       // could build and this core refuses is itself a divergence worth
@@ -201,7 +238,7 @@ for (const f of files) {
       const got = Buffer.from(
         c.value_marker === true
           ? client.unindexableMarker(ctx)
-          : client.blindIndex(c.value_text !== undefined ? c.value_text : hex(c.value_bytes!), ctx),
+          : client.blindIndex(valueOf(c), ctx),
       ).toString("hex");
       if (got === c.index) pairs.push({ id: c.id, producer, kind: "index", status: "pass" });
       else {
@@ -232,6 +269,7 @@ const verdict = {
     skipped: 0,
     envelope: pairs.filter((p) => p.kind === "envelope").length,
     index: pairs.filter((p) => p.kind === "index").length,
+    document: pairs.filter((p) => p.kind === "document").length,
   },
 };
 mkdirSync(dirname(verdictPath), { recursive: true });

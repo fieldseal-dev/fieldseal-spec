@@ -138,8 +138,13 @@ def test_every_index_case_derives_from_the_shared_key_material_alone(produced):
             table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
             purpose=c["purpose"],
             tenant_id=None if c["tenant_id"] is None else H(c["tenant_id"]),
-            row_id=None,
+            # Read, not assumed: every index case is row_id-absent today, and
+            # hardcoding `None` would keep passing on the day one is not,
+            # against a context the producer never used (#103 review).
+            row_id=None if c["row_id"] is None else H(c["row_id"]),
         )
+        # docs/08 §4.7's MUST, asserted here as the consumers assert it.
+        assert c["purpose"] == f"index:{d['index_id']}", case["id"]
         got = (client.unindexable_marker(ctx) if case.get("value_marker")
                else client.blind_index(case["value_text"], ctx))
         assert got.hex() == case["index"], case["id"]
@@ -155,6 +160,7 @@ def test_the_adapter_stores_the_marker_for_a_refused_value_unasked(produced):
     """
     marker = next(c for c in produced["index_cases"] if c.get("value_marker"))
     assert marker["declaration"]["on_unindexable"] == "bucket"
+    assert marker["index"], "the marker case carries no index value"
     assert "value_text" not in marker
     # docs/09 §7.2 gates bucket mode behind a recorded approval, and a consumer
     # cannot construct the client without it.
