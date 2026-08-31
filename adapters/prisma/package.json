@@ -25,7 +25,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
-    "prisma:generate": "prisma generate --schema tests/fixture/schema.prisma"
+    "prisma:generate": "prisma generate --schema tests/fixture/schema.prisma",
+    "cross:produce": "node --no-warnings=ExperimentalWarning tests/cross/produce.ts"
   },
   "//": [
     "AD-1 (spec §11.3): zero cryptography in this package. The only calls into",
