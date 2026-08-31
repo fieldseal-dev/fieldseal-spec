@@ -23,15 +23,20 @@
  * ## The instrument, and why the obvious one is wrong
  *
  * `perf_hooks.monitorEventLoopDelay` is the natural choice and it **cannot see
- * this**. It is now recorded on every run beside the real measurement, so the
- * claim is checkable rather than asserted, and both shapes of its failure have
- * been observed on Node 24.16 / Windows: a 428 ms block reported
- * `count = 3, max = 15.84 ms` (27x too small, and equal to that platform's
- * timer granularity), and an 893 ms block reported **`count = 0, max = 0`**.
- * A histogram of delays *between samples* cannot report a stall during which
- * no sample was taken -- so it either says nothing or says something
- * comfortable, and never says what happened. Believing either would have
- * concluded that the sync path is fine.
+ * this**. It is recorded on every run beside the real measurement, so the claim
+ * is checkable rather than asserted -- and it has now been checked on two
+ * platforms, which is what turned it from a suspicion into a finding.
+ *
+ * On **both** x86-64/Windows and arm64/macOS, a full stall (893 ms and 1219 ms
+ * respectively) reported **`count = 0, max = 0.00 ms`**. An earlier, shorter
+ * 428 ms block on Windows reported `count = 3, max = 15.84 ms` -- 27x too
+ * small, and equal to that platform's timer granularity, which is why the
+ * first write-up wrongly suspected a Windows artifact. It is not: a histogram
+ * of delays *between samples* cannot report a stall during which no sample was
+ * taken, and that is a property of the instrument, not of an operating system.
+ * It says nothing, or says something comfortable. It never says what happened.
+ * It also under-reports *partial* stalls: in the async 8-concurrent case on
+ * macOS it reported 178.91 ms against a real 527 ms.
  *
  * `setInterval` fails for a related reason: on Windows it cannot fire faster
  * than ~15.6 ms, so "ticks per elapsed millisecond" measures the clock rather

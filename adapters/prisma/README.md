@@ -482,7 +482,9 @@ committed to an async companion on the strength of that benchmark
 (`docs/11` §2) and it is not built yet; when it is, a deployment using it
 must also size `UV_THREADPOOL_SIZE` at or above its concurrent-derivation
 count, because the async form moves the cost to the libuv threadpool rather
-than removing it. This is a product constraint, not tuning.
+than removing it — measured on two machines, four concurrent derivations
+take an unrelated file read from ~0.28 ms to 67 ms (x86-64) or 402 ms
+(arm64). This is a product constraint, not tuning.
 
 **Application caches hold plaintext** (spec §10.2, "All ORMs"). Any cache
 sitting outside the extension stores decrypted values.
