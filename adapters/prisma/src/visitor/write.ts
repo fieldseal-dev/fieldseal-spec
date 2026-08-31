@@ -20,6 +20,7 @@ import type { Fieldseal } from "@fieldseal/core";
 import { toBytes, toColumn } from "../codec.ts";
 import { buildContext, type ContextOptions, indexContext } from "../context.ts";
 import { FieldsealNotSupported } from "../errors.ts";
+import type { Journal } from "../journal.ts";
 import {
   type EncryptedFieldDecl,
   type IndexFieldDecl,
@@ -35,6 +36,8 @@ export interface WriteCtx {
   readonly operation: string;
   readonly rootArgs: unknown;
   readonly context: ContextOptions;
+  /** Every mutation below is recorded before it is applied -- `journal.ts`. */
+  readonly journal: Journal;
 }
 
 /** Keys under which an operation's write payload can appear. */
@@ -91,17 +94,21 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
       // NULL is an absence, not a value: it stays NULL, and the sibling with
       // it, so `where: { field: null }` keeps working as plain SQL.
       const idx = model.indexBySource.get(enc.field);
-      if (idx !== undefined) row[idx.field] = null;
+      if (idx !== undefined) ctx.journal.set(row, idx.field, null);
       continue;
     }
 
     const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
     const plaintext = toBytes(written, enc, label);
-    row[enc.field] = toColumn(ctx.client.encrypt(plaintext, fieldCtx), enc);
+    ctx.journal.set(row, enc.field, toColumn(ctx.client.encrypt(plaintext, fieldCtx), enc));
 
     const idx = model.indexBySource.get(enc.field);
     if (idx !== undefined) {
-      row[idx.field] = deriveIndex(ctx.client, idx, enc, written, fieldCtx, label);
+      ctx.journal.set(
+        row,
+        idx.field,
+        deriveIndex(ctx.client, idx, enc, written, fieldCtx, label, ctx.context),
+      );
     }
   }
 
@@ -176,6 +183,7 @@ function deriveIndex(
   written: unknown,
   fieldCtx: ReturnType<typeof buildContext>,
   label: string,
+  opts: ContextOptions,
 ): Uint8Array {
   // §7.1/G16 part A: pass the *string*, never its encoding. TextEncoder
   // substitutes U+FFFD for an unpaired surrogate, so a caller who encodes
@@ -183,7 +191,7 @@ function deriveIndex(
   // is entered -- the exact false match the refusal exists to prevent.
   const operand = typeof written === "string" ? written : toBytes(written, encDecl, label);
   try {
-    return client.blindIndex(operand, indexContext(fieldCtx, idx.indexId));
+    return client.blindIndex(operand, indexContext(fieldCtx, idx.indexId, opts));
   } catch (e) {
     throw unindexableError(e, label, encDecl.noun);
   }

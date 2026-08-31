@@ -14,7 +14,7 @@
  *   4. WRITE    encrypt declared columns, derive index siblings
  *   5. WHERE    rewrite equality/`in` onto the sibling index, record the
  *               spec §7.5 obligations the rewrite incurs
- *   6. await query(args)      -- async: KMS acquisition can await here (L4)
+ *   6. await query(args)      -- async: KMS acquisition awaits here (L4, warm.ts)
  *   7. READ     decrypt declared columns in the result tree
  *   8. RE-VERIFY discharge the obligations: drop §7.4 collision rows
  *
@@ -29,6 +29,12 @@
  * `candidateScope(fn)` is the documented opt-out: inside it nothing is
  * recorded, step 8 does not run, and the database answers over the §7.4 bucket.
  *
+ * **Steps 4-5 and steps 7-8 are each atomic.** Every mutation the visitors make
+ * is journalled (`journal.ts`) and a pass that throws is rolled back before the
+ * error leaves. That exists for L4: `warm.ts` runs a pass again after awaiting
+ * `warm()`, and a retry over a half transformed tree would encrypt an envelope
+ * a second time instead of failing.
+ *
  * **Ordering.** Register fieldseal *last*. Measured against Prisma 7.10.0: the
  * extension registered first is outermost, so the one registered last sits
  * closest to the engine -- which is where this must be, so that every other
@@ -36,18 +42,20 @@
  * last" is exactly backwards, which is why it is written down.)
  */
 
-import type { Fieldseal, ReadMode, Warning } from "@fieldseal/core";
+import type { FieldContext, Fieldseal, ReadMode, Warning } from "@fieldseal/core";
 
 import { inCandidateScope } from "./candidates.ts";
 import { buildClient, type ClientOptions, type ScopedOverride } from "./client.ts";
-import type { TenantResolver } from "./context.ts";
+import type { ContextOptions, TenantResolver } from "./context.ts";
 import { FieldsealConfigurationError, FieldsealNotSupported } from "./errors.ts";
 import { FIELD_MAP_VERSION, type FieldMap, resolveMap } from "./fieldmap.ts";
+import { Journal } from "./journal.ts";
 import { analyzeOperation } from "./visitor/reject.ts";
 import { applyReads } from "./visitor/read.ts";
-import { applyRewrites } from "./visitor/rewrite.ts";
+import { applyRewrites, type Obligation } from "./visitor/rewrite.ts";
 import { verifyResult } from "./visitor/verify.ts";
 import { applyWrites, type WriteCtx } from "./visitor/write.ts";
+import { ContextLedger, providerCanWarm, runPass } from "./warm.ts";
 
 export interface FieldsealExtensionOptions {
   /** The generated field map (see `generator/`). */
@@ -72,6 +80,19 @@ export interface FieldsealExtensionOptions {
   readonly onWarning?: ((w: Warning) => void) | undefined;
   /** Leave index sibling columns in returned objects. Off by default. */
   readonly exposeIndexColumns?: boolean | undefined;
+  /**
+   * L4: on `KEY_UNAVAILABLE`, `await client.warm(...)` for the contexts the
+   * operation asked for and run the pass again (`warm.ts`, `docs/13` §5).
+   *
+   * On by default, and inert unless the key provider implements `warm` -- so
+   * `StaticKeyProvider` and `DerivedKeyProvider` deployments behave exactly as
+   * before, and an `EnvelopeKeyProvider` one stops serving `KEY_UNAVAILABLE`
+   * for every read until an operator warms the cache by hand.
+   *
+   * Set `false` to keep the stricter property that no query ever blocks on the
+   * key service: the miss is then raised, as it is in every sync adapter.
+   */
+  readonly warmOnKeyMiss?: boolean | undefined;
   readonly armProvisionalSuites?: boolean | undefined;
 }
 
@@ -100,8 +121,11 @@ export interface QueryExtension {
 export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtension {
   const map = validateMap(opts.fieldMap);
   const client: Fieldseal = buildClient(map, opts);
-  const contextOpts = { resolver: opts.tenant };
   const exposeIndexColumns = opts.exposeIndexColumns === true;
+  // Armed once, at construction: whether a provider can warm is a property of
+  // the deployment, not of a request, and deciding it per operation would put a
+  // capability check on the value path for no gain.
+  const l4 = opts.warmOnKeyMiss !== false && providerCanWarm(opts.keyProvider);
 
   return {
     name: "fieldseal",
@@ -142,52 +166,103 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
             );
           }
 
+          // The ledger is what makes L4 need no second walk: `context.ts`
+          // reports every context the passes build, index-key siblings
+          // included, and that is exactly the set to warm. Per operation, since
+          // what an operation needs is what it named.
+          const ledger = l4 ? new ContextLedger() : null;
+          const contextOpts: ContextOptions = {
+            resolver: opts.tenant,
+            ...(ledger !== null ? { record: (c: FieldContext) => ledger.add(c) } : {}),
+          };
+
           // 3. Refuse before doing any work: a shape that will not be served
           //    should not first have its operands encrypted or fingerprinted.
           //    The same walk plans the rewrites, so a refusal and a rewrite can
-          //    never disagree about what a `where` site is.
+          //    never disagree about what a `where` site is. It touches no key
+          //    and so cannot miss one -- it is outside the retry deliberately,
+          //    and the intents it plans survive a rollback because a rollback
+          //    restores the nodes they point at.
           const intents = analyzeOperation(resolved, operation, args, map, {
             verify: !inCandidateScope(),
           });
 
-          // 4. Encrypt and derive.
+          // 4 + 5, under one journal and one retry. Together, because step 5
+          // can miss a key after step 4 has already encrypted the payload: two
+          // separate retries would re-run step 4 over its own ciphertext.
+          const argsJournal = new Journal();
           const writeCtx: WriteCtx = {
             client,
             map,
             operation,
             rootArgs: args,
             context: contextOpts,
+            journal: argsJournal,
           };
-          applyWrites(resolved, args, writeCtx);
-
-          // 5. Rewrite equality/`in` onto the sibling index, and take on the
-          //    §7.5 debt each rewrite creates.
-          const obligations = applyRewrites(intents, {
+          let obligations: Obligation[] = [];
+          await runPass(
+            () => {
+              // 4. Encrypt and derive.
+              applyWrites(resolved, args, writeCtx);
+              // 5. Rewrite equality/`in` onto the sibling index, and take on
+              //    the §7.5 debt each rewrite creates.
+              obligations = applyRewrites(intents, {
+                client,
+                operation,
+                rootArgs: args,
+                context: contextOpts,
+                journal: argsJournal,
+              });
+            },
+            argsJournal,
             client,
-            operation,
-            rootArgs: args,
-            context: contextOpts,
-          });
+            ledger,
+          );
 
-          // 6. The await the sync core cannot do (L4 lands with warm(), PR3).
-          const result = await query(args);
+          // 6. The await a sync adapter cannot do. `warm.ts` has already used
+          //    it if a key was missing; the query engine has not acquired a
+          //    connection yet, so nothing was held open across it.
+          let result: unknown;
+          try {
+            result = await query(args);
+          } catch (e) {
+            // The database refused the statement. Hand the caller their own
+            // `data` object back rather than the encrypted rewrite of it, so a
+            // retry after a constraint violation is theirs to make.
+            argsJournal.rollback();
+            throw e;
+          }
+          argsJournal.commit();
 
-          // 7. Decrypt.
-          const decrypted = applyReads(resolved, result, {
+          // 7 + 8, under their own journal and their own retry. A miss here is
+          // on the decrypt side and the rows are already in hand, so the retry
+          // costs a warm and a second pass over the result -- never a second
+          // query, which for a write would be a second row.
+          const resultJournal = new Journal();
+          return await runPass(
+            () => {
+              // 7. Decrypt.
+              const decrypted = applyReads(resolved, result, {
+                client,
+                map,
+                operation,
+                rootArgs: args,
+                context: contextOpts,
+                exposeIndexColumns,
+                onPlaintextRead: opts.onPlaintextRead,
+                journal: resultJournal,
+              });
+              // 8. Discharge the obligations: a blind index is a filter, never
+              //    an answer (spec §7.5). Nothing is recorded inside
+              //    candidateScope().
+              return obligations.length === 0
+                ? decrypted
+                : verifyResult(decrypted, obligations, resultJournal);
+            },
+            resultJournal,
             client,
-            map,
-            operation,
-            rootArgs: args,
-            context: contextOpts,
-            exposeIndexColumns,
-            onPlaintextRead: opts.onPlaintextRead,
-          });
-
-          // 8. Discharge the obligations: a blind index is a filter, never an
-          //    answer (spec §7.5). Nothing is recorded inside candidateScope().
-          return obligations.length === 0
-            ? decrypted
-            : verifyResult(decrypted, obligations);
+            ledger,
+          );
       },
     },
   };
