@@ -323,6 +323,7 @@ it was checking.
 | **L4**: `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default where the provider implements `warm`; `warmOnKeyMiss: false` keeps the stricter "no query ever blocks on the key service" property. The core's value path still performs no I/O, asserted by instrumenting the provider rather than by review |
 | All §4 shapes | 🛑 throw |
 | `delete`/`deleteMany` by encrypted field | 🛑 refused — the rows the statement removes never come back for §7.5 to check, and an over-deletion is not recoverable. Measured: the bucket held 2, one of them a different value. This row read "✅ via index rewrite where declared" before the L2 build; `candidateScope` is the way to take those semantics deliberately |
+| **Cross-language**: a row written here, decrypted by another implementation | ✅ `tests/cross/produce.ts` → `cross-prisma.json`, consumed by the Python and TypeScript cores in the N×N job. Covers every `as:` rendering, both storage forms, the tenant-bound context and the empty string |
 | Raw SQL | ⚠️ passthrough + warning (default) / 🛑 throw (`strictRaw`) |
 | Result decryption incl. `include` nesting | ✅ |
 | `groupBy` on non-encrypted fields of a model containing encrypted fields | ✅ untouched |
@@ -334,7 +335,7 @@ it was checking.
 - **Zero-silent-failure regression:** the three failure shapes documented from `prisma-field-encryption` (`in:`, `contains:`, `orderBy`) each get a test asserting a **throw**, guarding the single most important behavioral difference (`docs/04` §3).
 - **Unknown-shape fail-closed:** feed the visitor an arg tree with a fabricated operator; assert hard error.
 - **Re-verification:** constructed truncation collision must be filtered from results.
-- **Cross-language sharing test:** rows written through this adapter decrypt via the Python core and vice versa (same shape as the Django §8 test).
+- **Cross-language sharing test — built, 2026-08-31.** `tests/cross/produce.ts` writes rows through the real extension, reads the raw columns back, and emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it. One thing the plan did not anticipate: Prisma is the adapter where the **codec** decision is largest, because its schema type is the *storage* type and the logical type is therefore an `as:` declaration that exists nowhere else. The producer exercises all six `as:` renderings and both storage forms rather than text plus an integer, and the test asserts each expected plaintext instead of round-tripping it — a consumer that decoded an integer differently would decrypt successfully and read the wrong value.
 - **L4 test:** cold cache + fake KMS wrapper — operation succeeds with an awaited warm, and the sync core path is never observed doing I/O (assert via wrapper instrumentation).
 
 ## 8. Deliberate non-goals

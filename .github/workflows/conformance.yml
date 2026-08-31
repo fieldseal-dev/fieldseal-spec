@@ -408,7 +408,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        impl: [python, typescript, django]
+        impl: [python, typescript, django, prisma]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -458,6 +458,40 @@ jobs:
         working-directory: adapters/django
         run: PYTHONPATH=. python tests/cross_produce.py --out ../../cross-django.json
 
+      # The Prisma adapter as a producer. The same three adapter-owned
+      # decisions as Django's leg, and one more that only exists here: Prisma's
+      # schema type is the *storage* type, so the logical type is an `as:`
+      # declaration and its rendering is an adapter choice. This leg exercises
+      # all six of them, plus the base64 storage form, which Django's fixture
+      # does not carry.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.impl == 'prisma'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the TypeScript core
+        if: matrix.impl == 'prisma'
+        working-directory: core/typescript
+        run: |
+          npm ci
+          npm run build
+      - name: Install and build the adapter
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Generate the fixture
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: |
+          npx prisma generate
+          node tests/fixture/build.ts
+          npx prisma db push
+      - name: Produce (prisma)
+        if: matrix.impl == 'prisma'
+        working-directory: adapters/prisma
+        run: npm run --silent cross:produce -- --out ../../cross-prisma.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cross-${{ matrix.impl }}
@@ -488,7 +522,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
       - name: Consume every producer (python)
         if: matrix.consumer == 'python'
-        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json cross-django.json --verdict verdict-python.json
+        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json cross-django.json cross-prisma.json --verdict verdict-python.json
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.consumer == 'typescript'
@@ -503,7 +537,7 @@ jobs:
       - name: Consume every producer (typescript)
         if: matrix.consumer == 'typescript'
         working-directory: core/typescript
-        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json ../../cross-django.json --verdict ../../verdict-typescript.json
+        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json ../../cross-django.json ../../cross-prisma.json --verdict ../../verdict-typescript.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

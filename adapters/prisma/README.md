@@ -360,7 +360,7 @@ the target matrix in `docs/13` §6.
 | Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
 | Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
 | `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction | fixture supplies it; see `helpers.ts` |
-| **Cross-language: a row written here, read by another core** | ❌ not yet — the cross producer is the next increment | — |
+| **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v1`; the N×N CI job has the Python core decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 | **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…` |
 | The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
@@ -394,6 +394,35 @@ an aggregate result, so that particular hazard is not silently reachable there
 even without this adapter. The refusal is still right — it names the reason and
 does not depend on a Prisma implementation detail — but the base64 case is where
 it bites.
+
+---
+
+## Cross-language: what this adapter stores, read by another language
+
+The project's central claim is that a value encrypted by one implementation is
+decryptable by another. The core-level harness proves that for the cores. What
+it cannot prove is that the bytes an *adapter* puts in a column are those bytes,
+because the decisions between an application value and the stored column belong
+to the adapter and to nothing the cores test — the codec's rendering, the
+storage form, and how the context is assembled.
+
+So `tests/cross/produce.ts` writes rows through the **real extension** (real
+`create()`, runtime CSPRNG, no test-mode injection), reads the raw columns back
+through `$queryRawUnsafe`, and emits the standard `fieldseal-vectors/cross/v1`
+document that every existing consumer already reads:
+
+```
+npm run cross:produce -- --out ../../cross-prisma.json
+```
+
+CI adds it to the N×N matrix as one more producer, and the Python core decrypts
+it. Prisma carries one decision the other adapters do not: its schema type is
+the **storage** type, so the logical type is an `as:` declaration and its
+rendering is an adapter choice — the producer exercises all six, plus the base64
+storage form, and the test asserts the expected plaintext rather than merely
+round-tripping it. A consumer that expected a platform integer encoding or a
+locale-aware date would decrypt successfully and read the wrong value, which is
+exactly the failure no round trip catches.
 
 ---
 
