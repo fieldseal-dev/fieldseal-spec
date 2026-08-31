@@ -306,6 +306,7 @@ the target matrix in `docs/13` §6.
 | **A model with no declarations** (relations to declared ones) | ✅ in the map as a relation-only entry; writes, reads and filters through it traverse the pipeline | `reaching Patient through the undeclared Referral model` |
 | A model missing from the field map — as the operation's model **or as a relation target** any walk reaches | 🛑 refused — a stale or edited map, never a passthrough; a skipped relation would write plaintext or return envelopes one hop down | `refuses an operation on a model the field map does not carry`, `refuses a nested write through a relation…` |
 | Database holds an envelope, never plaintext | ✅ | `stores an envelope in the database…` |
+| **Both database backends** — an encrypted column is a SQLite `BLOB` and a Postgres `bytea`; `storage: "base64"` is text on both | ✅ the whole suite runs on each as a separate CI leg | `stores an envelope in the database…`, `round-trips through a String column…` |
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `writes a different envelope every time…` |
 | `update` re-encrypts | ✅ including the `{ set: … }` form | `re-encrypts on update…`, `accepts the { set: value } update form` |
 | `update` with `increment`/arithmetic | 🛑 refused — the database would compute on an envelope | `refuses an arithmetic update…` |
@@ -491,6 +492,12 @@ npx prisma generate              # the fixture's Prisma client
 npx prisma db push               # the fixture database
 npm test                         # 232 tests
 npm run typecheck
+
+# The same suite against Postgres. `build.ts` derives schema.postgres.prisma
+# from schema.prisma, so re-run it (and `prisma generate`) when switching.
+export FIELDSEAL_TEST_DB=postgres
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fieldseal_test
+node tests/fixture/build.ts && npx prisma generate && npx prisma db push && npm test
 npm run cross:produce -- --out ../../cross-prisma.json   # the cross-language artifact
 npm run --silent report > conformance-prisma-adapter.json  # the docs/14 §4 report
 ```
@@ -498,6 +505,16 @@ npm run --silent report > conformance-prisma-adapter.json  # the docs/14 §4 rep
 `@fieldseal/core` is a `file:` dependency on this repository's own core, so the
 adapter is verified against the core it ships beside, not against a release.
 `core/typescript` must be built first — its `dist/` is gitignored.
+
+**Both backends run in CI as separate legs.** This adapter builds no SQL, so
+the backend-sensitive surface is narrow — an encrypted column is a `Bytes`
+column, which is a SQLite `BLOB` and a Postgres `bytea` — but that is exactly
+the round trip the whole design rests on, and "never treat one database backend
+as representative" is a house rule. A datasource `provider` must be a string
+literal, so the Postgres leg needs its own schema file;
+`tests/fixture/build.ts` derives it from `schema.prisma` and it is gitignored,
+because a second *committed* schema would drift apart precisely where the
+second backend was supposed to catch something.
 
 ### The conformance report
 

@@ -12,7 +12,7 @@ import {
   tenantScope,
 } from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
-import { clearDb, keyProvider, loose, makeClient, rawColumn, SUITE } from "./helpers.ts";
+import { clearDb, keyProvider, loose, makeClient, rawColumn, setColumn, SUITE } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
 const lp = loose(prisma);
@@ -235,11 +235,7 @@ describe("a stored value that is not an envelope (spec §10.3)", () => {
   const plantLegacyNickname = async (): Promise<string> => {
     const row = await lp["patient"]!["create"]!({ data: patient() });
     // A pre-migration row: the *plaintext* sits in the base64 column.
-    await base.$executeRawUnsafe(
-      `UPDATE "Patient" SET "nickname" = ? WHERE "id" = ?`,
-      "Ada",
-      row.id,
-    );
+    await setColumn(base, "Patient", "nickname", row.id as string, "Ada");
     return row.id as string;
   };
 
@@ -440,11 +436,7 @@ describe("tamper", () => {
     const row = await lp["patient"]!["create"]!({ data: patient() });
     const stored = Buffer.from((await rawColumn(base, "Patient", "email", row.id)) as Uint8Array);
     stored[stored.length - 1] = (stored[stored.length - 1]! ^ 0xff) & 0xff;
-    await base.$executeRawUnsafe(
-      `UPDATE "Patient" SET "email" = ? WHERE "id" = ?`,
-      stored,
-      row.id,
-    );
+    await setColumn(base, "Patient", "email", row.id as string, stored);
     await expect(prisma.patient.findUnique({ where: { id: row.id } })).rejects.toThrow();
   });
 });
