@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.5.0-provisional",
+  "vector_suite_version": "0.6.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -354,6 +354,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "alice@example.com",
@@ -374,6 +375,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ΐ@example.com",
@@ -394,6 +396,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ΰ@example.com",
@@ -414,6 +417,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "ǰ@example.com",
@@ -434,6 +438,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "straße@example.com",
@@ -454,6 +459,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "normalize": "nfc-casefold-v1",
         "plaintext_preimage_a": "rené@example.com",
@@ -474,6 +480,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
         "index_id": "email-eq",
@@ -505,6 +512,7 @@
       "suite_id": "0xFF01",
       "inputs": {
         "idf": "hmac-sha512",
+        "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
         "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
         "index_id": "email-eq",

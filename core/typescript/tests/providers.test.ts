@@ -310,7 +310,9 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
     // the cost, same column, two index values, lookup finds nothing. This
     // asserts only that the declared parameters are what the primitive is
     // invoked with; whether the primitive agrees with another core’s at a
-    // raised cost is a vector obligation on the held-out G2 family.
+    // raised cost is a vector obligation, and since suite 0.6.0-provisional
+    // blind-index/argon2id.json carries it: raised-cost-t4-b15 and
+    // unindexable-marker-t4-b15, both at t = 4.
     const at = (argon2?: { timeCost: number; memoryKib: number }): string =>
       makeClient({ indexes: [{ ...idx, idf: "argon2id" as const, ...(argon2 ? { argon2 } : {}) }] })
         .blindIndex(PT, { ...CTX, purpose: "index:exact" })
