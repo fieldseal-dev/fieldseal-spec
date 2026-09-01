@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
+import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
@@ -109,11 +109,31 @@ function mismatch(what: string, got: Uint8Array | string | number | undefined, w
  * the core rather than the harness — dropping it fails a correct core and
  * points the failure at the primitive (#62).
  */
+/**
+ * The cost an Argon2id vector declares (docs/08 §4.4), never this core's
+ * default: a vector at a raised cost tests the core only if the harness
+ * derives at the declared cost (issue #62). A missing cost is a malformed
+ * vector; the throw lands in the caller's per-vector boundary as a recorded
+ * failure. The fields spec §7.3 pins outright are checked rather than read:
+ * a vector declaring another `version`, `parallelism` or `output_len` is one
+ * this core cannot derive at, and deriving at the constant regardless would
+ * be the silent assumption #62 exists to catch (#108 review).
+ */
 function argon2Of(v: Record<string, unknown>): Argon2Params | undefined {
   if (v.idf !== "argon2id") return undefined;
   const p = v.idf_params as Record<string, number> | undefined;
   if (p?.time_cost === undefined || p.memory_kib === undefined) {
     throw new Error("argon2id vector without idf_params.time_cost / .memory_kib");
+  }
+  const fixed: [string, number | undefined, number][] = [
+    ["version", p.version, ARGON2_VERSION],
+    ["parallelism", p.parallelism, ARGON2_P],
+    ["output_len", p.output_len, ARGON2_OUTPUT_LEN],
+  ];
+  for (const [name, declared, pinned] of fixed) {
+    if (declared !== undefined && declared !== pinned) {
+      throw new Error(`argon2id vector declares idf_params.${name}=${declared}; spec §7.3 pins ${pinned} and this core cannot derive at anything else`);
+    }
   }
   return { timeCost: p.time_cost, memoryKib: p.memory_kib };
 }
@@ -343,12 +363,16 @@ function runUnindexable(v: Record<string, unknown>): Result {
     const ik = hex(inp.index_key as string);
     const bits = inp.truncate_bits as number;
     const want = hex(ex.index as string);
-    const marker = truncateBits(idf(which, ik, UNINDEXABLE_PREIMAGE), bits);
 
     if (v.assertion === "unindexable-marker") {
       if (!eq(hex(inp.reserved_preimage as string), UNINDEXABLE_PREIMAGE)) {
         problems.push(mismatch("reserved preimage", UNINDEXABLE_PREIMAGE, hex(inp.reserved_preimage as string)));
       }
+      // At the vector's declared cost, like every other derivation here.
+      // Until the #108 review this call omitted the cost and derived at this
+      // core's default -- invisible while every vector sat at the minima, and
+      // the reason unindexable-marker-t4-b15 now exists.
+      const marker = truncateBits(idf(which, ik, UNINDEXABLE_PREIMAGE, argon2Of(inp)), bits);
       if (!eq(marker, want)) problems.push(mismatch("marker", marker, want));
       // ...and that the public API agrees with the primitive.
       const fs = unindexableClient(inp, "bucket");
@@ -426,11 +450,20 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
   const b = v.truncate_bits as number;
   const normId = NORMALIZERS[v.normalize as string];
   const params = v.idf_params as Record<string, number>;
-  const argon2 = argon2Of(v);
+  // Read inside a boundary like everything else in the vector: a malformed
+  // cost is this vector's recorded failure (both results), not the run's abort.
+  let argon2: Argon2Params | undefined;
+  let costError: unknown;
+  try {
+    argon2 = argon2Of(v);
+  } catch (e) {
+    costError = e;
+  }
   const results: Result[] = [];
   const problems: string[] = [];
   try {
     if (normId === undefined) throw new Error(`unknown normalizer ${String(v.normalize)}`);
+    if (costError !== undefined) throw costError;
     // docs/08 §4.4: `plaintext` (already normalized) is the normative input;
     // the preimage checks the shipped normalizer against it.
     const wantNormalized = hex(v.plaintext as string);
@@ -459,6 +492,7 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
   if (normId !== undefined) {
     const pid = `${id}#pipeline`;
     try {
+      if (costError !== undefined) throw costError;
       const ctx = ctxFromVector(v.context as Record<string, unknown>);
       const P = 2 ** (b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
       const suiteId = parseSuiteId(v.suite_id as string);
@@ -811,5 +845,5 @@ export const HARNESS_NOTES: string[] = [
   "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key and context the vector carries (suite 0.2.0).",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
-  "blind-index/argon2id.json is held out (MANIFEST.held_out) and was not iterated; it is reported as not-run. Nothing about Argon2id contributes to this report's summary.",
+  "blind-index/argon2id.json is pinned as of suite 0.6.0-provisional (docs/07 §7) and is iterated like any other family; Argon2id contributes to this report's summary. Each vector derives at the cost it declares in idf_params, not at this core's default (docs/08 §4.4), and the declared salt is asserted on its own. A vector this core cannot derive at (a missing or non-§7.3 idf_params) is a recorded failure, not an abort.",
 ];

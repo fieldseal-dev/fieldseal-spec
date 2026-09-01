@@ -81,7 +81,8 @@ COLLISION_PAIRS = [
 ]
 
 
-def declared_cost(idf_name: str, ik: bytes) -> dict:
+def declared_cost(idf_name: str, salt_hex: str, *,
+                  time_cost: int = ARGON2_TIME_COST) -> dict:
     """The cost an Argon2id vector was generated at, `{}` for an IDF with none.
 
     Carried on **every** shape, assertion vectors included, not only the
@@ -93,17 +94,21 @@ def declared_cost(idf_name: str, ik: bytes) -> dict:
     vectors, so the omission cost nothing and was invisible; promoting it into
     the suite is what made it reachable. Found by promoting the family, which
     is a fair argument for not leaving vectors unrun.
+
+    `salt_hex` is derived once per file by the caller -- it depends only on
+    the index key, which every vector in a file shares (#108 review).
+    `time_cost` is the one parameter the raised-cost vectors move.
     """
     if idf_name != "argon2id":
         return {}
     return {
-        "version": ARGON2_VERSION, "time_cost": ARGON2_TIME_COST,
+        "version": ARGON2_VERSION, "time_cost": time_cost,
         "memory_kib": ARGON2_MEMORY_KIB,
         "parallelism": ARGON2_PARALLELISM,
         "output_len": ARGON2_OUTPUT_LEN,
         # Asserted separately so an HKDF-step bug and an Argon2-step bug are
         # distinguishable at the point of failure.
-        "salt": argon2_salt(ik).hex(),
+        "salt": salt_hex,
     }
 
 
@@ -112,6 +117,9 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
                        column_uuid=I.COLUMN_UUID, purpose="encrypt",
                        tenant_id=I.TENANT_ID)
     ik = index_key(I.TENANT_INDEX_KEY, ctx, index_id)
+    # One salt per file: it depends only on the index key, which every vector
+    # here shares, so each shape's declared_cost carries the same value.
+    salt_hex = argon2_salt(ik).hex() if idf_name == "argon2id" else ""
     out = []
     for slug, preimage, b_bits, provisional_on in CASES:
         normalized = normalize_nfc_casefold_v1(preimage)
@@ -147,7 +155,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             },
         }
         if idf_name == "argon2id":
-            vec["idf_params"] = declared_cost(idf_name, ik)
+            vec["idf_params"] = declared_cost(idf_name, salt_hex)
             vec["provisional_on"] = ["G2"]
         if provisional_on:
             vec["provisional_on"] = vec.get("provisional_on", []) + [provisional_on]
@@ -176,7 +184,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             "suite_id": suite_str(SUITE),
             "inputs": {
                 "idf": idf_name,
-                "idf_params": declared_cost(idf_name, ik),
+                "idf_params": declared_cost(idf_name, salt_hex),
                 "index_key": ik.hex(),
                 "normalize": NORMALIZER,
                 "plaintext_preimage_a": pre_a,
@@ -202,7 +210,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "suite_id": suite_str(SUITE),
         "inputs": {
             "idf": idf_name,
-            "idf_params": declared_cost(idf_name, ik),
+            "idf_params": declared_cost(idf_name, salt_hex),
             "index_key": ik.hex(),
             "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
             "index_id": index_id,
@@ -231,7 +239,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "suite_id": suite_str(SUITE),
         "inputs": {
             "idf": idf_name,
-            "idf_params": declared_cost(idf_name, ik),
+            "idf_params": declared_cost(idf_name, salt_hex),
             "index_key": ik.hex(),
             "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
             "index_id": index_id,
@@ -245,7 +253,88 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "expected": {"index": marker.hex(), "equals_marker": True,
                      "on_unindexable_refuse": "INVALID_ARGUMENT"},
     })
+    if idf_name == "argon2id":
+        out.extend(_raised_cost_vectors(index_id, ctx, ik, salt_hex))
     return out
+
+
+RAISED_T = ARGON2_TIME_COST + 1
+
+
+def _raised_cost_vectors(index_id: str, ctx: FieldContext, ik: bytes,
+                         salt_hex: str) -> list[dict]:
+    """Two vectors at `t = 4`: the raised cost docs/issues/G02 asks for.
+
+    Every other Argon2id vector is at the minima, which is exactly the
+    configuration under which a core that hard-codes them -- or a harness
+    that derives at its own default -- still passes. A vector off the minima
+    is the only one that can tell the two apart across implementations, and
+    the #108 review found the TypeScript harness deriving the reserved marker
+    at its default with nothing to say so. One primitive vector, which earns
+    a `#pipeline` companion through the public API, and one marker vector,
+    the shape the omission was in.
+    """
+    cost = declared_cost("argon2id", salt_hex, time_cost=RAISED_T)
+    preimage = "alice@example.com"
+    normalized = normalize_nfc_casefold_v1(preimage)
+    raw = idf_argon2id(ik, normalized, time_cost=RAISED_T)
+    idx = truncate(raw, 15)
+    marker = truncate(
+        idf_argon2id(ik, UNINDEXABLE_PREIMAGE, time_cost=RAISED_T), 15)
+    # A raised cost that derived the minima's bytes would assert nothing.
+    assert raw != idf_argon2id(ik, normalized), "raised cost changed nothing"
+    assert marker != truncate(idf_argon2id(ik, UNINDEXABLE_PREIMAGE), 15)
+    return [
+        {
+            "id": f"blind-index/argon2id/raised-cost-t{RAISED_T}-b15",
+            "description": f"argon2id index over {preimage!r} at "
+                           f"time_cost={RAISED_T} (spec §7.3: a minimum a "
+                           "deployment MAY raise), truncated to 15 bits",
+            "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+            "suite_id": suite_str(SUITE),
+            "idf": "argon2id",
+            "idf_params": cost,
+            "index_key": ik.hex(),
+            "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+            "index_id": index_id,
+            "context": ctx_json(ctx.for_index(index_id)),
+            "normalize": NORMALIZER,
+            "plaintext": normalized.hex(),
+            "plaintext_preimage": preimage,
+            "truncate_bits": 15,
+            "expected": {
+                "raw": raw.hex(),
+                "index": idx.hex(),
+                "stored": {"binary": idx.hex(), "hex": idx.hex(),
+                           "octets": len(idx)},
+            },
+            "provisional_on": ["G2"],
+        },
+        {
+            "id": f"blind-index/argon2id/unindexable-marker-t{RAISED_T}-b15",
+            "description": "the docs/09 §7.2 reserved marker for a column "
+                           f"declared at time_cost={RAISED_T}: the marker "
+                           "derives at the column's cost like any other value",
+            "spec_ref": "§7.2, §7.3, §7.5; docs/09 §7.2",
+            "assertion": "unindexable-marker",
+            "suite_id": suite_str(SUITE),
+            "inputs": {
+                "idf": "argon2id",
+                "idf_params": cost,
+                "index_key": ik.hex(),
+                "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+                "index_id": index_id,
+                "context": ctx_json(ctx.for_index(index_id)),
+                "normalize": NORMALIZER,
+                "reserved_preimage": UNINDEXABLE_PREIMAGE.hex(),
+                "truncate_bits": 15,
+            },
+            "expected": {"index": marker.hex(),
+                         "stored": {"binary": marker.hex(),
+                                    "hex": marker.hex(),
+                                    "octets": len(marker)}},
+        },
+    ]
 
 
 def generate_hmac() -> dict:
@@ -261,5 +350,9 @@ def generate_argon2id() -> dict:
     and the expected values did not move on promotion. What the hold-out did
     cost is visible in `declared_cost` above -- eight of these nineteen
     vectors were malformed and no harness could say so, because none ran them.
+
+    The #108 review of the promotion added the two raised-cost vectors
+    (`_raised_cost_vectors`): twenty-one vectors since, still at suite
+    0.6.0-provisional, which had not been published.
     """
     return wrapper("blind-index", _vectors("ssn-eq", "argon2id", idf_argon2id))

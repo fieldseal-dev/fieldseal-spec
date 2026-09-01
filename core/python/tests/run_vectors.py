@@ -35,10 +35,14 @@ import fieldseal  # noqa: E402
 from fieldseal import FieldContext, Fieldseal  # noqa: E402
 from fieldseal import unicode as fs_unicode  # noqa: E402
 from fieldseal.blindindex import (  # noqa: E402
+    ARGON2_OUTPUT_LEN,
+    ARGON2_PARALLELISM,
+    ARGON2_VERSION,
     NORMALIZERS,
     Argon2Params,
     CardinalityOverride,
     IndexDeclaration,
+    argon2_salt,
     idf,
     truncate,
 )
@@ -136,17 +140,46 @@ _HARNESS_OVERRIDE = CardinalityOverride(
     reason="vector harness", approved_by="vectors", date="2026-08-25")
 
 
+# Spec §7.3 pins these outright; a vector declaring anything else is one this
+# core cannot derive at, and is refused rather than derived at the constant.
+_ARGON2_FIXED = (("version", ARGON2_VERSION),
+                 ("parallelism", ARGON2_PARALLELISM),
+                 ("output_len", ARGON2_OUTPUT_LEN))
+
+
 def _argon2_params(inp: dict) -> Argon2Params | None:
     """docs/08 §4.4: an Argon2id vector states the cost it was generated at
     in `idf_params`, and the harness derives at that cost rather than at this
     core's default -- which is what lets a vector at a *raised* cost test the
     core instead of the harness. Dropping the parameters would fail such a
     vector against a correct core and point the failure at the primitive
-    (issue #62). Missing keys are a KeyError on purpose: a vector that omits
-    them is malformed, not a vector at the minimum."""
+    (issue #62).
+
+    Missing keys raise on purpose: a vector that omits them is malformed, not
+    a vector at the minimum. The raise is a recorded failure rather than an
+    abort because `run_blind_index` has a per-vector boundary -- the #108
+    review found it aborting the whole run with a bare KeyError instead, and
+    emitting no report. The fields §7.3 pins -- `version`, `parallelism`,
+    `output_len` -- are checked rather than read: deriving at the constant
+    regardless of what the vector declared would be the silent assumption
+    #62 exists to catch.
+    """
     if inp["idf"] != "argon2id":
         return None
-    params = inp["idf_params"]
+    params = inp.get("idf_params")
+    missing = not isinstance(params, dict) or any(
+        k not in params for k in ("time_cost", "memory_kib"))
+    if missing:
+        raise KeyError("argon2id vector without idf_params.time_cost / "
+                       ".memory_kib (docs/08 §4.4: malformed, not the minimum)")
+    assert isinstance(params, dict)
+    for name, pinned in _ARGON2_FIXED:
+        declared = params.get(name)
+        if declared is not None and declared != pinned:
+            raise ValueError(
+                f"argon2id vector declares idf_params.{name}={declared!r}; "
+                f"spec §7.3 pins {pinned} and this core cannot derive at "
+                "anything else")
     return Argon2Params(time_cost=params["time_cost"],
                         memory_kib=params["memory_kib"])
 
@@ -288,110 +321,151 @@ def _blind_index_primitive(which: str, index_key_bytes: bytes,
     return raw, truncate(raw, b_bits)
 
 
+def _raised(exc: BaseException) -> str:
+    """The reason recorded for an exception the per-vector boundary caught."""
+    missing_argon2 = (isinstance(exc, ModuleNotFoundError)
+                      and (exc.name or "").startswith("argon2"))
+    if missing_argon2:
+        return ("argon2 extra not installed -- pip install -e "
+                "'./core/python[argon2,dev]'; the family cannot be derived "
+                "without it")
+    return f"raised {exc!r}"
+
+
 def run_blind_index(doc: dict, results: list[dict]) -> None:
     for v in doc["vectors"]:
-        sid = _suite_id(v)
-        if v.get("assertion") == "equal":
-            i = v["inputs"]
-            norm = NORMALIZERS[i["normalize"]]
-            cost = _argon2_params(i)
-            _, a = _blind_index_primitive(i["idf"], H(i["index_key"]),
-                                          norm(i["plaintext_preimage_a"]),
-                                          i["truncate_bits"], cost)
-            _, b = _blind_index_primitive(i["idf"], H(i["index_key"]),
-                                          norm(i["plaintext_preimage_b"]),
-                                          i["truncate_bits"], cost)
-            ok = (a.hex() == v["expected"]["index_a"]
-                  and b.hex() == v["expected"]["index_b"]
-                  and (a == b) == v["expected"]["must_be_equal"])
-            _record(results, v["id"], ok)
-            continue
-        if v.get("assertion") == "unindexable-marker":
-            # docs/09 §7.2: the reserved marker's bytes, not merely its
-            # behaviour. Two cores that disagree on this value put their
-            # unindexable rows in two different buckets, and a lookup across
-            # them silently returns nothing.
-            i = v["inputs"]
-            _, got = _blind_index_primitive(i["idf"], H(i["index_key"]),
-                                            H(i["reserved_preimage"]),
-                                            i["truncate_bits"],
-                                            _argon2_params(i))
-            ctx = _ctx_from(i["context"], sid)
-            caller = FieldContext(
-                table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
-                purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
-            fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]),
-                         (_index_decl(i, ctx, "bucket"),))
-            api = fs.unindexable_marker(caller)
-            _record(results, v["id"],
-                    got.hex() == v["expected"]["index"] and api == got,
-                    f"primitive {got.hex()}, api {api.hex()}, "
-                    f"want {v['expected']['index']}")
-            continue
-        if v.get("assertion") == "unindexable-bucket":
-            # ...and that a refused value actually lands in it, while the
-            # default still refuses. Both halves matter: `bucket` that never
-            # fires is useless, and `refuse` that stopped refusing would be a
-            # silent policy change.
-            i = v["inputs"]
-            ctx = _ctx_from(i["context"], sid)
-            caller = FieldContext(
-                table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
-                purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
-            key = H(i["tenant_index_key"])
-            # `on_unindexable` is a property of the column (docs/09 §7.2), so
-            # the two policies are two declarations, not two calls.
-            bucket_fs = _client(bytes(16), b"\x22" * 32, key,
-                                (_index_decl(i, ctx, "bucket"),))
-            refuse_fs = _client(bytes(16), b"\x22" * 32, key,
-                                (_index_decl(i, ctx, "refuse"),))
-            bucketed = bucket_fs.blind_index(i["plaintext_preimage"], caller)
-            try:
-                refuse_fs.blind_index(i["plaintext_preimage"], caller)
-                refused = "NONE"
-            except InvalidArgument:
-                refused = "INVALID_ARGUMENT"
-            _record(results, v["id"],
-                    bucketed.hex() == v["expected"]["index"]
-                    and refused == v["expected"]["on_unindexable_refuse"],
-                    f"bucketed {bucketed.hex()} want {v['expected']['index']}; "
-                    f"refuse gave {refused}")
-            continue
-        # Primitive level: the vector's normalized plaintext is the normative
-        # input (docs/08 §4.4); the preimage checks the shipped normalizer.
-        normalized = NORMALIZERS[v["normalize"]](v["plaintext_preimage"])
-        raw, stored = _blind_index_primitive(v["idf"], H(v["index_key"]),
-                                             H(v["plaintext"]),
-                                             v["truncate_bits"],
-                                             _argon2_params(v))
-        exp = v["expected"]
-        checks = {
-            "normalizer": normalized.hex() == v["plaintext"],
-            "raw": raw.hex() == exp["raw"],
-            "index": stored.hex() == exp["index"],
-            "stored.binary": stored.hex() == exp["stored"]["binary"],
-            "stored.hex": stored.hex() == exp["stored"]["hex"],
-            "stored.octets": len(stored) == exp["stored"]["octets"],
-        }
-        _record(results, v["id"], all(checks.values()),
-                " ".join(f"{k}={ok}" for k, ok in checks.items()))
-        # End to end through the public API with the tenant index key the
-        # vector carries, text-in and bytes-in. Both are accepted at this
-        # boundary and must agree: docs/09 §7.1 requires an index API to take
-        # text, and widening the type must not fork the function.
-        ctx = _ctx(v, sid)
-        caller_ctx = FieldContext(
+        before = len(results)
+        try:
+            _run_blind_index_vector(v, results)
+        except Exception as exc:  # noqa: BLE001 - a harness reports, not raises
+            # The #108 review stripped the eight idf_params blocks from a copy
+            # of the suite: the TypeScript harness recorded eight failures and
+            # emitted its report; this one aborted inside _argon2_params with a
+            # bare KeyError and emitted nothing -- no artifact for the CI gate
+            # to read. Same boundary as run_envelope's #decrypt and run_errors.
+            # A primitive vector owes two results: record whichever the raise
+            # cut short, and both if it cut short the first.
+            reason = _raised(exc)
+            if len(results) > before:
+                _record(results, v["id"] + "#pipeline", False, reason)
+            else:
+                _record(results, v["id"], False, reason)
+                if "assertion" not in v:
+                    _record(results, v["id"] + "#pipeline", False, reason)
+
+
+def _run_blind_index_vector(v: dict, results: list[dict]) -> None:
+    sid = _suite_id(v)
+    if v.get("assertion") == "equal":
+        i = v["inputs"]
+        norm = NORMALIZERS[i["normalize"]]
+        cost = _argon2_params(i)
+        _, a = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                      norm(i["plaintext_preimage_a"]),
+                                      i["truncate_bits"], cost)
+        _, b = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                      norm(i["plaintext_preimage_b"]),
+                                      i["truncate_bits"], cost)
+        ok = (a.hex() == v["expected"]["index_a"]
+              and b.hex() == v["expected"]["index_b"]
+              and (a == b) == v["expected"]["must_be_equal"])
+        _record(results, v["id"], ok)
+        return
+    if v.get("assertion") == "unindexable-marker":
+        # docs/09 §7.2: the reserved marker's bytes, not merely its
+        # behaviour. Two cores that disagree on this value put their
+        # unindexable rows in two different buckets, and a lookup across
+        # them silently returns nothing.
+        i = v["inputs"]
+        _, got = _blind_index_primitive(i["idf"], H(i["index_key"]),
+                                        H(i["reserved_preimage"]),
+                                        i["truncate_bits"],
+                                        _argon2_params(i))
+        ctx = _ctx_from(i["context"], sid)
+        caller = FieldContext(
             table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
-            purpose=f"index:{v['index_id']}", tenant_id=ctx.tenant_id,
-            row_id=None)
-        fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]),
-                     (_index_decl(v, ctx),))
-        got = fs.blind_index(v["plaintext_preimage"], caller_ctx)
-        got_b = fs.blind_index(v["plaintext_preimage"].encode("utf-8"),
-                               caller_ctx)
-        _record(results, v["id"] + "#pipeline",
-                got.hex() == exp["stored"]["binary"] and got == got_b,
-                f"got {got.hex()} (bytes-in {got_b.hex()})")
+            purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
+        fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]),
+                     (_index_decl(i, ctx, "bucket"),))
+        api = fs.unindexable_marker(caller)
+        _record(results, v["id"],
+                got.hex() == v["expected"]["index"] and api == got,
+                f"primitive {got.hex()}, api {api.hex()}, "
+                f"want {v['expected']['index']}")
+        return
+    if v.get("assertion") == "unindexable-bucket":
+        # ...and that a refused value actually lands in it, while the
+        # default still refuses. Both halves matter: `bucket` that never
+        # fires is useless, and `refuse` that stopped refusing would be a
+        # silent policy change.
+        i = v["inputs"]
+        ctx = _ctx_from(i["context"], sid)
+        caller = FieldContext(
+            table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
+        key = H(i["tenant_index_key"])
+        # `on_unindexable` is a property of the column (docs/09 §7.2), so
+        # the two policies are two declarations, not two calls.
+        bucket_fs = _client(bytes(16), b"\x22" * 32, key,
+                            (_index_decl(i, ctx, "bucket"),))
+        refuse_fs = _client(bytes(16), b"\x22" * 32, key,
+                            (_index_decl(i, ctx, "refuse"),))
+        bucketed = bucket_fs.blind_index(i["plaintext_preimage"], caller)
+        try:
+            refuse_fs.blind_index(i["plaintext_preimage"], caller)
+            refused = "NONE"
+        except InvalidArgument:
+            refused = "INVALID_ARGUMENT"
+        _record(results, v["id"],
+                bucketed.hex() == v["expected"]["index"]
+                and refused == v["expected"]["on_unindexable_refuse"],
+                f"bucketed {bucketed.hex()} want {v['expected']['index']}; "
+                f"refuse gave {refused}")
+        return
+    # Primitive level: the vector's normalized plaintext is the normative
+    # input (docs/08 §4.4); the preimage checks the shipped normalizer. A
+    # primitive vector carries idf/idf_params at the top level, an assertion
+    # vector under inputs -- hence _argon2_params(v) here and (i) above.
+    normalized = NORMALIZERS[v["normalize"]](v["plaintext_preimage"])
+    raw, stored = _blind_index_primitive(v["idf"], H(v["index_key"]),
+                                         H(v["plaintext"]),
+                                         v["truncate_bits"],
+                                         _argon2_params(v))
+    exp = v["expected"]
+    checks = {
+        "normalizer": normalized.hex() == v["plaintext"],
+        "raw": raw.hex() == exp["raw"],
+        "index": stored.hex() == exp["index"],
+        "stored.binary": stored.hex() == exp["stored"]["binary"],
+        "stored.hex": stored.hex() == exp["stored"]["hex"],
+        "stored.octets": len(stored) == exp["stored"]["octets"],
+    }
+    if v["idf"] == "argon2id":
+        # docs/08 §4.4: the HKDF-derived salt is asserted on its own so an
+        # HKDF-step bug and an Argon2-step bug are distinguishable. The
+        # TypeScript harness did this from the start; this one did not until
+        # the #108 review, which had made §4.4's sentence true of one core.
+        checks["salt"] = (argon2_salt(H(v["index_key"])).hex()
+                          == v["idf_params"]["salt"])
+    _record(results, v["id"], all(checks.values()),
+            " ".join(f"{k}={ok}" for k, ok in checks.items()))
+    # End to end through the public API with the tenant index key the
+    # vector carries, text-in and bytes-in. Both are accepted at this
+    # boundary and must agree: docs/09 §7.1 requires an index API to take
+    # text, and widening the type must not fork the function.
+    ctx = _ctx(v, sid)
+    caller_ctx = FieldContext(
+        table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+        purpose=f"index:{v['index_id']}", tenant_id=ctx.tenant_id,
+        row_id=None)
+    fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]),
+                 (_index_decl(v, ctx),))
+    got = fs.blind_index(v["plaintext_preimage"], caller_ctx)
+    got_b = fs.blind_index(v["plaintext_preimage"].encode("utf-8"),
+                           caller_ctx)
+    _record(results, v["id"] + "#pipeline",
+            got.hex() == exp["stored"]["binary"] and got == got_b,
+            f"got {got.hex()} (bytes-in {got_b.hex()})")
 
 
 def run_envelope(doc: dict, results: list[dict]) -> None:
@@ -723,7 +797,10 @@ def run() -> dict:
             "0.6.0-provisional (docs/07 §7) and is iterated like any other "
             "family; Argon2id now contributes to this report's summary. Each "
             "vector derives at the cost it declares in idf_params, not at "
-            "this core's default (docs/08 §4.4).",
+            "this core's default (docs/08 §4.4), and the declared salt is "
+            "asserted on its own. A vector this core cannot derive at -- a "
+            "missing or non-§7.3 idf_params, or the argon2 extra not "
+            "installed -- is a recorded failure, not an abort.",
         ],
         "results": results,
         "held_out": held,

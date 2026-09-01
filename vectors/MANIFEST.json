@@ -6,8 +6,8 @@
   "files": [
     {
       "path": "blind-index/argon2id.json",
-      "sha256": "9c6d1cafdcbb9a72af18514364ed25abead71f0590fe3bd0dccf0500054d4d29",
-      "bytes": 24676
+      "sha256": "562b849f69bc34cb2976e9337e558456a5e8cde9ef3fb0559b889d53a12ae947",
+      "bytes": 27612
     },
     {
       "path": "blind-index/hmac-sha512.json",

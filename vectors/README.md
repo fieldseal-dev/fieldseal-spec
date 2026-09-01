@@ -6,7 +6,7 @@ Every implementation MUST run every vector for every conformance level it claims
 
 ## Layout
 
-*Status 2026-08-31, suite `0.6.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 144 vectors, which both cores run as 175 results (`envelope/` vectors carry a `#decrypt` direction and some `blind-index/` vectors a `#pipeline` run, per `docs/14` §4). **Nothing is held out**: `blind-index/argon2id.json` was the last held-out family and was pinned on 2026-08-31 (`docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, and `cross/corpus.json` is the 16-case input corpus every cross producer encrypts — both under `MANIFEST.support`, never run by a harness. The *dynamic* cross exchange runs in CI (`docs/14` §3: each core produces through its production path, every core decrypts every producer, self-pairs included); `cross/static/` — per-release checked-in envelopes — waits for a first release to pin. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
+*Status 2026-08-31, suite `0.6.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 146 vectors, which both cores run as 178 results (`envelope/` vectors carry a `#decrypt` direction and some `blind-index/` vectors a `#pipeline` run, per `docs/14` §4). **Nothing is held out**: `blind-index/argon2id.json` was the last held-out family and was pinned on 2026-08-31 (`docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, and `cross/corpus.json` is the 16-case input corpus every cross producer encrypts — both under `MANIFEST.support`, never run by a harness. The *dynamic* cross exchange runs in CI (`docs/14` §3: each core produces through its production path, every core decrypts every producer, self-pairs included); `cross/static/` — per-release checked-in envelopes — waits for a first release to pin. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
 
 
 ```
@@ -93,10 +93,16 @@ with the generator's.
 **What the hold-out cost, recorded because it is the argument against holding
 families out casually:** eight of the family's nineteen vectors declared
 `idf: argon2id` and carried no `idf_params`. Both cores reject a missing cost
-as a malformed vector rather than assuming the minimum (`docs/08` §4.4), so
-both would have failed them — and neither could say so, because nothing ran
-them. A held-out family is unreviewed by machine no matter how reviewable it
-looks.
+as a malformed vector rather than assuming the minimum (`docs/08` §4.4) — but
+not in the same way: the review of the promotion tested it and found the
+TypeScript harness recording eight failures where the Python harness aborted
+with no report at all (`docs/07` §7, 2026-09-01; both record now). Neither
+could have said so earlier, because nothing ran them. A held-out family is
+unreviewed by machine no matter how reviewable it looks. The same review found
+the TypeScript harness deriving the reserved marker at its own default cost
+rather than the vector's, invisible while every vector sat at the minima;
+`raised-cost-t4-b15` and `unindexable-marker-t4-b15` are the two vectors that
+now sit off them.
 
 ## Licensing
 

@@ -486,9 +486,11 @@ def test_a_raised_argon2_cost_reaches_the_derivation():
     invoked with. It asserts nothing about whether that primitive matches
     another core's -- that is a vector obligation, and since 2026-08-31 the
     vectors carry it: `blind-index/argon2id.json` is pinned into the suite and
-    both cores derive its values at the cost each vector declares. Cross-core
-    agreement at a *raised* cost is still not covered by a vector; only the
-    minima are shipped.
+    both cores derive its values at the cost each vector declares -- including
+    `raised-cost-t4-b15` and `unindexable-marker-t4-b15`, added in the #108
+    review round, which are the vectors that assert cross-core agreement at a
+    *raised* cost: the one configuration under which a core, or a harness,
+    that quietly used the minima is told apart from one that did not.
     """
     pytest.importorskip("argon2.low_level",
                         reason="the argon2 extra is not installed")

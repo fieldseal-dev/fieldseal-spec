@@ -81,12 +81,12 @@ def _decl(index_id: str, normalize: str, bits: int, population: int,
     return d
 
 
-#: Index cases. Every one is `hmac-sha512`: `argon2id` joins when
-#: `blind-index/argon2id.json` leaves `MANIFEST.held_out`, because a cross job
-#: asserting Argon2id agreement on every merge while the manifest says the
-#: suite deliberately does not count that family would have the two saying
-#: different things about the same primitive. `idf_params` is present and empty
-#: so the slot exists the day it does.
+#: Index cases. Every one is `hmac-sha512`. The precondition that once kept
+#: `argon2id` out -- `blind-index/argon2id.json` leaving `MANIFEST.held_out` --
+#: was met on 2026-08-31; the omission is a cost decision now, not a blocked
+#: one (docs/08 §4.7): every cross leg would pay an Argon2id derivation per
+#: case per producer on every merge. `idf_params` is present and empty so the
+#: slot exists the day that changes.
 def _index_cases() -> list[tuple]:
     a = "tenant-a-dek-v1"
     t = I.TENANT_ID

@@ -32,8 +32,14 @@ def argon2_salt(index_key: bytes) -> bytes:
                 length=ARGON2_SALT_LEN)
 
 
-def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
-    """Spec §7.3, enumerable domains. Requires argon2-cffi."""
+def idf_argon2id(index_key: bytes, normalized: bytes, *,
+                 time_cost: int = ARGON2_TIME_COST,
+                 memory_kib: int = ARGON2_MEMORY_KIB) -> bytes:
+    """Spec §7.3, enumerable domains. Requires argon2-cffi.
+
+    `time_cost` and `memory_kib` are the two parameters §7.3 states as minima
+    a deployment MAY raise. The raised-cost vectors pass them explicitly;
+    everything else takes the defaults, which are the minima."""
     from argon2.low_level import Type, hash_secret_raw
 
     # argon2-cffi's `secret=` keyword is the PASSWORD, not RFC 9106's secret
@@ -42,8 +48,8 @@ def idf_argon2id(index_key: bytes, normalized: bytes) -> bytes:
     return hash_secret_raw(
         secret=normalized,
         salt=argon2_salt(index_key),
-        time_cost=ARGON2_TIME_COST,
-        memory_cost=ARGON2_MEMORY_KIB,
+        time_cost=time_cost,
+        memory_cost=memory_kib,
         parallelism=ARGON2_PARALLELISM,
         hash_len=ARGON2_OUTPUT_LEN,
         type=Type.ID,

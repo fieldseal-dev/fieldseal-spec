@@ -18,7 +18,9 @@ HELD_OUT: dict[str, dict[str, str]] = {
     # because the next held-out family should be listed with a reason rather
     # than quietly omitted -- and because promoting this one showed what a
     # hold-out hides: nothing ran those vectors, so eight of them carried no
-    # `idf_params` and both cores would have rejected them as malformed.
+    # `idf_params` -- and the two harnesses would have reacted differently
+    # (the TypeScript one recording eight failures, the Python one aborting
+    # with no report), which the #108 review found and fixed. docs/07 §7.
 }
 
 

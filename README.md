@@ -107,9 +107,9 @@ internal/              namespace-placeholder packages (npm, PyPI), not a product
 Gate 0a (see below) opened on 2026-08-22. What exists under those directories today:
 
 - **Two cores** — `core/python` and `core/typescript`, each passing the pinned vector suite
-  **145/145**, the second written without reading the first.
+  **178/178** with identical result ids, the second written without reading the first.
 - **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
-  suite `0.4.0-provisional`.
+  suite `0.6.0-provisional` — 146 vectors, nothing held out.
 - **Two ORM adapters** — `adapters/django` and `adapters/prisma`, each with a 200+-test suite,
   each running against SQLite and PostgreSQL in CI. Both are also cross-language
   *producers*: a row written through either adapter is decrypted by both cores in the N×N

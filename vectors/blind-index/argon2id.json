@@ -700,6 +700,86 @@
         "equals_marker": true,
         "on_unindexable_refuse": "INVALID_ARGUMENT"
       }
+    },
+    {
+      "id": "blind-index/argon2id/raised-cost-t4-b15",
+      "description": "argon2id index over 'alice@example.com' at time_cost=4 (spec §7.3: a minimum a deployment MAY raise), truncated to 15 bits",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF01",
+      "idf": "argon2id",
+      "idf_params": {
+        "version": 19,
+        "time_cost": 4,
+        "memory_kib": 32768,
+        "parallelism": 1,
+        "output_len": 64,
+        "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+      },
+      "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "ssn-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:ssn-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "a62b06ad5dd3ed6b773117ddf96dc79cc4035d5c8bcd9e7eee34746386dfba4aa7c68fa3637b96014c5b6e569ead0124f3cb594816c167f52e7d92685bbb538d",
+        "index": "a62a",
+        "stored": {
+          "binary": "a62a",
+          "hex": "a62a",
+          "octets": 2
+        }
+      },
+      "provisional_on": [
+        "G2"
+      ]
+    },
+    {
+      "id": "blind-index/argon2id/unindexable-marker-t4-b15",
+      "description": "the docs/09 §7.2 reserved marker for a column declared at time_cost=4: the marker derives at the column's cost like any other value",
+      "spec_ref": "§7.2, §7.3, §7.5; docs/09 §7.2",
+      "assertion": "unindexable-marker",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 4,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "ssn-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:ssn-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "reserved_preimage": "ff6669656c647365616c2d756e696e64657861626c652d7631",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "index": "0a5a",
+        "stored": {
+          "binary": "0a5a",
+          "hex": "0a5a",
+          "octets": 2
+        }
+      }
     }
   ],
   "retired": []

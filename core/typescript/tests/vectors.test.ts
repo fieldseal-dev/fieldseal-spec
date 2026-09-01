@@ -49,7 +49,31 @@ describe("report invariants (docs/14 §4)", () => {
     // rather than assuming the minimum (docs/08 §4.4).
     expect(argon2.some((r) => r.id.endsWith("/unindexable-marker-b15"))).toBe(true);
     expect(argon2.some((r) => r.id.endsWith("/unindexable-bucketed-b15"))).toBe(true);
+    // A vector off the minima is the only one that can tell a harness that
+    // derives at the declared cost from one that derives at its default and
+    // happens to agree (docs/08 §4.4) -- the #108 review caught this harness's
+    // marker check doing exactly that. Both raised-cost shapes, and the
+    // primitive's #pipeline companion, must be present and passing.
+    expect(argon2.some((r) => r.id.endsWith("/raised-cost-t4-b15"))).toBe(true);
+    expect(argon2.some((r) => r.id.endsWith("/raised-cost-t4-b15#pipeline"))).toBe(true);
+    expect(argon2.some((r) => r.id.endsWith("/unindexable-marker-t4-b15"))).toBe(true);
     expect(report.held_out).toEqual([]);
+  });
+  it("carries no harness note that contradicts the results", () => {
+    // The #108 review found this report describing blind-index/argon2id.json
+    // as held out and not iterated while listing 30 of its results as passing:
+    // HARNESS_NOTES is emitted verbatim (docs/14 §4) and nothing asserted on
+    // it. A note that names a file whose vectors appear in `results` may not
+    // say the file was held out or not run.
+    const ran = new Set(report.results.map((r) => r.id.split("/").slice(0, 2).join("/")));
+    const file = /([\w-]+\/[\w-]+)\.json/g;
+    for (const note of report.harness_notes) {
+      let m: RegExpExecArray | null;
+      while ((m = file.exec(note)) !== null) {
+        const fam = m[1];
+        if (fam !== undefined && ran.has(fam)) expect(/held out|held-out|not-run|not iterated/i.test(note), note).toBe(false);
+      }
+    }
   });
   it("declares the provisional status honestly", () => {
     expect(report.provisional_suites).toBe(true);

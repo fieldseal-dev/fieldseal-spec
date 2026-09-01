@@ -16,7 +16,7 @@ The reference Python implementation of the Fieldseal specification, built to
 
 | | |
 |---|---|
-| Vector suite | **175/175** pinned results pass on suite `0.6.0-provisional` (144 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
+| Vector suite | **178/178** pinned results pass on suite `0.6.0-provisional` (146 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
 | Gate, parity and totality tests | 131 pass (`tests/test_gates.py`, `tests/test_parity.py`) |
 | Suites | `0xFF01` (AES-256-GCM). `0xFF02` is registered and refused at construction — it needs an XChaCha backend, blocked on gap G7 |
 | Conformance report | `tests/run_vectors.py` writes the [`docs/14`](../../docs/14-conformance-ci.md) §4 JSON to stdout, including `pinned_decisions` and `harness_notes`; the TypeScript core's report has the same shape and the same result ids, so the two diff cleanly |
@@ -94,7 +94,7 @@ divergence note in [`docs/07`](../../docs/07-implementation-plan.md) §7.
 
 **`blind-index/argon2id.json` is pinned** as of suite `0.6.0-provisional` (2026-08-31, `docs/07` §7) and this core runs it like any other family. It was held out while the primitive had no external known-answer source: RFC 9106 §5.3's vector supplies a nonzero secret (`K`) and associated data (`X`), both forbidden by spec §7.3 and unsuppliable from Python, so passing the project's own vectors would have proved only that two implementations copied one unverified assumption. That is answered — the generator checks argon2-cffi against libsodium's seven published `crypto_pwhash` answers on every run (libsodium cannot supply `K` or `X` either, which makes it the right source for the case §7.3 uses), and the TypeScript core reproduces the same values through `node:crypto`.
 
-Promoting it also found what the hold-out had been hiding: eight of the family's nineteen vectors declared `idf: argon2id` with no `idf_params`, and both cores reject a missing cost as malformed rather than assuming the minimum (`docs/08` §4.4). Nothing had run them, so nothing had said so.
+Promoting it also found what the hold-out had been hiding: eight of the family's nineteen vectors declared `idf: argon2id` with no `idf_params`, and both cores reject a missing cost as malformed rather than assuming the minimum (`docs/08` §4.4). Nothing had run them, so nothing had said so. The #108 review then found that this harness's rejection was an abort with no report where the TypeScript harness's was eight recorded failures; `run_blind_index` now has the per-vector boundary the other runners had, and a vector it cannot derive — malformed `idf_params`, or the `argon2` extra not installed — is a recorded failure with a reason. The same round added two vectors at a raised cost (`t = 4`), the only ones that can tell a harness deriving at the declared cost from one deriving at its default (`docs/07` §7, 2026-09-01).
 
 ## Honest limitations
 

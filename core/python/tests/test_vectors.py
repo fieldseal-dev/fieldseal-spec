@@ -46,7 +46,98 @@ def test_argon2id_family_is_pinned_and_run():
     # cost as malformed rather than as "the minimum" (docs/08 §4.4, #62).
     assert any(i.endswith("/unindexable-marker-b15") for i in argon2)
     assert any(i.endswith("/unindexable-bucketed-b15") for i in argon2)
+    # A vector off the minima is the only one that can tell a harness that
+    # derives at the declared cost from one that derives at its default and
+    # happens to agree (docs/08 §4.4; the #108 review caught the TypeScript
+    # marker check doing exactly that). Both raised-cost shapes, and the
+    # primitive's #pipeline companion, must be present and passing.
+    assert any(i.endswith("/raised-cost-t4-b15") for i in argon2)
+    assert any(i.endswith("/raised-cost-t4-b15#pipeline") for i in argon2)
+    assert any(i.endswith("/unindexable-marker-t4-b15") for i in argon2)
     assert not REPORT["held_out"]
+
+
+def test_harness_notes_do_not_contradict_the_results():
+    """The #108 review found the TypeScript report describing
+    `blind-index/argon2id.json` as held out and not iterated while listing
+    30 of its results as passing: `harness_notes` is emitted verbatim
+    (docs/14 §4) and nothing asserted on it. A note that names a file whose
+    vectors appear in `results` may not say the file was held out or not run.
+    """
+    import re
+
+    ran = {"/".join(r["id"].split("/")[:2]) for r in REPORT["results"]}
+    for note in REPORT["harness_notes"]:
+        for fam in re.findall(r"([\w-]+/[\w-]+)\.json", note):
+            if fam in ran:
+                assert not re.search(
+                    r"held out|held-out|not-run|not iterated", note, re.I), note
+
+
+def test_argon2_params_reads_the_vector_not_the_core():
+    """`_argon2_params` is where docs/08 §4.4's rule lives for this core.
+    Three things the #108 reviewers asked to see pinned rather than inferred
+    from a green run: an HMAC vector's empty `idf_params` yields no Argon2
+    parameters at all; a missing cost is an error naming the key, not a bare
+    KeyError; and a vector declaring a `version`, `parallelism` or
+    `output_len` other than §7.3's is refused rather than silently derived
+    at the constant."""
+    from run_vectors import _argon2_params
+
+    assert _argon2_params({"idf": "hmac-sha512", "idf_params": {}}) is None
+    with pytest.raises(KeyError, match="idf_params.time_cost"):
+        _argon2_params({"idf": "argon2id"})
+    with pytest.raises(KeyError, match="idf_params.time_cost"):
+        _argon2_params({"idf": "argon2id", "idf_params": {"time_cost": 3}})
+    ok = _argon2_params({"idf": "argon2id",
+                         "idf_params": {"time_cost": 4, "memory_kib": 32768,
+                                        "version": 19, "parallelism": 1,
+                                        "output_len": 64}})
+    assert ok is not None and (ok.time_cost, ok.memory_kib) == (4, 32768)
+    with pytest.raises(ValueError, match="parallelism"):
+        _argon2_params({"idf": "argon2id",
+                        "idf_params": {"time_cost": 3, "memory_kib": 32768,
+                                       "parallelism": 2}})
+
+
+def test_a_vector_the_harness_cannot_derive_is_a_recorded_failure(monkeypatch):
+    """The #108 review stripped `idf_params` from the eight Argon2id
+    assertion vectors in a copy of the suite: the TypeScript harness recorded
+    eight failures and emitted its report; this one aborted with
+    `KeyError('idf_params')` and emitted nothing -- no artifact for the CI
+    gate. `run_blind_index` now has the per-vector boundary `run_envelope`
+    and `run_errors` already had. The same boundary is what keeps the
+    `argon2` extra from being a hard dependency of the *report* (a green one
+    still needs it): without it, `run()` raised ModuleNotFoundError from
+    inside the core and this module errored at collection."""
+    import json
+
+    import run_vectors
+    from run_vectors import VECTORS, run_blind_index
+
+    doc = json.loads(
+        (VECTORS / "blind-index" / "argon2id.json").read_text("utf-8"))
+    marker = next(v for v in doc["vectors"]
+                  if v["id"].endswith("/unindexable-marker-b15"))
+    malformed = json.loads(json.dumps(marker))
+    del malformed["inputs"]["idf_params"]
+    results: list[dict] = []
+    run_blind_index({"vectors": [malformed]}, results)
+    assert [(r["id"], r["status"]) for r in results] == [
+        (marker["id"], "fail")]
+    assert "idf_params" in results[0]["reason"]
+
+    primitive = next(v for v in doc["vectors"] if "assertion" not in v)
+
+    def no_argon2(*_a, **_k):
+        raise ModuleNotFoundError("No module named 'argon2'", name="argon2")
+
+    monkeypatch.setattr(run_vectors, "idf", no_argon2)
+    results = []
+    run_blind_index({"vectors": [primitive]}, results)
+    assert {r["id"]: r["status"] for r in results} == {
+        primitive["id"]: "fail", primitive["id"] + "#pipeline": "fail"}
+    assert all("argon2 extra" in r["reason"] for r in results)
 
 
 def test_l0_not_claimed_against_a_frozen_format():
