@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/cross-corpus/v1",
-  "vector_suite_version": "0.5.0-provisional",
+  "vector_suite_version": "0.6.0-provisional",
   "spec_version": "0.1-draft",
   "suite_id": "0xFF01",
   "note": "Producer inputs only (docs/08 §4.7). A producer encrypts every case through its production path -- runtime CSPRNG for msg_seed and nonce, no test-mode injection -- resolving key_ref against keys/test-keys.json, and emits cross/<impl> files whose envelopes every other implementation must decrypt. `index_cases` are the other half: a producer registers each `declaration` on its client and derives the index through its production path, and every consumer re-derives and compares byte-exact -- a mismatched index is a silent lookup miss, not an error, so nothing else in the matrix would notice.",

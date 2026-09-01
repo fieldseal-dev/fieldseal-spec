@@ -421,12 +421,21 @@ def idf_argon2id(index_key: bytes, normalized: bytes,
                  params: Argon2Params | None = None) -> bytes:
     """Spec §7.3, at `params` (the minima when absent).
 
-    UNVALIDATED. The `blind-index/argon2id.json` vector family is held out of
-    the pinned suite because this primitive has never been checked against an
-    external known-answer source -- RFC 9106 §5.3's vector needs a nonzero
-    secret and associated data, both of which §7.3 forbids and Python cannot
-    supply. Passing the project's own vectors here would prove only that two
-    implementations copied one unverified assumption.
+    Externally checked, and pinned since suite 0.6.0-provisional. This
+    docstring read UNVALIDATED while `blind-index/argon2id.json` was held out
+    of the suite, on the ground that the primitive had never been checked
+    against an outside known-answer source. That ground is gone twice over:
+    the generator verifies argon2-cffi against libsodium's seven published
+    `crypto_pwhash` answers on every run (`tools/vector-gen`
+    `kat_argon2id.py`), and the TypeScript core reproduces this family's
+    expected values through `node:crypto`, a backend that shares no code with
+    this one.
+
+    The original limitation still stands and is worth keeping straight: RFC
+    9106 §5.3's own vector sets a nonzero secret `K` and associated data `X`,
+    both forbidden by §7.3 and unsuppliable from Python. libsodium cannot
+    supply them either, which is precisely why its answers are the right
+    external source for the empty-`K`/`X` case §7.3 actually uses.
     """
     from argon2.low_level import Type, hash_secret_raw
 

@@ -10,8 +10,9 @@ algorithm; the eighth entry in that table is one libsodium refuses
 Why these and not RFC 9106 §5.3: the RFC vector sets Argon2's secret K and
 associated data X, both forbidden by spec §7.3 and unsuppliable from this
 stack. libsodium's crypto_pwhash cannot supply K or X either, so its answers
-are exactly the "empty K and X" known-answer source MANIFEST.held_out names
-as the unblocking condition for blind-index/argon2id.json.
+are exactly the "empty K and X" known-answer source that MANIFEST.held_out
+named as the unblocking condition for blind-index/argon2id.json until the
+family was pinned on 2026-08-31 (docs/07 §7). The check runs every time.
 
 Two transcription details, both taken from the C test: the salt buffer is
 crypto_pwhash_SALTBYTES (16), so only the first 16 bytes of each 32-byte

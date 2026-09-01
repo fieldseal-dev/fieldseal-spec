@@ -1,76 +1,72 @@
 {
-  "vector_suite_version": "0.5.0-provisional",
+  "vector_suite_version": "0.6.0-provisional",
   "spec_version": "0.1-draft",
   "provisional": true,
   "provisional_note": "Every suite identifier here is in the reserved 0xFF00-0xFFFF provisional range (spec §4.8). These vectors are built against constructions marked [PROVISIONAL] in the specification and adopted under Gate 0a; they are not a stable release and the expected values may change when Gate 0b closes.",
   "files": [
     {
+      "path": "blind-index/argon2id.json",
+      "sha256": "562b849f69bc34cb2976e9337e558456a5e8cde9ef3fb0559b889d53a12ae947",
+      "bytes": 27612
+    },
+    {
       "path": "blind-index/hmac-sha512.json",
-      "sha256": "786aa793132104792de51052108d290777e7fe62d75c609a9493d5ed2001e34c",
-      "bytes": 20493
+      "sha256": "af001e12b1c0842c1b629ccdb00f7009de78409d26980a5aa2cd5be602cd725b",
+      "bytes": 20701
     },
     {
       "path": "commitment/ff01.json",
-      "sha256": "3bdb4d08593b1f1ab5407b4ead732f9c542a577411e64e3470b1ca1eac3949a5",
+      "sha256": "d6ae6ce80accaf57cffbd02dc929fac6547c7430d88477d886510ff68a8f80a5",
       "bytes": 1538
     },
     {
       "path": "context/canonical.json",
-      "sha256": "abe6132017549c767906110981b8a6e2f8b42f650439e333b34b71e6fa35bfc2",
+      "sha256": "05f0477c55730460d298ab30ff9cc0f44f16492e4fbf0bf91c0d6b8023887185",
       "bytes": 38567
     },
     {
       "path": "envelope/ff01.json",
-      "sha256": "1dadc13f23d67d603573d2fe1a0f6928633b4c3db19563ff75a27070c5bd3973",
+      "sha256": "899b1cc80733b4b9ac6b53656ac98f8a176e705c1a0fe95edf674edc8c929066",
       "bytes": 45113
     },
     {
       "path": "errors/crypto.json",
-      "sha256": "91880e0f0ad611659492ccf9e8175a703b054c080f38797b8014ea8c18af4fa1",
+      "sha256": "6823673a5004c608a87c1c38d5bfcf09727fec79782076cc5d0d1fe206ea816d",
       "bytes": 20158
     },
     {
       "path": "errors/format.json",
-      "sha256": "fd6797cd3405ce1fb730e12a6d1be92ebfe3b481bd6621334a2845c05b1cce87",
+      "sha256": "a40968d765dd171c274b5b491081585ad010d5163db778631fcb544eac30b1b4",
       "bytes": 55649
     },
     {
       "path": "errors/policy.json",
-      "sha256": "9e56ef9fc7080c51e4e54890638e8bca609a3e1fd07683f8bfc64669833d2eb0",
+      "sha256": "9b669c4389f4c54dce026cd0769ecb08fed554448c0299e4f531084dfcb07fa0",
       "bytes": 20946
     },
     {
       "path": "kdf/index-key.json",
-      "sha256": "ee2e4432efc8e67246dc7d02ce7ab9a3380cdb9609fdc4e40f73eae3cd360236",
+      "sha256": "eea7d7070ee87e72e929209b7a40f530222162ce2fa2b85f6f5a0f39481bd3be",
       "bytes": 14525
     },
     {
       "path": "kdf/record-key.json",
-      "sha256": "4b074871549d16a74bb7ad9ebf80d1bdbaae96fd51a092c399e60625836354ff",
+      "sha256": "31865fe5bb6cada67e5919191640ab9b2ed8576b5be74b2d1850afe1470a07cb",
       "bytes": 21845
     }
   ],
   "support": [
     {
       "path": "cross/corpus.json",
-      "sha256": "ef167867ae5e3f9119c8962e76759dbb2dafd8c50d7b3a52ee39e2e520759ea1",
+      "sha256": "776d756497790d05611cccfcdb7b50369a12647918e05eb36b4e1a84ef48177b",
       "bytes": 26832
     },
     {
       "path": "keys/test-keys.json",
-      "sha256": "9a011b8b1e16a62300abdda5749b89cd20865c72054d549d26e4d30b1fd955c3",
+      "sha256": "10b4d8b1b39c172ecc431bea78c38b40e37e497ec7985e09b825052132ce1f78",
       "bytes": 1423
     }
   ],
-  "held_out": [
-    {
-      "path": "blind-index/argon2id.json",
-      "sha256": "0fca07f38e73c87af0957848b3e10bc5449635804383bff9ae13050fd3cc0657",
-      "bytes": 23384,
-      "reason": "Held pending a project decision (docs/18 D-15). The original ground -- that the Argon2id primitive had never been checked against an external known-answer source -- no longer holds: since 2026-08-23 the generator checks argon2-cffi against libsodium's seven published crypto_pwhash answers (empty K and X, 16-byte salt, p = 1) at every run, and the TypeScript core's node:crypto backend reproduces RFC 9106 §5.3 and all four vectors in this file. What remains is the decision to count the family, which the project makes, not the generator.",
-      "unblocks_when": "The project records the decision in docs/07 §7 and moves this path from held_out to files (tools/vector-gen manifest.HELD_OUT); both harnesses then run it. No expected value changes.",
-      "tracking": "docs/08-test-vector-spec.md §7; gap G2"
-    }
-  ],
+  "held_out": [],
   "held_out_note": "Generated, reviewable, and NOT part of the suite. A conformance run MUST iterate `files` only. An implementation may exercise a held-out family for its own development, but MUST NOT count it toward any conformance claim and MUST NOT report it as passed."
 }

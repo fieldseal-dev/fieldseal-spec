@@ -4,33 +4,23 @@ import hashlib
 import json
 from pathlib import Path
 
-VECTOR_SUITE_VERSION = "0.5.0-provisional"
+VECTOR_SUITE_VERSION = "0.6.0-provisional"
 SPEC_VERSION = "0.1-draft"
 
 # Families generated but deliberately NOT part of the pinned suite. Listed
 # rather than omitted: a missing file reads as an oversight, a listed one with
 # a reason reads as a decision. A conformance harness MUST iterate `files` and
 # MUST NOT iterate `held_out` (docs/14 §4).
-HELD_OUT = {
-    "blind-index/argon2id.json": {
-        "reason": (
-            "Held pending a project decision (docs/18 D-15). The original "
-            "ground -- that the Argon2id primitive had never been checked "
-            "against an external known-answer source -- no longer holds: "
-            "since 2026-08-23 the generator checks argon2-cffi against "
-            "libsodium's seven published crypto_pwhash answers (empty K and "
-            "X, 16-byte salt, p = 1) at every run, and the TypeScript core's "
-            "node:crypto backend reproduces RFC 9106 §5.3 and all four "
-            "vectors in this file. What remains is the decision to count "
-            "the family, which the project makes, not the generator."
-        ),
-        "unblocks_when": (
-            "The project records the decision in docs/07 §7 and moves this "
-            "path from held_out to files (tools/vector-gen manifest.HELD_OUT); "
-            "both harnesses then run it. No expected value changes."
-        ),
-        "tracking": "docs/08-test-vector-spec.md §7; gap G2",
-    },
+HELD_OUT: dict[str, dict[str, str]] = {
+    # Empty since suite 0.6.0-provisional. `blind-index/argon2id.json` was the
+    # only entry; the project took the decision its `unblocks_when` asked for
+    # and pinned the family (docs/07 §7, 2026-08-31). The mechanism stays
+    # because the next held-out family should be listed with a reason rather
+    # than quietly omitted -- and because promoting this one showed what a
+    # hold-out hides: nothing ran those vectors, so eight of them carried no
+    # `idf_params` -- and the two harnesses would have reacted differently
+    # (the TypeScript one recording eight failures, the Python one aborting
+    # with no report), which the #108 review found and fixed. docs/07 §7.
 }
 
 

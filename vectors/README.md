@@ -6,7 +6,7 @@ Every implementation MUST run every vector for every conformance level it claims
 
 ## Layout
 
-*Status 2026-08-31, suite `0.5.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 125 vectors, which both cores run as 145 results (`envelope/` vectors carry a `#decrypt` direction and some `blind-index/` vectors a `#pipeline` run, per `docs/14` §4); `blind-index/argon2id.json` is held out (see the manifest's `held_out` and `docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, and `cross/corpus.json` is the 16-case input corpus every cross producer encrypts — both under `MANIFEST.support`, never run by a harness. The *dynamic* cross exchange runs in CI (`docs/14` §3: each core produces through its production path, every core decrypts every producer, self-pairs included); `cross/static/` — per-release checked-in envelopes — waits for a first release to pin. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
+*Status 2026-08-31, suite `0.6.0-provisional`.* `envelope/`, `kdf/`, `context/`, `blind-index/`, `commitment/` and `errors/` (`format.json`, `policy.json`, `crypto.json`) are emitted by `tools/vector-gen` and pinned by hash in `MANIFEST.json` — 146 vectors, which both cores run as 178 results (`envelope/` vectors carry a `#decrypt` direction and some `blind-index/` vectors a `#pipeline` run, per `docs/14` §4). **Nothing is held out**: `blind-index/argon2id.json` was the last held-out family and was pinned on 2026-08-31 (`docs/07` §7). `keys/test-keys.json` is the shared public key material for `cross/`, and `cross/corpus.json` is the 16-case input corpus every cross producer encrypts — both under `MANIFEST.support`, never run by a harness. The *dynamic* cross exchange runs in CI (`docs/14` §3: each core produces through its production path, every core decrypts every producer, self-pairs included); `cross/static/` — per-release checked-in envelopes — waits for a first release to pin. `schema/` is empty; each harness records that in its report's `harness_notes`. Vectors whose expected value depends on an open gap carry `provisional_on` (docs/08 §3).
 
 
 ```
@@ -69,13 +69,40 @@ A conformance run MUST iterate `MANIFEST.files` and MUST NOT iterate
 `held_out`. An implementation MAY exercise a held-out family in its own
 development and MUST NOT count it toward any conformance claim.
 
-Currently held out: **`blind-index/argon2id.json`**. The Argon2id primitive has
-never been checked against an external known-answer source, and the source
+**Currently held out: nothing.** The mechanism is kept described because the
+next family that needs it should be listed with a reason rather than quietly
+omitted.
+
+`blind-index/argon2id.json` was the only entry and was **pinned on 2026-08-31**
+(`docs/07` §7). It had been held because the Argon2id primitive had never been
+checked against an external known-answer source, and the source
 `docs/08-test-vector-spec.md` §7 named for that — RFC 9106 §5.3's test vector —
-cannot serve, because it supplies a nonzero secret (`K`) and associated data
-(`X`), both forbidden by spec §7.3 and unsuppliable from Python. Without an
-external check, two implementations would inherit the same unverified
-assumption from one generator, agree with each other, and prove nothing.
+cannot serve: it supplies a nonzero secret (`K`) and associated data (`X`),
+both forbidden by spec §7.3 and unsuppliable from Python. Without an external
+check, two implementations would have inherited the same unverified assumption
+from one generator, agreed with each other, and proved nothing.
+
+The check now exists, and libsodium's `crypto_pwhash` answers are the right
+one *because* they share that limitation — libsodium cannot supply `K` or `X`
+either, so its seven published answers cover exactly the empty-`K`/`X` case
+§7.3 uses. The generator verifies them on every run
+(`tools/vector-gen/fieldseal_vectorgen/kat_argon2id.py`), and the TypeScript
+core reproduces the family through `node:crypto`, a backend sharing no code
+with the generator's.
+
+**What the hold-out cost, recorded because it is the argument against holding
+families out casually:** eight of the family's nineteen vectors declared
+`idf: argon2id` and carried no `idf_params`. Both cores reject a missing cost
+as a malformed vector rather than assuming the minimum (`docs/08` §4.4) — but
+not in the same way: the review of the promotion tested it and found the
+TypeScript harness recording eight failures where the Python harness aborted
+with no report at all (`docs/07` §7, 2026-09-01; both record now). Neither
+could have said so earlier, because nothing ran them. A held-out family is
+unreviewed by machine no matter how reviewable it looks. The same review found
+the TypeScript harness deriving the reserved marker at its own default cost
+rather than the vector's, invisible while every vector sat at the minima;
+`raised-cost-t4-b15` and `unindexable-marker-t4-b15` are the two vectors that
+now sit off them.
 
 ## Licensing
 
