@@ -1101,11 +1101,20 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
     // docs/08 §5 item 10: the entire suite, a second time, through the
     // companions. The suffix is applied to the synchronous *result* id at the
     // pass boundary, so it lands last: `<id>#decrypt#async`, `<id>#pipeline#async`.
+    const firstPassCount = results.length;
     const second = await runPass(suite, ASYNC_OPS);
     results.push(...second.map((r) => ({ ...r, id: `${r.id}#async` })));
     // The split as a number, so the note below is checkable against the
     // report it appears in rather than asserted in prose.
     const routed = second.filter((r) => r.details?.async_route === "companion").length;
+    // docs/14 §4 defines this flag as an `iff` over three conditions, so it is
+    // computed from all three rather than written as a literal. A hardcoded
+    // `true` was correct for this core and still the wrong thing to emit: the
+    // invariant in `vectors.test.ts` that would have caught it drifting is not
+    // run by `npm run vectors`, which is the command that produces the report
+    // CI publishes. An emitter that can only tell the truth beats one that
+    // happens to (#111 review, Reviewer 2 obs 5 / Reviewer 5 §2).
+    const asyncCompanions = firstPassCount > 0 && second.length === firstPassCount && routed > 0;
     const asyncSplit = `Of the ${second.length} '#async' results, ${routed} went through a spec §11.1 companion and ${second.length - routed} re-ran the synchronous operation because this core ships no companion for them; each result carries the distinction as details.async_route.`;
     const outOfBand = [...runLengthBound(), ...(await runIndexBoundary(SYNC_OPS)), ...(await runIndexBoundary(ASYNC_OPS))];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
@@ -1144,7 +1153,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
-      async_companions: true,
+      async_companions: asyncCompanions,
       summary,
     };
   } finally {
