@@ -18,6 +18,6 @@ function gitCommit(): string | undefined {
 }
 
 const commit = gitCommit();
-const report = runSuite(commit === undefined ? {} : { commit });
+const report = await runSuite(commit === undefined ? {} : { commit });
 process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 process.exitCode = report.summary.fail === 0 ? 0 : 1;

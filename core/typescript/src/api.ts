@@ -1,6 +1,7 @@
 /**
  * The Fieldseal client: the five synchronous operations of spec §11.1 plus
- * `warm` (spec §11.2), over an immutable configuration (docs/09 §2).
+ * `warm` (spec §11.2) and the two §11.1 asynchronous companions to the index
+ * derivations, over an immutable configuration (docs/09 §2).
  *
  * Operation pipelines follow docs/09 §3 step for step. Where the spec leaves
  * an order unpinned (the G5 decrypt-path precedence; the relative order of
@@ -10,7 +11,7 @@
 
 import { randomBytes } from "node:crypto";
 import { gcmOpen, gcmSeal } from "./aead/gcm.ts";
-import { idf, truncateBits, UNINDEXABLE_PREIMAGE, type ValidatedIndex } from "./blindindex.ts";
+import { idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type ValidatedIndex } from "./blindindex.ts";
 import {
   ARMING_MECHANISM_DESCRIPTION,
   validateConfig,
@@ -297,17 +298,29 @@ export class Fieldseal {
    */
   blindIndex(plaintext: string | Uint8Array, ctx: FieldContext): Buffer {
     // Permitted in every mode, including readonly (spec §10.3).
-    if (typeof plaintext !== "string" && !(plaintext instanceof Uint8Array)) {
-      throw new InvalidArgumentError("value must be a string or a Uint8Array");
-    }
-    validateFieldContext(ctx, "index");
-    const indexId = indexIdOf(ctx.purpose) as string;
-    const decl = this.#cfg.indexes.get(indexRegistryKey(ctx.tableUuid, ctx.columnUuid, indexId));
-    if (decl === undefined) {
-      // Fail closed; never fall back to a default IDF (docs/09 §3.3 step 2).
-      throw new ConfigurationError(`no blind index '${indexId}' is declared for this table/column; indexes are declared at construction (spec §7.8)`);
-    }
-    return this.#index(decl, plaintext, ctx);
+    return this.#index(this.#indexDeclFor(ctx, { plaintext }), plaintext, ctx);
+  }
+
+  /**
+   * `blindIndex` with the Argon2id derivation on the libuv threadpool
+   * (spec §11.1). Byte-identical output and the same §9 error for the same
+   * condition; the synchronous form is not implemented over this one.
+   *
+   * Only the derivation moves. Key acquisition, HKDF and normalization stay
+   * on the event loop — microseconds — and run before the first `await`, so
+   * a `KEY_UNAVAILABLE` from the provider surfaces as a rejection with the
+   * same precedence it has on the synchronous path. An `hmac-sha512` column
+   * never leaves the loop at all: there is nothing to offload.
+   *
+   * Which form to call is a deployment question, not a preference: a
+   * synchronous Argon2id derivation stalls the whole event loop for its
+   * duration (docs/11 §2). A deployment that calls this concurrently MUST
+   * size `UV_THREADPOOL_SIZE` at or above the number of concurrent
+   * derivations — the pool is shared with `fs`, `dns` and `zlib`, so
+   * under-sizing it delays unrelated work as well as index lookups.
+   */
+  async blindIndexAsync(plaintext: string | Uint8Array, ctx: FieldContext): Promise<Buffer> {
+    return this.#indexAsync(this.#indexDeclFor(ctx, { plaintext }), plaintext, ctx);
   }
 
   /**
@@ -321,47 +334,136 @@ export class Fieldseal {
    * does not define to anyone able to read the column, with no key at all.
    */
   unindexableMarker(ctx: FieldContext): Buffer {
+    return this.#index(this.#indexDeclFor(ctx), UNINDEXABLE_PREIMAGE, ctx, true);
+  }
+
+  /**
+   * `unindexableMarker` on the libuv threadpool (spec §11.1), on the same
+   * terms as `blindIndexAsync`: this is an Argon2id derivation too, and an
+   * adapter that buckets on the request path pays for it on the loop
+   * otherwise.
+   */
+  async unindexableMarkerAsync(ctx: FieldContext): Promise<Buffer> {
+    return this.#indexAsync(this.#indexDeclFor(ctx), UNINDEXABLE_PREIMAGE, ctx, true);
+  }
+
+  /**
+   * The refusals the four index entry points share, in the order the report
+   * pins: value type, then context, then the fail-closed registry lookup.
+   * Factored out so a synchronous call and its companion cannot drift in
+   * what they refuse or in which order (spec §11.1).
+   *
+   * The value arrives wrapped rather than bare so that an absent value and a
+   * value that is `undefined` stay distinguishable: `blindIndex(undefined,
+   * ctx)` must still be refused for its type, `unindexableMarker(ctx)` has
+   * no value to check.
+   */
+  #indexDeclFor(ctx: FieldContext, value?: { readonly plaintext: unknown }): ValidatedIndex {
+    if (value !== undefined && typeof value.plaintext !== "string" && !(value.plaintext instanceof Uint8Array)) {
+      throw new InvalidArgumentError("value must be a string or a Uint8Array");
+    }
     validateFieldContext(ctx, "index");
     const indexId = indexIdOf(ctx.purpose) as string;
     const decl = this.#cfg.indexes.get(indexRegistryKey(ctx.tableUuid, ctx.columnUuid, indexId));
     if (decl === undefined) {
+      // Fail closed; never fall back to a default IDF (docs/09 §3.3 step 2).
       throw new ConfigurationError(`no blind index '${indexId}' is declared for this table/column; indexes are declared at construction (spec §7.8)`);
     }
-    return this.#index(decl, UNINDEXABLE_PREIMAGE, ctx, true);
+    return decl;
   }
 
-  #index(decl: ValidatedIndex, plaintext: string | Uint8Array, ctx: FieldContext, preNormalized = false): Buffer {
+  /**
+   * Everything both index paths do before the IDF: the per-column index key
+   * and the normalized value, with the tenant index key already erased.
+   *
+   * The caller owns the returned `indexKey` and MUST zero it. On any throw
+   * from here it is zeroed before the exception leaves.
+   */
+  #indexInputs(
+    decl: ValidatedIndex,
+    plaintext: string | Uint8Array,
+    ctx: FieldContext,
+    preNormalized: boolean,
+  ): { indexKey: Uint8Array; normalized: Uint8Array } {
     const suite = getSuite(this.#cfg.writeSuite) as Suite;
     const resolved: ResolvedContext = { ...ctx, suiteId: suite.id };
     const material = this.#encryptionKey(resolved, 32); // the tenant INDEX key (spec §8)
+    let indexKey: Uint8Array;
     try {
-      const indexKey = deriveIndexKey(material.key, resolved);
+      indexKey = deriveIndexKey(material.key, resolved);
+    } finally {
+      material.key.fill(0); // the line above is its only read
+    }
+    try {
+      let normalized: Uint8Array;
       try {
-        let normalized: Uint8Array;
-        try {
-          // `unindexableMarker` passes the reserved preimage, which is not
-          // valid UTF-8 by construction and so must bypass normalization.
-          normalized = preNormalized ? (plaintext as Uint8Array) : normalize(decl.normalize, plaintext);
-        } catch (e) {
-          // docs/09 §7.2: a value the normalizer refuses either fails here or
-          // lands in the column's reserved bucket. Storing no index at all is
-          // not on the menu — that is the silent missing row spec §10.2
-          // forbids, and it is why `bucket` derives a marker rather than
-          // returning nothing.
-          if (decl.onUnindexable !== "bucket" || !(e instanceof InvalidArgumentError)) throw e;
-          normalized = UNINDEXABLE_PREIMAGE;
-        }
-        const raw = idf(decl.idf, indexKey, normalized, decl.argon2);
-        try {
-          return copyOut(truncateBits(raw, decl.truncateBits));
-        } finally {
-          raw.fill(0); // the untruncated IDF output reveals more than the stored index value
-        }
+        // `unindexableMarker` passes the reserved preimage, which is not
+        // valid UTF-8 by construction and so must bypass normalization.
+        normalized = preNormalized ? (plaintext as Uint8Array) : normalize(decl.normalize, plaintext);
+      } catch (e) {
+        // docs/09 §7.2: a value the normalizer refuses either fails here or
+        // lands in the column's reserved bucket. Storing no index at all is
+        // not on the menu — that is the silent missing row spec §10.2
+        // forbids, and it is why `bucket` derives a marker rather than
+        // returning nothing.
+        if (decl.onUnindexable !== "bucket" || !(e instanceof InvalidArgumentError)) throw e;
+        normalized = UNINDEXABLE_PREIMAGE;
+      }
+      return { indexKey, normalized };
+    } catch (e) {
+      indexKey.fill(0);
+      throw e;
+    }
+  }
+
+  #index(decl: ValidatedIndex, plaintext: string | Uint8Array, ctx: FieldContext, preNormalized = false): Buffer {
+    const { indexKey, normalized } = this.#indexInputs(decl, plaintext, ctx, preNormalized);
+    try {
+      const raw = idf(decl.idf, indexKey, normalized, decl.argon2);
+      try {
+        return copyOut(truncateBits(raw, decl.truncateBits));
       } finally {
-        indexKey.fill(0);
+        raw.fill(0); // the untruncated IDF output reveals more than the stored index value
       }
     } finally {
-      material.key.fill(0);
+      indexKey.fill(0);
+    }
+  }
+
+  /**
+   * `#index` with the derivation awaited. What crosses the `await` is the
+   * narrow part: the tenant index key and the per-column index key are both
+   * erased before the threadpool work starts — `idfAsync` derives the
+   * 16-byte Argon2id salt synchronously, so nothing past that point needs
+   * the key — leaving only that salt and a private copy of the normalized
+   * value in flight. Node's own internal copies are outside the core's
+   * reach either way.
+   */
+  async #indexAsync(
+    decl: ValidatedIndex,
+    plaintext: string | Uint8Array,
+    ctx: FieldContext,
+    preNormalized = false,
+  ): Promise<Buffer> {
+    const { indexKey, normalized } = this.#indexInputs(decl, plaintext, ctx, preNormalized);
+    // Never zero `normalized` itself: under `identity` it is the caller's own
+    // array (normalize.ts), and on the marker path it is the process-wide
+    // UNINDEXABLE_PREIMAGE singleton. The copy is what this path owns.
+    const mine = new Uint8Array(normalized);
+    // `idfAsync` is an async function, so it returns rather than throws: the
+    // erasure below is reached even when the derivation fails.
+    const pending = idfAsync(decl.idf, indexKey, mine, decl.argon2);
+    indexKey.fill(0); // the salt already exists inside `pending`
+    let raw: Uint8Array;
+    try {
+      raw = await pending;
+    } finally {
+      mine.fill(0);
+    }
+    try {
+      return copyOut(truncateBits(raw, decl.truncateBits));
+    } finally {
+      raw.fill(0);
     }
   }
 
