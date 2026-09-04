@@ -10,7 +10,8 @@ because it is decision evidence for a single open question rather than the
 start of the programme:
 
 - **The WS-C Argon2id event-loop benchmark** (`docs/07` §6), which decided
-  whether the TypeScript core ships `blindIndexAsync`. Two legs —
+  that the TypeScript core ships `blindIndexAsync` — shipped 2026-09-04,
+  together with `unindexableMarkerAsync`. Two legs —
   `core/typescript/tests/bench/argon2-eventloop.ts` (`npm run bench:argon2`)
   for the mechanism, and `adapters/prisma/tests/bench/argon2-request-path.ts`
   for the criterion `docs/11` §2 actually names, a real request path. Neither

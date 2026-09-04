@@ -21,8 +21,10 @@ divergence report it was built to produce is
 - **Node ≥ 24.7.0** (`engines` is enforced). The floor is set by
   `crypto.argon2Sync`, which this core uses as its Argon2id backend with no
   external dependency; it requires OpenSSL ≥ 3.2 in the Node build.
-- **Server-side only.** Browser and edge runtimes are out of scope: the API is
-  synchronous by specification (§11.1) and Web Crypto's AEAD API is async-only.
+- **Server-side only.** Browser and edge runtimes are out of scope: the five
+  operations are synchronous by specification (§11.1) and Web Crypto's AEAD API
+  is async-only. The two asynchronous companions below are additive — they do
+  not make the core callable from a runtime without a synchronous AEAD.
 - Zero runtime dependencies. `node:crypto` supplies AES-256-GCM, HKDF-SHA-512,
   HMAC-SHA-512, Argon2id, the CSPRNG and the constant-time compare.
 
@@ -56,13 +58,31 @@ const plaintext = fs.decrypt(envelope, ctx);        // Buffer
 const bidx = fs.blindIndex(plaintextBytes, { ...ctx, purpose: "index:email-eq" }); // ⌈b/8⌉ raw bytes
 fs.isCiphertext(value);                              // boolean; never decrypts
 fs.rotate(envelope, ctx);                            // fresh envelope under the active key
-await fs.warm([ctx]);                                // the only async method; all KMS I/O lives here
+fs.unindexableMarker({ ...ctx, purpose: "index:email-eq" }); // this column's reserved bucket
+await fs.warm([ctx]);                                // spec §11.2 prefetch; all KMS I/O lives here
+
+// spec §11.1 asynchronous companions: the two Argon2id derivations, and only
+// those. See "Argon2id blind indexes cost real time per query term" below.
+await fs.blindIndexAsync(plaintextBytes, { ...ctx, purpose: "index:email-eq" });
+await fs.unindexableMarkerAsync({ ...ctx, purpose: "index:email-eq" });
 ```
 
 All five operations are synchronous and perform no I/O (spec §11.1). Inputs are
-`Uint8Array`; outputs are `Buffer`. **Strings are never accepted** — encoding
-is the adapter's job, and an implicit UTF-8 coercion is exactly the kind of
-cross-language divergence the vector suite exists to catch.
+`Uint8Array`; outputs are `Buffer`. **Strings are not accepted by the envelope
+operations** — an implicit UTF-8 coercion there is exactly the kind of
+cross-language divergence the vector suite exists to catch. `blindIndex` is the
+deliberate exception and takes text *or* bytes (docs/09 §7.1): index derivation
+is the one operation whose answer depends on the difference between a string
+and its encoding, because `TextEncoder` silently substitutes U+FFFD for an
+unpaired surrogate — so a caller who encodes first has already collapsed two
+distinct values into one index before this core is entered.
+
+`blindIndexAsync` and `unindexableMarkerAsync` are the spec §11.1 companions to
+the two Argon2id derivations: byte-identical output, the same §9 error for the
+same condition (as a rejection), and the synchronous forms are **not**
+implemented by blocking on them. The conformance report runs the entire vector
+suite a second time through them (`async_companions: true`, 178 `#async`
+results).
 
 ### Arming provisional writes (spec §4.8)
 
@@ -127,13 +147,27 @@ state them, and because the project's credibility rests on not overclaiming.
   `node:crypto` may hold internal copies; there is no `mlock` for GC-managed
   memory. Cache TTL and max-uses are security parameters, not tuning knobs.
   Construct clients after forking in prefork servers.
-- **Argon2id blind indexes cost real time per query term** (§7.3), measured at
-  roughly 40 ms per term at the spec-minimum 3 iterations / 32 MiB on the
-  development machine. **In Node that time blocks the event loop**, stalling
-  every concurrent request in the process — a materially worse failure mode
-  than on a threaded runtime. Confine Argon2id-indexed lookups to worker
-  threads, or prefer `hmac-sha512` where the §7.3 domain class permits. No
-  async companion is shipped in this version (docs/11 §2, §7).
+- **Argon2id blind indexes cost real time per query term** (§7.3): roughly
+  44–70 ms per term at the spec-minimum 3 iterations / 32 MiB, measured on two
+  machines (docs/07 §7). **A synchronous derivation blocks the event loop** for
+  that whole time, stalling every concurrent request in the process — twenty
+  derivations let the loop take **one turn**. In order:
+  1. Prefer `hmac-sha512` wherever the §7.3 domain class permits it —
+     microseconds instead of milliseconds. §7.3 requires Argon2id precisely for
+     the low-entropy domains where a blind index is most needed, so this is not
+     available everywhere the problem is.
+  2. Otherwise use `blindIndexAsync` / `unindexableMarkerAsync`, **and size
+     `UV_THREADPOOL_SIZE` at or above the number of concurrent derivations.**
+     The companion moves the cost to the libuv threadpool rather than removing
+     it, and that pool is shared with `fs`, `dns` and `zlib`: four concurrent
+     derivations against the default pool took an unrelated `fs.readFile` from
+     p50 ~0.28 ms into the tens-to-hundreds of milliseconds on both machines.
+     An under-sized pool delays unrelated work instead of index lookups, which
+     is not an improvement.
+  3. Worker threads remain possible and are not free here: the DEK cache is
+     per-instance with no `SharedArrayBuffer` key storage, so a pool of four
+     means four clients, four caches, four times the KMS unwrap traffic, and a
+     `max_uses` counter fragmented across instances.
 - **Blind indexes are filters, never answers** (§7.5). Candidates fetched by
   index must be decrypted and compared before being returned; pagination
   directly on an indexed column is incorrect (over-fetch → decrypt → filter →
@@ -157,11 +191,13 @@ state them, and because the project's credibility rests on not overclaiming.
 - **Cardinality gate** (§7.6): an index on a column with fewer than 2¹⁰ distinct
   values, or declared skewed, is refused at construction unless an explicit
   `cardinalityOverride { reason, approvedBy, date }` is given.
-- **`nfc-casefold-v1`** folds with a vendored Unicode 17.0.0 full case folding
-  table; NFC itself comes from the platform ICU (version recorded in the
-  conformance report). Characters assigned after the platform's Unicode
-  version may normalize differently across runtimes; this is documented, not
-  solved.
+- **`nfc-casefold-v1`** uses vendored Unicode 17.0.0 tables for **both** NFC
+  and full case folding, so an index value does not depend on the runtime's
+  ICU. The conformance report records the platform's ICU/Unicode versions for
+  information only, and names the vendored version it actually used. A value
+  containing a code point the pinned version does not assign is refused, or —
+  where the column declares it — bucketed under a reserved marker; it is never
+  silently indexed under a substituted character.
 - **Plaintext length** is bounded at 2³¹−1 bytes (§3.5); the bound is a
   ceiling, not a guarantee that a runtime can allocate it. Node 24's buffer
   maximum (2⁵³−1) is above the bound, so on this platform the spec bound is the
@@ -183,7 +219,8 @@ module, and the production `encrypt()` takes no seed or nonce in any form.
 
 ```
 npm ci
-npm test            # vitest: vector suite + gates + totality + primitives + providers
+npm test            # vitest: vector suite (both passes) + gates + totality +
+                    # primitives + providers + async companions
 npm run vectors     # emit the docs/14 §4 conformance report to stdout
 npm run build       # tsc → dist/
 npm run typecheck

@@ -477,10 +477,11 @@ machines, an x86-64 desktop (871 ms) and an arm64 Mac (1373 ms). The
 per-call cost is hardware-dependent; the total stall is not.
 
 Prefer `hmac-sha512` wherever the §7.3 domain table permits — microseconds
-rather than milliseconds. Where the domain requires Argon2id, the core has
-committed to an async companion on the strength of that benchmark
-(`docs/11` §2) and it is not built yet; when it is, a deployment using it
-must also size `UV_THREADPOOL_SIZE` at or above its concurrent-derivation
+rather than milliseconds. Where the domain requires Argon2id, the core ships
+an async companion on the strength of that benchmark (`docs/11` §2, shipped
+2026-09-04) and **this adapter does not use it yet** — every derivation on
+this page's paths is still synchronous. A deployment that does use it must
+also size `UV_THREADPOOL_SIZE` at or above its concurrent-derivation
 count, because the async form moves the cost to the libuv threadpool rather
 than removing it — measured on two machines, four concurrent derivations
 take an unrelated file read from ~0.28 ms to 67 ms (x86-64) or 402 ms

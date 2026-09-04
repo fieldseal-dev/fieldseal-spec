@@ -3,10 +3,11 @@
  *
  *   npm run bench:argon2 -- --out <file>
  *
- * **What is being decided.** `docs/11` §2 leaves `blindIndexAsync` "permitted,
- * not yet decided" and pre-commits three outcomes, all turning on one
+ * **What was decided.** `docs/11` §2 left `blindIndexAsync` "permitted, not
+ * yet decided" and pre-committed three outcomes, all turning on one
  * measurement: whether the synchronous path is untenable in a real request
- * path. Spec §11.1's own justification says why that is the question -- a sync
+ * path. It is; the companion shipped on 2026-09-04 (`docs/07` §7), and this
+ * benchmark stays as the record of why and as the way to re-measure. Spec §11.1's own justification says why that is the question -- a sync
  * Argon2id "stalls *every* concurrent request in the process", not just the one
  * that asked for an index. So the thing to measure is **what happens to work
  * that never asked for an index** while indexes are being derived.
