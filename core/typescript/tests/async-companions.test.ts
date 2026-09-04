@@ -30,31 +30,21 @@ import type { ResolvedContext } from "../src/context.ts";
 import type { EnvelopeHeader } from "../src/envelope.ts";
 import { FieldsealError } from "../src/errors.ts";
 import { StaticKeyProvider, type EncryptionKey, type KeyProvider } from "../src/keyprovider.ts";
-import { bytes, codeOf, codeOfAsync, CTX, DEK, INDEX_KEY, KEY_ID, makeClient } from "./helpers.ts";
+import { BorrowingProvider, bytes, codeOf, codeOfAsync, CTX, DEK, INDEX_BASE, INDEX_KEY, KEY_ID, makeClient, OVERRIDE, UNPINNED } from "./helpers.ts";
 
-const OVERRIDE = { reason: "legal name column; refusing a customer's name is worse", approvedBy: "test", date: "2026-09-04" };
 
-const BASE = {
-  tableUuid: CTX.tableUuid,
-  columnUuid: CTX.columnUuid,
-  normalize: "nfc-casefold-v1" as const,
-  truncateBits: 15,
-  projectedPopulation: 65536,
-};
 
 const COLUMNS = [
-  { ...BASE, indexId: "hmac", idf: "hmac-sha512" as const },
-  { ...BASE, indexId: "argon", idf: "argon2id" as const },
-  { ...BASE, indexId: "raised", idf: "argon2id" as const, argon2: { timeCost: 4, memoryKib: 32768 } },
-  { ...BASE, indexId: "bucket", idf: "argon2id" as const, onUnindexable: "bucket" as const, unindexableOverride: OVERRIDE },
-  { ...BASE, indexId: "ident", idf: "argon2id" as const, normalize: "identity" as const },
+  { ...INDEX_BASE, indexId: "hmac", idf: "hmac-sha512" as const },
+  { ...INDEX_BASE, indexId: "argon", idf: "argon2id" as const },
+  { ...INDEX_BASE, indexId: "raised", idf: "argon2id" as const, argon2: { timeCost: 4, memoryKib: 32768 } },
+  { ...INDEX_BASE, indexId: "bucket", idf: "argon2id" as const, onUnindexable: "bucket" as const, unindexableOverride: OVERRIDE },
+  { ...INDEX_BASE, indexId: "ident", idf: "argon2id" as const, normalize: "identity" as const },
 ];
 
 const c = makeClient({ indexes: COLUMNS });
 const at = (indexId: string): typeof CTX => ({ ...CTX, purpose: `index:${indexId}` });
 
-/** A value with a code point Unicode 17.0 does not assign (docs/09 §7.2). */
-const UNPINNED = "a͸b";
 const VALUES = ["alice@example.com", "ALICE@example.com", "José", "grüße", "😀", ""];
 
 afterEach(() => {
@@ -269,21 +259,6 @@ describe("what crosses the await (docs/09 §8.1; the pinned key-material-ownersh
   });
 
   it("every buffer the provider lends survives the companion, not just the index key", async () => {
-    // Each field is its own allocation rather than the module constant it
-    // copies: the constants are the pristine values to compare against, so a
-    // provider handing one out directly would let a core that erased it
-    // corrupt every later test instead of failing this one.
-    class BorrowingProvider implements KeyProvider {
-      readonly indexKey = new Uint8Array(INDEX_KEY);
-      readonly keyId = new Uint8Array(KEY_ID);
-      readonly dek = new Uint8Array(DEK);
-      encryptionKey(ctx: ResolvedContext): EncryptionKey {
-        return { key: ctx.purpose === "encrypt" ? this.dek : this.indexKey, keyId: this.keyId };
-      }
-      decryptionKeys(_header: EnvelopeHeader): Uint8Array[] {
-        return [this.dek];
-      }
-    }
     const p = new BorrowingProvider();
     const b = makeClient({ keyProvider: p, indexes: COLUMNS });
     const first = await b.blindIndexAsync("alice@example.com", at("argon"));

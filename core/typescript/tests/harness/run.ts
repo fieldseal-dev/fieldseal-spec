@@ -16,13 +16,13 @@ import type { ReadMode } from "../../src/config.ts";
 import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
-import { FieldsealError } from "../../src/errors.ts";
 import { INDEX_KEY_SALT, deriveIndexKey, deriveRecordKey } from "../../src/kdf.ts";
 import { StaticKeyProvider } from "../../src/keyprovider.ts";
 import { UNICODE_VERSION, normalize, type NormalizerId } from "../../src/normalize.ts";
 import { FMT_VER, SUITE_FF01, getSuite, isProvisionalId } from "../../src/registry.ts";
 import { encrypt_with_materials } from "../../src/testing/index.ts";
 import { hex, hexOrNull, loadSuite, parseSuiteId, type LoadedSuite } from "./suite.ts";
+import { codeOfError } from "../errcode.ts";
 
 export type Status = "pass" | "fail" | "skipped";
 
@@ -80,10 +80,8 @@ function ctxFromVector(c: Record<string, unknown>): FieldContext {
   };
 }
 
-function errCode(e: unknown): string {
-  if (e instanceof FieldsealError) return e.code;
-  return `UNTYPED(${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
-}
+/** Re-exported name for `codeOfError`; the harness has called it this since suite 0.2.0. */
+const errCode = codeOfError;
 
 /** The shipped normalizer set (docs/09 §7). Suite 0.2.0 uses these identifiers verbatim (D-07 resolved). */
 const NORMALIZERS: Record<string, NormalizerId> = {
