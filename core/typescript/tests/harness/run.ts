@@ -442,13 +442,33 @@ const SYNC_OPS: IndexOps = {
   unindexableMarker: (fs, ctx) => sync("unindexableMarker()", () => fs.unindexableMarker(ctx)),
 };
 
+/**
+ * The mirror of `sync()` for the async table: the raw return of the companion
+ * must be a `Promise` before it is awaited. `await` accepts a plain value just
+ * as happily, so without this a table entry that read `fs.blindIndex` instead
+ * of `fs.blindIndexAsync` would run the whole second pass through the
+ * synchronous form, label every result "companion" and report
+ * `async_companions: true` -- verified by making exactly that mistake before
+ * this guard existed: 356/356, flag `true`, 65 labelled companion.
+ *
+ * What it does not catch, stated so nobody reads more into it: an entry that
+ * wrapped the synchronous method in an `async` arrow returns a `Promise` too.
+ * The only check that sees through that is the backend-seam spy in
+ * `tests/async-companions.test.ts`, which holds the property for the core's
+ * methods; this guard holds the table to those methods.
+ */
+function mustBePromise<T>(what: string, out: Promise<T>): Promise<T> {
+  if (!(out instanceof Promise)) throw new Error(`${what} did not return a Promise on the asynchronous pass; the table is not calling a spec §11.1 companion`);
+  return out;
+}
+
 const ASYNC_OPS: IndexOps = {
   pass: "async",
   blindIndexName: "blindIndexAsync",
   markerName: "unindexableMarkerAsync",
-  idf: (which, key, normalized, params) => idfAsync(which, key, normalized, params),
-  blindIndex: (fs, value, ctx) => fs.blindIndexAsync(value, ctx),
-  unindexableMarker: (fs, ctx) => fs.unindexableMarkerAsync(ctx),
+  idf: (which, key, normalized, params) => mustBePromise("idfAsync()", idfAsync(which, key, normalized, params)),
+  blindIndex: (fs, value, ctx) => mustBePromise("blindIndexAsync()", fs.blindIndexAsync(value, ctx)),
+  unindexableMarker: (fs, ctx) => mustBePromise("unindexableMarkerAsync()", fs.unindexableMarkerAsync(ctx)),
 };
 
 /**
@@ -1107,13 +1127,25 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
     // The split as a number, so the note below is checkable against the
     // report it appears in rather than asserted in prose.
     const routed = second.filter((r) => r.details?.async_route === "companion").length;
-    // docs/14 §4 defines this flag as an `iff` over three conditions, so it is
-    // computed from all three rather than written as a literal. A hardcoded
-    // `true` was correct for this core and still the wrong thing to emit: the
+    // docs/14 §4 defines this flag as an `iff` over two halves -- the
+    // implementation exposes the spec §11.1 companions, and this report
+    // carries the second pass with every first-pass result twinned. It is
+    // computed rather than written as a literal: a hardcoded `true` was
+    // correct for this core and still the wrong thing to emit, because the
     // invariant in `vectors.test.ts` that would have caught it drifting is not
-    // run by `npm run vectors`, which is the command that produces the report
-    // CI publishes. An emitter that can only tell the truth beats one that
-    // happens to (#111 review, Reviewer 2 obs 5 / Reviewer 5 §2).
+    // run by `npm run vectors`, the command that produces the report CI
+    // publishes (#111 review, Reviewer 2 obs 5 / Reviewer 5 §2).
+    //
+    // What the computation can and cannot see, exactly. The second half is
+    // observed: `second.length === firstPassCount` is the pass. The first
+    // half is a proxy: `routed > 0` counts results whose `async_route` label
+    // is "companion", and that label comes from `routesThroughCompanion`,
+    // which is a function of the vector's family and operation -- it never
+    // looks at what `ASYNC_OPS` actually called. So this emitter cannot claim
+    // a second pass it did not run or did not label; it *can* still say
+    // `true` over a pass that was labelled correctly and routed wrongly.
+    // `mustBePromise` above closes the plain-typo case of that; the seam spy
+    // in `tests/async-companions.test.ts` holds the rest, for the core.
     const asyncCompanions = firstPassCount > 0 && second.length === firstPassCount && routed > 0;
     const asyncSplit = `Of the ${second.length} '#async' results, ${routed} went through a spec §11.1 companion and ${second.length - routed} re-ran the synchronous operation because this core ships no companion for them; each result carries the distinction as details.async_route.`;
     const outOfBand = [...runLengthBound(), ...(await runIndexBoundary(SYNC_OPS)), ...(await runIndexBoundary(ASYNC_OPS))];
