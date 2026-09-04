@@ -1,8 +1,10 @@
 import { Fieldseal, type FieldsealConfig, type ArmingOptions, type Warning } from "../src/index.ts";
 import { StaticKeyProvider } from "../src/keyprovider.ts";
-import type { FieldContext } from "../src/context.ts";
-import { FieldsealError } from "../src/errors.ts";
+import type { FieldContext, ResolvedContext } from "../src/context.ts";
+import type { EnvelopeHeader } from "../src/envelope.ts";
+import type { EncryptionKey, KeyProvider } from "../src/keyprovider.ts";
 import { SUITE_FF01 } from "../src/registry.ts";
+import { codeOfError } from "./errcode.ts";
 
 export const DEK = new Uint8Array(32).map((_, i) => i);
 export const INDEX_KEY = new Uint8Array(32).map((_, i) => 0x20 + i);
@@ -40,8 +42,7 @@ export function codeOf(fn: () => unknown): string {
   try {
     fn();
   } catch (e) {
-    if (e instanceof FieldsealError) return e.code;
-    return `UNTYPED(${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
+    return codeOfError(e);
   }
   return "NO_ERROR";
 }
@@ -57,8 +58,7 @@ export async function codeOfAsync(fn: () => Promise<unknown> | unknown): Promise
   try {
     await fn();
   } catch (e) {
-    if (e instanceof FieldsealError) return e.code;
-    return `UNTYPED(${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
+    return codeOfError(e);
   }
   return "NO_ERROR";
 }
@@ -86,3 +86,56 @@ export function withEnv<T>(name: string, value: string | undefined, fn: () => T)
 
 export const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 export const hex = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, "hex"));
+
+/**
+ * A `KeyProvider` that hands out references to its own buffers, so a core
+ * that erased provider-owned material corrupts *this object* and fails the
+ * assertion rather than doing it invisibly (docs/09 §8.1, the pinned
+ * key-material-ownership decision).
+ *
+ * Each field is a fresh copy of the module constant it mirrors, never the
+ * constant itself: the constants are the pristine values the assertions
+ * compare against, so a provider that lent one out directly would let a
+ * misbehaving core corrupt every later test instead of failing one.
+ *
+ * Shared because `providers.test.ts` and `async-companions.test.ts` had
+ * identical copies (#111 review): the sync and async paths must make the
+ * *same* promise about borrowed material, and two definitions of the
+ * provider is how they would quietly stop doing so.
+ */
+export class BorrowingProvider implements KeyProvider {
+  readonly dek = new Uint8Array(DEK);
+  readonly indexKey = new Uint8Array(INDEX_KEY);
+  readonly keyId = new Uint8Array(KEY_ID);
+  encryptionKey(ctx: ResolvedContext): EncryptionKey {
+    return { key: ctx.purpose === "encrypt" ? this.dek : this.indexKey, keyId: this.keyId };
+  }
+  decryptionKeys(_header: EnvelopeHeader): Uint8Array[] {
+    return [this.dek];
+  }
+}
+
+/**
+ * A value carrying U+0378, unassigned in every Unicode version so far, so it
+ * stands in for "a character the pin does not define" without waiting for
+ * 18.0. `OTHER_UNPINNED` is a second one: the two must land in the same
+ * bucket and that is only demonstrable with two distinct values.
+ */
+export const UNPINNED = "a͸b";
+export const OTHER_UNPINNED = "z͸z";
+
+/** The boilerplate `unindexableOverride` for tests that need `bucket`. */
+export const OVERRIDE = { reason: "legal name column; refusing a customer's name is worse", approvedBy: "test", date: "2026-08-25" };
+
+/**
+ * The index-declaration fields every test column shares. Spread it and add
+ * `idf` (and `indexId` where more than one column is declared) — what varies
+ * between tests is what the test is about, and this is the part that is not.
+ */
+export const INDEX_BASE = {
+  tableUuid: CTX.tableUuid,
+  columnUuid: CTX.columnUuid,
+  normalize: "nfc-casefold-v1" as const,
+  truncateBits: 15,
+  projectedPopulation: 65536,
+};

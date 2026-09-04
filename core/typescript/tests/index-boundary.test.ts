@@ -17,16 +17,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { codeOf, CTX, makeClient } from "./helpers.ts";
+import { codeOf, CTX, INDEX_BASE, makeClient, OTHER_UNPINNED, OVERRIDE, UNPINNED } from "./helpers.ts";
 
-const IDX = {
-  tableUuid: CTX.tableUuid,
-  columnUuid: CTX.columnUuid,
-  idf: "hmac-sha512" as const,
-  normalize: "nfc-casefold-v1" as const,
-  truncateBits: 15,
-  projectedPopulation: 65536,
-};
+const IDX = { ...INDEX_BASE, idf: "hmac-sha512" as const };
 const IDX_CTX = { ...CTX, purpose: "index:exact" };
 
 const c = makeClient({ indexes: [IDX] });
@@ -101,12 +94,6 @@ describe("the false match the text path exists to close", () => {
 });
 
 describe("on_unindexable (docs/09 §7.2)", () => {
-  // U+0378 is unassigned in every Unicode version so far, so it stands in for
-  // "a character the pin does not define" without waiting for 18.0.
-  const UNPINNED = "a͸b";
-  const OTHER_UNPINNED = "z͸z";
-  const OVERRIDE = { reason: "legal name column; refusing a customer's name is worse", approvedBy: "test", date: "2026-08-25" };
-
   it("refuse is the default, and it refuses", () => {
     expect(codeOf(() => c.blindIndex(UNPINNED, IDX_CTX))).toBe("INVALID_ARGUMENT");
   });
