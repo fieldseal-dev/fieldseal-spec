@@ -35,7 +35,9 @@ env:
   # Pin the toolchain. Bump deliberately, not automatically.
   PYTHON_VERSION: "3.12"
   # >= 24.7.0: the TypeScript core's Argon2id backend is node:crypto's
-  # argon2Sync, which first shipped there (core/typescript/README.md).
+  # argon2Sync and argon2 -- both forms, since the spec §11.1 companions
+  # shipped 2026-09-04 -- and both first appeared in that release, so adding
+  # the asynchronous half did not move this floor (core/typescript/README.md).
   NODE_VERSION: "24"
 
 jobs:

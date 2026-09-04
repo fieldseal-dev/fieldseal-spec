@@ -204,11 +204,15 @@ function judgeSides(a: Uint8Array, b: Uint8Array, wantA: string, wantB: string, 
 /**
  * `runAssertion` for the async pass. Only `blind-index/` assertions have an
  * operation with a §11.1 companion; every other family re-runs the
- * synchronous check, which is what makes the second pass the entire suite.
+ * synchronous check, which is what makes the second pass the entire suite —
+ * but that routing happens in the dispatch, not here. This function is
+ * reached only from `runBlindIndexAsync`, and `suite.ts` refuses to load a
+ * document whose vector ids do not start with its own `group/`, so `id` is
+ * always `blind-index/…`. An earlier `if (!id.startsWith("blind-index/"))
+ * return runAssertion(v)` guard was unreachable and is gone (#111 review).
  */
 async function runAssertionAsync(v: Record<string, unknown>): Promise<Result> {
   const id = v.id as string;
-  if (!id.startsWith("blind-index/")) return runAssertion(v);
   const ex = v.expected as Record<string, unknown>;
   const inp = v.inputs as Record<string, unknown>;
   const want = ex.must_be_equal as boolean;
@@ -651,11 +655,18 @@ function pipelineCtx(v: Record<string, unknown>): FieldContext {
   };
 }
 
-function pipelineVerdict(pid: string, out: Uint8Array, v: Record<string, unknown>, via: string): Result {
+/**
+ * Takes the method name rather than a prose `via` string so a failure names
+ * the method that actually produced it: with `"blindIndex()"` hard-coded here
+ * an async-only divergence was reported as `<id>#pipeline#async` with a reason
+ * naming the synchronous method, which is the one place a reader would look
+ * first and the wrong one.
+ */
+function pipelineVerdict(pid: string, out: Uint8Array, v: Record<string, unknown>, method: "blindIndex" | "blindIndexAsync"): Result {
   const stored = (v.expected as Record<string, unknown>).stored as Record<string, string | number>;
   return eq(out, hex(stored.binary as string))
-    ? { id: pid, status: "pass", details: { via } }
-    : { id: pid, status: "fail", reason: mismatch("blindIndex()", out, hex(stored.binary as string)) };
+    ? { id: pid, status: "pass", details: { via: `Fieldseal.${method} with the vector's tenant index key` } }
+    : { id: pid, status: "fail", reason: mismatch(`${method}()`, out, hex(stored.binary as string)) };
 }
 
 function runBlindIndex(v: Record<string, unknown>): Result[] {
@@ -682,7 +693,7 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
         new TextEncoder().encode(v.plaintext_preimage as string),
         pipelineCtx(v),
       );
-      results.push(pipelineVerdict(pid, out, v, "Fieldseal.blindIndex with the vector's tenant index key"));
+      results.push(pipelineVerdict(pid, out, v, "blindIndex"));
     } catch (e) {
       results.push({ id: pid, status: "fail", reason: `blindIndex raised ${errCode(e)}` });
     }
@@ -720,7 +731,7 @@ async function runBlindIndexAsync(v: Record<string, unknown>): Promise<Result[]>
         new TextEncoder().encode(v.plaintext_preimage as string),
         pipelineCtx(v),
       );
-      results.push(pipelineVerdict(pid, out, v, "Fieldseal.blindIndexAsync with the vector's tenant index key"));
+      results.push(pipelineVerdict(pid, out, v, "blindIndexAsync"));
     } catch (e) {
       results.push({ id: pid, status: "fail", reason: `blindIndexAsync raised ${errCode(e)}` });
     }
@@ -829,9 +840,26 @@ function runErrors(v: Record<string, unknown>): Result {
  * refusal half, the `#async` out-of-band entry, and
  * `tests/async-companions.test.ts`.
  */
+/**
+ * Whether the async pass routes this vector through a spec §11.1 companion or
+ * merely re-runs the synchronous operation. One predicate, because two would
+ * drift: `runPass` labels each `#async` result with it and `runErrorsAsync`
+ * branches on it, and a report that labelled a result "companion" while the
+ * runner took the synchronous path would be worse than no label at all.
+ *
+ * This core ships companions for `blind_index` and `unindexable_marker` only,
+ * so the whole `blind-index/` family qualifies and `errors/` qualifies for its
+ * `blind_index` operation. `envelope/`, `kdf/`, `context/`, `commitment/` and
+ * every other `errors/` operation have no companion to route through.
+ */
+function routesThroughCompanion(group: string, v: Record<string, unknown>): boolean {
+  if (group === "blind-index") return true;
+  return group === "errors" && ((v.operation ?? "decrypt") as string) === "blind_index";
+}
+
 async function runErrorsAsync(v: Record<string, unknown>): Promise<Result> {
   const op = (v.operation ?? "decrypt") as string;
-  if (op !== "blind_index") return runErrors(v);
+  if (!routesThroughCompanion("errors", v)) return runErrors(v);
   const id = v.id as string;
   const ex = v.expected as Record<string, unknown>;
   const ctx = v.context !== undefined ? ctxFromVector(v.context as Record<string, unknown>) : undefined;
@@ -1030,6 +1058,7 @@ async function runPass(suite: LoadedSuite, pass: "sync" | "async"): Promise<Resu
   const results: Result[] = [];
   for (const [, doc] of suite.files) {
     for (const v of doc.vectors) {
+      const first = results.length;
       switch (doc.group) {
         case "envelope":
           results.push(...runEnvelope(v));
@@ -1052,6 +1081,17 @@ async function runPass(suite: LoadedSuite, pass: "sync" | "async"): Promise<Resu
         default:
           results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
       }
+      // Every `#async` result says which of the two it is. Without this the
+      // report offers 178 `#async` ids and no way to see that only 65 of them
+      // went through a companion at all, which reads as far more coverage
+      // than the second pass actually buys (#111 review).
+      if (pass === "async") {
+        const route = routesThroughCompanion(doc.group, v) ? "companion" : "sync-rerun";
+        for (let i = first; i < results.length; i++) {
+          const r = results[i] as Result;
+          results[i] = { ...r, details: { ...r.details, async_route: route } };
+        }
+      }
     }
   }
   return results;
@@ -1071,6 +1111,10 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
     // pass boundary, so it lands last: `<id>#decrypt#async`, `<id>#pipeline#async`.
     const second = await runPass(suite, "async");
     results.push(...second.map((r) => ({ ...r, id: `${r.id}#async` })));
+    // The split as a number, so the note below is checkable against the
+    // report it appears in rather than asserted in prose.
+    const routed = second.filter((r) => r.details?.async_route === "companion").length;
+    const asyncSplit = `Of the ${second.length} '#async' results, ${routed} went through a spec §11.1 companion and ${second.length - routed} re-ran the synchronous operation because this core ships no companion for them; each result carries the distinction as details.async_route.`;
     const outOfBand = [...runLengthBound(), ...runIndexBoundary(), ...(await runIndexBoundaryAsync())];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
     const summary = {
@@ -1104,7 +1148,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
         unicode_tables: `vendored UCD ${UNICODE_VERSION} (NFC + CaseFolding C+F)`,
       },
       pinned_decisions: PINNED_DECISIONS,
-      harness_notes: HARNESS_NOTES,
+      harness_notes: [...HARNESS_NOTES, asyncSplit],
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
