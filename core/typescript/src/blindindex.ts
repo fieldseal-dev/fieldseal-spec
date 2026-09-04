@@ -46,6 +46,18 @@ export interface Argon2Params {
  */
 export interface Argon2Backend {
   readonly name: string;
+  /**
+   * Argument ownership, which the caller relies on to erase the salt: a
+   * backend MUST NOT retain a reference to `password` or `salt` past the
+   * point its result is available -- the return for the synchronous form,
+   * the settling of the promise for the asynchronous one. `idf` and
+   * `idfAsync` zero the salt at exactly those points, so a backend that
+   * read either buffer lazily afterwards would derive from zeros. The
+   * shipped backend copies both synchronously inside the `node:crypto`
+   * call (verified on Node 24.16: zeroing `message` and `nonce` on the line
+   * after `argon2(...)` still yields the reference tag), which is stricter
+   * than this contract requires.
+   */
   argon2id(password: Uint8Array, salt: Uint8Array, t: number, mKib: number, p: number, outLen: number): Uint8Array;
   argon2idAsync(
     password: Uint8Array,
@@ -138,7 +150,17 @@ export function idf(
 ): Uint8Array {
   if (which === "hmac-sha512") return hmacSha512(indexKey, normalized);
   const p = argon2ParamsOrMinima(params);
-  return backend.argon2id(normalized, argon2Salt(indexKey), p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  const salt = argon2Salt(indexKey);
+  try {
+    return backend.argon2id(normalized, salt, p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  } finally {
+    // The salt is key material, not a public parameter. Spec §7.3: the index
+    // key "enters **only** through the salt" and keying "rests entirely on
+    // the salt" -- with K and X forbidden, 16 bytes of salt carry the whole
+    // strength of the column's index key, so leaving it to GC while zeroing
+    // the key it came from protects nothing.
+    salt.fill(0);
+  }
 }
 
 /**
@@ -148,7 +170,12 @@ export function idf(
  *
  * Everything before the first `await` runs synchronously, salt derivation
  * included, so a caller may zero `indexKey` as soon as this function
- * returns -- it is read before the derivation is queued, never across it.
+ * returns -- it is read before the derivation is handed to the backend,
+ * never across it. The salt derived from it is zeroed here, once the
+ * derivation has completed rather than once it has been submitted: the
+ * `Argon2Backend` contract above only promises the backend is done with its
+ * arguments by then, so erasing any earlier would be reaching past what a
+ * swappable seam guarantees.
  * The HMAC branch never touches the threadpool: there is nothing to offload,
  * and queueing a microsecond of SHA-512 behind Argon2id derivations would
  * make an HMAC column slower for no gain.
@@ -163,9 +190,15 @@ export async function idfAsync(
   if (which === "hmac-sha512") return hmacSha512(indexKey, normalized);
   const p = argon2ParamsOrMinima(params);
   const salt = argon2Salt(indexKey);
-  // Called through the property, never destructured: the seam test spies by
-  // replacing `backend.argon2idAsync`, which a captured reference would miss.
-  return backend.argon2idAsync(normalized, salt, p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  try {
+    // Called through the property, never destructured: the seam test spies by
+    // replacing `backend.argon2idAsync`, which a captured reference would miss.
+    // Awaited rather than returned so the erasure below runs on completion
+    // and not on submission.
+    return await backend.argon2idAsync(normalized, salt, p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  } finally {
+    salt.fill(0); // key material, for the reason given in `idf`
+  }
 }
 
 /**

@@ -433,11 +433,18 @@ export class Fieldseal {
   /**
    * `#index` with the derivation awaited. What crosses the `await` is the
    * narrow part: the tenant index key and the per-column index key are both
-   * erased before the threadpool work starts — `idfAsync` derives the
-   * 16-byte Argon2id salt synchronously, so nothing past that point needs
-   * the key — leaving only that salt and a private copy of the normalized
-   * value in flight. Node's own internal copies are outside the core's
-   * reach either way.
+   * erased as soon as `idfAsync` returns, and nothing the in-flight
+   * derivation holds reads them — `idfAsync` derives the 16-byte Argon2id
+   * salt synchronously, so the key is consumed before the backend is
+   * called. This is an ordering statement about *reads*, not about
+   * submission: `idfAsync` has no `await` of its own and `node:crypto`
+   * queues the threadpool job inside the call, so the job is already
+   * queued when the erasure below runs. It captured the salt and the copy,
+   * never the key.
+   *
+   * The salt is erased too, by `idfAsync` itself once the derivation
+   * completes — spec §7.3 makes it key-equivalent for the column.
+   * Node's own internal copies are outside the core's reach either way.
    */
   async #indexAsync(
     decl: ValidatedIndex,
@@ -448,12 +455,23 @@ export class Fieldseal {
     const { indexKey, normalized } = this.#indexInputs(decl, plaintext, ctx, preNormalized);
     // Never zero `normalized` itself: under `identity` it is the caller's own
     // array (normalize.ts), and on the marker path it is the process-wide
-    // UNINDEXABLE_PREIMAGE singleton. The copy is what this path owns.
+    // UNINDEXABLE_PREIMAGE singleton. The copy is what this path owns, and
+    // what the `mine.fill(0)` below is allowed to destroy.
+    //
+    // What the copy buys, precisely: on the shipped backend `node:crypto`
+    // copies `message` synchronously, so the caller's buffer is never read
+    // across the await with or without this line — the copy is what makes
+    // the erasure below safe, not what protects the caller from Node. It
+    // also insulates the path from a future backend that reads its
+    // arguments lazily, which the `Argon2Backend` contract permits up to
+    // the point the derivation completes. Removing the copy is only safe
+    // together with the erasure, and the pair is cheaper to audit than the
+    // conditional that would skip both.
     const mine = new Uint8Array(normalized);
     // `idfAsync` is an async function, so it returns rather than throws: the
     // erasure below is reached even when the derivation fails.
     const pending = idfAsync(decl.idf, indexKey, mine, decl.argon2);
-    indexKey.fill(0); // the salt already exists inside `pending`
+    indexKey.fill(0); // `idfAsync` derived the salt from it before returning; nothing in flight reads it
     let raw: Uint8Array;
     try {
       raw = await pending;

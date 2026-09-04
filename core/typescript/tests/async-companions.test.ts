@@ -181,9 +181,17 @@ describe("rejection parity (spec §11.1: the same §9 error for the same conditi
 describe("the companion is not the synchronous form in disguise (spec §11.1)", () => {
   /**
    * Counts event-loop turns taken while `work` runs. `setImmediate` fires in
-   * the check phase, which a blocking derivation never reaches; the counter
-   * is read without awaiting anything when `work` is synchronous, so the
-   * control genuinely observes the loop standing still.
+   * the check phase, which a blocking derivation never reaches.
+   *
+   * What each side of this is worth, stated exactly, because the shape
+   * invites over-reading. The `toBeGreaterThan(0)` assertions are the real
+   * test: they fail for a companion that is the synchronous form in
+   * disguise. The `toBe(0)` on the synchronous call is a much weaker
+   * control than "the loop stood still" — `turns` is 0 for *any* callable
+   * that does not yield, a no-op included (measured: no-op 0, `argon2Sync`
+   * 0, `Promise.resolve(argon2Sync(...))` 0, real `argon2` ~87000). It
+   * rules out a `blindIndex` that yields to the loop, and nothing more; it
+   * does not observe blocking. Kept for that narrower property.
    *
    * Only 0 and "more than 0" are asserted anywhere. Durations are not
    * assertable in CI (docs/14 §7).
@@ -322,5 +330,73 @@ describe("concurrency", () => {
       expect(out.byteOffset).toBe(0);
     }
     expect(new Set(outs).size).toBe(8);
+  });
+});
+
+describe("the Argon2id salt is key material and is erased (spec §7.3)", () => {
+  /**
+   * Spec §7.3 forbids Argon2's `K` and `X`, so "keying now rests entirely on
+   * the salt" (`docs/02` line 546) and those 16 bytes carry the full strength
+   * of the column's index key: anyone holding the salt can run the same
+   * offline dictionary attack on that column's stored indexes as the holder
+   * of the key. The core erases the key, the per-column key, the untruncated
+   * IDF output and its copy of the normalized value, so leaving the salt to
+   * GC would have been the one gap in the set — flagged in review of #111 and
+   * closed on both paths.
+   *
+   * The salt is never handed to a caller, so the only place to observe it is
+   * the backend seam. The spy captures the *reference*, not a copy.
+   */
+  // Bound before the spy replaces the property, so calling through does not
+  // re-enter the spy.
+  const realSync = nodeArgon2Backend.argon2id.bind(nodeArgon2Backend);
+  const realAsync = nodeArgon2Backend.argon2idAsync.bind(nodeArgon2Backend);
+
+  function captureSyncSalt(): () => Uint8Array {
+    let seen: Uint8Array | undefined;
+    vi.spyOn(nodeArgon2Backend, "argon2id").mockImplementation((pw, salt, t, m, p, len) => {
+      seen = salt;
+      return realSync(pw, salt, t, m, p, len);
+    });
+    return () => seen ?? expect.fail("argon2id was never called");
+  }
+
+  function captureAsyncSalt(): () => Uint8Array {
+    let seen: Uint8Array | undefined;
+    vi.spyOn(nodeArgon2Backend, "argon2idAsync").mockImplementation((pw, salt, t, m, p, len) => {
+      seen = salt;
+      return realAsync(pw, salt, t, m, p, len);
+    });
+    return () => seen ?? expect.fail("argon2idAsync was never called");
+  }
+
+  it("the synchronous path zeroes the salt once the derivation returns", () => {
+    const salt = captureSyncSalt();
+    const out = c.blindIndex("alice@example.com", at("argon"));
+    // The derivation still produced the right answer, so the erasure happened
+    // after the read and not before it — the assertion below would also pass
+    // for a core that zeroed the salt too early and derived from zeros.
+    expect(out.equals(c.blindIndex("alice@example.com", at("argon")))).toBe(true);
+    expect(salt()).toEqual(new Uint8Array(16));
+  });
+
+  it("the companion zeroes the salt once the derivation completes", async () => {
+    const salt = captureAsyncSalt();
+    const out = await c.blindIndexAsync("alice@example.com", at("argon"));
+    expect(out.equals(c.blindIndex("alice@example.com", at("argon")))).toBe(true);
+    expect(salt()).toEqual(new Uint8Array(16));
+  });
+
+  it("the salt is erased on the refusal path too, not only on success", async () => {
+    // A backend that throws stands in for any derivation failure: the salt
+    // must not outlive the call because the call did not finish.
+    const seen: Uint8Array[] = [];
+    vi.spyOn(nodeArgon2Backend, "argon2idAsync").mockImplementation((_pw, salt) => {
+      seen.push(salt);
+      return Promise.reject(new Error("backend failure"));
+    });
+    await expect(c.blindIndexAsync("alice@example.com", at("argon"))).rejects.toThrow("backend failure");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(new Uint8Array(16));
   });
 });
