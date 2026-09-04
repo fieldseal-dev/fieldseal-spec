@@ -107,6 +107,162 @@ jobs:
           name: conformance-python
           path: conformance-python.json
 
+  # docs/08 line 414 claims the two cores produce identical result ids on the
+  # synchronous pass. Until 2026-09-04 nothing enforced it: each core job
+  # uploaded its own report and no job ever opened both. That left the
+  # project's central claim -- cross-implementation agreement -- resting on a
+  # hand check, and it left one failure invisible: a core that silently
+  # stopped running a family would still emit a green report, because a report
+  # is only ever compared with the vectors that core chose to run.
+  #
+  # What this job does NOT catch, stated so the docs do not overclaim: a drop
+  # that hits both cores identically AND is removed from the manifest. The
+  # manifest cross-check below closes the both-cores half; a family deleted
+  # from MANIFEST.json as well is a suite change, and that belongs to
+  # `suite-integrity` and `vectors-reproducible`.
+  cross-core-result-ids:
+    name: Both cores report the same result ids
+    runs-on: ubuntu-24.04
+    needs: [typescript-core, python-core]
+    # Deliberately not the implicit `success()` gate a bare `needs:` gives.
+    # Both core jobs upload with `if: always()`, so their reports exist even
+    # when they are red -- and a red core is exactly when a silently dropped
+    # family is most likely to be missed, because attention goes to the
+    # failing vector. Running regardless is what makes docs/08's "on every
+    # run" true rather than "on every green run".
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Two named downloads rather than one `pattern: conformance-*`: the
+      # prisma jobs also upload `conformance-prisma-adapter-<db>`, which that
+      # pattern matched and pulled in for no reason. A named download also
+      # fails the step outright when its input is missing, rather than leaving
+      # the comparison to discover it.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conformance-python
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conformance-typescript
+
+      # A property of the two reports plus the manifest, so it installs
+      # neither core.
+      - name: Compare the synchronous result-id sets
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          ASYNC = "#async"
+          STRIP = -len(ASYNC)
+          fail = []
+          sync_ids = {}
+          oob_ids = {}
+
+          for name in ("python", "typescript"):
+              path = pathlib.Path(f"conformance-{name}.json")
+              try:
+                  r = json.loads(path.read_text("utf-8"))
+                  results, oob = r["results"], r["out_of_band"]
+                  flag = r["async_companions"]
+              except Exception as e:
+                  # Reachable now that this job runs on a red core: a harness
+                  # that aborts leaves the shell redirect's 0-byte file behind.
+                  fail.append(f"{name}: report unreadable ({type(e).__name__}: {e})")
+                  continue
+
+              ids = [x["id"] for x in results]
+              dupes = sorted({i for i in ids if ids.count(i) > 1})
+              if dupes:
+                  fail.append(f"{name}: duplicate result ids: {dupes[:10]}")
+
+              # A skipped result is not coverage and must not enter the
+              # comparison as though it were: two cores skipping the same
+              # family would otherwise look like agreement. Both cores declare
+              # 0xFF01 for every vector today, so any skip at all is a change
+              # that should be seen rather than averaged away.
+              skipped = sorted(x["id"] for x in results if x["status"] == "skipped")
+              if skipped:
+                  fail.append(f"{name}: {len(skipped)} skipped result(s), which is coverage silently lost: {skipped[:5]}")
+
+              live = [x["id"] for x in results if x["status"] != "skipped"]
+              second = [i for i in live if i.endswith(ASYNC)]
+              sync_ids[name] = {i for i in live if not i.endswith(ASYNC)}
+
+              # docs/14 line 126 defines the flag over both halves: the
+              # companions exist, AND every first-pass result is twinned.
+              # Checking only that '#async' results are present would pass a
+              # partial second pass -- 178 synchronous, 65 twins -- because
+              # stripping the suffix cannot shrink the synchronous set, so the
+              # comparison below would still see 178 == 178. The suffix is
+              # appended last at the pass boundary, so composed ids
+              # ('<id>#decrypt#async') strip correctly.
+              if flag:
+                  if not second:
+                      fail.append(f"{name}: async_companions is true but the report carries no '{ASYNC}' results")
+                  else:
+                      untwinned = sorted(sync_ids[name] - {i[:STRIP] for i in second})
+                      if untwinned:
+                          fail.append(f"{name}: async_companions is true but {len(untwinned)} first-pass result(s) have no twin: {untwinned[:5]}")
+              elif second:
+                  fail.append(f"{name}: async_companions is false but the report carries {len(second)} '{ASYNC}' results")
+
+              # out_of_band carries the checks no vector can (spec §3.5's
+              # length bound, docs/09 §7.1's surrogate refusal). No per-core
+              # test asserts these exist, and the hand check this job replaced
+              # did cover them.
+              bad = sorted(o["id"] for o in oob if o["status"] != "pass")
+              if bad:
+                  fail.append(f"{name}: out-of-band entries not passing: {bad}")
+              oob_ids[name] = {o["id"] for o in oob if not o["id"].endswith(ASYNC)}
+
+              print(f"{name}: {len(results)} results ({len(second)} '{ASYNC}', {len(sync_ids[name])} synchronous, "
+                    f"{len(skipped)} skipped), {len(oob)} out-of-band, async_companions={flag}")
+
+          if len(sync_ids) == 2:
+              py, ts = sync_ids["python"], sync_ids["typescript"]
+              # Two empty sets are equal: without this the job passes if both
+              # cores stop running the suite entirely.
+              if not py or not ts:
+                  fail.append(f"a synchronous id set is empty (python {len(py)}, typescript {len(ts)})")
+              for a, b in (("python", "typescript"), ("typescript", "python")):
+                  only = sorted(sync_ids[a] - sync_ids[b])
+                  if only:
+                      fail.append(f"{len(only)} id(s) only {a} ran: {only[:10]}")
+
+              only_oob = oob_ids["python"] ^ oob_ids["typescript"]
+              if only_oob:
+                  fail.append(f"out-of-band ids differ between cores: {sorted(only_oob)}")
+
+              # The both-cores half of the problem. Comparing two reports
+              # cannot see a family neither ran, so the expected families come
+              # from the suite itself. Presence per manifest file, not a count:
+              # results-per-vector varies by family, that expansion is the
+              # per-core harness's business, and a hard-coded total would fail
+              # every legitimate addition to the suite.
+              manifest = json.loads(pathlib.Path("vectors/MANIFEST.json").read_text("utf-8"))
+              for name, ids in sync_ids.items():
+                  absent = [f["path"] for f in manifest["files"]
+                            if not any(i.startswith(f["path"][:-len(".json")] + "/") for i in ids)]
+                  if absent:
+                      fail.append(f"{name}: manifest files with no result at all: {absent}")
+
+              if not fail:
+                  print(f"\nidentical: {len(py)} synchronous result ids and {len(oob_ids['python'])} "
+                        f"out-of-band ids, empty symmetric difference; all "
+                        f"{len(manifest['files'])} manifest files reached by both cores")
+
+          if fail:
+              print("\ndocs/08 line 414 says the cores report identical ids on the synchronous pass:")
+              for f in fail:
+                  print(f"  - {f}")
+              sys.exit(1)
+          PY
+
   django-adapter:
     name: Django adapter (L1+L2) on SQLite and Postgres
     runs-on: ubuntu-24.04
