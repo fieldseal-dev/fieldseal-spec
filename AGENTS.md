@@ -1,6 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository. It is
+the single instruction set, and it is agent-neutral on purpose: Claude Code is
+not the only agent that works here.
+
+**If you are Claude Code:** read this file as `CLAUDE.md`. The repository's
+`CLAUDE.md` is a pointer to this file and carries no instructions of its own —
+everything that would be in it is below, and applies unchanged.
 
 ---
 
@@ -8,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Fieldseal** is a portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.
 
-**Current status:** Pre-alpha design work (Phase 0 of 3). The specification is a working draft that has not been independently reviewed. Focus is on the specification itself; code implementation begins in Phase 1 (~12 weeks after cryptographic review). See `docs/01-prd.md` for the complete roadmap and success metrics.
+**Current status:** Pre-alpha design work (Phase 0 of 3). The specification is a working draft that has not been independently reviewed. The Phase 0 exit gate was split on 2026-08-22 (`docs/01-prd.md` §8): **Gate 0a** (spec gaps resolved or provisionally resolved and marked; registry on provisional suite identifiers) permits implementation and is closed; **Gate 0b** (two credentialed cryptographic reviewers) permits freezing the format and is still open. Phase 1 code may therefore begin, but nothing may be frozen, published as stable, or offered for adoption. See `docs/01-prd.md` for the complete roadmap and success metrics.
 
 **Central claim:** A value encrypted by implementation A in one language is decryptable by implementation B in another language using the same key. This is verified through machine-readable test vectors (cross-implementation round trips in CI). If this claim fails, the project has failed — everything else is secondary.
 
@@ -38,14 +44,24 @@ These commitments define what the spec will be judged on. When proposing changes
 
 ```
 spec/                     normative specification (moves here as versioned releases)
-vectors/                  machine-readable test vectors (planned layout; not yet written)
+vectors/                  machine-readable test vectors — six families emitted and pinned
+                          by hash in MANIFEST.json (146 vectors, 178 results), nothing
+                          held out; cross/ runs as a dynamic CI exchange and cross/static/
+                          waits for a first release (see vectors/README.md)
 core/
-  python/  typescript/  java/  dotnet/  go/  reference implementations (Phase 1+)
+  python/  typescript/    reference implementations — both built, both pass the pinned suite
+  java/  dotnet/  go/      README placeholders (Phase 1+)
 adapters/
-  django/  sqlalchemy/  prisma/  hibernate/  efcore/  gorm/  typeorm/  (Phase 1+)
+  django/  prisma/       built and gated in CI (L1+L2, and L4 for Prisma);
+                          zero cryptographic code, asserted by a CI grep
+  sqlalchemy/  hibernate/  efcore/  gorm/  typeorm/   README placeholders (Phase 1+)
 tools/
-  leakage-estimator/      measures actual vs. assumed column distribution skew
-  backfill/               resumable migration tooling
+  vector-gen/             the vector generator (standalone; imports neither core)
+  ucd-gen/                generates the vendored Unicode tables for both cores and
+                          the vector generator from the published UCD (docs/09 §7.1);
+                          CI re-runs it with --check, so a hand edit fails the build
+  leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
+  backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model
 docs/
   00-research-memo.md     prior art and gap analysis
@@ -66,8 +82,18 @@ docs/
   15-tooling.md           backfill tool and leakage-estimator design
   adr/                    architecture decision records for Phase-1-blocking decisions
                           (incl. Appendix A to ADR-0001: AWS-format expressibility mapping)
-  issues/                 ready-to-post spec-gap issue drafts G1–G13 (see docs/07 §5)
+  issues/                 spec-gap issue drafts G01–G24 (see docs/07 §5)
   16-reviewer-brief.md    the Phase 0 cryptographic-review brief (reading path, gating questions)
+  17-m2-implementer-brief.md  handoff for building a second core in isolation (the
+                          independence rule as a followable protocol)
+  18-m2-report.md         the M2 result: TypeScript core vs the pinned suite, isolation
+                          statement, divergence/ambiguity list (D-01..D-20)
+  19-what-encrypted-search-costs.md  the blind-index cost argument for readers who
+                          will not read the spec
+www/                      the fieldseal.dev site: Hugo, hand-written templates, no
+                          theme and no third-party JavaScript. docs/ is synced in by
+                          www/scripts/sync-docs.py; .github/workflows/pages.yml builds
+                          and link-checks on PRs and deploys from main
 examples/                 end-to-end demonstration applications (Phase 1+)
 CONTRIBUTING.md           how to contribute spec changes
 SECURITY.md               how to report security issues
@@ -182,7 +208,7 @@ Each ORM has hard limits. When implementing adapters, consult the spec's per-ORM
 
 ## Key Decision Points and Open Questions
 
-These are unresolved before Phase 1 and should shape your thinking about changes:
+These shape your thinking about changes. Items 1 and 2 are **provisionally decided under Gate 0a and still open** — ADR-0001 took option C (fresh envelope, AWS-aligned constructions); ADR-0002 deferred to the status quo without deciding. Both are reversible at Gate 0b, and the spec marks the affected sections `[PROVISIONAL]`. Items 3–6 remain untouched. Do not close any of these by engineering judgment, and do not treat a provisional decision as a settled one.
 
 1. **Profile the AWS structured-encryption format or define fresh?** (§13.1) — Profiling buys interoperability and reduces novelty risk; defining fresh buys freedom from DynamoDB semantics. **Highest-leverage decision.**
 2. **Which FIPS-approvable AEAD for suite 0x0001?** (§13.2) — AES-256-GCM + explicit commitment (current), AES-256-CBC-HMAC-SHA-512 (committing natively, more overhead), or wait for AES-GCM-SIV (not FIPS, best misuse resistance).
@@ -207,9 +233,9 @@ When starting on this codebase:
 
 ---
 
-## No Code Yet (Phase 0)
+## Code and the Split Gate (Phase 0 → Phase 1)
 
-This repository currently contains specification and documentation only. Code will begin in Phase 1, following independent cryptographic review (an exit gate for Phase 0). When implementations are written:
+This repository contains the specification, its documentation, the vector generator, two Phase 1 cores (`core/python`, `core/typescript`), two Phase 1 adapters (`adapters/django`, `adapters/prisma`) and the fieldseal.dev site; the remaining adapters, the tools in `tools/{leakage-estimator,backfill}`, the benchmark programme and the examples are not started. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
 
 - Core libraries will be in `core/{python,typescript,java,dotnet,go}` and MUST pass the shared test vectors in CI.
 - ORM adapters will be in `adapters/{django,sqlalchemy,...}` and MUST contain zero cryptographic code.
@@ -222,7 +248,19 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 ## Building, Linting, Testing
 
-**Currently:** No build, lint, or test commands exist. Phase 1 will add per-language test suites running the shared vectors.
+**Python core** (`core/python`): `pip install -e "./core/python[argon2,dev]"`, `pytest core/python/tests -q`, report via `python core/python/tests/run_vectors.py` (see `.github/workflows/conformance.yml`).
+
+**TypeScript core** (`core/typescript`, Node ≥ 24.7): `npm ci`, `npm test` (vitest: vector harness + gates + totality + primitives + providers), `npm run vectors` (emits the `docs/14` §4 conformance report), `npm run build`, `npm run typecheck`. Zero runtime dependencies.
+
+**Django adapter** (`adapters/django`): install the core from this checkout, not an index — `pip install -e "./core/python[argon2]"` then `pip install -e "./adapters/django[dev]"`; `python -m pytest tests -q` from `adapters/django`, with `FIELDSEAL_TEST_DB=sqlite|postgres`. CI runs both backends (`docs/12` §8), plus `ruff check src tests` and `mypy --strict src/fieldseal_django`.
+
+**Prisma adapter** (`adapters/prisma`): build the core first (`npm ci && npm run build` in `core/typescript`), then `npm ci`, `npm run build`, `node tests/fixture/build.ts && npx prisma generate && npx prisma db push`, `npm test`. `npm run report` emits the `docs/14` §4 report. CI runs SQLite and Postgres legs.
+
+**AD-1 (spec §11.3):** an adapter contains no cryptographic code. CI greps `src/` for crypto imports in both adapters and fails the build on a hit. This is a conformance rule, not a style preference.
+
+**Site** (`www/`): `python www/scripts/sync-docs.py` then `hugo server --source www`; before pushing, `hugo --source www --minify --gc` and `python www/scripts/check-links.py www/public`.
+
+**Independence rule:** a second core is built without reading the first or the generator — `docs/17-m2-implementer-brief.md` is the protocol, `docs/18-m2-report.md` the first result. When working on `core/typescript`, do not consult `core/python/**` or `tools/vector-gen/**` to resolve a mismatch; record it.
 
 **When implementations arrive:** Each language will have its own build and test setup (Makefile, pyproject.toml, package.json, etc.). Adapters will be integrated into the same test suite and MUST demonstrate coverage through a documented matrix (spec §10.2).
 
