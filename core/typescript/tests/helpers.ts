@@ -46,6 +46,23 @@ export function codeOf(fn: () => unknown): string {
   return "NO_ERROR";
 }
 
+/**
+ * `codeOf` for a call that may reject. A thunk rather than a promise so that
+ * a *synchronous* throw from a nominally asynchronous entry point is caught
+ * here too: spec §11.1 requires the companion to fail the same way as the
+ * synchronous form, and "the same code, but thrown instead of rejected" is
+ * a difference a caller's `.catch()` would miss.
+ */
+export async function codeOfAsync(fn: () => Promise<unknown> | unknown): Promise<string> {
+  try {
+    await fn();
+  } catch (e) {
+    if (e instanceof FieldsealError) return e.code;
+    return `UNTYPED(${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
+  }
+  return "NO_ERROR";
+}
+
 export function messageOf(fn: () => unknown): string {
   try {
     fn();

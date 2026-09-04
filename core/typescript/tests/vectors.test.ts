@@ -6,7 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { runSuite, type Report } from "./harness/run.ts";
 
-const report: Report = runSuite();
+// Top-level await: vitest awaits the test module during collection, so the
+// `it` cases below are registered once both passes have run.
+const report: Report = await runSuite();
 
 describe("vector suite (MANIFEST.files only)", () => {
   for (const r of report.results) {
@@ -107,6 +109,48 @@ describe("report invariants (docs/14 §4)", () => {
       expect(report.pinned_decisions[key], key).toBeUndefined();
     }
   });
+  it("carries the docs/08 §5 item 10 second pass, and declares it", () => {
+    const async = report.results.filter((r) => r.id.endsWith("#async"));
+    const sync = report.results.filter((r) => !r.id.endsWith("#async"));
+    // The flag and the pass are one claim: a report that said `true` while
+    // carrying one pass, or carried two while saying `false`, would misstate
+    // what was actually run (docs/14 §4).
+    expect(report.async_companions).toBe(async.length > 0);
+    expect(async.length).toBe(sync.length);
+
+    const bySync = new Map(sync.map((r) => [r.id, r]));
+    for (const r of async) {
+      const original = bySync.get(r.id.slice(0, -"#async".length));
+      // An async runner that invented an id -- or dropped one -- would
+      // otherwise look like a pass.
+      expect(original, r.id).toBeDefined();
+      expect(r.status, r.id).toBe(original?.status);
+    }
+    const byAsync = new Set(async.map((r) => r.id.slice(0, -"#async".length)));
+    for (const r of sync) expect(byAsync.has(r.id), r.id).toBe(true);
+  });
+
+  it("runs the raised-cost Argon2id vectors through the companion too", () => {
+    // The three shapes that can tell a companion deriving at the declared
+    // cost from one deriving at this core's default (#108 review), each
+    // through blindIndexAsync / idfAsync / unindexableMarkerAsync.
+    for (const suffix of ["/raised-cost-t4-b15#async", "/raised-cost-t4-b15#pipeline#async", "/unindexable-marker-t4-b15#async"]) {
+      const r = report.results.find((x) => x.id.endsWith(suffix));
+      expect(r, suffix).toBeDefined();
+      expect(r?.status, suffix).toBe("pass");
+    }
+  });
+
+  it("verifies the lone-surrogate refusal on both paths out of band", () => {
+    // Every blind_index error vector in the suite is a positive control, so
+    // the companion's *error* parity has no vector to rest on: this entry and
+    // tests/async-companions.test.ts are what hold spec §11.1's "the same §9
+    // error for the same condition".
+    const ids = report.out_of_band.map((o) => o.id);
+    expect(ids).toContain("docs/09/7.1/lone-surrogate-refusal");
+    expect(ids).toContain("docs/09/7.1/lone-surrogate-refusal#async");
+  });
+
   it("has no failures and no silent skips", () => {
     expect(report.summary.fail).toBe(0);
     for (const r of report.results) if (r.status === "skipped") expect(r.reason).toBeTruthy();

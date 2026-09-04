@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
+import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { FieldsealError } from "../../src/errors.ts";
@@ -22,7 +22,7 @@ import { StaticKeyProvider } from "../../src/keyprovider.ts";
 import { UNICODE_VERSION, normalize, type NormalizerId } from "../../src/normalize.ts";
 import { FMT_VER, SUITE_FF01, getSuite, isProvisionalId } from "../../src/registry.ts";
 import { encrypt_with_materials } from "../../src/testing/index.ts";
-import { hex, hexOrNull, loadSuite, parseSuiteId } from "./suite.ts";
+import { hex, hexOrNull, loadSuite, parseSuiteId, type LoadedSuite } from "./suite.ts";
 
 export type Status = "pass" | "fail" | "skipped";
 
@@ -56,7 +56,7 @@ export interface Report {
   results: Result[];
   held_out: { path: string; status: "not-run"; reason: string }[];
   out_of_band: OutOfBand[];
-  async_companions: false;
+  async_companions: boolean;
   summary: { pass: number; fail: number; skipped: number; held_out: number };
 }
 
@@ -185,9 +185,50 @@ function runAssertion(v: Record<string, unknown>): Result {
     } else {
       throw new Error("no assertion runner for this family");
     }
-    if (!eq(a, hex(wantA))) problems.push(mismatch("side a", a, hex(wantA)));
-    if (!eq(b, hex(wantB))) problems.push(mismatch("side b", b, hex(wantB)));
-    if (eq(a, b) !== want) problems.push(`sides ${eq(a, b) ? "are" : "are not"} equal; must_be_equal=${want}`);
+    problems.push(...judgeSides(a, b, wantA, wantB, want));
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+}
+
+/** Both sides against their expected bytes, then the relation between them. */
+function judgeSides(a: Uint8Array, b: Uint8Array, wantA: string, wantB: string, want: boolean): string[] {
+  const problems: string[] = [];
+  if (!eq(a, hex(wantA))) problems.push(mismatch("side a", a, hex(wantA)));
+  if (!eq(b, hex(wantB))) problems.push(mismatch("side b", b, hex(wantB)));
+  if (eq(a, b) !== want) problems.push(`sides ${eq(a, b) ? "are" : "are not"} equal; must_be_equal=${want}`);
+  return problems;
+}
+
+/**
+ * `runAssertion` for the async pass. Only `blind-index/` assertions have an
+ * operation with a §11.1 companion; every other family re-runs the
+ * synchronous check, which is what makes the second pass the entire suite —
+ * but that routing happens in the dispatch, not here. This function is
+ * reached only from `runBlindIndexAsync`, and `suite.ts` refuses to load a
+ * document whose vector ids do not start with its own `group/`, so `id` is
+ * always `blind-index/…`. An earlier `if (!id.startsWith("blind-index/"))
+ * return runAssertion(v)` guard was unreachable and is gone (#111 review).
+ */
+async function runAssertionAsync(v: Record<string, unknown>): Promise<Result> {
+  const id = v.id as string;
+  const ex = v.expected as Record<string, unknown>;
+  const inp = v.inputs as Record<string, unknown>;
+  const want = ex.must_be_equal as boolean;
+  const problems: string[] = [];
+  try {
+    const which = inp.idf as IdfId;
+    const normId = NORMALIZERS[inp.normalize as string];
+    if (normId === undefined) throw new Error(`unknown normalizer ${String(inp.normalize)}`);
+    const ik = hex(inp.index_key as string);
+    const bits = inp.truncate_bits as number;
+    const cost = argon2Of(inp);
+    const side = async (preimage: string): Promise<Uint8Array> =>
+      truncateBits(await idfAsync(which, ik, normalize(normId, new TextEncoder().encode(preimage)), cost), bits);
+    const a = await side(inp.plaintext_preimage_a as string);
+    const b = await side(inp.plaintext_preimage_b as string);
+    problems.push(...judgeSides(a, b, ex.index_a as string, ex.index_b as string, want));
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
@@ -354,51 +395,123 @@ function runCommitment(v: Record<string, unknown>): Result {
  * failure `on_unindexable` exists to prevent, reintroduced by the fix.
  */
 function runUnindexable(v: Record<string, unknown>): Result {
-  const id = v.id as string;
-  const ex = v.expected as Record<string, unknown>;
   const inp = v.inputs as Record<string, unknown>;
-  const problems: string[] = [];
-  try {
-    const which = inp.idf as IdfId;
-    const ik = hex(inp.index_key as string);
-    const bits = inp.truncate_bits as number;
-    const want = hex(ex.index as string);
+  return judgeUnindexable(v, () => {
+    const marker = truncateBits(idf(inp.idf as IdfId, hex(inp.index_key as string), UNINDEXABLE_PREIMAGE, argon2Of(inp)), inp.truncate_bits as number);
+    const api = unindexableClient(inp, "bucket").unindexableMarker(indexCtx(inp));
+    return { marker, api };
+  }, (value) => {
+    const bucketed = unindexableClient(inp, "bucket").blindIndex(value, indexCtx(inp));
+    let refused = "NONE";
+    try {
+      unindexableClient(inp, "refuse").blindIndex(value, indexCtx(inp));
+    } catch (e) {
+      refused = errCode(e);
+    }
+    return { bucketed, refused };
+  });
+}
 
-    if (v.assertion === "unindexable-marker") {
-      if (!eq(hex(inp.reserved_preimage as string), UNINDEXABLE_PREIMAGE)) {
-        problems.push(mismatch("reserved preimage", UNINDEXABLE_PREIMAGE, hex(inp.reserved_preimage as string)));
-      }
-      // At the vector's declared cost, like every other derivation here.
-      // Until the #108 review this call omitted the cost and derived at this
-      // core's default -- invisible while every vector sat at the minima, and
-      // the reason unindexable-marker-t4-b15 now exists.
-      const marker = truncateBits(idf(which, ik, UNINDEXABLE_PREIMAGE, argon2Of(inp)), bits);
-      if (!eq(marker, want)) problems.push(mismatch("marker", marker, want));
-      // ...and that the public API agrees with the primitive.
-      const fs = unindexableClient(inp, "bucket");
-      const api = fs.unindexableMarker(indexCtx(inp));
-      if (!eq(api, want)) problems.push(mismatch("unindexableMarker()", api, want));
-    } else {
-      const value = inp.plaintext_preimage as string;
-      const bucketed = unindexableClient(inp, "bucket").blindIndex(value, indexCtx(inp));
-      if (!eq(bucketed, want)) problems.push(mismatch("bucketed index", bucketed, want));
-      // Both halves matter: a `bucket` that never fires is useless, and a
-      // `refuse` that stopped refusing would be a silent policy change.
+/**
+ * `runUnindexable` through the §11.1 companions. The refusal half is the
+ * only place in the whole second pass where a companion is required to
+ * produce a §9 *error*: `errors/`'s two blind_index vectors are both
+ * positive controls. `await` inside the `try` is what makes the rejection
+ * land in `errCode` rather than escaping as an unhandled rejection.
+ */
+async function runUnindexableAsync(v: Record<string, unknown>): Promise<Result> {
+  const inp = v.inputs as Record<string, unknown>;
+  return judgeUnindexableAsync(
+    v,
+    async () => {
+      const marker = truncateBits(
+        await idfAsync(inp.idf as IdfId, hex(inp.index_key as string), UNINDEXABLE_PREIMAGE, argon2Of(inp)),
+        inp.truncate_bits as number,
+      );
+      const api = await unindexableClient(inp, "bucket").unindexableMarkerAsync(indexCtx(inp));
+      return { marker, api };
+    },
+    async (value) => {
+      const bucketed = await unindexableClient(inp, "bucket").blindIndexAsync(value, indexCtx(inp));
       let refused = "NONE";
       try {
-        unindexableClient(inp, "refuse").blindIndex(value, indexCtx(inp));
+        await unindexableClient(inp, "refuse").blindIndexAsync(value, indexCtx(inp));
       } catch (e) {
         refused = errCode(e);
       }
-      const wantRefused = ex.on_unindexable_refuse as string;
-      if (refused !== wantRefused) problems.push(`on_unindexable="refuse" gave ${refused}, want ${wantRefused}`);
+      return { bucketed, refused };
+    },
+  );
+}
+
+interface MarkerSides {
+  marker: Uint8Array;
+  api: Uint8Array;
+}
+interface BucketSides {
+  bucketed: Uint8Array;
+  refused: string;
+}
+
+/** The checks both unindexable shapes make, given the derived values. */
+function unindexableProblems(v: Record<string, unknown>, sides: MarkerSides | BucketSides): string[] {
+  const ex = v.expected as Record<string, unknown>;
+  const inp = v.inputs as Record<string, unknown>;
+  const want = hex(ex.index as string);
+  const problems: string[] = [];
+  if ("marker" in sides) {
+    if (!eq(hex(inp.reserved_preimage as string), UNINDEXABLE_PREIMAGE)) {
+      problems.push(mismatch("reserved preimage", UNINDEXABLE_PREIMAGE, hex(inp.reserved_preimage as string)));
     }
+    if (!eq(sides.marker, want)) problems.push(mismatch("marker", sides.marker, want));
+    // ...and that the public API agrees with the primitive.
+    if (!eq(sides.api, want)) problems.push(mismatch("unindexableMarker()", sides.api, want));
+  } else {
+    if (!eq(sides.bucketed, want)) problems.push(mismatch("bucketed index", sides.bucketed, want));
+    // Both halves matter: a `bucket` that never fires is useless, and a
+    // `refuse` that stopped refusing would be a silent policy change.
+    const wantRefused = ex.on_unindexable_refuse as string;
+    if (sides.refused !== wantRefused) problems.push(`on_unindexable="refuse" gave ${sides.refused}, want ${wantRefused}`);
+  }
+  return problems;
+}
+
+function unindexableVerdict(id: string, problems: string[]): Result {
+  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+}
+
+function judgeUnindexable(
+  v: Record<string, unknown>,
+  // At the vector's declared cost, like every other derivation here. Until
+  // the #108 review the marker call omitted the cost and derived at this
+  // core's default -- invisible while every vector sat at the minima, and
+  // the reason unindexable-marker-t4-b15 now exists.
+  marker: () => MarkerSides,
+  bucket: (value: string) => BucketSides,
+): Result {
+  const problems: string[] = [];
+  try {
+    const inp = v.inputs as Record<string, unknown>;
+    problems.push(...unindexableProblems(v, v.assertion === "unindexable-marker" ? marker() : bucket(inp.plaintext_preimage as string)));
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0
-    ? { id, status: "pass" }
-    : { id, status: "fail", reason: problems.join("; ") };
+  return unindexableVerdict(v.id as string, problems);
+}
+
+async function judgeUnindexableAsync(
+  v: Record<string, unknown>,
+  marker: () => Promise<MarkerSides>,
+  bucket: (value: string) => Promise<BucketSides>,
+): Promise<Result> {
+  const problems: string[] = [];
+  try {
+    const inp = v.inputs as Record<string, unknown>;
+    problems.push(...unindexableProblems(v, v.assertion === "unindexable-marker" ? await marker() : await bucket(inp.plaintext_preimage as string)));
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  return unindexableVerdict(v.id as string, problems);
 }
 
 function indexCtx(inp: Record<string, unknown>): FieldContext {
@@ -439,19 +552,20 @@ function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse"
   );
 }
 
-function runBlindIndex(v: Record<string, unknown>): Result[] {
-  const id = v.id as string;
-  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [runUnindexable(v)];
-  if (v.assertion !== undefined) return [runAssertion(v)];
-  const ex = v.expected as Record<string, unknown>;
-  const stored = ex.stored as Record<string, string | number>;
-  const which = v.idf as IdfId;
-  const indexKey = hex(v.index_key as string);
-  const b = v.truncate_bits as number;
-  const normId = NORMALIZERS[v.normalize as string];
-  const params = v.idf_params as Record<string, number>;
-  // Read inside a boundary like everything else in the vector: a malformed
-  // cost is this vector's recorded failure (both results), not the run's abort.
+interface BlindIndexInputs {
+  which: IdfId;
+  indexKey: Uint8Array;
+  b: number;
+  normId: NormalizerId | undefined;
+  params: Record<string, number>;
+  argon2: Argon2Params | undefined;
+  costError: unknown;
+}
+
+function blindIndexInputs(v: Record<string, unknown>): BlindIndexInputs {
+  // The cost is read inside a boundary like everything else in the vector: a
+  // malformed cost is this vector's recorded failure (both results), not the
+  // run's abort.
   let argon2: Argon2Params | undefined;
   let costError: unknown;
   try {
@@ -459,74 +573,167 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
   } catch (e) {
     costError = e;
   }
+  return {
+    which: v.idf as IdfId,
+    indexKey: hex(v.index_key as string),
+    b: v.truncate_bits as number,
+    normId: NORMALIZERS[v.normalize as string],
+    params: v.idf_params as Record<string, number>,
+    argon2,
+    costError,
+  };
+}
+
+/**
+ * The normalized value the primitive derives from, and the normalizer check
+ * that comes with it. docs/08 §4.4: `plaintext` (already normalized) is the
+ * normative input; the preimage checks the shipped normalizer against it.
+ */
+function blindIndexNormalized(v: Record<string, unknown>, i: BlindIndexInputs, problems: string[]): Uint8Array {
+  if (i.normId === undefined) throw new Error(`unknown normalizer ${String(v.normalize)}`);
+  if (i.costError !== undefined) throw i.costError;
+  const wantNormalized = hex(v.plaintext as string);
+  const normalized = normalize(i.normId, new TextEncoder().encode(v.plaintext_preimage as string));
+  if (!eq(normalized, wantNormalized)) problems.push(mismatch("normalizer", normalized, wantNormalized));
+  return wantNormalized;
+}
+
+/** Everything the primitive result asserts once `raw` is in hand. */
+function blindIndexProblems(v: Record<string, unknown>, i: BlindIndexInputs, raw: Uint8Array): string[] {
+  const ex = v.expected as Record<string, unknown>;
+  const stored = ex.stored as Record<string, string | number>;
+  const problems: string[] = [];
+  if (!eq(raw, hex(ex.raw as string))) problems.push(mismatch("raw", raw, hex(ex.raw as string)));
+  if (i.which === "argon2id" && typeof i.params.salt === "string") {
+    const salt = argon2Salt(i.indexKey);
+    if (!eq(salt, hex(i.params.salt as unknown as string))) problems.push(mismatch("salt", salt, hex(i.params.salt as unknown as string)));
+  }
+  const bi = truncateBits(raw, i.b);
+  if (!eq(bi, hex(ex.index as string))) problems.push(mismatch("index", bi, hex(ex.index as string)));
+  // Spec §7.11 stored form: the raw truncated bytes, exactly ⌈b/8⌉ of them;
+  // lowercase hex is the declared-per-column alternative.
+  if (!eq(bi, hex(stored.binary as string))) problems.push(mismatch("stored.binary", bi, hex(stored.binary as string)));
+  if (toHex(bi) !== stored.hex) problems.push(mismatch("stored.hex", toHex(bi), stored.hex));
+  if (bi.length !== stored.octets || bi.length !== Math.ceil(i.b / 8)) problems.push(mismatch("stored.octets", bi.length, stored.octets));
+  return problems;
+}
+
+/**
+ * The client the `#pipeline` result derives through: the tenant index key
+ * and context the vector carries (suite 0.2.0), declared as a column.
+ */
+function pipelineClient(v: Record<string, unknown>, i: BlindIndexInputs, ctx: FieldContext): Fieldseal {
+  const P = 2 ** (i.b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
+  const suiteId = parseSuiteId(v.suite_id as string);
+  return new Fieldseal(
+    {
+      keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: hex(v.tenant_index_key as string) }),
+      allowedSuites: [suiteId],
+      writeSuite: suiteId,
+      indexes: [
+        {
+          tableUuid: ctx.tableUuid,
+          columnUuid: ctx.columnUuid,
+          indexId: v.index_id as string,
+          idf: i.which,
+          ...(i.argon2 ? { argon2: i.argon2 } : {}),
+          normalize: i.normId as NormalizerId,
+          truncateBits: i.b,
+          projectedPopulation: P,
+        },
+      ],
+    },
+    { armProvisionalSuites: true },
+  );
+}
+
+/** The context the pipeline call passes, row_id included deliberately. */
+function pipelineCtx(v: Record<string, unknown>): FieldContext {
+  return {
+    ...ctxFromVector(v.context as Record<string, unknown>),
+    rowId: hex("deadbeef"), // must be ignored by index derivation (spec §7.2 row_id = null)
+  };
+}
+
+/**
+ * Takes the method name rather than a prose `via` string so a failure names
+ * the method that actually produced it: with `"blindIndex()"` hard-coded here
+ * an async-only divergence was reported as `<id>#pipeline#async` with a reason
+ * naming the synchronous method, which is the one place a reader would look
+ * first and the wrong one.
+ */
+function pipelineVerdict(pid: string, out: Uint8Array, v: Record<string, unknown>, method: "blindIndex" | "blindIndexAsync"): Result {
+  const stored = (v.expected as Record<string, unknown>).stored as Record<string, string | number>;
+  return eq(out, hex(stored.binary as string))
+    ? { id: pid, status: "pass", details: { via: `Fieldseal.${method} with the vector's tenant index key` } }
+    : { id: pid, status: "fail", reason: mismatch(`${method}()`, out, hex(stored.binary as string)) };
+}
+
+function runBlindIndex(v: Record<string, unknown>): Result[] {
+  const id = v.id as string;
+  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [runUnindexable(v)];
+  if (v.assertion !== undefined) return [runAssertion(v)];
+  const i = blindIndexInputs(v);
   const results: Result[] = [];
   const problems: string[] = [];
   try {
-    if (normId === undefined) throw new Error(`unknown normalizer ${String(v.normalize)}`);
-    if (costError !== undefined) throw costError;
-    // docs/08 §4.4: `plaintext` (already normalized) is the normative input;
-    // the preimage checks the shipped normalizer against it.
-    const wantNormalized = hex(v.plaintext as string);
-    const normalized = normalize(normId, new TextEncoder().encode(v.plaintext_preimage as string));
-    if (!eq(normalized, wantNormalized)) problems.push(mismatch("normalizer", normalized, wantNormalized));
-    const raw = idf(which, indexKey, wantNormalized, argon2);
-    if (!eq(raw, hex(ex.raw as string))) problems.push(mismatch("raw", raw, hex(ex.raw as string)));
-    if (which === "argon2id" && typeof params.salt === "string") {
-      const salt = argon2Salt(indexKey);
-      if (!eq(salt, hex(params.salt as unknown as string))) problems.push(mismatch("salt", salt, hex(params.salt as unknown as string)));
-    }
-    const bi = truncateBits(raw, b);
-    if (!eq(bi, hex(ex.index as string))) problems.push(mismatch("index", bi, hex(ex.index as string)));
-    // Spec §7.11 stored form: the raw truncated bytes, exactly ⌈b/8⌉ of them;
-    // lowercase hex is the declared-per-column alternative.
-    if (!eq(bi, hex(stored.binary as string))) problems.push(mismatch("stored.binary", bi, hex(stored.binary as string)));
-    if (toHex(bi) !== stored.hex) problems.push(mismatch("stored.hex", toHex(bi), stored.hex));
-    if (bi.length !== stored.octets || bi.length !== Math.ceil(b / 8)) problems.push(mismatch("stored.octets", bi.length, stored.octets));
+    const normalized = blindIndexNormalized(v, i, problems);
+    problems.push(...blindIndexProblems(v, i, idf(i.which, i.indexKey, normalized, i.argon2)));
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
   results.push(problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") });
 
-  // Full client pipeline from the tenant index key and context the vector
-  // carries (suite 0.2.0), through the public blindIndex operation.
-  if (normId !== undefined) {
+  // Full client pipeline through the public blindIndex operation.
+  if (i.normId !== undefined) {
     const pid = `${id}#pipeline`;
     try {
-      if (costError !== undefined) throw costError;
-      const ctx = ctxFromVector(v.context as Record<string, unknown>);
-      const P = 2 ** (b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
-      const suiteId = parseSuiteId(v.suite_id as string);
-      const fs = new Fieldseal(
-        {
-          keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: hex(v.tenant_index_key as string) }),
-          allowedSuites: [suiteId],
-          writeSuite: suiteId,
-          indexes: [
-            {
-              tableUuid: ctx.tableUuid,
-              columnUuid: ctx.columnUuid,
-              indexId: v.index_id as string,
-              idf: which,
-              ...(argon2 ? { argon2 } : {}),
-              normalize: normId,
-              truncateBits: b,
-              projectedPopulation: P,
-            },
-          ],
-        },
-        { armProvisionalSuites: true },
+      if (i.costError !== undefined) throw i.costError;
+      const out = pipelineClient(v, i, ctxFromVector(v.context as Record<string, unknown>)).blindIndex(
+        new TextEncoder().encode(v.plaintext_preimage as string),
+        pipelineCtx(v),
       );
-      const out = fs.blindIndex(new TextEncoder().encode(v.plaintext_preimage as string), {
-        ...ctx,
-        rowId: hex("deadbeef"), // must be ignored by index derivation (spec §7.2 row_id = null)
-      });
-      results.push(
-        eq(out, hex(stored.binary as string))
-          ? { id: pid, status: "pass", details: { via: "Fieldseal.blindIndex with the vector's tenant index key" } }
-          : { id: pid, status: "fail", reason: mismatch("blindIndex()", out, hex(stored.binary as string)) },
-      );
+      results.push(pipelineVerdict(pid, out, v, "blindIndex"));
     } catch (e) {
       results.push({ id: pid, status: "fail", reason: `blindIndex raised ${errCode(e)}` });
+    }
+  }
+  return results;
+}
+
+/**
+ * `runBlindIndex` for the async pass: the same checks with the derivation
+ * routed through `idfAsync` and the pipeline through
+ * `Fieldseal.blindIndexAsync`. The primitive goes through the real async
+ * primitive rather than comparing a copy, so `<id>#async` is a genuine check
+ * of `crypto.argon2` against the vectors at both cost points.
+ */
+async function runBlindIndexAsync(v: Record<string, unknown>): Promise<Result[]> {
+  const id = v.id as string;
+  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [await runUnindexableAsync(v)];
+  if (v.assertion !== undefined) return [await runAssertionAsync(v)];
+  const i = blindIndexInputs(v);
+  const results: Result[] = [];
+  const problems: string[] = [];
+  try {
+    const normalized = blindIndexNormalized(v, i, problems);
+    problems.push(...blindIndexProblems(v, i, await idfAsync(i.which, i.indexKey, normalized, i.argon2)));
+  } catch (e) {
+    problems.push(`raised ${errCode(e)}`);
+  }
+  results.push(problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") });
+
+  if (i.normId !== undefined) {
+    const pid = `${id}#pipeline`;
+    try {
+      if (i.costError !== undefined) throw i.costError;
+      const out = await pipelineClient(v, i, ctxFromVector(v.context as Record<string, unknown>)).blindIndexAsync(
+        new TextEncoder().encode(v.plaintext_preimage as string),
+        pipelineCtx(v),
+      );
+      results.push(pipelineVerdict(pid, out, v, "blindIndexAsync"));
+    } catch (e) {
+      results.push({ id: pid, status: "fail", reason: `blindIndexAsync raised ${errCode(e)}` });
     }
   }
   return results;
@@ -537,9 +744,57 @@ function runBlindIndex(v: Record<string, unknown>): Result[] {
 // from the vector's config. `input` is literal; `expected` is one of
 // {error}, {value} (pass-through), {plaintext}, {is_ciphertext}, {index}.
 
+function errorsClient(v: Record<string, unknown>, ctx: FieldContext | undefined): Fieldseal {
+  const cfg = v.config as Record<string, unknown>;
+  const decl = v.index_declaration as Record<string, unknown> | undefined;
+  return new Fieldseal(
+    {
+      keyProvider: new StaticKeyProvider({
+        dek: hex(v.tenant_dek as string),
+        keyId: hex(v.key_id as string),
+        ...(v.tenant_index_key !== undefined ? { indexKey: hex(v.tenant_index_key as string) } : {}),
+      }),
+      allowedSuites: (cfg.allowed_suites as string[]).map(parseSuiteId),
+      writeSuite: parseSuiteId(cfg.write_suite as string),
+      readMode: cfg.read_mode as ReadMode,
+      ...(decl && ctx
+        ? {
+            indexes: [
+              {
+                tableUuid: ctx.tableUuid,
+                columnUuid: ctx.columnUuid,
+                indexId: decl.index_id as string,
+                idf: decl.idf as IdfId,
+                normalize: NORMALIZERS[decl.normalize as string]!,
+                truncateBits: decl.truncate_bits as number,
+                projectedPopulation: 2 ** ((decl.truncate_bits as number) + 1),
+              },
+            ],
+          }
+        : {}),
+    },
+    { armProvisionalSuites: cfg.arm_provisional_suites as boolean },
+  );
+}
+
+/** The verdict when the operation (or the client's construction) raised. */
+function judgeErrorsRaised(id: string, ex: Record<string, unknown>, want: string, e: unknown): Result {
+  const code = errCode(e);
+  const ok = "error" in ex && ex.error === code;
+  return ok ? { id, status: "pass", details: { raised: code } } : { id, status: "fail", reason: `expected ${want}, raised ${code}`, details: { raised: code } };
+}
+
+/** The verdict when it returned. */
+function judgeErrorsReturned(id: string, ex: Record<string, unknown>, want: string, op: string, got: Uint8Array | boolean): Result {
+  if ("error" in ex) return { id, status: "fail", reason: `expected ${want}, no error raised` };
+  if ("is_ciphertext" in ex) return got === ex.is_ciphertext ? { id, status: "pass" } : { id, status: "fail", reason: `is_ciphertext returned ${String(got)}, expected ${String(ex.is_ciphertext)}` };
+  const wantBytes = hex(((ex.value ?? ex.plaintext ?? ex.index) as string) ?? "");
+  const gotBytes = got as Uint8Array;
+  return eq(gotBytes, wantBytes) ? { id, status: "pass" } : { id, status: "fail", reason: mismatch(op, gotBytes, wantBytes) };
+}
+
 function runErrors(v: Record<string, unknown>): Result {
   const id = v.id as string;
-  const cfg = v.config as Record<string, unknown>;
   const ex = v.expected as Record<string, unknown>;
   const op = (v.operation ?? "decrypt") as string;
   const ctx = v.context !== undefined ? ctxFromVector(v.context as Record<string, unknown>) : undefined;
@@ -548,34 +803,7 @@ function runErrors(v: Record<string, unknown>): Result {
   const want = "error" in ex ? `error ${String(ex.error)}` : JSON.stringify(ex);
   let got: Uint8Array | boolean;
   try {
-    const fs = new Fieldseal(
-      {
-        keyProvider: new StaticKeyProvider({
-          dek: hex(v.tenant_dek as string),
-          keyId: hex(v.key_id as string),
-          ...(v.tenant_index_key !== undefined ? { indexKey: hex(v.tenant_index_key as string) } : {}),
-        }),
-        allowedSuites: (cfg.allowed_suites as string[]).map(parseSuiteId),
-        writeSuite: parseSuiteId(cfg.write_suite as string),
-        readMode: cfg.read_mode as ReadMode,
-        ...(decl && ctx
-          ? {
-              indexes: [
-                {
-                  tableUuid: ctx.tableUuid,
-                  columnUuid: ctx.columnUuid,
-                  indexId: decl.index_id as string,
-                  idf: decl.idf as IdfId,
-                  normalize: NORMALIZERS[decl.normalize as string]!,
-                  truncateBits: decl.truncate_bits as number,
-                  projectedPopulation: 2 ** ((decl.truncate_bits as number) + 1),
-                },
-              ],
-            }
-          : {}),
-      },
-      { armProvisionalSuites: cfg.arm_provisional_suites as boolean },
-    );
+    const fs = errorsClient(v, ctx);
     switch (op) {
       case "decrypt":
         got = fs.decrypt(input, ctx!);
@@ -596,15 +824,55 @@ function runErrors(v: Record<string, unknown>): Result {
         return { id, status: "fail", reason: `unknown operation ${op}` };
     }
   } catch (e) {
-    const code = errCode(e);
-    const ok = "error" in ex && ex.error === code;
-    return ok ? { id, status: "pass", details: { raised: code } } : { id, status: "fail", reason: `expected ${want}, raised ${code}`, details: { raised: code } };
+    return judgeErrorsRaised(id, ex, want, e);
   }
-  if ("error" in ex) return { id, status: "fail", reason: `expected ${want}, no error raised` };
-  if ("is_ciphertext" in ex) return got === ex.is_ciphertext ? { id, status: "pass" } : { id, status: "fail", reason: `is_ciphertext returned ${String(got)}, expected ${String(ex.is_ciphertext)}` };
-  const wantBytes = hex(((ex.value ?? ex.plaintext ?? ex.index) as string) ?? "");
-  const gotBytes = got as Uint8Array;
-  return eq(gotBytes, wantBytes) ? { id, status: "pass" } : { id, status: "fail", reason: mismatch(op, gotBytes, wantBytes) };
+  return judgeErrorsReturned(id, ex, want, op, got);
+}
+
+/**
+ * `runErrors` for the async pass. Only `blind_index` has a companion; the
+ * other four operations re-run their synchronous form, which is what the
+ * `#async` twin of an `envelope`-family error vector means.
+ *
+ * Both `blind_index` error vectors are positive controls -- they expect an
+ * index value, not an error -- so this swap on its own proves no error-code
+ * parity. That obligation is carried by the `unindexable-bucket` vectors'
+ * refusal half, the `#async` out-of-band entry, and
+ * `tests/async-companions.test.ts`.
+ */
+/**
+ * Whether the async pass routes this vector through a spec §11.1 companion or
+ * merely re-runs the synchronous operation. One predicate, because two would
+ * drift: `runPass` labels each `#async` result with it and `runErrorsAsync`
+ * branches on it, and a report that labelled a result "companion" while the
+ * runner took the synchronous path would be worse than no label at all.
+ *
+ * This core ships companions for `blind_index` and `unindexable_marker` only,
+ * so the whole `blind-index/` family qualifies and `errors/` qualifies for its
+ * `blind_index` operation. `envelope/`, `kdf/`, `context/`, `commitment/` and
+ * every other `errors/` operation have no companion to route through.
+ */
+function routesThroughCompanion(group: string, v: Record<string, unknown>): boolean {
+  if (group === "blind-index") return true;
+  return group === "errors" && ((v.operation ?? "decrypt") as string) === "blind_index";
+}
+
+async function runErrorsAsync(v: Record<string, unknown>): Promise<Result> {
+  const op = (v.operation ?? "decrypt") as string;
+  if (!routesThroughCompanion("errors", v)) return runErrors(v);
+  const id = v.id as string;
+  const ex = v.expected as Record<string, unknown>;
+  const ctx = v.context !== undefined ? ctxFromVector(v.context as Record<string, unknown>) : undefined;
+  const input = hex(v.input as string);
+  const decl = v.index_declaration as Record<string, unknown> | undefined;
+  const want = "error" in ex ? `error ${String(ex.error)}` : JSON.stringify(ex);
+  let got: Uint8Array;
+  try {
+    got = await errorsClient(v, ctx).blindIndexAsync(input, { ...ctx!, purpose: `index:${decl!.index_id as string}` });
+  } catch (e) {
+    return judgeErrorsRaised(id, ex, want, e);
+  }
+  return judgeErrorsReturned(id, ex, want, op, got);
 }
 
 // ---------------------------------------------------------------------------
@@ -626,10 +894,16 @@ function runErrors(v: Record<string, unknown>): Result {
  * a normative requirement verified by a test the report would otherwise never
  * mention is indistinguishable from one nobody checked.
  */
-function runIndexBoundary(): OutOfBand[] {
-  const id = "docs/09/7.1/lone-surrogate-refusal";
-  const method =
-    "unit test: two distinct unpaired surrogates passed as text to blindIndex are both refused, with messages that name different code points";
+const INDEX_BOUNDARY_ID = "docs/09/7.1/lone-surrogate-refusal";
+const INDEX_BOUNDARY_METHOD =
+  "unit test: two distinct unpaired surrogates passed as text to blindIndex are both refused, with messages that name different code points";
+
+interface Refusal {
+  code: string;
+  message: string;
+}
+
+function indexBoundaryClient(): { fs: Fieldseal; ctx: FieldContext } {
   const fs = new Fieldseal(
     {
       // An index key is required here: without one, key acquisition fails
@@ -663,17 +937,10 @@ function runIndexBoundary(): OutOfBand[] {
     rowId: null,
     purpose: "index:exact",
   };
-  const refuse = (s: string): { code: string; message: string } => {
-    try {
-      fs.blindIndex(s, ctx);
-      return { code: "NONE", message: "" };
-    } catch (e) {
-      return { code: errCode(e), message: (e as Error).message };
-    }
-  };
+  return { fs, ctx };
+}
 
-  const high = refuse("a\uD800b");
-  const low = refuse("a\uDC00b");
+function judgeIndexBoundary(id: string, method: string, high: Refusal, low: Refusal): OutOfBand[] {
   let status: OutOfBand["status"] = "pass";
   let reason: string | undefined;
   if (high.code !== "INVALID_ARGUMENT" || low.code !== "INVALID_ARGUMENT") {
@@ -687,6 +954,43 @@ function runIndexBoundary(): OutOfBand[] {
     reason = "both surrogates produced the same message; the refusal does not distinguish them";
   }
   return [{ id, status, method, ...(reason ? { reason } : {}) }];
+}
+
+function runIndexBoundary(): OutOfBand[] {
+  const { fs, ctx } = indexBoundaryClient();
+  const refuse = (s: string): Refusal => {
+    try {
+      fs.blindIndex(s, ctx);
+      return { code: "NONE", message: "" };
+    } catch (e) {
+      return { code: errCode(e), message: (e as Error).message };
+    }
+  };
+  return judgeIndexBoundary(INDEX_BOUNDARY_ID, INDEX_BOUNDARY_METHOD, refuse("a\uD800b"), refuse("a\uDC00b"));
+}
+
+/**
+ * The same check through the §11.1 companion, and the async pass's only
+ * *error* obligation that a vector cannot carry: spec §11.1 requires the
+ * companion to raise the same §9 error for the same condition, and every
+ * blind-index error vector in the suite is a positive control.
+ */
+async function runIndexBoundaryAsync(): Promise<OutOfBand[]> {
+  const { fs, ctx } = indexBoundaryClient();
+  const refuse = async (s: string): Promise<Refusal> => {
+    try {
+      await fs.blindIndexAsync(s, ctx);
+      return { code: "NONE", message: "" };
+    } catch (e) {
+      return { code: errCode(e), message: (e as Error).message };
+    }
+  };
+  return judgeIndexBoundary(
+    `${INDEX_BOUNDARY_ID}#async`,
+    `${INDEX_BOUNDARY_METHOD}, through blindIndexAsync (both refusals arrive as rejections)`,
+    await refuse("a\uD800b"),
+    await refuse("a\uDC00b"),
+  );
 }
 
 function runLengthBound(): OutOfBand[] {
@@ -740,39 +1044,78 @@ export interface RunOptions {
   commit?: string;
 }
 
-export function runSuite(opts: RunOptions = {}): Report {
-  const prevTestMode = process.env[TEST_MODE_ENV];
-  process.env[TEST_MODE_ENV] = "1";
-  try {
-    const suite = loadSuite(opts.vectorsDir);
-    const results: Result[] = [];
-    for (const [, doc] of suite.files) {
-      for (const v of doc.vectors) {
-        switch (doc.group) {
-          case "envelope":
-            results.push(...runEnvelope(v));
-            break;
-          case "kdf":
-            results.push(runKdf(v));
-            break;
-          case "context":
-            results.push(runContext(v));
-            break;
-          case "commitment":
-            results.push(runCommitment(v));
-            break;
-          case "blind-index":
-            results.push(...runBlindIndex(v));
-            break;
-          case "errors":
-            results.push(runErrors(v));
-            break;
-          default:
-            results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
+/**
+ * One pass over the whole suite. `"async"` routes every operation that has a
+ * spec §11.1 companion through it; the families that have none re-run the
+ * synchronous operation, so that docs/08 §5 item 10's "the entire suite"
+ * stays the entire suite rather than a selection of it (the twins that
+ * cannot differ are identical by construction, and the harness note says so).
+ *
+ * One loop for both passes: a second copy could gain a family the first has
+ * and nobody would notice.
+ */
+async function runPass(suite: LoadedSuite, pass: "sync" | "async"): Promise<Result[]> {
+  const results: Result[] = [];
+  for (const [, doc] of suite.files) {
+    for (const v of doc.vectors) {
+      const first = results.length;
+      switch (doc.group) {
+        case "envelope":
+          results.push(...runEnvelope(v));
+          break;
+        case "kdf":
+          results.push(runKdf(v));
+          break;
+        case "context":
+          results.push(runContext(v));
+          break;
+        case "commitment":
+          results.push(runCommitment(v));
+          break;
+        case "blind-index":
+          results.push(...(pass === "async" ? await runBlindIndexAsync(v) : runBlindIndex(v)));
+          break;
+        case "errors":
+          results.push(pass === "async" ? await runErrorsAsync(v) : runErrors(v));
+          break;
+        default:
+          results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
+      }
+      // Every `#async` result says which of the two it is. Without this the
+      // report offers 178 `#async` ids and no way to see that only 65 of them
+      // went through a companion at all, which reads as far more coverage
+      // than the second pass actually buys (#111 review).
+      if (pass === "async") {
+        const route = routesThroughCompanion(doc.group, v) ? "companion" : "sync-rerun";
+        for (let i = first; i < results.length; i++) {
+          const r = results[i] as Result;
+          results[i] = { ...r, details: { ...r.details, async_route: route } };
         }
       }
     }
-    const outOfBand = [...runLengthBound(), ...runIndexBoundary()];
+  }
+  return results;
+}
+
+export async function runSuite(opts: RunOptions = {}): Promise<Report> {
+  const prevTestMode = process.env[TEST_MODE_ENV];
+  process.env[TEST_MODE_ENV] = "1";
+  // The arming window must span both passes: `encrypt_with_materials` reads
+  // this variable at call time, so de-arming between them would turn every
+  // envelope twin into a failure.
+  try {
+    const suite = loadSuite(opts.vectorsDir);
+    const results = await runPass(suite, "sync");
+    // docs/08 §5 item 10: the entire suite, a second time, through the
+    // companions. The suffix is applied to the synchronous *result* id at the
+    // pass boundary, so it lands last: `<id>#decrypt#async`, `<id>#pipeline#async`.
+    const second = await runPass(suite, "async");
+    results.push(...second.map((r) => ({ ...r, id: `${r.id}#async` })));
+    // The split as a number, so the note below is checkable against the
+    // report it appears in rather than asserted in prose.
+    const routed = second.filter((r) => r.details?.async_route === "companion").length;
+    const asyncSplit = `Of the ${second.length} '#async' results, ${routed} went through a spec §11.1 companion and ${second.length - routed} re-ran the synchronous operation because this core ships no companion for them; each result carries the distinction as details.async_route.`;
+    const outOfBand = [...runLengthBound(), ...runIndexBoundary(), ...(await runIndexBoundaryAsync())];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
     const summary = {
       pass: results.filter((r) => r.status === "pass").length,
@@ -805,11 +1148,11 @@ export function runSuite(opts: RunOptions = {}): Report {
         unicode_tables: `vendored UCD ${UNICODE_VERSION} (NFC + CaseFolding C+F)`,
       },
       pinned_decisions: PINNED_DECISIONS,
-      harness_notes: HARNESS_NOTES,
+      harness_notes: [...HARNESS_NOTES, asyncSplit],
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
-      async_companions: false,
+      async_companions: true,
       summary,
     };
   } finally {
@@ -830,7 +1173,8 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "unimplemented-registered-suite": "0xFF02 is registered (isCiphertext → true) but refused at construction if allow-listed or set as writeSuite (CONFIGURATION_ERROR naming G7); no §9 code is reachable for it because no client can be built that accepts it",
   "commitment-construction": 'HKDF-SHA-512(ikm = record_key, salt = "", info = "fieldseal-commit-v1", 32) -- as spec §4.6 states under its [PROVISIONAL — G1] marker (since 2026-08-23); provisional until G1 closes',
   "key-material-ownership":
-    "provider-owned (docs/09 §8.1): the core never mutates or erases what `encryptionKey` or `decryptionKeys` returned. `#encryptionKey` validates and copies (api.ts:182), so the encrypt and blind-index paths erase their own copy; the decrypt candidate loop borrows and erases nothing. Erasure steps performed: docs/09 §3.1 step 13 and §3.2 record_key (both, Uint8Array), the intermediate plaintext buffer, the untruncated IDF output, and §8.3 cache eviction. None skipped. Candidate reads do not count against max_uses.",
+    "provider-owned (docs/09 §8.1): the core never mutates or erases what `encryptionKey` or `decryptionKeys` returned. `#encryptionKey` validates and copies (api.ts:196), so the encrypt and blind-index paths erase their own copy; the decrypt candidate loop borrows and erases nothing. Erasure steps performed: docs/09 §3.1 step 13 and §3.2 record_key (both, Uint8Array), the intermediate plaintext buffer, the untruncated IDF output, the Argon2id salt (spec §7.3 makes it key-equivalent for the column), and §8.3 cache eviction. None skipped. Candidate reads do not count against max_uses. " +
+    "In the §11.1 asynchronous companions both index keys are erased as soon as `idfAsync` returns -- the Argon2id salt is derived from them synchronously, so nothing the in-flight derivation holds reads them; the threadpool job is already queued by then, and captured the salt and the copy rather than the key -- and the normalized value is copied rather than borrowed across the await, because under `identity` it is the caller's own array and on the marker path it is the process-wide reserved preimage; neither original is ever zeroed. The copy is what makes erasing the buffer handed to the backend safe: on the shipped backend node copies it synchronously, so the caller is not relying on the copy for that.",
 };
 // Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 // these over: `unknown-format-version-set` -> spec §3.1/§3.4/§9/§10.3,
@@ -845,5 +1189,6 @@ export const HARNESS_NOTES: string[] = [
   "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key and context the vector carries (suite 0.2.0).",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
+  "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",
   "blind-index/argon2id.json is pinned as of suite 0.6.0-provisional (docs/07 §7) and is iterated like any other family; Argon2id contributes to this report's summary. Each vector derives at the cost it declares in idf_params, not at this core's default (docs/08 §4.4), and the declared salt is asserted on its own. A vector this core cannot derive at (a missing or non-§7.3 idf_params) is a recorded failure, not an abort.",
 ];

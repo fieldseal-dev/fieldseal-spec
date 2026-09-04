@@ -4,7 +4,7 @@
  * gates (§7.4 band, §7.6 cardinality, §6.1 identifier grammar).
  */
 
-import { createHmac, argon2Sync } from "node:crypto";
+import { argon2, argon2Sync, createHmac } from "node:crypto";
 import { isValidIndexId, UUID_LEN } from "./context.ts";
 import { ConfigurationError } from "./errors.ts";
 import { hkdfSha512 } from "./kdf.ts";
@@ -28,20 +28,52 @@ export interface Argon2Params {
 
 /**
  * Abstracts the Argon2id primitive so the backend is swappable without API
- * change (docs/11 §2). The shipped backend is `node:crypto`'s native
- * `argon2Sync` (Node ≥ 24.7 with OpenSSL ≥ 3.2), which is synchronous,
- * returns raw output, takes an explicit parallelism, and -- unlike libsodium
- * and argon2-cffi -- accepts the RFC 9106 §5.3 secret and associated data,
- * which is what lets this core check the primitive against that RFC vector
- * even though the Fieldseal invocation forbids both (see tests/primitives).
+ * change (docs/11 §2). The shipped backend is `node:crypto`'s native Argon2
+ * (Node ≥ 24.7 with OpenSSL ≥ 3.2), which returns raw output, takes an
+ * explicit parallelism, and -- unlike libsodium and argon2-cffi -- accepts
+ * the RFC 9106 §5.3 secret and associated data, which is what lets this core
+ * check the primitive against that RFC vector even though the Fieldseal
+ * invocation forbids both (see tests/primitives).
+ *
+ * The seam carries both forms because the core ships both: `argon2Sync`
+ * blocks the calling thread, `argon2` runs the derivation on the libuv
+ * threadpool. Both are required members, not one optional: exactly one
+ * implementation exists, and an optional `argon2idAsync` would turn "this
+ * backend has no async form" into a silent runtime branch. Spec §11.1
+ * forbids the converse shortcut -- the synchronous form MUST NOT be
+ * implemented by blocking on the asynchronous one -- so `idf` never routes
+ * through `argon2idAsync`, and `tests/async-companions.test.ts` asserts it.
  */
 export interface Argon2Backend {
   readonly name: string;
+  /**
+   * Argument ownership, which the caller relies on to erase the salt: a
+   * backend MUST NOT retain a reference to `password` or `salt` past the
+   * point its result is available -- the return for the synchronous form,
+   * the settling of the promise for the asynchronous one. `idf` and
+   * `idfAsync` zero the salt at exactly those points, so a backend that
+   * read either buffer lazily afterwards would derive from zeros. The
+   * shipped backend copies both synchronously inside the `node:crypto`
+   * call (verified on Node 24.16: zeroing `message` and `nonce` on the line
+   * after `argon2(...)` still yields the reference tag), which is stricter
+   * than this contract requires.
+   */
   argon2id(password: Uint8Array, salt: Uint8Array, t: number, mKib: number, p: number, outLen: number): Uint8Array;
+  argon2idAsync(
+    password: Uint8Array,
+    salt: Uint8Array,
+    t: number,
+    mKib: number,
+    p: number,
+    outLen: number,
+  ): Promise<Uint8Array>;
 }
 
+// Deliberately not `Object.freeze`d: the spy in
+// `tests/async-companions.test.ts` replaces these two properties to assert
+// that neither form routes through the other (spec §11.1).
 export const nodeArgon2Backend: Argon2Backend = {
-  name: "node:crypto argon2Sync",
+  name: "node:crypto argon2Sync / argon2",
   argon2id(password, salt, t, mKib, p, outLen) {
     // Spec §7.3: K (secret) and X (associatedData) MUST NOT be used. They are
     // deliberately not passed, not passed-as-empty: "not used" and "empty"
@@ -65,6 +97,29 @@ export const nodeArgon2Backend: Argon2Backend = {
       }),
     );
   },
+  argon2idAsync(password, salt, t, mKib, p, outLen) {
+    // Same two invariants as the synchronous form above: `secret` and
+    // `associatedData` omitted rather than passed empty, and no `version`
+    // key. The callback receives the raw tag; the copy mirrors the sync
+    // path, so both forms hand back a buffer the core owns and may zero.
+    return new Promise((resolve, reject) => {
+      argon2(
+        "argon2id",
+        {
+          message: password,
+          nonce: salt,
+          parallelism: p,
+          tagLength: outLen,
+          memory: mKib,
+          passes: t,
+        },
+        (err, out) => {
+          if (err) reject(err);
+          else resolve(new Uint8Array(out));
+        },
+      );
+    });
+  },
 };
 
 export function hmacSha512(key: Uint8Array, data: Uint8Array): Uint8Array {
@@ -76,17 +131,74 @@ export function argon2Salt(indexKey: Uint8Array): Uint8Array {
   return hkdfSha512(indexKey, new Uint8Array(0), ARGON2_SALT_INFO, ARGON2_SALT_LEN);
 }
 
+/**
+ * The §7.3 minima, applied where a column declares no Argon2id parameters.
+ * One function so `idf`, `idfAsync` and `validateIndexDeclaration` cannot
+ * drift in what "unspecified" costs.
+ */
+export function argon2ParamsOrMinima(params?: Argon2Params): Argon2Params {
+  return params ?? { timeCost: ARGON2_MIN_T, memoryKib: ARGON2_MIN_M_KIB };
+}
+
 /** IDF(index_key, normalized) per spec §7.3, for either IDF. */
 export function idf(
   which: IdfId,
   indexKey: Uint8Array,
   normalized: Uint8Array,
-  argon2?: Argon2Params,
+  params?: Argon2Params,
   backend: Argon2Backend = nodeArgon2Backend,
 ): Uint8Array {
   if (which === "hmac-sha512") return hmacSha512(indexKey, normalized);
-  const params = argon2 ?? { timeCost: ARGON2_MIN_T, memoryKib: ARGON2_MIN_M_KIB };
-  return backend.argon2id(normalized, argon2Salt(indexKey), params.timeCost, params.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  const p = argon2ParamsOrMinima(params);
+  const salt = argon2Salt(indexKey);
+  try {
+    return backend.argon2id(normalized, salt, p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  } finally {
+    // The salt is key material, not a public parameter. Spec §7.3: the index
+    // key "enters **only** through the salt" and keying "rests entirely on
+    // the salt" -- with K and X forbidden, 16 bytes of salt carry the whole
+    // strength of the column's index key, so leaving it to GC while zeroing
+    // the key it came from protects nothing.
+    salt.fill(0);
+  }
+}
+
+/**
+ * `idf` on the libuv threadpool (spec §11.1 companion). Byte-identical
+ * output and the same §9 error for the same condition; `idf` is not
+ * implemented over it.
+ *
+ * Everything before the first `await` runs synchronously, salt derivation
+ * included, so a caller may zero `indexKey` as soon as this function
+ * returns -- it is read before the derivation is handed to the backend,
+ * never across it. The salt derived from it is zeroed here, once the
+ * derivation has completed rather than once it has been submitted: the
+ * `Argon2Backend` contract above only promises the backend is done with its
+ * arguments by then, so erasing any earlier would be reaching past what a
+ * swappable seam guarantees.
+ * The HMAC branch never touches the threadpool: there is nothing to offload,
+ * and queueing a microsecond of SHA-512 behind Argon2id derivations would
+ * make an HMAC column slower for no gain.
+ */
+export async function idfAsync(
+  which: IdfId,
+  indexKey: Uint8Array,
+  normalized: Uint8Array,
+  params?: Argon2Params,
+  backend: Argon2Backend = nodeArgon2Backend,
+): Promise<Uint8Array> {
+  if (which === "hmac-sha512") return hmacSha512(indexKey, normalized);
+  const p = argon2ParamsOrMinima(params);
+  const salt = argon2Salt(indexKey);
+  try {
+    // Called through the property, never destructured: the seam test spies by
+    // replacing `backend.argon2idAsync`, which a captured reference would miss.
+    // Awaited rather than returned so the erasure below runs on completion
+    // and not on submission.
+    return await backend.argon2idAsync(normalized, salt, p.timeCost, p.memoryKib, ARGON2_P, ARGON2_OUTPUT_LEN);
+  } finally {
+    salt.fill(0); // key material, for the reason given in `idf`
+  }
 }
 
 /**
@@ -204,7 +316,7 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
   }
   let argon2: Argon2Params | undefined;
   if (d.idf === "argon2id") {
-    argon2 = d.argon2 ?? { timeCost: ARGON2_MIN_T, memoryKib: ARGON2_MIN_M_KIB };
+    argon2 = argon2ParamsOrMinima(d.argon2);
     if (!Number.isInteger(argon2.timeCost) || argon2.timeCost < ARGON2_MIN_T) {
       throw new ConfigurationError(`index declaration ${indexId}: Argon2id timeCost must be an integer ≥ ${ARGON2_MIN_T} (spec §7.3)`);
     }
