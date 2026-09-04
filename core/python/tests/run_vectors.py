@@ -100,8 +100,14 @@ PINNED_DECISIONS = {
         "only (the cache holds `bytearray`). **Not performed: docs/09 §3.1 "
         "step 13 and §3.2 record_key**, because `kdf.record_key()` returns "
         "immutable `bytes` and CPython offers nothing to overwrite (§3 "
-        "preamble; docs/10 §5). Candidate reads do not count against "
-        "max_uses."),
+        "preamble; docs/10 §5). **Also not performed: the spec §7.3 "
+        "Argon2id salt**, which is key material -- with K and X "
+        "forbidden, keying rests entirely on it -- and which the "
+        "TypeScript core does erase. argon2-cffi accepts only "
+        "immutable `bytes` for `salt=` (`bytearray` and `memoryview` "
+        "raise TypeError, verified against 25.1.0 and pinned by "
+        "tests/test_blindindex_salt.py), so there is no buffer to "
+        "overwrite. Candidate reads do not count against max_uses."),
 }
 # Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 # these over: `unknown-format-version-set` → spec §3.1/§3.4/§9/§10.3,
