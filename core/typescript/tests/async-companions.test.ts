@@ -268,7 +268,11 @@ describe("what crosses the await (docs/09 §8.1; the pinned key-material-ownersh
     expect(intact).toEqual(bytes("alice@example.com")); // the core zeroes only what it owns
   });
 
-  it("the borrowed index key survives the companion", async () => {
+  it("every buffer the provider lends survives the companion, not just the index key", async () => {
+    // Each field is its own allocation rather than the module constant it
+    // copies: the constants are the pristine values to compare against, so a
+    // provider handing one out directly would let a core that erased it
+    // corrupt every later test instead of failing this one.
     class BorrowingProvider implements KeyProvider {
       readonly indexKey = new Uint8Array(INDEX_KEY);
       readonly keyId = new Uint8Array(KEY_ID);
@@ -283,7 +287,19 @@ describe("what crosses the await (docs/09 §8.1; the pinned key-material-ownersh
     const p = new BorrowingProvider();
     const b = makeClient({ keyProvider: p, indexes: COLUMNS });
     const first = await b.blindIndexAsync("alice@example.com", at("argon"));
+
+    // `encryptionKey` returns *two* buffers by reference and the index path
+    // reads both: the key, and the key id. Only the first was asserted here
+    // until #111's review — `keyId` is read rather than erased today, so this
+    // is the ownership contract being stated in full rather than a fix.
     expect(p.indexKey).toEqual(INDEX_KEY);
+    expect(p.keyId).toEqual(KEY_ID);
+    // The DEK is untouched because the index path never asks for it (spec §8
+    // purpose routing), which this provider is shaped to detect: it hands out
+    // the DEK for `encrypt` and would derive a different index if the core
+    // ever requested that purpose here.
+    expect(p.dek).toEqual(DEK);
+
     expect((await b.blindIndexAsync("alice@example.com", at("argon"))).equals(first)).toBe(true);
   });
 

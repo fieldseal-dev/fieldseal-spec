@@ -189,7 +189,7 @@ function runAssertion(v: Record<string, unknown>): Result {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+  return verdict(id, problems);
 }
 
 /** Both sides against their expected bytes, then the relation between them. */
@@ -206,9 +206,9 @@ function judgeSides(a: Uint8Array, b: Uint8Array, wantA: string, wantB: string, 
  * operation with a §11.1 companion; every other family re-runs the
  * synchronous check, which is what makes the second pass the entire suite —
  * but that routing happens in the dispatch, not here. This function is
- * reached only from `runBlindIndexAsync`, and `suite.ts` refuses to load a
- * document whose vector ids do not start with its own `group/`, so `id` is
- * always `blind-index/…`. An earlier `if (!id.startsWith("blind-index/"))
+ * reached only from `runBlindIndex` on the async pass, and `suite.ts` refuses
+ * to load a document whose vector ids do not start with its own `group/`, so
+ * `id` is always `blind-index/…`. An earlier `if (!id.startsWith("blind-index/"))
  * return runAssertion(v)` guard was unreachable and is gone (#111 review).
  */
 async function runAssertionAsync(v: Record<string, unknown>): Promise<Result> {
@@ -232,7 +232,7 @@ async function runAssertionAsync(v: Record<string, unknown>): Promise<Result> {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+  return verdict(id, problems);
 }
 
 function client(dek: Uint8Array, keyId: Uint8Array, extra: Partial<ConstructorParameters<typeof Fieldseal>[0]> = {}): Fieldseal {
@@ -346,7 +346,7 @@ function runKdf(v: Record<string, unknown>): Result {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+  return verdict(id, problems);
 }
 
 function runContext(v: Record<string, unknown>): Result {
@@ -364,7 +364,7 @@ function runContext(v: Record<string, unknown>): Result {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+  return verdict(id, problems);
 }
 
 function runCommitment(v: Record<string, unknown>): Result {
@@ -380,7 +380,7 @@ function runCommitment(v: Record<string, unknown>): Result {
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
+  return verdict(id, problems);
 }
 
 /**
@@ -394,48 +394,107 @@ function runCommitment(v: Record<string, unknown>): Result {
  * buckets, and a lookup across them would silently return nothing — the exact
  * failure `on_unindexable` exists to prevent, reintroduced by the fix.
  */
-function runUnindexable(v: Record<string, unknown>): Result {
-  const inp = v.inputs as Record<string, unknown>;
-  return judgeUnindexable(v, () => {
-    const marker = truncateBits(idf(inp.idf as IdfId, hex(inp.index_key as string), UNINDEXABLE_PREIMAGE, argon2Of(inp)), inp.truncate_bits as number);
-    const api = unindexableClient(inp, "bucket").unindexableMarker(indexCtx(inp));
-    return { marker, api };
-  }, (value) => {
-    const bucketed = unindexableClient(inp, "bucket").blindIndex(value, indexCtx(inp));
-    let refused = "NONE";
-    try {
-      unindexableClient(inp, "refuse").blindIndex(value, indexCtx(inp));
-    } catch (e) {
-      refused = errCode(e);
-    }
-    return { bucketed, refused };
-  });
+/**
+ * The three operations that differ between the two passes, and nothing else.
+ *
+ * Before this seam existed, four runners had `*Async` twins that differed
+ * from their originals only by `await` and by which method name they called
+ * — `runUnindexable`, `runBlindIndex`, `runIndexBoundary` and the
+ * `judgeUnindexable` helper. Two copies of a check is two places for a
+ * family to be silently dropped from one pass, which is the failure this
+ * whole second pass exists to prevent.
+ *
+ * Everything is typed `Promise` so one body serves both passes. That does
+ * *not* make the synchronous pass asynchronous where it matters: `SYNC_OPS`
+ * calls the synchronous core methods, and `sync()` below refuses a result
+ * that arrives as a promise, so a `blindIndex` that started returning one
+ * fails the sync pass loudly instead of being quietly awaited. Spec §11.1's
+ * "the sync form MUST NOT block on the async one" is asserted against the
+ * core in `tests/async-companions.test.ts`, not here.
+ */
+interface IndexOps {
+  readonly pass: "sync" | "async";
+  readonly blindIndexName: "blindIndex" | "blindIndexAsync";
+  readonly markerName: "unindexableMarker" | "unindexableMarkerAsync";
+  idf(which: IdfId, key: Uint8Array, normalized: Uint8Array, params?: Argon2Params): Promise<Uint8Array>;
+  blindIndex(fs: Fieldseal, value: string | Uint8Array, ctx: FieldContext): Promise<Uint8Array>;
+  unindexableMarker(fs: Fieldseal, ctx: FieldContext): Promise<Uint8Array>;
 }
 
 /**
- * `runUnindexable` through the §11.1 companions. The refusal half is the
- * only place in the whole second pass where a companion is required to
- * produce a §9 *error*: `errors/`'s two blind_index vectors are both
- * positive controls. `await` inside the `try` is what makes the rejection
- * land in `errCode` rather than escaping as an unhandled rejection.
+ * Wraps a synchronous call for the shared body while keeping the assertion
+ * that it *was* synchronous. `await` on a plain value is indistinguishable
+ * from `await` on a resolved promise, so without this the sync pass would
+ * accept a core whose "synchronous" method had become async.
  */
-async function runUnindexableAsync(v: Record<string, unknown>): Promise<Result> {
+async function sync<T>(what: string, produce: () => T): Promise<T> {
+  const out = produce();
+  if (out instanceof Promise) throw new Error(`${what} returned a Promise on the synchronous pass; spec §11.1 requires a synchronous result`);
+  return out;
+}
+
+const SYNC_OPS: IndexOps = {
+  pass: "sync",
+  blindIndexName: "blindIndex",
+  markerName: "unindexableMarker",
+  idf: (which, key, normalized, params) => sync("idf()", () => idf(which, key, normalized, params)),
+  blindIndex: (fs, value, ctx) => sync("blindIndex()", () => fs.blindIndex(value, ctx)),
+  unindexableMarker: (fs, ctx) => sync("unindexableMarker()", () => fs.unindexableMarker(ctx)),
+};
+
+/**
+ * The mirror of `sync()` for the async table: the raw return of the companion
+ * must be a `Promise` before it is awaited. `await` accepts a plain value just
+ * as happily, so without this a table entry that read `fs.blindIndex` instead
+ * of `fs.blindIndexAsync` would run the whole second pass through the
+ * synchronous form, label every result "companion" and report
+ * `async_companions: true` -- verified by making exactly that mistake before
+ * this guard existed: 356/356, flag `true`, 65 labelled companion.
+ *
+ * What it does not catch, stated so nobody reads more into it: an entry that
+ * wrapped the synchronous method in an `async` arrow returns a `Promise` too.
+ * The only check that sees through that is the backend-seam spy in
+ * `tests/async-companions.test.ts`, which holds the property for the core's
+ * methods; this guard holds the table to those methods.
+ */
+function mustBePromise<T>(what: string, out: Promise<T>): Promise<T> {
+  if (!(out instanceof Promise)) throw new Error(`${what} did not return a Promise on the asynchronous pass; the table is not calling a spec §11.1 companion`);
+  return out;
+}
+
+const ASYNC_OPS: IndexOps = {
+  pass: "async",
+  blindIndexName: "blindIndexAsync",
+  markerName: "unindexableMarkerAsync",
+  idf: (which, key, normalized, params) => mustBePromise("idfAsync()", idfAsync(which, key, normalized, params)),
+  blindIndex: (fs, value, ctx) => mustBePromise("blindIndexAsync()", fs.blindIndexAsync(value, ctx)),
+  unindexableMarker: (fs, ctx) => mustBePromise("unindexableMarkerAsync()", fs.unindexableMarkerAsync(ctx)),
+};
+
+/**
+ * On the async pass the refusal half below is the only place in the whole
+ * second pass where a companion is required to produce a §9 *error*:
+ * `errors/`'s two blind_index vectors are both positive controls. `await`
+ * inside the `try` is what makes the rejection land in `errCode` rather than
+ * escaping as an unhandled rejection.
+ */
+async function runUnindexable(v: Record<string, unknown>, ops: IndexOps): Promise<Result> {
   const inp = v.inputs as Record<string, unknown>;
-  return judgeUnindexableAsync(
+  return judgeUnindexable(
     v,
     async () => {
       const marker = truncateBits(
-        await idfAsync(inp.idf as IdfId, hex(inp.index_key as string), UNINDEXABLE_PREIMAGE, argon2Of(inp)),
+        await ops.idf(inp.idf as IdfId, hex(inp.index_key as string), UNINDEXABLE_PREIMAGE, argon2Of(inp)),
         inp.truncate_bits as number,
       );
-      const api = await unindexableClient(inp, "bucket").unindexableMarkerAsync(indexCtx(inp));
+      const api = await ops.unindexableMarker(unindexableClient(inp, "bucket"), indexCtx(inp));
       return { marker, api };
     },
     async (value) => {
-      const bucketed = await unindexableClient(inp, "bucket").blindIndexAsync(value, indexCtx(inp));
+      const bucketed = await ops.blindIndex(unindexableClient(inp, "bucket"), value, indexCtx(inp));
       let refused = "NONE";
       try {
-        await unindexableClient(inp, "refuse").blindIndexAsync(value, indexCtx(inp));
+        await ops.blindIndex(unindexableClient(inp, "refuse"), value, indexCtx(inp));
       } catch (e) {
         refused = errCode(e);
       }
@@ -476,31 +535,22 @@ function unindexableProblems(v: Record<string, unknown>, sides: MarkerSides | Bu
   return problems;
 }
 
-function unindexableVerdict(id: string, problems: string[]): Result {
+/**
+ * The one place a list of problems becomes a `Result`. Seven inline copies of
+ * this expression used to sit beside it; a `fail` that forgot to join its
+ * problems, or a `pass` that ignored a non-empty list, is exactly the kind of
+ * defect a green report hides.
+ */
+function verdict(id: string, problems: string[]): Result {
   return problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") };
 }
 
-function judgeUnindexable(
+async function judgeUnindexable(
   v: Record<string, unknown>,
   // At the vector's declared cost, like every other derivation here. Until
   // the #108 review the marker call omitted the cost and derived at this
   // core's default -- invisible while every vector sat at the minima, and
   // the reason unindexable-marker-t4-b15 now exists.
-  marker: () => MarkerSides,
-  bucket: (value: string) => BucketSides,
-): Result {
-  const problems: string[] = [];
-  try {
-    const inp = v.inputs as Record<string, unknown>;
-    problems.push(...unindexableProblems(v, v.assertion === "unindexable-marker" ? marker() : bucket(inp.plaintext_preimage as string)));
-  } catch (e) {
-    problems.push(`raised ${errCode(e)}`);
-  }
-  return unindexableVerdict(v.id as string, problems);
-}
-
-async function judgeUnindexableAsync(
-  v: Record<string, unknown>,
   marker: () => Promise<MarkerSides>,
   bucket: (value: string) => Promise<BucketSides>,
 ): Promise<Result> {
@@ -511,7 +561,7 @@ async function judgeUnindexableAsync(
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  return unindexableVerdict(v.id as string, problems);
+  return verdict(v.id as string, problems);
 }
 
 function indexCtx(inp: Record<string, unknown>): FieldContext {
@@ -669,71 +719,39 @@ function pipelineVerdict(pid: string, out: Uint8Array, v: Record<string, unknown
     : { id: pid, status: "fail", reason: mismatch(`${method}()`, out, hex(stored.binary as string)) };
 }
 
-function runBlindIndex(v: Record<string, unknown>): Result[] {
-  const id = v.id as string;
-  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [runUnindexable(v)];
-  if (v.assertion !== undefined) return [runAssertion(v)];
-  const i = blindIndexInputs(v);
-  const results: Result[] = [];
-  const problems: string[] = [];
-  try {
-    const normalized = blindIndexNormalized(v, i, problems);
-    problems.push(...blindIndexProblems(v, i, idf(i.which, i.indexKey, normalized, i.argon2)));
-  } catch (e) {
-    problems.push(`raised ${errCode(e)}`);
-  }
-  results.push(problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") });
-
-  // Full client pipeline through the public blindIndex operation.
-  if (i.normId !== undefined) {
-    const pid = `${id}#pipeline`;
-    try {
-      if (i.costError !== undefined) throw i.costError;
-      const out = pipelineClient(v, i, ctxFromVector(v.context as Record<string, unknown>)).blindIndex(
-        new TextEncoder().encode(v.plaintext_preimage as string),
-        pipelineCtx(v),
-      );
-      results.push(pipelineVerdict(pid, out, v, "blindIndex"));
-    } catch (e) {
-      results.push({ id: pid, status: "fail", reason: `blindIndex raised ${errCode(e)}` });
-    }
-  }
-  return results;
-}
-
 /**
- * `runBlindIndex` for the async pass: the same checks with the derivation
- * routed through `idfAsync` and the pipeline through
- * `Fieldseal.blindIndexAsync`. The primitive goes through the real async
+ * On the async pass the primitive goes through the real asynchronous
  * primitive rather than comparing a copy, so `<id>#async` is a genuine check
  * of `crypto.argon2` against the vectors at both cost points.
  */
-async function runBlindIndexAsync(v: Record<string, unknown>): Promise<Result[]> {
+async function runBlindIndex(v: Record<string, unknown>, ops: IndexOps): Promise<Result[]> {
   const id = v.id as string;
-  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [await runUnindexableAsync(v)];
-  if (v.assertion !== undefined) return [await runAssertionAsync(v)];
+  if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [await runUnindexable(v, ops)];
+  if (v.assertion !== undefined) return [ops.pass === "async" ? await runAssertionAsync(v) : runAssertion(v)];
   const i = blindIndexInputs(v);
   const results: Result[] = [];
   const problems: string[] = [];
   try {
     const normalized = blindIndexNormalized(v, i, problems);
-    problems.push(...blindIndexProblems(v, i, await idfAsync(i.which, i.indexKey, normalized, i.argon2)));
+    problems.push(...blindIndexProblems(v, i, await ops.idf(i.which, i.indexKey, normalized, i.argon2)));
   } catch (e) {
     problems.push(`raised ${errCode(e)}`);
   }
-  results.push(problems.length === 0 ? { id, status: "pass" } : { id, status: "fail", reason: problems.join("; ") });
+  results.push(verdict(id, problems));
 
+  // Full client pipeline through the public blind-index operation.
   if (i.normId !== undefined) {
     const pid = `${id}#pipeline`;
     try {
       if (i.costError !== undefined) throw i.costError;
-      const out = await pipelineClient(v, i, ctxFromVector(v.context as Record<string, unknown>)).blindIndexAsync(
+      const out = await ops.blindIndex(
+        pipelineClient(v, i, ctxFromVector(v.context as Record<string, unknown>)),
         new TextEncoder().encode(v.plaintext_preimage as string),
         pipelineCtx(v),
       );
-      results.push(pipelineVerdict(pid, out, v, "blindIndexAsync"));
+      results.push(pipelineVerdict(pid, out, v, ops.blindIndexName));
     } catch (e) {
-      results.push({ id: pid, status: "fail", reason: `blindIndexAsync raised ${errCode(e)}` });
+      results.push({ id: pid, status: "fail", reason: `${ops.blindIndexName} raised ${errCode(e)}` });
     }
   }
   return results;
@@ -956,38 +974,31 @@ function judgeIndexBoundary(id: string, method: string, high: Refusal, low: Refu
   return [{ id, status, method, ...(reason ? { reason } : {}) }];
 }
 
-function runIndexBoundary(): OutOfBand[] {
-  const { fs, ctx } = indexBoundaryClient();
-  const refuse = (s: string): Refusal => {
-    try {
-      fs.blindIndex(s, ctx);
-      return { code: "NONE", message: "" };
-    } catch (e) {
-      return { code: errCode(e), message: (e as Error).message };
-    }
-  };
-  return judgeIndexBoundary(INDEX_BOUNDARY_ID, INDEX_BOUNDARY_METHOD, refuse("a\uD800b"), refuse("a\uDC00b"));
-}
-
 /**
- * The same check through the §11.1 companion, and the async pass's only
- * *error* obligation that a vector cannot carry: spec §11.1 requires the
- * companion to raise the same §9 error for the same condition, and every
- * blind-index error vector in the suite is a positive control.
+ * On the async pass this is the pass's only *error* obligation that a vector
+ * cannot carry: spec §11.1 requires the companion to raise the same §9 error
+ * for the same condition, and every blind-index error vector in the suite is
+ * a positive control.
+ *
+ * The two refusals are awaited in series rather than with `Promise.all`, and
+ * that is deliberate: they share one `Fieldseal`, and the property under test
+ * is that the two messages *differ*, so interleaving two concurrent refusals
+ * through one client is a risk the check has nothing to gain from.
  */
-async function runIndexBoundaryAsync(): Promise<OutOfBand[]> {
+async function runIndexBoundary(ops: IndexOps): Promise<OutOfBand[]> {
   const { fs, ctx } = indexBoundaryClient();
   const refuse = async (s: string): Promise<Refusal> => {
     try {
-      await fs.blindIndexAsync(s, ctx);
+      await ops.blindIndex(fs, s, ctx);
       return { code: "NONE", message: "" };
     } catch (e) {
       return { code: errCode(e), message: (e as Error).message };
     }
   };
+  const async = ops.pass === "async";
   return judgeIndexBoundary(
-    `${INDEX_BOUNDARY_ID}#async`,
-    `${INDEX_BOUNDARY_METHOD}, through blindIndexAsync (both refusals arrive as rejections)`,
+    async ? `${INDEX_BOUNDARY_ID}#async` : INDEX_BOUNDARY_ID,
+    async ? `${INDEX_BOUNDARY_METHOD}, through blindIndexAsync (both refusals arrive as rejections)` : INDEX_BOUNDARY_METHOD,
     await refuse("a\uD800b"),
     await refuse("a\uDC00b"),
   );
@@ -1054,7 +1065,8 @@ export interface RunOptions {
  * One loop for both passes: a second copy could gain a family the first has
  * and nobody would notice.
  */
-async function runPass(suite: LoadedSuite, pass: "sync" | "async"): Promise<Result[]> {
+async function runPass(suite: LoadedSuite, ops: IndexOps): Promise<Result[]> {
+  const pass = ops.pass;
   const results: Result[] = [];
   for (const [, doc] of suite.files) {
     for (const v of doc.vectors) {
@@ -1073,7 +1085,7 @@ async function runPass(suite: LoadedSuite, pass: "sync" | "async"): Promise<Resu
           results.push(runCommitment(v));
           break;
         case "blind-index":
-          results.push(...(pass === "async" ? await runBlindIndexAsync(v) : runBlindIndex(v)));
+          results.push(...(await runBlindIndex(v, ops)));
           break;
         case "errors":
           results.push(pass === "async" ? await runErrorsAsync(v) : runErrors(v));
@@ -1105,17 +1117,38 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
   // envelope twin into a failure.
   try {
     const suite = loadSuite(opts.vectorsDir);
-    const results = await runPass(suite, "sync");
+    const results = await runPass(suite, SYNC_OPS);
     // docs/08 §5 item 10: the entire suite, a second time, through the
     // companions. The suffix is applied to the synchronous *result* id at the
     // pass boundary, so it lands last: `<id>#decrypt#async`, `<id>#pipeline#async`.
-    const second = await runPass(suite, "async");
+    const firstPassCount = results.length;
+    const second = await runPass(suite, ASYNC_OPS);
     results.push(...second.map((r) => ({ ...r, id: `${r.id}#async` })));
     // The split as a number, so the note below is checkable against the
     // report it appears in rather than asserted in prose.
     const routed = second.filter((r) => r.details?.async_route === "companion").length;
+    // docs/14 §4 defines this flag as an `iff` over two halves -- the
+    // implementation exposes the spec §11.1 companions, and this report
+    // carries the second pass with every first-pass result twinned. It is
+    // computed rather than written as a literal: a hardcoded `true` was
+    // correct for this core and still the wrong thing to emit, because the
+    // invariant in `vectors.test.ts` that would have caught it drifting is not
+    // run by `npm run vectors`, the command that produces the report CI
+    // publishes (#111 review, Reviewer 2 obs 5 / Reviewer 5 §2).
+    //
+    // What the computation can and cannot see, exactly. The second half is
+    // observed: `second.length === firstPassCount` is the pass. The first
+    // half is a proxy: `routed > 0` counts results whose `async_route` label
+    // is "companion", and that label comes from `routesThroughCompanion`,
+    // which is a function of the vector's family and operation -- it never
+    // looks at what `ASYNC_OPS` actually called. So this emitter cannot claim
+    // a second pass it did not run or did not label; it *can* still say
+    // `true` over a pass that was labelled correctly and routed wrongly.
+    // `mustBePromise` above closes the plain-typo case of that; the seam spy
+    // in `tests/async-companions.test.ts` holds the rest, for the core.
+    const asyncCompanions = firstPassCount > 0 && second.length === firstPassCount && routed > 0;
     const asyncSplit = `Of the ${second.length} '#async' results, ${routed} went through a spec §11.1 companion and ${second.length - routed} re-ran the synchronous operation because this core ships no companion for them; each result carries the distinction as details.async_route.`;
-    const outOfBand = [...runLengthBound(), ...runIndexBoundary(), ...(await runIndexBoundaryAsync())];
+    const outOfBand = [...runLengthBound(), ...(await runIndexBoundary(SYNC_OPS)), ...(await runIndexBoundary(ASYNC_OPS))];
     const heldOut = suite.manifest.held_out.map((h) => ({ path: h.path, status: "not-run" as const, reason: h.reason }));
     const summary = {
       pass: results.filter((r) => r.status === "pass").length,
@@ -1152,7 +1185,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
-      async_companions: true,
+      async_companions: asyncCompanions,
       summary,
     };
   } finally {

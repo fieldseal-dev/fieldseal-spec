@@ -118,6 +118,27 @@ describe("report invariants (docs/14 §4)", () => {
     expect(report.async_companions).toBe(async.length > 0);
     expect(async.length).toBe(sync.length);
 
+    // docs/14 line 126 defines the flag as an `iff` over two halves, and the
+    // emitter computes it rather than emitting a literal. Assert the
+    // computation here rather than only the flag's agreement with one of its
+    // own inputs: a `true` over a second pass that carried no "companion"
+    // label would satisfy the line above and still tell a reader the
+    // companions were exercised when none was.
+    //
+    // Same caveat as in the emitter: the "companion" label is assigned by
+    // family, not observed from the call, so this asserts that the harness
+    // *intended* to route 65 results through a companion, not that it did.
+    // The latter is held for the core by the seam spy in
+    // `async-companions.test.ts`, and for the harness table by
+    // `mustBePromise` in `harness/run.ts`.
+    const routed = async.filter((r) => r.details?.async_route === "companion");
+    expect(report.async_companions).toBe(sync.length > 0 && async.length === sync.length && routed.length > 0);
+    expect(routed.length).toBeGreaterThan(0);
+    // Every async result is one or the other, and no synchronous result is
+    // marked at all -- the marker names the pass it belongs to.
+    for (const r of async) expect(["companion", "sync-rerun"], r.id).toContain(r.details?.async_route);
+    for (const r of sync) expect(r.details?.async_route, r.id).toBeUndefined();
+
     const bySync = new Map(sync.map((r) => [r.id, r]));
     for (const r of async) {
       const original = bySync.get(r.id.slice(0, -"#async".length));
