@@ -6,11 +6,9 @@
 
 import { describe, expect, it } from "vitest";
 import { DekCache } from "../src/cache.ts";
-import { DerivedKeyProvider, EnvelopeKeyProvider, InMemoryKeyDirectory, StaticKeyProvider, type EncryptionKey, type KeyProvider, type Wrapper } from "../src/keyprovider.ts";
-import type { ResolvedContext } from "../src/context.ts";
-import type { EnvelopeHeader } from "../src/envelope.ts";
+import { DerivedKeyProvider, EnvelopeKeyProvider, InMemoryKeyDirectory, StaticKeyProvider, type Wrapper } from "../src/keyprovider.ts";
 import { Fieldseal, SUITE_FF01, type Warning } from "../src/index.ts";
-import { bytes, codeOf, COLUMN, CTX, DEK, INDEX_KEY, KEY_ID, makeClient, messageOf, TABLE, withEnv } from "./helpers.ts";
+import { BorrowingProvider, bytes, codeOf, COLUMN, CTX, DEK, INDEX_KEY, KEY_ID, makeClient, messageOf, TABLE, withEnv } from "./helpers.ts";
 
 const PT = bytes("123456789");
 
@@ -395,18 +393,6 @@ describe("key-material ownership (docs/09 §8.1; G17, issue #67)", () => {
    * written moments earlier -- a decrypt-side error for a write-side memory
    * bug. That is the regression this block exists to hold.
    */
-  class BorrowingProvider implements KeyProvider {
-    readonly dek = new Uint8Array(DEK);
-    readonly indexKey = new Uint8Array(INDEX_KEY);
-    readonly keyId = new Uint8Array(KEY_ID);
-    encryptionKey(ctx: ResolvedContext): EncryptionKey {
-      return { key: ctx.purpose === "encrypt" ? this.dek : this.indexKey, keyId: this.keyId };
-    }
-    decryptionKeys(_header: EnvelopeHeader): Uint8Array[] {
-      return [this.dek];
-    }
-  }
-
   it("encrypt() leaves the material encryptionKey returned intact", () => {
     const p = new BorrowingProvider();
     makeClient({ keyProvider: p }).encrypt(PT, CTX);

@@ -440,6 +440,24 @@ def idf_argon2id(index_key: bytes, normalized: bytes,
     from argon2.low_level import Type, hash_secret_raw
 
     cost = params if params is not None else Argon2Params()
+    # The salt is key material and this binding cannot erase it. Spec §7.3
+    # forbids Argon2's K and X, so keying "rests entirely on the salt"
+    # (docs/02 line 546): these 16 bytes carry the full strength of the
+    # column's index key, and anyone holding them can mount the same offline
+    # dictionary attack on the column's stored indexes as the holder of the
+    # key. The TypeScript core zeroes its salt (`idf`/`idfAsync`, PR #111
+    # review); this one cannot, because argon2-cffi accepts only immutable
+    # `bytes` for `salt=` -- `bytearray` and `memoryview` are both rejected
+    # with TypeError (verified against argon2-cffi 25.1.0; pinned by
+    # tests/test_blindindex_salt.py, which fails if that ever changes so
+    # this decision gets revisited rather than forgotten).
+    #
+    # Nothing is gained by deriving into a `bytearray` and converting at the
+    # call: the `bytes` copy handed to the primitive is the exposure, and it
+    # is unwipeable either way. Recorded rather than fixed, in the same terms
+    # as record_key (docs/10 §5) -- and the salt is passed inline here
+    # precisely so no longer-lived reference to it exists.
+    #
     # `secret=` here is argon2-cffi's name for the PASSWORD. It is *not*
     # RFC 9106's secret value K, which §7.3 forbids and which this API cannot
     # supply anyway. Passing index_key here would be silently wrong.

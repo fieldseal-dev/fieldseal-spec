@@ -108,6 +108,8 @@ Gate 0a (see below) opened on 2026-08-22. What exists under those directories to
 
 - **Two cores** — `core/python` and `core/typescript`, each passing the pinned vector suite
   **178/178** with identical result ids, the second written without reading the first.
+  The TypeScript core additionally runs all 178 a second time through its spec §11.1
+  asynchronous companions (356 results) and asserts identical bytes and error codes.
 - **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
   suite `0.6.0-provisional` — 146 vectors, nothing held out.
 - **Two ORM adapters** — `adapters/django` and `adapters/prisma`, each with a 200+-test suite,
