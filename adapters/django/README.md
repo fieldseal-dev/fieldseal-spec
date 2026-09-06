@@ -125,12 +125,13 @@ not the target matrix in `docs/12` §6.
 | `earliest()` / `latest()` | 🛑 refused — `LIMIT 1` before verification, `first()`'s failure renamed | `test_earliest_and_latest_refuse` |
 | `update()`, `delete()` on a verified queryset | 🛑 refused — would write to collision rows | `test_sql_answered_paths_refuse` |
 | `aggregate()`, `values()`, `values_list()`, `only()`, `defer()` | 🛑 refused — answered from SQL, or drop the column verification needs | same |
-| `exclude(field=...)` | 🛑 refused — false negatives are unrecoverable | `test_exclude_refuses` |
-| `Q` with `OR`/`XOR`/negation over an encrypted column | 🛑 refused — cannot decide a candidate | `test_or_through_q_refuses`, `test_negation_still_refuses` |
+| `exclude(field=...)` | 🛑 refused on **every** queryset (G24) — false negatives are unrecoverable, so `.candidates()` does not lift it | `test_exclude_refuses`, `TestCandidatesDoesNotLiftNegation` |
+| `Q` with `OR` over an encrypted column | 🛑 refused — cannot decide a candidate; `.candidates()` lifts it | `test_or_through_q_refuses`, `test_or_through_q_on_candidates_works` |
+| `Q` negated (`~Q`) or `XOR` over an encrypted column | 🛑 refused on **every** queryset (G24) — a widened bucket drops rows from both | `test_negation_still_refuses`, `TestCandidatesDoesNotLiftNegation` |
 | Subquery embedding (`__in=qs`, `Subquery`, `Exists`) | 🛑 refused — the outer query would receive unverified candidates | `test_a_verifying_queryset_refuses_to_become_a_subquery` |
 | `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands | `test_combinators_refuse_on_either_side` |
 | Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too | `TestRelationTraversal` |
-| `.candidates()` | ✅ bucket semantics, unverified, every refusal lifted (filter-time ones included; the cross-model traversal is the exception — embed the owner's `.candidates()` instead) | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals` |
+| `.candidates()` | ✅ bucket semantics, unverified, every *verification* refusal lifted (`Q` under `OR` included). Three exceptions: negation (G24), the cross-model traversal (embed the owner's `.candidates()` instead), and the G20 family | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals`, `TestCandidatesDoesNotLiftNegation` |
 | `order_by()` over an encrypted column — direct, relation path, or expression | 🛑 refused on **every** queryset (G20) — sorts envelope bytes; `.candidates()` does not lift it | `TestOrderBy` |
 | `earliest()`/`latest()` naming one (or via `Meta.get_latest_by`) | 🛑 refused (G20) — the same ordering through a different door | `TestEarliestLatest` |
 | Aggregate/function expressions over one (`Min`, `Sum`, `Count`, `Length`, …) | 🛑 refused (G20) — measured: `Min("age")` over {30, 40} returned **40**, decrypted cleanly | `TestAggregates` |
@@ -181,8 +182,16 @@ slicing, `qs[i]`, `earliest()`/`latest()`, `update()`, `delete()`,
 recoverable, an exclusion's false negatives are not. NULL is the exception
 that needs none of this: `filter(field=None)` and `__isnull` compile to
 `IS [NOT] NULL` on the envelope column itself, which is exact. `.candidates()`
-opts out of all of it and hands you bucket semantics, documented as
+opts out of the rest and hands you bucket semantics, documented as
 unverified.
+
+**`.candidates()` does not lift negation** (G24, [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100), spec §10.2):
+`exclude()`, `~Q`, and `XOR`, which is negation once expanded. Bucket
+semantics are a coherent thing to accept for a filter, where they hand you
+*more* rows than the answer and you reach it by dropping some; they are not
+for an exclusion, where they hand you fewer and the missing rows are not in
+what you were handed. The hatch lifted `exclude()` until that issue closed,
+and the refusal message recommended it.
 
 **A second refusal family does not depend on filtering at all** (G20,
 [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that

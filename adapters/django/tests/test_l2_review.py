@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from django.db import connection
 from django.db.models import Q, QuerySet
 
 from fieldseal_django.errors import FieldsealNotSupported
@@ -257,18 +258,89 @@ class TestBeyondTheFetchWindow:
 
 
 class TestCandidatesLiftsFilterTimeRefusals:
-    """`.candidates()` lifts the filter-time refusals too -- `exclude`, `Q`
-    under OR -- because the SQL semantics they refuse are exactly what it
+    """`.candidates()` lifts the filter-time *verification* refusals --
+    `Q` under OR -- because the SQL semantics they refuse are exactly what it
     hands over. (Its own message told callers to do this; before the review
-    round, the code refused them anyway.)"""
-
-    def test_exclude_on_candidates_excludes_the_bucket(self, rows):
-        remaining = Patient.objects.all().candidates().exclude(
-            email="ada@example.com")
-        assert rows[0].pk not in {p.pk for p in remaining}
-        assert {rows[1].pk, rows[2].pk} <= {p.pk for p in remaining}
+    round, the code refused them anyway.) The `exclude` half of that sentence
+    stood until G24; see the class below."""
 
     def test_or_through_q_on_candidates_works(self, rows):
         both = Patient.objects.all().candidates().filter(
             Q(email="ada@example.com") | Q(email="grace@example.com"))
         assert {p.pk for p in both} == {rows[0].pk, rows[1].pk}
+
+
+class TestCandidatesDoesNotLiftNegation:
+    """G24 ([#100]), decided 2026-09-06 in the Prisma adapter's direction:
+    neither hatch lifts negation.
+
+    The deciding argument is what the caller can do with what they were
+    handed. Under `filter().candidates()` they hold a superset of the answer
+    and can reach it by dropping rows -- that is §7.5, and handing it over is
+    what the hatch is for. Under an exclusion they hold a *subset*, and no
+    operation on it restores a row the database already removed. Every test
+    below passed as a served query before G24 closed.
+    """
+
+    def test_the_wrong_answer_the_refusal_prevents(self, rows):
+        """Measured, not described.
+
+        The SQL the adapter used to compile for
+        `candidates().exclude(email="ada@example.com")`, run directly --
+        neither queryset lookup will emit it now, and the sibling column
+        refuses `exact` on its own account, so a cursor is the only way left
+        to produce the answer the refusal exists to prevent. Grace is not
+        Ada, so she belongs in the exclusion; the bucket drops her, and
+        nothing is raised.
+        """
+        _forge_collision(onto=rows[1], like=rows[0])
+        bucket = Patient.objects.get(pk=rows[0].pk).email_bidx
+        q = connection.ops.quote_name
+        with connection.cursor() as cur:
+            cur.execute(
+                f"SELECT {q('id')} FROM {q(Patient._meta.db_table)} "
+                f"WHERE NOT ({q('email_bidx')} = %s)", [bytes(bucket)])
+            kept = {row[0] for row in cur.fetchall()}
+        assert rows[1].pk not in kept  # dropped, and not recoverable from
+        assert rows[2].pk in kept      # what the caller was handed
+
+    @pytest.mark.parametrize("shape", [
+        lambda qs: qs.exclude(email="ada@example.com"),
+        lambda qs: qs.exclude(Q(email="ada@example.com")),
+        lambda qs: qs.filter(~Q(email="ada@example.com")),
+        # Nested under an AND: the negation is the child's own.
+        lambda qs: qs.filter(Q(age=36) & ~Q(email="ada@example.com")),
+        # Nested under an OR, which poisons `reason` first -- the shape that
+        # requires tracking negation in its own slot rather than reading it
+        # off the verification reason.
+        lambda qs: qs.filter(Q(age=36) | ~Q(email="ada@example.com")),
+        # XOR is negation once expanded, and drops rows the same way.
+        lambda qs: qs.filter(Q(email="ada@example.com") ^ Q(age=36)),
+    ], ids=["exclude-kw", "exclude-Q", "not-Q", "and-not-Q", "or-not-Q",
+            "xor-Q"])
+    def test_every_subtractive_shape_refuses_on_candidates(self, rows, shape):
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape(Patient.objects.all().candidates()))
+        assert "false negatives are not" in str(e.value)
+
+    def test_the_message_no_longer_recommends_the_hatch(self, rows):
+        """The ergonomic half of G24: the refusal text used to end "or use
+        .candidates() and accept the semantics", which sent a caller
+        following it onto irrecoverable semantics with nothing saying they
+        differ in kind from the filter case."""
+        with pytest.raises(FieldsealNotSupported) as e:
+            Patient.objects.exclude(email="ada@example.com")
+        msg = str(e.value)
+        assert "never reach the adapter" in msg
+        assert "does not lift this" in msg
+        assert "or use .candidates()" not in msg
+
+    def test_null_negation_is_still_exact_and_still_served(self, rows):
+        """The carve-out G24 does not touch: `IS NOT NULL` reads the envelope
+        column's null-ness, no bucket is involved, and negation loses
+        nothing."""
+        Patient.objects.create(email="x@example.com", nickname="ada")
+        served = Patient.objects.all().candidates().exclude(nickname=None)
+        assert [p.nickname for p in served] == ["ada"]
+        assert list(Patient.objects.all().candidates().exclude(
+            nickname__isnull=True)) == list(served)

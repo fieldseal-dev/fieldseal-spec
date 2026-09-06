@@ -4,7 +4,16 @@
 **Blocks:** No stored byte, no derived value, no vector in any family. One shipped adapter changes whichever way it resolves.
 **Found:** 2026-08-31, closing G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87)) — writing the §10.2 negation bullet required deciding whether the escape hatches lift it, and the two adapters already answer differently.
 
-**Status:** OPEN — filed, not decided. Tracker [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100). G21 closed without deciding this, and spec §10.2 says so explicitly rather than picking a side by omission.
+**Status:** ✅ **CLOSED 2026-09-06** — tracker [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100). **Resolved to direction 1: neither hatch lifts negation.** Spec §10.2's open sentence is replaced by a MUST NOT, scoped by *position* rather than by operator — an encrypted-column predicate is refused wherever a wider index match set yields a **narrower** result — with `IS [NOT] NULL` carved out (it reads the envelope column's own null-ness and touches no bucket) and a rule that a refusal message MUST NOT direct the caller to the hatch.
+
+**Two corrections to this filing, both found in the sweep.** The divergence was wider than stated in *both* directions.
+
+- **Django was also lifting `XOR`**, which is not mentioned below. `a XOR b` is `(a AND NOT b) OR (NOT a AND b)`, so a widened bucket flips rows *out* of the answer exactly as an exclusion does. It falls to the same test and is refused with the rest.
+- **Prisma was not refusing negation outright**, as the Gap section says it was. It refused the two *scalar operators* (`not`, `notIn`) and lifted every other negated position: `NOT` was gated on `verify` alongside `OR`, and the negating relation wrappers `none` and `isNot` rode in on the relation-filter family. Both are now refused on every scope.
+
+That pair is why the clause is scoped by position rather than by naming operators: an operator list is what let two adapters enumerate different sets and each believe it had covered the family.
+
+**Consequences swept:** spec §7.10 and §10.2; `docs/12` §3.2 and the Django README; `docs/13` §2.1/§2.2/§4/§6 and the Prisma README; `docs/07` §5 and §7. Django adapter 252 → 260 tests, Prisma 243 → 250 — the wrong answer measured in both before the refusal was written, with one row forged into another's bucket.
 
 ## Gap
 
