@@ -288,10 +288,14 @@ Three caveats:
 - **It does not lift everything.** Ordering, grouping, `DISTINCT` and
   byte-reading aggregates over an encrypted column stay refused (G20) — bucket
   semantics are a meaningful thing to accept, ciphertext order is not. Nor does
-  it lift `not`/`notIn` (spec §7.10 has no row for negated membership; G21
-  [#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87) is open),
-  equality on a column with no declared index, or `findUnique` on an encrypted
-  column.
+  it lift **negation in any position** — `not`, `notIn`, a term under `NOT`,
+  or the relation filters `none` and `isNot` (G24, [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100), spec §10.2):
+  the scope hands you §7.5, and §7.5 is a *filter* obligation. A superset can be
+  narrowed to the answer; an exclusion cannot be widened back to it, because the
+  rows the database dropped are not in what you were handed. `OR`, `some`,
+  `every` and `is` all widen when the bucket widens, so those stay lifted.
+  Equality on a column with no declared index and `findUnique` on an encrypted
+  column stay refused too.
 
 ---
 
@@ -338,15 +342,16 @@ the target matrix in `docs/13` §6.
 | **`updateMany`, `deleteMany`, `update`, `delete`, `upsert`** on a rewritten filter | 🛑 refused — would write to or delete rows that do not match; measured `deleteMany` = 2 of 2 | `measures why deleteMany is refused…` |
 | `take`, `skip`, `cursor`, `distinct` beside a rewritten filter | 🛑 refused — applied to the candidate set before §7.5 shrinks it; the page holds the collision and misses the match | `measures why \`take\` is refused…`, `refuses \`distinct\` even on a plaintext column` |
 | A `take` on the **parent** of a nested obligation | ✅ served — dropping child rows cannot change which parents matched | `a \`take\` on the *parent* is fine…` |
-| An encrypted term under `OR` / `NOT` | 🛑 refused — a returned row may be there for the other branch, so §7.5 cannot attribute it | `refuses \`OR\`…` |
+| An encrypted term under `OR` | 🛑 refused — a returned row may be there for the other branch, so §7.5 cannot attribute it; `candidateScope` lifts it | `refuses \`OR\`…` |
+| An encrypted term under `NOT`, or under the relation filters `none` / `isNot` | 🛑 refused on **every** scope (G24) — a widened bucket removes rows from the answer, and nothing recovers them | `does NOT lift NOT…` |
 | Relation filters (`some`/`every`/`none`/`is`, unwrapped to-one) naming an encrypted column | 🛑 refused — the rewrite lands in a join the database answers (spec §10.2: a path the surface does not reach) | `refuses the \`some\` form` (5-way sweep) |
 | `_count` whose relation filter names an encrypted column | 🛑 refused — computed in the database | `refuses a \`_count\` whose relation filter…` |
 | A projection that drops the column being verified (`select`, query `omit`, **client-level `omit`**) | 🛑 refused on the result — the client-level form never appears in `args` at all | `refuses a *client-level* omit…` |
-| `candidateScope(fn)` | ⚠️ serves every row above at **bucket semantics**; §7.5 becomes the caller's | `candidateScope: what it hands over, and what it does not` (13 tests) |
-| `candidateScope` over G20 shapes, `not`/`notIn`, an unindexed column, `findUnique` | 🛑 still refused | `does NOT lift the G20 family…`, `does NOT lift \`notIn\` or \`not\`…` |
+| `candidateScope(fn)` | ⚠️ serves the rows above at **bucket semantics**, negation excepted; §7.5 becomes the caller's | `candidateScope: what it hands over, and what it does not` (18 tests) |
+| `candidateScope` over G20 shapes, **any negated position** (`not`, `notIn`, `NOT`, `none`, `isNot`), an unindexed column, `findUnique` | 🛑 still refused | `does NOT lift the G20 family…`, `does NOT lift \`notIn\` or \`not\`…`, `does NOT lift NOT…` |
 | `contains`, `startsWith`, `endsWith`, `lt`/`gte`, `search` | 🛑 refused (spec §7.1, §4.7) | `refuses \`contains\`…` (8-way sweep) |
 | `mode: "insensitive"` | 🛑 refused — the column has exactly one equality (G19) | `refuses \`mode: insensitive\`…` |
-| `not`, `notIn` (non-null operands) | 🛑 refused — an exclusion's false negatives are unrecoverable | `explains notIn as an exclusion asymmetry…` |
+| `not`, `notIn` (non-null operands) | 🛑 refused — an exclusion's false negatives are unrecoverable, and no scope lifts that (G24) | `explains notIn as an exclusion asymmetry…` |
 | An unrecognised filter operator | 🛑 hard error — fails closed, never passed through | `fails closed on an operator it does not recognise` |
 | Filtering the index sibling directly | 🛑 refused — cannot re-verify a filter it did not construct | `refuses a filter on the index sibling directly` |
 | `findUnique` on an encrypted column or its sibling | 🛑 refused — neither can be unique (spec §7.10); use `findMany` + equality | `refuses findUnique on an encrypted column…` |
@@ -511,7 +516,7 @@ npm run build                    # dist/, and the generator bin
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma generate              # the fixture's Prisma client
 npx prisma db push               # the fixture database
-npm test                         # 235 tests
+npm test                         # 250 tests
 npm run typecheck
 
 # The same suite against Postgres. `build.ts` derives schema.postgres.prisma

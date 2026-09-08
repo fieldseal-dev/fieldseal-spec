@@ -200,18 +200,26 @@ Three decisions worth recording:
   same today; refusing here would be a silent divergence between two shipped
   adapters, which is the failure G23 was filed about. The consequence is
   measured in the test suite and stated in the README, not softened.
-- **It does not lift `not`/`notIn`.** Django's `.candidates()` does lift its
-  `exclude()` analogue, and the difference is deliberate: there the rewrite
-  happens in the field layer whether the queryset verifies or not, so lifting it
-  costs nothing, while here the rewrite is the adapter's own and spec §7.10 has
-  a row for membership and none for negated membership. Serving it inside the
-  scope would be deciding **G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87))** by engineering judgment.
+- **It does not lift negation, in any position** — `not`, `notIn`, a term under
+  `NOT`, or the relation filters `none` and `isNot`. **G24 ([#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100)) decided
+  this on 2026-09-06**, in this adapter's direction, and spec §10.2 now carries
+  it as a MUST NOT scoped by *position* rather than by operator: an
+  encrypted-column predicate is refused wherever a *wider* index match set
+  yields a *narrower* result. The scope hands the caller §7.5, and §7.5 is a
+  filter obligation — dischargeable from a superset, not from an exclusion,
+  because the rows the database removed are not among the ones handed over.
+  **The decision cost this adapter two shapes it had been lifting**, which the
+  issue did not know about: `NOT` was gated on `verify` alongside `OR`, and the
+  negating relation wrappers rode in on the relation-filter family. `OR`,
+  `some`, `every` and `is` all widen when the bucket widens, and stay lifted.
 - **It must await inside the scope.** A Prisma client method returns a lazy
   promise that dispatches nothing until something calls `.then`, so a
   synchronous `storage.run(true, fn)` would exit the scope before the query ran
   and re-verify anyway — an opt-out that silently does nothing, which is worse
   than not having one. Found by the first draft doing exactly that; the
   "measures why" tests fail if it regresses.
+
+**Refusal honesty on a column with no bucket (G24 review round, item 5, 2026-09-08).** The refusals in this section justify themselves with §7.4 bucket mechanics — an exclusion drops the whole bucket, a database-answered operation computes over one, an `OR` branch leaves a candidate §7.5 cannot decide — and each is checked *before* the column is checked for having an index at all. On a column with no declared index, that justification described a bucket that is not there, and the remedy it prescribed (run the positive form instead) is refused on its own account. **The check order is deliberate and unchanged**: reversing it sends a caller to run a schema migration for a shape that is refused *with* the index too. So the fact travels in the message — the refusal names the real reason first, keeps the position rule as an explicitly counterfactual second half, and points at the fallback that works either way (fetch, then filter after decryption). Spec §10.2 states this principle as two instances rather than one clause — the G23 bytes-computation sentence and the G24 escape-hatch sentence — and this is a third instance implemented without one. The `contains`-class operators are already refused ahead of everything else in `scalarFilter`, so §7.1 needed no second correction here.
 
 ### 2.1 The args-tree visitor — typed, not string-surgery
 
@@ -224,7 +232,7 @@ Where-tree coverage: `where.<field>` shorthand equality, `where.<field>.equals`,
 **Walked is not the same as rewritten, and this list previously conflated them.** Every shape above is *visited*; §2.0 decides which of them can be *served*. The two the earlier draft got wrong:
 
 - **Relation filters are not rewritten** (`some`/`every`/`none`/`is`/`isNot` and the unwrapped to-one form). The rewrite would land in a join or subquery the database resolves, and only the *parent* rows come back — §7.5 re-verification needs the encrypted column's decrypted value, which lives on the other model. They are refused, with the join to run instead named in the message: query the owning model directly (keeping the column in the projection, or there is nothing to verify against) and filter by the resulting ids. Django refused the same analogue for the same reason (`docs/12`, `_refuse_traversal`), and spec §10.2 requires it rather than permitting it — *"a filter path its interception surface does not reach"* MUST be rejected. This closes the open item the plan carried as "the relation-filter case still needs deciding": it is settled by §10.2's existing text, not by a new spec decision, so no gap issue was filed.
-- **`.not` is not rewritten either**, and neither is `notIn` — see the §4 table and **G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87))**, now closed in favour of the refusal this adapter already shipped, with spec §7.10 and §10.2 stating the rule generally. **Whether `candidateScope()` may lift it is a separate open question, G24 [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100)** — this adapter says no and Django's `.candidates()` says yes, which G21's closure surfaced and deliberately did not settle. The exclusion drops rows §7.5 never sees, and a filter's false positives are recoverable where an exclusion's false negatives are not.
+- **`.not` is not rewritten either**, and neither is `notIn` — see the §4 table and **G21 ([#87](https://github.com/fieldseal-dev/fieldseal-spec/issues/87))**, now closed in favour of the refusal this adapter already shipped, with spec §7.10 and §10.2 stating the rule generally. **G24 ([#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100)) closed that question on 2026-09-06 in this adapter's direction**, and generalised it: no hatch lifts negation, in either adapter, in any position — the Django adapter's `.candidates()` lifted `exclude()` and was changed to match. The exclusion drops rows §7.5 never sees, and a filter's false positives are recoverable where an exclusion's false negatives are not.
 
 ## 3. Read path
 
@@ -253,7 +261,7 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | `findUnique` naming an encrypted or index field | Neither can be unique (spec §7.10, G12); the shape to run is `findMany` + equality + re-verify, and take the first row. Structural, so `candidateScope` does not lift it |
 | `where.<encrypted>` with **no declared index** | Equality without an index cannot be served (randomized suite) — throw with "declare a blind index or filter after fetch". Not lifted by `candidateScope`: there is nothing to rewrite onto |
 
-**The L2 rows — refused because the answer is computed before §7.5 can run** (§2.0 has the measurements; all of these are lifted by `candidateScope`, which is what it is for):
+**The L2 rows — refused because the answer is computed before §7.5 can run** (§2.0 has the measurements; `candidateScope` lifts these, which is what it is for — *except* the two rows marked below, where the position is a negation and G24 ([#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100)) forbids lifting it):
 
 | Shape carrying a rewritten equality | Why |
 |---|---|
@@ -261,8 +269,10 @@ Rationale per case is the verified failure mode in `docs/04` §3: un-rewritten f
 | `count`, `aggregate`, `groupBy` | Answered over the §7.4 bucket; an extension cannot turn them into a row fetch. Measured: 2 where the verified answer is 1 |
 | `updateMany`, `deleteMany`, `update`, `delete`, `upsert` | The statement acts on rows that never come back. Measured: `deleteMany` removed 2 of 2, one of them holding a different value |
 | `take` / `skip` / `cursor` / `distinct` **at the level carrying the obligation** | Applied to the candidate set before §7.5 shrinks it. A `take` on the *parent* of a nested obligation is served |
-| An encrypted term under `OR` / `NOT` | A returned row may be there because the other branch matched; §7.5 cannot attribute it |
-| Relation filters (`some`/`every`/`none`/`is`/`isNot`, unwrapped to-one) | Resolved as a join or subquery; only the parent rows come back (§2.1) |
+| An encrypted term under `OR` | A returned row may be there because the other branch matched; §7.5 cannot attribute it |
+| An encrypted term under `NOT` — **not lifted by `candidateScope`** | The same, plus the negation asymmetry: a widened bucket *removes* rows from the answer. Tracked in its own slot rather than read off the combinator, because under `OR: [{ NOT: … }]` the `OR` claims that slot first and the negation would otherwise never be seen (G24) |
+| Relation filters (`some`/`every`/`is`, unwrapped to-one) | Resolved as a join or subquery; only the parent rows come back (§2.1) |
+| Relation filters `none` / `isNot` — **not lifted by `candidateScope`** | The same, plus: both are negations. A parent whose child merely collides is removed from the answer, and no operation on the returned parents puts it back (G24) |
 | `_count` whose relation filter names an encrypted field | Computed in the database |
 | A projection that drops the column being verified (`select`, query `omit`, client-level `omit`) | §7.5 has nothing to compare. Checked on the **result**, because the client-level form never appears in `args` |
 
@@ -319,7 +329,7 @@ it was checking.
 | **`findMany`** with rewritable equality/`in` on indexed fields | ✅ rewritten + re-verified (the `in:` rewrite is conformant to §10.2 as of G13; no deviation remains) |
 | A relation `where` under `include`/`select` | ✅ rewritten + re-verified in the nested rows, at any depth |
 | `findFirst` / `count` with the same predicate | 🛑 refused — the database answers before §7.5 runs, and an extension cannot turn one operation into another. This row said `findMany/findFirst/count` until the L2 build measured it (§2.0); the correction is a narrowing of the claim, not of the requirement |
-| `candidateScope(fn)` | ⚠️ serves all of the above at §7.4 bucket semantics, §7.5 handed to the caller (§2.2) |
+| `candidateScope(fn)` | ⚠️ serves all of the above at §7.4 bucket semantics, §7.5 handed to the caller (§2.2) — **except a negated position** (`not`, `notIn`, `NOT`, `none`, `isNot`), which no scope lifts, because §7.5 is not dischargeable from an exclusion (G24, [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100)) |
 | Backfill (`tools/backfill`, docs/15) | ✅ per-row `update`/batched `updateMany` **through the extension** — traverses the §2 pipeline. **Confirmed 2026-08-27**: `create` and `updateMany` issued on the extended client both traverse `$allOperations` in full. The obligation to state is that the backfill must hold the **extended** client — the base client bypasses the pipeline silently, which is the failure this row exists to prevent |
 | **L4**: `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default where the provider implements `warm`; `warmOnKeyMiss: false` keeps the stricter "no query ever blocks on the key service" property. The core's value path still performs no I/O, asserted by instrumenting the provider rather than by review |
 | All §4 shapes | 🛑 throw |
