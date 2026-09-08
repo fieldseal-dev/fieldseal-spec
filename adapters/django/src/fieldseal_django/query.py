@@ -252,6 +252,14 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         self._fieldseal_obligations: tuple[_Obligation, ...] = ()
         self._fieldseal_verify = True
         self._fieldseal_indexed = False
+        # Marked at birth, not only on the first clone: the lookup layer
+        # reads the mark's *absence* as "no queryset of ours owns this
+        # query" and refuses ([#118] door 2), so a queryset that reaches SQL
+        # without ever cloning must still carry it. Django has such paths --
+        # `_disable_cloning()` on the prefetch descriptors makes `_chain()`
+        # return `self` -- and an unmarked one would be refused for the
+        # wrong reason.
+        self._mark_query()
 
     # -- cloning -----------------------------------------------------------
     #
@@ -278,6 +286,23 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         that lived only on the queryset would be invisible to every
         expression route. `Query.clone()` copies `__dict__`, so both marks
         survive the clone `Subquery.__init__` takes.
+
+        The *presence* of the pair carries a second fact, which is what
+        `fields._IndexedLookup` reads at compile time: this `Query` belongs
+        to a queryset that has the §7.5 layer. An unmarked `Query` is one no
+        queryset of ours ever held -- `Model._base_manager` builds exactly
+        that -- and compiling an encrypted equality there serves the §7.4
+        bucket as the answer ([#118]). Note the asymmetry that makes the
+        distinction work: `fieldseal_verify = False` is a caller opting out,
+        and the attribute *missing* is nobody having opted in.
+
+        The mark says a queryset of ours owns this `Query`. It does **not**
+        say that queryset is the one answering the statement, and the two
+        come apart at a subquery boundary, where the lookup compiles for the
+        inner query and an enclosing statement fetches the rows.
+        `_refuse_across_subquery_boundary` is the reader for that half; a
+        mark alone was not enough, which the review round on [#121]
+        measured.
         """
         self.query.fieldseal_indexed = self._fieldseal_indexed
         self.query.fieldseal_verify = self._fieldseal_verify
@@ -337,9 +362,54 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
 
     def _filter_or_exclude(self, negate: bool, args: Any, kwargs: Any) -> Any:
         walked = self._encrypted_predicates(args, kwargs, negate)
-        clone = super()._filter_or_exclude(negate, args, kwargs)
+        return self._record(super()._filter_or_exclude(negate, args, kwargs),
+                            walked)
+
+    def complex_filter(self, filter_obj: Any) -> Any:
+        """Django's `complex_filter`, with the same walk `filter()` runs.
+
+        **Not a convenience method that callers rarely type.** Django reaches
+        it itself for `limit_choices_to`, at four of that feature's five
+        sites -- `ForeignKey.validate`, `Field.get_choices`,
+        `ForeignObjectRel.get_choices` and admin autocomplete -- so an
+        ordinary `full_clean()` or a form choice list arrives here ([#118]).
+        Two of those four are on `_base_manager`, which has no queryset of
+        ours to override; `fields._IndexedLookup._refuse_unlayered` is the
+        half of the fix that covers them.
+
+        The dict form is already covered: Django's own body routes it
+        through `_filter_or_exclude`. The `Q` form is not -- it calls
+        `query.add_q` directly, going round the queryset layer entirely, so
+        before this override `complex_filter(Q(email=v))` recorded no §7.5
+        obligation, `complex_filter(~Q(email=v))` dropped the §7.4 bucket
+        that G24 refuses, and `complex_filter(Q(email=v) | Q(...))` served
+        candidates the OR refusal exists to stop. All three measured; all
+        three served, silently, with nothing raised.
+
+        The walk is `filter(Q(...))`'s exactly -- same entry arguments, same
+        order relative to `super()`, which matters because `_q_obligations`
+        materializes an `__in` iterable in place and Django consumes it
+        again to compile.
+        """
+        if not isinstance(filter_obj, models.Q):
+            return super().complex_filter(filter_obj)
+        walked = self._q_obligations(filter_obj, None, None,
+                                     self._fieldseal_verify)
+        return self._record(super().complex_filter(filter_obj), walked)
+
+    def _record(self, clone: Any,
+                walked: list[_Obligation | _Bucketed]) -> Any:
+        """Carry a walk's result onto the queryset the walk described.
+
+        `clone` is whatever `super()` handed back and is not always a
+        copy -- under `_disable_cloning()` (Django's prefetch descriptors)
+        `_chain()` returns `self`, so this must read `self`'s obligations
+        and write the result rather than mutate in place from a stale base.
+        """
         found = [ob for ob in walked if isinstance(ob, _Obligation)]
         if found:
+            # Reads before it writes even when `clone is self`: the tuple on
+            # the right is built whole before the name is rebound.
             clone._fieldseal_obligations = (*self._fieldseal_obligations, *found)
         if walked:
             # Every entry, obligation or `_BUCKETED` marker, means the blind
