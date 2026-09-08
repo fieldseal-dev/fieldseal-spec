@@ -571,7 +571,11 @@ class _IndexedLookup(models.Lookup):
         return out
 
     def _sibling_sql(self, compiler: Any) -> tuple[str, list[Any]]:
+        # Cross-model first: it is the narrower diagnosis of the two, and it
+        # names a remedy the general one cannot (`filter the owner`). A
+        # traversal from a plain manager trips both.
         self._refuse_cross_model(compiler)
+        self._refuse_unlayered(compiler)
         sibling = self.lhs.output_field.fieldseal_index_field
         col = sibling.get_col(self.lhs.alias, output_field=sibling)
         sql, params = compiler.compile(col)
@@ -609,6 +613,60 @@ class _IndexedLookup(models.Lookup):
             f"filter(...__in={owner.__name__}_qs.candidates()), or "
             "materialize verified primary keys and use "
             "filter(...__pk__in=[...])."
+        )
+
+    def _refuse_unlayered(self, compiler: Any) -> None:
+        """Refuse compiling from a query no verifying queryset owns.
+
+        `_refuse_cross_model` above is this same argument one relation out,
+        and the traversal is not the only way to be outside the §7.5 layer.
+        `Model._base_manager` is a plain `django.db.models.Manager` returning
+        a plain `QuerySet` -- Django builds it that way deliberately, so its
+        own internals are not filtered by a custom default manager -- so on
+        the **owning** model `Patient._base_manager.filter(email=v)` compiles
+        this lookup with no queryset layer anywhere above it, and the
+        cross-model backstop passes by design, because the owner *is* the
+        querying model. Measured before this refusal existed ([#118]): the
+        whole §7.4 bucket served as the answer, `exclude()` dropping it
+        entire, and nothing raised on either.
+
+        Django reaches that manager itself, twice over: `ForeignKey
+        .validate` applies `limit_choices_to` through
+        `_base_manager.complex_filter`, and `forms.models
+        .apply_limit_choices_to_to_formfield` builds its `Exists(...)`
+        subquery from `_base_manager` too -- so an ordinary `full_clean()`
+        and a `ModelForm`'s choice list both arrive here, on a model whose
+        FK limits choices by an encrypted column.
+
+        The mark is `FieldsealQuerySet`'s, set in its `__init__` and carried
+        by every clone, and `Query.clone` copies `__dict__` so it survives
+        into subqueries and into the `Query` subclasses `chain()` swaps in.
+        Its *absence* is the signal, and it is not the same as
+        `fieldseal_verify = False`: that is a caller opting out of §7.5 with
+        `.candidates()` and taking it on, which stays served. Absent means
+        nobody was ever there to opt out.
+        """
+        if getattr(compiler.query, "fieldseal_verify", None) is not None:
+            return
+        field = self.lhs.output_field
+        owner = field.model._meta.concrete_model
+        raise FieldsealNotSupported(
+            f"`{owner.__name__}.{field.name}` is filtered from a queryset "
+            "that carries no fieldseal layer -- `Model._base_manager`, which "
+            "Django builds as a plain Manager so its own internals are not "
+            "filtered by a custom default manager, or a QuerySet built "
+            "directly from a plain one. The lookup would compile onto the "
+            "blind-index sibling and select the whole spec §7.4 bucket, but "
+            "spec §7.5 re-verification runs in FieldsealQuerySet._fetch_all, "
+            "which is not on this queryset -- so the collisions §7.4 "
+            "mandates would be served as the answer, and in a negated "
+            "position dropped from it with nothing able to put them back. "
+            "Spec §10.2 requires raising instead. Use "
+            f"`{owner.__name__}.objects` (system check fieldseal.E008 "
+            "already requires a verifying default manager there), or "
+            "`.candidates()` on it to take on §7.5 yourself. A "
+            "`limit_choices_to` over an encrypted column reaches here "
+            "through ForeignKey.validate() and cannot be served at all."
         )
 
 

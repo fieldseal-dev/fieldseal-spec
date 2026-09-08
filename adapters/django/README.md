@@ -194,6 +194,20 @@ for an exclusion, where they hand you fewer and the missing rows are not in
 what you were handed. The hatch lifted `exclude()` until that issue closed,
 and the refusal message recommended it.
 
+**`filter()` is not the only door, and the rules above do not live behind
+it** ([#118](https://github.com/fieldseal-dev/fieldseal-spec/issues/118)).
+`complex_filter(Q)` calls `query.add_q` directly, and `Model._base_manager`
+is a plain `Manager` with no verifying queryset anywhere above it — Django
+builds it that way on purpose. Both reached the blind index unrefused and
+unverified, and Django walks both itself, for `limit_choices_to`. The
+queryset override closes the first; the second is closed one layer down, in
+the lookup: **a query no verifying queryset owns cannot compile an encrypted
+equality at all**, so `Patient._base_manager.filter(email=v)` raises. It
+still answers primary keys, `IS [NOT] NULL` and unfiltered reads, which is
+what Django's own FK validation and cascade deletes need from it. If you hold
+a plain queryset and want the rows, go through `Model.objects` — or
+`.candidates()` on it, and take on §7.5 yourself.
+
 **A second refusal family does not depend on filtering at all** (G20,
 [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that
 *computes on envelope bytes* — `order_by()`, `earliest()`/`latest()`,

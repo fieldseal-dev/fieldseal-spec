@@ -19,7 +19,7 @@ import inspect
 import pytest
 from django.db.models import QuerySet
 
-from fieldseal_django.query import FieldsealQuerySet
+from fieldseal_django.query import FieldsealManager, FieldsealQuerySet
 
 from .models import Patient
 
@@ -92,6 +92,40 @@ def test_filter_and_exclude_still_funnel_through_filter_or_exclude():
     recorded and verification silently does nothing."""
     for method in (QuerySet.filter, QuerySet.exclude):
         assert "_filter_or_exclude(" in inspect.getsource(method)
+
+
+def test_complex_filter_still_splits_dict_from_q():
+    """`FieldsealQuerySet.complex_filter` walks the `Q` form itself and hands
+    the dict form straight to `super()`, on the strength of Django routing
+    that branch into `_filter_or_exclude` -- and therefore into the same
+    walk. If either half moves, one of the two forms silently stops
+    recording obligations ([#118] door 1)."""
+    source = inspect.getsource(QuerySet.complex_filter)
+    assert "_filter_or_exclude(" in source, (
+        "QuerySet.complex_filter no longer routes its dict form through "
+        "_filter_or_exclude. FieldsealQuerySet.complex_filter relies on "
+        "that for the dict form; walk it there too, or complex_filter("
+        "{'col': v}) returns unverified index candidates."
+    )
+    assert "add_q(" in source, (
+        "QuerySet.complex_filter no longer calls query.add_q for the Q "
+        "form. Re-read it: FieldsealQuerySet.complex_filter overrides this "
+        "method precisely because that call goes round the queryset layer."
+    )
+
+
+def test_base_manager_is_still_a_plain_manager():
+    """Why door 2 exists at all ([#118]).
+
+    Django builds `_base_manager` as a plain `Manager` so its own internals
+    are not filtered by a custom default manager -- which means the model
+    that *owns* an encrypted column still has a queryset with no §7.5 layer
+    on it, and `_IndexedLookup._refuse_unlayered` is the only thing between
+    that queryset and the blind index. If this ever stops being true, that
+    refusal may be refusing a shape Django now verifies.
+    """
+    assert not isinstance(Patient._base_manager, FieldsealManager)
+    assert type(Patient._base_manager.all()) is QuerySet
 
 
 def test_chaining_still_funnels_through_clone():
