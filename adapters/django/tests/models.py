@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.db import models
+from django.db.models import Q
 
 from fieldseal_django import BlindIndex, Encrypted, FieldsealMeta, Override
 
@@ -153,3 +154,24 @@ class Visit(models.Model):
     reason_bidx = Encrypted.index_column("reason")
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_VISIT)
+
+
+class Referral(models.Model):
+    """An FK whose `limit_choices_to` names an encrypted column ([#118]).
+
+    Not a declaration anyone should write, and that is exactly why it is
+    here: Django applies `limit_choices_to` through `complex_filter(Q)` at
+    four sites, and two of them are not the caller's choice of manager.
+    `ForeignKey.validate` uses `Patient._base_manager` -- a plain `Manager`
+    -- so an ordinary `full_clean()` on this model reached the blind index
+    with no queryset layer above it at all; `Field.get_choices` uses
+    `_default_manager`, so a form choice list reached it through the
+    verifying queryset but round the side of `_filter_or_exclude`, recording
+    no §7.5 obligation. One declaration, both doors.
+    """
+
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.CASCADE,
+        limit_choices_to=Q(email="ada@example.com"),
+    )

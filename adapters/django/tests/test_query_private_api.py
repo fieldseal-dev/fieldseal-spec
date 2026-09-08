@@ -19,7 +19,7 @@ import inspect
 import pytest
 from django.db.models import QuerySet
 
-from fieldseal_django.query import FieldsealQuerySet
+from fieldseal_django.query import FieldsealManager, FieldsealQuerySet
 
 from .models import Patient
 
@@ -92,6 +92,103 @@ def test_filter_and_exclude_still_funnel_through_filter_or_exclude():
     recorded and verification silently does nothing."""
     for method in (QuerySet.filter, QuerySet.exclude):
         assert "_filter_or_exclude(" in inspect.getsource(method)
+
+
+def test_complex_filter_still_splits_dict_from_q():
+    """`FieldsealQuerySet.complex_filter` walks the `Q` form itself and hands
+    the dict form straight to `super()`, on the strength of Django routing
+    that branch into `_filter_or_exclude` -- and therefore into the same
+    walk. If either half moves, one of the two forms silently stops
+    recording obligations ([#118] door 1)."""
+    source = inspect.getsource(QuerySet.complex_filter)
+    assert "_filter_or_exclude(" in source, (
+        "QuerySet.complex_filter no longer routes its dict form through "
+        "_filter_or_exclude. FieldsealQuerySet.complex_filter relies on "
+        "that for the dict form; walk it there too, or complex_filter("
+        "{'col': v}) returns unverified index candidates."
+    )
+    assert "add_q(" in source, (
+        "QuerySet.complex_filter no longer calls query.add_q for the Q "
+        "form. Re-read it: FieldsealQuerySet.complex_filter overrides this "
+        "method precisely because that call goes round the queryset layer."
+    )
+
+
+def test_the_mark_still_survives_query_clone_and_the_chain_subclass_swap():
+    """`_mark_query` sets the pair on the `Query`, and `_IndexedLookup`
+    reads it back at compile time -- across a `Query.clone()` it never
+    performs itself (`Subquery.__init__` takes `qs.query` and clones it) and
+    across the `chain(klass)` subclass swap that `.delete()`/`.update()` and
+    the aggregation wrapper use.
+
+    Only `_clone` re-applies the mark; nothing re-applies it on those paths,
+    so they rest entirely on `Query.clone` copying `__dict__`. That was a
+    comment until the lookup layer started refusing on the mark's absence:
+    a dropped mark now fails **open** in exactly the direction [#118]
+    exists to close, so it is pinned rather than commented (review round on
+    [#121]).
+    """
+    from django.db.models.sql.subqueries import AggregateQuery, DeleteQuery
+
+    qs = Patient.objects.filter(email="ada@example.com")
+    made = [
+        ("Query.clone()", qs.query.clone()),
+        ("Query.chain()", qs.query.chain()),
+        ("Query.chain(DeleteQuery)", qs.query.chain(DeleteQuery)),
+        ("Query.chain(AggregateQuery)", qs.query.chain(AggregateQuery)),
+    ]
+    for how, query in made:
+        assert getattr(query, "fieldseal_verify", None) is True, (
+            f"{how} dropped Query.fieldseal_verify. "
+            "fieldseal_django.fields._IndexedLookup refuses when that "
+            "attribute is absent, so losing it here does not raise -- it "
+            "makes the check pass and serves unverified index candidates. "
+            "Re-apply the mark on this path (see _mark_query)."
+        )
+        assert getattr(query, "fieldseal_indexed", None) is True, (
+            f"{how} dropped Query.fieldseal_indexed; embedded-bucket "
+            "detection (_embedded_index_query) reads it."
+        )
+
+    # The watchdog for the assertions above: a Query that genuinely has no
+    # mark is the thing being distinguished, and it must stay unmarked.
+    assert not hasattr(QuerySet(Patient).query, "fieldseal_verify")
+
+
+def test_subquery_wrappers_still_take_the_query_and_not_the_queryset():
+    """Why the mark has to live on the `Query` at all, and why a second
+    check reads it: `Exists`/`Subquery` keep `qs.query`, so no queryset
+    method of ours runs for the inner side, and the lookup compiles for a
+    query that is not the one fetching the rows."""
+    from django.db.models import Exists
+
+    qs = Patient.objects.filter(email="ada@example.com")
+    inner = Exists(qs).query
+    assert inner is not qs.query, (
+        "Exists no longer clones the queryset's Query. Re-read "
+        "_refuse_across_subquery_boundary: it assumes the inner query is a "
+        "copy carrying the mark, and that `subquery` is set on it."
+    )
+    assert inner.subquery is True, (
+        "Exists/Subquery no longer set Query.subquery. That flag is how "
+        "_refuse_across_subquery_boundary tells an embedded verifying "
+        "query from a top-level one; without it the boundary hole in "
+        "[#121] reopens."
+    )
+
+
+def test_base_manager_is_still_a_plain_manager():
+    """Why door 2 exists at all ([#118]).
+
+    Django builds `_base_manager` as a plain `Manager` so its own internals
+    are not filtered by a custom default manager -- which means the model
+    that *owns* an encrypted column still has a queryset with no §7.5 layer
+    on it, and `_IndexedLookup._refuse_unlayered` is the only thing between
+    that queryset and the blind index. If this ever stops being true, that
+    refusal may be refusing a shape Django now verifies.
+    """
+    assert not isinstance(Patient._base_manager, FieldsealManager)
+    assert type(Patient._base_manager.all()) is QuerySet
 
 
 def test_chaining_still_funnels_through_clone():
