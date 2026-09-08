@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 from django.db import connection
-from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet, Subquery
 
 from fieldseal_django.errors import FieldsealNotSupported
 
@@ -496,3 +496,60 @@ class TestABucketEmbeddedInASubtractivePosition:
                     pk=OuterRef("pk")))).filter(hit=True))
         assert "Materialize the verified rows first" in str(e.value)
         assert ".candidates()" not in str(e.value)
+
+    @pytest.mark.parametrize("shape", [
+        lambda e: Patient.objects.filter(e),
+        lambda e: Patient.objects.exclude(e),
+        lambda e: Patient.objects.filter(Q(e)),
+        lambda e: Patient.objects.annotate(hit=e).filter(hit=True),
+    ], ids=["filter-positional", "exclude-positional", "Q-child", "annotate"])
+    @pytest.mark.parametrize("hatched", [False, True],
+                             ids=["verifying", "candidates"])
+    def test_every_expression_route_refuses(self, rows, shape, hatched):
+        """`annotate()` was not the only door. An `Exists`/`Subquery` also
+        arrives as a positional `filter()`/`exclude()` argument and as an
+        expression child of a `Q` -- neither of which is a `Q` leaf the walk
+        visits, nor a queryset `resolve_expression` is called on. Measured
+        before this test: `filter(Exists(qs))` returned the bucket as the
+        answer and `exclude(Exists(qs.candidates()))` dropped the collision
+        row, silently, in both hatch states.
+        """
+        inner = Patient.objects.filter(email="ada@example.com")
+        if hatched:
+            inner = inner.candidates()
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape(Exists(inner.filter(pk=OuterRef("pk")))))
+        assert "as a subquery" in str(e.value)
+
+    def test_a_subquery_as_a_keyword_operand_refuses(self, rows):
+        """The same wrapper in the other operand position. The bare queryset
+        spelling (`pk__in=qs`) is deliberately untouched here -- that one has
+        `resolve_expression` beneath it and, for `.candidates()`, is the
+        shape the refusal messages recommend."""
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(Patient.objects.filter(pk=Subquery(
+                Patient.objects.filter(email="ada@example.com")
+                .candidates().values("pk")[:1])))
+        assert "as a subquery" in str(e.value)
+
+    def test_the_wrong_answer_the_expression_routes_allowed(self, rows):
+        """Measured, not described -- the SQL those routes compiled to, run
+        directly, since every queryset spelling of it now refuses."""
+        _forge_collision(onto=rows[1], like=rows[0])
+        bucket = Patient.objects.get(pk=rows[0].pk).email_bidx
+        q = connection.ops.quote_name
+        table = Patient._meta.db_table
+        inner = (f"SELECT 1 FROM {q(table)} sub WHERE sub.{q('id')} = "
+                 f"p.{q('id')} AND sub.{q('email_bidx')} = %s")
+        with connection.cursor() as cur:
+            cur.execute(
+                f"SELECT p.{q('id')} FROM {q(table)} p WHERE EXISTS ({inner})",
+                [bytes(bucket)])
+            matched = {row[0] for row in cur.fetchall()}
+            cur.execute(
+                f"SELECT p.{q('id')} FROM {q(table)} p WHERE NOT EXISTS "
+                f"({inner})", [bytes(bucket)])
+            kept = {row[0] for row in cur.fetchall()}
+        assert matched == {rows[0].pk, rows[1].pk}  # Grace, as a match
+        assert rows[1].pk not in kept               # and then dropped
+        assert rows[2].pk in kept

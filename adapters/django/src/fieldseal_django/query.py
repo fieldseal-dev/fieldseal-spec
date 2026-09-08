@@ -88,7 +88,8 @@ class _Bucketed:
 _BUCKETED = _Bucketed()
 
 
-def _embedded_index_query(value: Any, bucket_only: bool = False) -> Any:
+def _embedded_index_query(value: Any, bucket_only: bool = False,
+                          expressions_only: bool = False) -> Any:
     """The first embedded `Query` a blind index selected the rows of, or None.
 
     `filter(x__in=qs)` hands Django the queryset, so `resolve_expression`
@@ -96,6 +97,12 @@ def _embedded_index_query(value: Any, bucket_only: bool = False) -> Any:
     constructor and never call the queryset again, so the mark has to live
     on the `Query` (see `_mark_query`) and the operand has to be walked as
     an expression tree to find it.
+
+    `expressions_only` skips a bare queryset operand, which is the other
+    route's to police: `filter(x__in=qs.candidates())` is the shape three
+    refusal messages recommend and must stay served, while an `Exists` or
+    `Subquery` *wrapping* the same queryset has no layer beneath it and is
+    refused wherever it appears.
 
     An iterable operand is deliberately not iterated. `__in` values are
     consumed twice -- here and again by the SQL compiler -- and a generator
@@ -105,6 +112,8 @@ def _embedded_index_query(value: Any, bucket_only: bool = False) -> Any:
     stack = [value]
     while stack:
         node = stack.pop()
+        if expressions_only and isinstance(node, models.QuerySet):
+            continue
         query = getattr(node, "query", node)
         if getattr(query, "fieldseal_indexed", False) and not (
                 bucket_only and getattr(query, "fieldseal_verify", True)):
@@ -346,6 +355,13 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         both modes; `verifying` decides how much of it applies.
         """
         verifying = self._fieldseal_verify
+        # `filter(Exists(qs))` is a positional *expression*, not a `Q`, so the
+        # `Q` walk below never sees it, and `Exists` keeps `qs.query` rather
+        # than the queryset, so `resolve_expression` never sees it either.
+        # Measured before this call existed: served, unverified, in both
+        # directions.
+        self._refuse_embedded_index(args, kwargs, "exclude" if negate
+                                    else "filter")
         out: list[_Obligation | _Bucketed] = []
         for key in list(kwargs):
             ob = self._predicate(key, kwargs, negate, verifying)
@@ -535,6 +551,9 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                     self._q_obligations(child, reason, subtractive, verifying))
                 continue
             if not isinstance(child, (tuple, list)) or len(child) != 2:
+                # An expression child (`Q(Exists(qs))`), which carries the
+                # same subquery hazard as a positional one.
+                self._refuse_embedded_index((child,), {}, "filter")
                 continue
             key, value = str(child[0]), child[1]
             if subtractive is not None:
@@ -890,10 +909,12 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                                method: str) -> None:
         """Refuse `Exists(qs)` / `Subquery(qs)` over a blind-index queryset.
 
-        `resolve_expression` catches the embedding on the route where Django
-        resolves the *queryset* (`filter(pk__in=qs)`). `Exists` and
+        `resolve_expression` catches the embedding on the one route where
+        Django resolves the *queryset* (`filter(pk__in=qs)`). `Exists` and
         `Subquery` take `qs.query` in their constructor and never call it,
-        so an annotation reached SQL unrefused in both directions.
+        so every expression route reached SQL unrefused in both directions --
+        as an annotation, as a positional `filter()`/`exclude()` argument, as
+        an expression child of a `Q`, and as a keyword operand.
         Measured before this walk existed:
         `annotate(has=Exists(Patient.objects.filter(email=v)))
         .filter(has=True)` served bucket matches as answers with no
@@ -910,7 +931,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         would be the wrong answer for half the callers who followed it.
         """
         for expr in (*args, *kwargs.values()):
-            query = _embedded_index_query(expr)
+            query = _embedded_index_query(expr, expressions_only=True)
             if query is None:
                 continue
             raise FieldsealNotSupported(
