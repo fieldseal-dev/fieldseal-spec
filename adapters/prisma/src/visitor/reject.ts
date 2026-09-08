@@ -398,7 +398,7 @@ function scalarFilter(
         hasResidual = true;
         continue;
       }
-      refuseSubtractive(label, "`not`", path);
+      refuseSubtractive(label, "`not`", path, "", bucketAbsence(model, field));
     }
     if (op === "in") {
       // SQL `IN` never matches NULL, and neither does the rewritten predicate,
@@ -415,6 +415,7 @@ function scalarFilter(
         ` Spec §7.10 supports membership (N index values OR'd) but has no row for` +
           ` negated membership, and spec §10.2's rewrite permission names \`in\`` +
           ` only.`,
+        bucketAbsence(model, field),
       );
     }
     if (op === "isSet") {
@@ -459,10 +460,31 @@ function record(
 ): void {
   const label = `${model.model}.${field}`;
   const verify = ctx.opts.verify;
+  // Computed here, used by the three refusals below, and deliberately *not*
+  // reordered ahead of them -- see `bucketAbsence`.
+  const absence = bucketAbsence(model, field);
 
-  if (site.subtractive !== null) refuseSubtractive(label, site.subtractive, path);
+  if (site.subtractive !== null) {
+    refuseSubtractive(label, site.subtractive, path, "", absence);
+  }
 
   if (verify && site.answered !== null) {
+    if (absence !== null) {
+      // `site.answered.fallback` is kept rather than replaced: it names the
+      // shape to run, and for the write family (`updateMany`, `deleteMany`,
+      // `update`, `delete`, `upsert`, nested writes) swapping it for the
+      // read-side tail would prescribe a remedy that never performs the write.
+      // The counterfactual clause stays site-generic for the same reason --
+      // "returns an answer rather than the rows" is false for the write family
+      // and for the relation site, which are `findMany`s that do return rows.
+      throw new FieldsealNotSupported(
+        `${label}: ${site.answered.why} ${absence}: this path is refused over a ` +
+          `blind index too, for the reason just given -- spec §7.5 requires ` +
+          `candidates to be decrypted and compared before they count as ` +
+          `results, and this one never presents them. ` +
+          `${site.answered.fallback}${NO_BUCKET_RIDER} (At ${path}.)`,
+      );
+    }
     throw new FieldsealNotSupported(
       `${label}: ${site.answered.why} Spec §7.4 mandates that the index bucket ` +
         `holds rows whose value differs, so the answer would be computed over ` +
@@ -478,6 +500,13 @@ function record(
   // closing sentence is what makes the difference matter -- the scope really
   // does lift an `OR`, because a widened bucket can only add rows to it.
   if (verify && site.combinator !== null) {
+    if (absence !== null) {
+      throw new FieldsealNotSupported(
+        `${label}: an encrypted column under \`${site.combinator}\` is not ` +
+          `available: ${absence}: a branch spec §7.5 cannot decide row by row ` +
+          `is refused over a blind index too.${NO_BUCKET_TAIL} (At ${path}.)`,
+      );
+    }
     throw new FieldsealNotSupported(
       `${label}: an encrypted column under \`${site.combinator}\` is not ` +
         `available. A returned row may be there because the *other* branch ` +
@@ -493,6 +522,9 @@ function record(
 
   const idx = model.indexBySource.get(field);
   if (idx === undefined) {
+    // Reached only when no site refusal fired; `absence` is non-null here, and
+    // this is the message that owns the remedy (declare an index) rather than
+    // the ones above, which cannot honestly prescribe it.
     throw new FieldsealNotSupported(
       `${label}: equality on an encrypted column needs a declared blind index. ` +
         `The suite is randomized -- every write of the same value produces a ` +
@@ -576,7 +608,7 @@ function topLevelAnswered(operation: string): Answered {
       };
     case "count":
       return {
-        why: `\`count\` is answered by the database as a COUNT over the index bucket.`,
+        why: `\`count\` is answered by the database, not by rows this adapter can re-verify.`,
         fallback:
           `The extension cannot turn a count into a row fetch, so it cannot ` +
           `verify what it counted. Use \`(await prisma.<model>.findMany({ where ` +
@@ -585,7 +617,9 @@ function topLevelAnswered(operation: string): Answered {
     case "aggregate":
     case "groupBy":
       return {
-        why: `\`${operation}\` is answered by the database over the index bucket.`,
+        why:
+          `\`${operation}\` is answered by the database, not by rows this adapter ` +
+          `can re-verify.`,
         fallback: `Fetch the verified rows with findMany and aggregate in application code.`,
       };
     case "updateMany":
@@ -611,6 +645,52 @@ function topLevelAnswered(operation: string): Answered {
 }
 
 /**
+ * Why this column carries no §7.4 bucket for a refusal to be *about*, or null.
+ *
+ * Three refusals below justify themselves with bucket mechanics -- an
+ * exclusion drops the whole bucket, a database-answered operation computes
+ * over one, an `OR` branch leaves a candidate undecidable -- and all three run
+ * before the missing-index check in `record()`. On a column with no declared
+ * index they describe a bucket that is not there, and the remedy each
+ * prescribes (run the positive form instead) is refused on its own account.
+ *
+ * The ordering is deliberate and stays (see `record`): reversing it sends a
+ * caller to run a schema migration for a shape that is refused *with* the
+ * index too. So the fact travels in the message rather than in the order.
+ * Spec §10.2, one clause up from G23: a refusal MUST NOT carry a false
+ * justification.
+ */
+function bucketAbsence(model: ResolvedModel, field: string): string | null {
+  if (model.indexBySource.get(field) !== undefined) return null;
+  return (
+    `${model.model}.${field} declares no blind index, so there is no index ` +
+    `column to compare against and the randomized envelope (spec §4.4) matches ` +
+    `nothing -- in either direction. Declaring one would not make this shape ` +
+    `available either`
+  );
+}
+
+/**
+ * The fallback when there is no bucket: it works in either direction, and
+ * unlike "run the positive form instead" it is not itself refused.
+ */
+const NO_BUCKET_TAIL =
+  ` Fetch the rows and filter after decryption in application code, which is ` +
+  `the honest fallback here either way.`;
+
+/**
+ * The rider the *answered* sites need instead. Those already carry an
+ * operation-specific fallback naming the shape to run (findMany then act on
+ * the ids, for the write family), and replacing it would drop the write; what
+ * the missing index adds is that the encrypted term cannot be in the `where`
+ * of that shape either.
+ */
+const NO_BUCKET_RIDER =
+  ` With no index the encrypted term cannot go in the \`where\` at all: filter ` +
+  `on the remaining criteria, decrypt, and apply the encrypted one in ` +
+  `application code.`;
+
+/**
  * The one filter-time refusal `candidateScope()` does not lift (G24, [#100];
  * spec §10.2's negation clause).
  *
@@ -631,7 +711,21 @@ function refuseSubtractive(
   position: string,
   at: string | null,
   extra = "",
+  absence: string | null = null,
 ): never {
+  if (absence !== null) {
+    throw new FieldsealNotSupported(
+      `${label}: ${position} is not available on an encrypted column: ${absence}: ` +
+        `an encrypted column in a subtractive position is refused over a blind ` +
+        `index too, because the SQL excludes the whole §7.4 bucket and the rows ` +
+        `it should have kept never reach the adapter for spec §7.5 ` +
+        `re-verification to put back (spec §10.2, decided by G24, ` +
+        // `extra` is the operator's own reason (`notIn` and §7.10's missing
+        // negated-membership row) and is true whether or not an index exists,
+        // so it is carried here rather than dropped with the bucket paragraph.
+        `[#100]).${extra}${NO_BUCKET_TAIL}${at === null ? "" : ` (At ${at}.)`}`,
+    );
+  }
   throw new FieldsealNotSupported(
     `${label}: ${position} is not available on an encrypted column.${extra} The ` +
       `SQL excludes whole index buckets, and spec §7.4 mandates that a bucket ` +
@@ -680,7 +774,7 @@ const TO_ONE_INCLUDE: Answered = {
 };
 
 const RELATION_COUNT: Answered = {
-  why: `\`_count\` is computed by the database over the §7.4 index bucket.`,
+  why: `\`_count\` is computed by the database, not from rows this adapter can re-verify.`,
   fallback:
     `Include the relation with the same filter and count the verified rows in ` +
     `application code.`,

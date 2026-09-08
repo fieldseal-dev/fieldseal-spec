@@ -451,3 +451,184 @@ describe("candidateScope: what it hands over, and what it does not", () => {
     expect(b).toHaveLength(1);
   });
 });
+
+/**
+ * The G24 review's item 5: three refusals justified themselves with §7.4
+ * bucket mechanics on a column that has no bucket, and prescribed a remedy
+ * refused on its own account.
+ *
+ * `NOT: { note: "x" }` said "the SQL excludes whole index buckets" for a
+ * column with no declared index, and sent the caller to "fetch the matching
+ * rows with the positive form", which raises "needs a declared blind index".
+ * The `count` and `OR` refusals one clause over said the same kind of thing.
+ *
+ * The order of the checks is *not* the fix and is unchanged: `record()`'s
+ * comment gives the reason, and reversing it sends a caller to run a schema
+ * migration for a shape refused with the index too. The fact travels in the
+ * message. G23 settled the principle: a refusal MUST NOT be justified by a
+ * mechanism that is not operating.
+ */
+describe("a refusal does not invent a bucket the column does not have", () => {
+  const NO_INDEX = /declares no blind index/;
+  const BUCKET_CLAIM = /SQL excludes whole index buckets/;
+  const FALLBACK = /filter after decryption in application code/;
+
+  const unindexed: Array<[string, () => Promise<unknown>]> = [
+    ["NOT", () => lp["patient"]!["findMany"]!({ where: { NOT: { note: "x" } } })],
+    ["the scalar `not`", () => lp["patient"]!["findMany"]!({ where: { note: { not: "x" } } })],
+    ["the scalar `notIn`", () => lp["patient"]!["findMany"]!({ where: { note: { notIn: ["x"] } } })],
+    [
+      // A negating relation wrapper, onto an *unindexed* column on the far
+      // side: the site is subtractive and the column still has no bucket.
+      "the relation filter `isNot`",
+      () => lp["visit"]!["findMany"]!({ where: { patient: { isNot: { note: "x" } } } }),
+    ],
+    [
+      "NOT under candidateScope",
+      () => candidateScope(() => lp["patient"]!["findMany"]!({ where: { NOT: { note: "x" } } })),
+    ],
+  ];
+
+  for (const [name, run] of unindexed) {
+    it(`names the real reason under ${name}`, async () => {
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(FieldsealNotSupported);
+      expect(err!.message).toMatch(NO_INDEX);
+      expect(err!.message).not.toMatch(BUCKET_CLAIM);
+      expect(err!.message).toMatch(FALLBACK);
+    });
+  }
+
+  it("names the real reason for a database-answered operation", async () => {
+    const err = await lp["patient"]!["count"]!({ where: { note: "x" } }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(NO_INDEX);
+    // The two sentences that asserted this column's own bucket are gone. What
+    // remains is the counterfactual -- refused with an index too -- which is a
+    // statement about the indexed case, not about this column.
+    expect(err!.message).not.toMatch(/COUNT over the index bucket/);
+    expect(err!.message).not.toMatch(/the answer would be computed over/);
+    expect(err!.message).toMatch(/not by rows this adapter can re-verify/);
+  });
+
+  it("names the real reason under OR", async () => {
+    const err = await lp["patient"]!["findMany"]!({
+      where: { OR: [{ note: "x" }, { plainName: "a" }] },
+    }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(NO_INDEX);
+    expect(err!.message).not.toMatch(/A returned row may be there/);
+    expect(err!.message).toMatch(FALLBACK);
+  });
+
+  it("leaves the refusal that owns the remedy saying it", async () => {
+    // The positive form is where "declare a blind index" is the right advice,
+    // because declaring one makes *that* shape work.
+    await expect(
+      lp["patient"]!["findMany"]!({ where: { note: "x" } }),
+    ).rejects.toThrow(/needs a declared blind index/);
+  });
+
+  const indexed: Array<[string, () => Promise<unknown>]> = [
+    ["NOT", () => lp["patient"]!["findMany"]!({ where: { NOT: { email: ADA } } })],
+    ["the scalar `not`", () => lp["patient"]!["findMany"]!({ where: { email: { not: ADA } } })],
+    [
+      "NOT under candidateScope",
+      () => candidateScope(() => lp["patient"]!["findMany"]!({ where: { NOT: { email: ADA } } })),
+    ],
+  ];
+
+  for (const [name, run] of indexed) {
+    it(`keeps the bucket justification on an indexed column under ${name}`, async () => {
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err!.message).toMatch(BUCKET_CLAIM);
+      expect(err!.message).not.toMatch(NO_INDEX);
+    });
+  }
+
+  it("keeps the bucket justification for `none` over an indexed column", async () => {
+    // The mirror of the `isNot` case above: same subtractive relation family,
+    // but `Visit.reason` has an index, so the claim is true and stays.
+    await expect(
+      lp["patient"]!["findMany"]!({ where: { visits: { none: { reason: "c" } } } }),
+    ).rejects.toThrow(BUCKET_CLAIM);
+  });
+
+  it("keeps the candidate justification on an indexed column under OR", async () => {
+    await expect(
+      lp["patient"]!["findMany"]!({ where: { OR: [{ email: ADA }, { plainName: "a" }] } }),
+    ).rejects.toThrow(/A returned row may be there/);
+  });
+
+  // ---- what the review round on this PR found the first cut got wrong ----
+
+  const writes: Array<[string, () => Promise<unknown>]> = [
+    [
+      "updateMany",
+      () => lp["patient"]!["updateMany"]!({ where: { note: "x" }, data: { plainName: "z" } }),
+    ],
+    ["deleteMany", () => lp["patient"]!["deleteMany"]!({ where: { note: "x" } })],
+  ];
+
+  for (const [name, run] of writes) {
+    it(`keeps the operation's own fallback for ${name}`, async () => {
+      // The first cut replaced `answered.fallback` with the read-side tail, so
+      // the remedy a caller followed no longer performed the write at all --
+      // the same defect class this describe block exists to remove, one layer
+      // down. The operation-specific sentence is what names the shape to run.
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err!.message).toMatch(NO_INDEX);
+      expect(err!.message).toMatch(/act on their primary keys/);
+      // And the clause that contradicted `why` two sentences earlier is gone:
+      // a write does not "return an answer rather than the rows".
+      expect(err!.message).not.toMatch(/returns an answer rather than the rows/);
+      expect(err!.message).toMatch(/cannot go in the `where` at all/);
+    });
+  }
+
+  it("keeps the relation-site fallback, which is a findMany that does return rows", async () => {
+    const err = await lp["visit"]!["findMany"]!({
+      where: { patient: { is: { note: "x" } } },
+    }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(NO_INDEX);
+    expect(err!.message).toMatch(/Query that model directly and join on the result/);
+    expect(err!.message).not.toMatch(/returns an answer rather than the rows/);
+  });
+
+  it("keeps `notIn`'s own §7.10 reason, which holds with or without an index", async () => {
+    // `extra` was dropped along with the bucket paragraph in the first cut.
+    // It is the operator's reason, not the bucket's.
+    await expect(
+      lp["patient"]!["findMany"]!({ where: { note: { notIn: ["x"] } } }),
+    ).rejects.toThrow(/no row for negated membership/);
+  });
+
+  it("still justifies a database-answered refusal by the bucket when there is one", async () => {
+    // The `why` clauses were reworded (the bucket claim moved out of them and
+    // into the paragraph below), so this pins that the *justification* an
+    // indexed column gets is still the bucket one.
+    const err = await lp["patient"]!["count"]!({ where: { email: ADA } }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(/Spec §7\.4 mandates that the index bucket/);
+    expect(err!.message).not.toMatch(NO_INDEX);
+    expect(err!.message).toMatch(/which counts verified rows/);
+  });
+});
