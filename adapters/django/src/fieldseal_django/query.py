@@ -33,7 +33,17 @@ inherit a wrong answer. The dividing line throughout: a predicate is
 column itself (NULL plaintext is stored as NULL, never as an encrypted
 placeholder), so it is served with no obligation, in any combination.
 
-**A second refusal family, G20 ([#80]), is orthogonal to verification:** SQL
+**A second family is not verification's to lift either, and this one is a
+filter (G24, [#100], decided 2026-09-06):** an encrypted term in a
+*subtractive* position -- `exclude()`, a negated `Q`, XOR -- is refused on
+every queryset, `.candidates()` included. The hatch hands the caller §7.5,
+and §7.5 is a filter obligation: a superset can be narrowed to the answer,
+an exclusion cannot be widened back to it, because the rows the database
+dropped are not in what the caller was handed. Spec §10.2 carries the rule;
+this adapter lifted it until G24 closed, and the Prisma adapter did not,
+which is the divergence the issue was filed for.
+
+**A third refusal family, G20 ([#80]), is orthogonal to verification:** SQL
 that *reads envelope bytes* -- `ORDER BY`, `GROUP BY`, `DISTINCT`, aggregate
 and function expressions over them -- is meaningless on every queryset,
 obligations or none, and `.candidates()` does not lift it. See the section
@@ -52,6 +62,66 @@ from typing import Any
 from django.db import models
 
 from .errors import FieldsealNotSupported
+
+#: The positions a wider index bucket *narrows* rather than widens, named for
+#: the refusal message. `.candidates()` does not lift either (G24, [#100]):
+#: XOR is here because it is negation once expanded, and a widened operand
+#: flips rows out of the answer exactly as an `exclude()` does.
+_NEGATED = "a negated combination"
+_XOR = ("an XOR combination -- negation once expanded, since `a XOR b` is "
+        "`(a AND NOT b) OR (NOT a AND b)`")
+
+
+class _Bucketed:
+    """What the walk reports for an indexed term seen while §7.5 was off.
+
+    There is no obligation to record -- `.candidates()` handed §7.5 to the
+    caller -- but the queryset's rows are a §7.4 bucket rather than the
+    answer, and a position that *embeds* it has to be able to tell. Carried
+    as a marker in the walk's own result list so that neither walker grows a
+    parameter for it.
+    """
+
+    __slots__ = ()
+
+
+_BUCKETED = _Bucketed()
+
+
+def _embedded_index_query(value: Any, bucket_only: bool = False,
+                          expressions_only: bool = False) -> Any:
+    """The first embedded `Query` a blind index selected the rows of, or None.
+
+    `filter(x__in=qs)` hands Django the queryset, so `resolve_expression`
+    sees it; `Exists(qs)` and `Subquery(qs)` take `qs.query` in their
+    constructor and never call the queryset again, so the mark has to live
+    on the `Query` (see `_mark_query`) and the operand has to be walked as
+    an expression tree to find it.
+
+    `expressions_only` skips a bare queryset operand, which is the other
+    route's to police: `filter(x__in=qs.candidates())` is the shape three
+    refusal messages recommend and must stay served, while an `Exists` or
+    `Subquery` *wrapping* the same queryset has no layer beneath it and is
+    refused wherever it appears.
+
+    An iterable operand is deliberately not iterated. `__in` values are
+    consumed twice -- here and again by the SQL compiler -- and a generator
+    handed to both would arrive at the second exhausted, which is the hazard
+    `_predicate` materializes for.
+    """
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if expressions_only and isinstance(node, models.QuerySet):
+            continue
+        query = getattr(node, "query", node)
+        if getattr(query, "fieldseal_indexed", False) and not (
+                bucket_only and getattr(query, "fieldseal_verify", True)):
+            return query
+        getter = getattr(node, "get_source_expressions", None)
+        if getter is not None:
+            stack.extend(getter())
+    return None
 
 
 class _Obligation:
@@ -171,6 +241,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         super().__init__(*args, **kwargs)
         self._fieldseal_obligations: tuple[_Obligation, ...] = ()
         self._fieldseal_verify = True
+        self._fieldseal_indexed = False
 
     # -- cloning -----------------------------------------------------------
     #
@@ -183,7 +254,23 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         clone: FieldsealQuerySet = super()._clone()
         clone._fieldseal_obligations = self._fieldseal_obligations
         clone._fieldseal_verify = self._fieldseal_verify
+        clone._fieldseal_indexed = self._fieldseal_indexed
+        clone._mark_query()
         return clone
+
+    def _mark_query(self) -> None:
+        """Mirror the two flags onto `self.query`, where an *embedded* copy
+        of this queryset can still be asked about them.
+
+        `filter(x__in=qs)` hands Django the queryset and Django calls its
+        `resolve_expression`; `Exists(qs)` and `Subquery(qs)` take `qs.query`
+        in their constructor and never touch the queryset again, so a mark
+        that lived only on the queryset would be invisible to every
+        expression route. `Query.clone()` copies `__dict__`, so both marks
+        survive the clone `Subquery.__init__` takes.
+        """
+        self.query.fieldseal_indexed = self._fieldseal_indexed
+        self.query.fieldseal_verify = self._fieldseal_verify
 
     # -- the opt-out (docs/12 §3.2, decision C) ----------------------------
 
@@ -197,52 +284,101 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         caller takes on §7.5.
 
         Every *verification* refusal below is lifted, including the
-        filter-time ones (`exclude`, `Q` under OR or negation): the SQL
-        semantics they refuse are exactly what this method hands over. Two
-        families are not lifted, because there is nothing meaningful to
-        accept: a relation traversal onto another model's encrypted column
-        (refused at compile time for every queryset -- the opt-in there is
-        the owning model's own `.candidates()`, embedded:
-        `filter(rel__in=Owner.objects.filter(col=v).candidates())`), and the
-        G20 family -- ordering, grouping, DISTINCT or aggregation over
-        ciphertext -- where the database would be computing on bytes that
-        carry no order or identity at all.
+        filter-time `Q` under OR: the SQL semantics they refuse are exactly
+        what this method hands over. Three families are not lifted, because
+        there is nothing meaningful to accept:
+
+        - **negation over an encrypted column** -- `exclude()`, a negated
+          `Q`, and XOR, which is negation once expanded (G24, [#100], and
+          spec §10.2). Bucket semantics are a coherent thing to accept for a
+          filter, where they hand back *more* rows than the answer; they are
+          not for an exclusion, where they hand back fewer and the missing
+          ones are not recoverable from what came back. This method lifted
+          it until G24 closed, and the `exclude()` message recommended it;
+        - a **relation traversal** onto another model's encrypted column
+          (refused at compile time for every queryset -- the opt-in there is
+          the owning model's own `.candidates()`, embedded:
+          `filter(rel__in=Owner.objects.filter(col=v).candidates())`);
+        - the **G20 family** -- ordering, grouping, DISTINCT or aggregation
+          over ciphertext -- where the database would be computing on bytes
+          that carry no order or identity at all.
         """
         clone: FieldsealQuerySet = self._chain()
         clone._fieldseal_verify = False
+        clone._mark_query()
         return clone
 
     @property
     def _verifying(self) -> bool:
         return bool(self._fieldseal_verify and self._fieldseal_obligations)
 
+    @property
+    def _bucketed(self) -> bool:
+        """These rows are a §7.4 *bucket*, not the answer.
+
+        The property an embedding position needs: `_verifying` says §7.5
+        will run here, `_bucketed` says it will not and the rows are
+        approximate. A `.candidates()` queryset that never touched a blind
+        index is neither -- it is exact, and embedding it anywhere is fine.
+        """
+        return self._fieldseal_indexed and not self._fieldseal_verify
+
     # -- recording obligations --------------------------------------------
 
     def _filter_or_exclude(self, negate: bool, args: Any, kwargs: Any) -> Any:
-        found = self._encrypted_predicates(args, kwargs, negate)
+        walked = self._encrypted_predicates(args, kwargs, negate)
         clone = super()._filter_or_exclude(negate, args, kwargs)
+        found = [ob for ob in walked if isinstance(ob, _Obligation)]
         if found:
             clone._fieldseal_obligations = (*self._fieldseal_obligations, *found)
+        if walked:
+            # Every entry, obligation or `_BUCKETED` marker, means the blind
+            # index answered a term here; `_bucketed` reads it back off the
+            # `verify` flag.
+            clone._fieldseal_indexed = True
+            clone._mark_query()
         return clone
 
     def _encrypted_predicates(self, args: Any, kwargs: Any,
-                              negate: bool) -> list[_Obligation]:
-        if not self._fieldseal_verify:
-            # `.candidates()` has taken §7.5 off this queryset, so there is
-            # nothing to record and no refusal to make: an escape hatch that
-            # refuses the same things is not one.
-            return []
-        out: list[_Obligation] = []
+                              negate: bool) -> list[_Obligation | _Bucketed]:
+        """Record what `_fetch_all` must re-verify -- and refuse what neither
+        this queryset nor its caller could put right.
+
+        On a `.candidates()` queryset nothing is recorded and every
+        *verification* refusal is lifted: an escape hatch that refuses the
+        same things is not one. **One family is not lifted (G24, [#100]):**
+        an encrypted term in a subtractive position, where a wider index
+        bucket yields a *narrower* result. The hatch hands over §7.5, and
+        §7.5 is a filter obligation -- a caller handed a superset can reach
+        the answer by dropping rows, a caller handed an exclusion cannot
+        reach it at all, because the rows are not there. So the walk runs in
+        both modes; `verifying` decides how much of it applies.
+        """
+        verifying = self._fieldseal_verify
+        # `filter(Exists(qs))` is a positional *expression*, not a `Q`, so the
+        # `Q` walk below never sees it, and `Exists` keeps `qs.query` rather
+        # than the queryset, so `resolve_expression` never sees it either.
+        # Measured before this call existed: served, unverified, in both
+        # directions.
+        self._refuse_embedded_index(args, kwargs, "exclude" if negate
+                                    else "filter")
+        out: list[_Obligation | _Bucketed] = []
         for key in list(kwargs):
-            ob = self._predicate(key, kwargs, negate)
+            ob = self._predicate(key, kwargs, negate, verifying)
             if ob is not None:
                 out.append(ob)
         for arg in args:
-            out.extend(self._q_obligations(arg, "negated" if negate else None))
+            # `exclude(Q(...))` enters the walk already negated on both
+            # counts: verification cannot decide the row, and the row may not
+            # be there to decide. The two are separate below.
+            out.extend(self._q_obligations(
+                arg, "negated" if negate else None,
+                _NEGATED if negate else None, verifying))
         return out
 
     def _predicate(self, key: str, kwargs: dict[str, Any],
-                   negate: bool) -> _Obligation | None:
+                   negate: bool,
+                   verifying: bool) -> _Obligation | _Bucketed | None:
         """One keyword predicate: an obligation, a pass-through, or a raise.
 
         `kwargs` is taken whole rather than the value alone so that an
@@ -254,30 +390,49 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         from .fields import Encrypted
 
         field, lookup, traversed = self._resolve(key)
+        value = kwargs[key]
+        if negate:
+            # Before the left-hand side is even known to be ours: the
+            # operand can *be* a bucket without this predicate naming an
+            # encrypted column at all (`exclude(pk__in=Owner.objects
+            # .filter(enc=v).candidates())`).
+            self._refuse_bucket_operand(f"exclude({key}=...)", value)
         if not isinstance(field, Encrypted):
             return None
-        value = kwargs[key]
         if lookup == "isnull" or (lookup == "exact" and value is None):
             # Served exactly by the envelope column (`IS [NOT] NULL`; Django
             # itself rewrites `exact=None` to `isnull`). No blind index is
             # touched, so there is no candidate set to verify and negation
             # loses nothing -- allowed in every combination.
             return None
-        if traversed:
-            self._refuse_traversal(key, field)
         if negate:
-            raise FieldsealNotSupported(
+            # Ahead of the traversal branch, and that ordering is the rule
+            # rather than an accident: G24 scopes the refusal by *position*,
+            # and a negated term is in one whoever owns the column. Checked
+            # second, this fell through the `traversed` early return for
+            # every path whose owner is the querying model -- a self-FK, an
+            # MTI parent, `Patient.objects.candidates()
+            # .exclude(visit__patient__email=v)` -- because the compile-time
+            # backstop those rely on (`_refuse_cross_model`) passes there by
+            # design. Measured before the reorder: served, collision row
+            # dropped, nothing raised.
+            self._refuse_subtractive(
                 f"`exclude({key}=...)` is not available on an encrypted "
-                "column. The SQL excludes the whole index bucket, and "
-                "spec §7.4 mandates that the bucket holds rows whose "
-                "value differs -- so the query drops rows it should have "
-                "kept, and they never reach the adapter for §7.5 "
-                "re-verification to put back. A filter's false positives "
-                "are recoverable; an exclusion's false negatives are not. "
-                "Fetch the matches with filter() and exclude their "
-                "primary keys, or use .candidates() and accept the "
-                "semantics."
+                "column."
             )
+        if traversed:
+            if verifying:
+                self._refuse_traversal(key, field)
+            # Not verifying: the lookup itself refuses this traversal on
+            # every queryset it can (`_refuse_cross_model`), so leave the
+            # message to the layer that owns it.
+            return None
+        if not verifying:
+            # `.candidates()` has taken §7.5 off this queryset: nothing to
+            # record, and every refusal below it is the caller's to accept.
+            # The marker still goes back, because an embedding position has
+            # to know these rows came out of a bucket.
+            return _BUCKETED
         if lookup == "in":
             value = kwargs[key] = list(value)
         return self._obligation(field, lookup, value, key)
@@ -301,7 +456,60 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             "verified primary keys and use filter(...__pk__in=[...])."
         )
 
-    def _q_obligations(self, node: Any, reason: str | None) -> list[_Obligation]:
+    def _refuse_subtractive(self, lead: str) -> None:
+        """The one filter-time refusal `.candidates()` does not lift.
+
+        Decided by G24 ([#100]) and normative in spec §10.2: the hatch hands
+        the caller spec §7.5, and §7.5 is a *filter* obligation. Under
+        `filter(...).candidates()` the caller holds a superset of the answer
+        and can reach it by dropping rows; under an exclusion they hold a
+        subset and cannot reach it at all, because the rows the database
+        removed are not in what they were handed. Recommending the hatch for
+        this shape -- which the `exclude()` message did until G24 closed --
+        sends a caller following the error text onto semantics that differ
+        in kind from the filter case, with nothing saying so.
+        """
+        raise FieldsealNotSupported(
+            f"{lead} The SQL excludes the whole index bucket, and spec §7.4 "
+            "mandates that the bucket holds rows whose value differs -- so "
+            "the query drops rows it should have kept, and they never reach "
+            "the adapter for §7.5 re-verification to put back. A filter's "
+            "false positives are recoverable; an exclusion's false negatives "
+            "are not. Fetch the matches with a positive filter() and exclude "
+            "their primary keys. .candidates() does not lift this: it hands "
+            "over §7.5, and no operation on an exclusion's own result "
+            "restores a row the database already removed (spec §10.2, G24 "
+            "[#100])."
+        )
+
+    def _refuse_bucket_operand(self, at: str, value: Any) -> None:
+        """Refuse a §7.4 bucket used as the *operand* of a subtractive term.
+
+        G24 scopes the refusal by position, and a subquery occupies one
+        without the outer predicate naming an encrypted column:
+        `exclude(pk__in=Patient.objects.filter(email=v).candidates())`
+        subtracts the whole bucket, so the colliding rows §7.4 mandates are
+        removed from the answer and are not among the ones the caller was
+        handed. Measured before this refusal existed, on all of
+        `exclude(pk__in=...)`, `exclude(rel__in=...)`, `filter(~Q(...))` and
+        `difference(...)`: served, collision row dropped, nothing raised.
+
+        It cannot live in `resolve_expression`, which is where the same
+        embedding is otherwise caught: that method is handed the operand and
+        not the position, so it cannot tell this from
+        `filter(...__in=qs.candidates())` -- the shape three refusal
+        messages recommend.
+        """
+        if _embedded_index_query(value, bucket_only=True) is None:
+            return
+        self._refuse_subtractive(
+            f"`{at}` subtracts a queryset whose rows a blind index selected "
+            "(`.candidates()`)."
+        )
+
+    def _q_obligations(self, node: Any, reason: str | None,
+                       subtractive: str | None,
+                       verifying: bool) -> list[_Obligation | _Bucketed]:
         """Walk a `Q`: a plain AND of positive terms records obligations
         exactly like keyword arguments; anything else refuses.
 
@@ -313,6 +521,14 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         pure AND every returned row must satisfy the encrypted term too, so
         per-term verification is exact. `reason` carries why an enclosing
         context is already unverifiable; it poisons everything beneath it.
+
+        `subtractive` is tracked *separately* rather than read off `reason`,
+        and for a reason the shapes make concrete: under
+        `filter(Q(a=1) | ~Q(enc=v))` the enclosing OR sets `reason` first and
+        poisons the subtree, so the inner negation would never be seen if the
+        two shared one slot -- and that is the shape `.candidates()` must
+        still refuse (G24, [#100]). One is "verification cannot decide this
+        row"; the other is "the row is not here to decide".
         """
         from django.db.models import Q
 
@@ -320,31 +536,52 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
 
         if not isinstance(node, Q):
             return []
-        if reason is None:
-            if node.negated:
-                reason = "negated"
-            elif node.connector != Q.AND:
-                reason = f"{node.connector}-combined"
-        out: list[_Obligation] = []
+        if node.negated:
+            subtractive = subtractive or _NEGATED
+            reason = reason or "negated"
+        elif node.connector == Q.XOR:
+            subtractive = subtractive or _XOR
+            reason = reason or "XOR-combined"
+        elif node.connector != Q.AND:
+            reason = reason or f"{node.connector}-combined"
+        out: list[_Obligation | _Bucketed] = []
         for i, child in enumerate(node.children):
             if isinstance(child, Q):
-                out.extend(self._q_obligations(child, reason))
+                out.extend(
+                    self._q_obligations(child, reason, subtractive, verifying))
                 continue
             if not isinstance(child, (tuple, list)) or len(child) != 2:
+                # An expression child (`Q(Exists(qs))`), which carries the
+                # same subquery hazard as a positional one.
+                self._refuse_embedded_index((child,), {}, "filter")
                 continue
             key, value = str(child[0]), child[1]
+            if subtractive is not None:
+                self._refuse_bucket_operand(f"Q({key}=...)", value)
             field, lookup, traversed = self._resolve(key)
             if not isinstance(field, Encrypted):
                 continue
             if lookup == "isnull" or (lookup == "exact" and value is None):
                 continue  # precise on the envelope column; see _predicate
+            if subtractive is not None:
+                # Ahead of `traversed`, for the reason `_predicate` gives at
+                # length: the position is the rule, not who owns the column.
+                self._refuse_subtractive(
+                    f"`Q({key}=...)` reaches an encrypted column through "
+                    f"{subtractive}."
+                )
             if traversed:
-                self._refuse_traversal(key, field)
+                if verifying:
+                    self._refuse_traversal(key, field)
+                continue  # see `_predicate`: the lookup layer owns this one
+            if not verifying:
+                out.append(_BUCKETED)
+                continue
             if reason is not None:
                 raise FieldsealNotSupported(
-                    f"`Q({key}=...)` reaches an encrypted column through a "
-                    f"{reason} combination. A candidate row may be present "
-                    "because another branch matched, so spec §7.5 "
+                    f"`Q({key}=...)` reaches an encrypted column through an "
+                    f"{reason.split('-')[0]} combination. A candidate row may "
+                    "be present because another branch matched, so spec §7.5 "
                     "re-verification cannot decide it without evaluating the "
                     "whole predicate in Python. Split the encrypted term "
                     "into its own filter() call, or use .candidates() and "
@@ -660,11 +897,56 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
 
     def annotate(self, *args: Any, **kwargs: Any) -> Any:
         self._refuse_ciphertext_computation(args, kwargs, "annotate")
+        self._refuse_embedded_index(args, kwargs, "annotate")
         return super().annotate(*args, **kwargs)
 
     def alias(self, *args: Any, **kwargs: Any) -> Any:
         self._refuse_ciphertext_computation(args, kwargs, "alias")
+        self._refuse_embedded_index(args, kwargs, "alias")
         return super().alias(*args, **kwargs)
+
+    def _refuse_embedded_index(self, args: Any, kwargs: Any,
+                               method: str) -> None:
+        """Refuse `Exists(qs)` / `Subquery(qs)` over a blind-index queryset.
+
+        `resolve_expression` catches the embedding on the one route where
+        Django resolves the *queryset* (`filter(pk__in=qs)`). `Exists` and
+        `Subquery` take `qs.query` in their constructor and never call it,
+        so every expression route reached SQL unrefused in both directions --
+        as an annotation, as a positional `filter()`/`exclude()` argument, as
+        an expression child of a `Q`, and as a keyword operand.
+        Measured before this walk existed:
+        `annotate(has=Exists(Patient.objects.filter(email=v)))
+        .filter(has=True)` served bucket matches as answers with no
+        obligation recorded anywhere, and the `.candidates()` form under
+        `.filter(has=False)` dropped the collision row -- G24's shape,
+        arriving through an annotation.
+
+        Refused in both directions rather than only the subtractive one,
+        because an alias carries no position: `filter(has=True)` and
+        `filter(has=False)` are the same annotation and this method cannot
+        see which is coming. So the remedy it names is the one that is right
+        either way -- materialize the verified rows and pass their primary
+        keys. Per spec §10.2 it does not point at `.candidates()`, which
+        would be the wrong answer for half the callers who followed it.
+        """
+        for expr in (*args, *kwargs.values()):
+            query = _embedded_index_query(expr, expressions_only=True)
+            if query is None:
+                continue
+            raise FieldsealNotSupported(
+                f"`{method}()` embeds a queryset filtered by an encrypted "
+                "column as a subquery (Exists, Subquery). The subquery runs "
+                "entirely in the database, where spec §7.5 re-verification "
+                "cannot run, so the annotation would be computed from "
+                "unverified index candidates -- and the alias is then "
+                "usable in a subtractive position (`filter(alias=False)`), "
+                "where the §7.4 bucket removes rows that belong in the "
+                "answer and nothing can put them back (spec §10.2, G24 "
+                "[#100]). Materialize the verified rows first and annotate "
+                "from their primary keys "
+                "(Exists(Model.objects.filter(pk__in=[o.pk for o in qs])))."
+            )
 
     def _refuse_ciphertext_computation(self, args: Any, kwargs: Any,
                                        method: str) -> None:
@@ -935,7 +1217,9 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                 "receive unverified index candidates. Materialize the "
                 "verified rows first and pass their primary keys "
                 "(filter(x__pk__in=[obj.pk for obj in qs])), or embed "
-                "qs.candidates() to accept bucket semantics."
+                "qs.candidates() in a positive filter() to accept bucket "
+                "semantics -- a subtractive position is refused there too "
+                "(spec §10.2, G24 [#100])."
             )
         return super().resolve_expression(*args, **kwargs)
 
@@ -951,6 +1235,13 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         the verified side's SQL just as surely as `verified.union(plain)`.
         (`tests/test_query_private_api.py` pins that the three public methods
         still funnel through here.)
+
+        `.candidates()` lifts this for `union` and `intersection` and not
+        for `difference`, which is G24's rule applied to set operators
+        rather than a second one: widen the bucket and a union or an
+        intersection returns *more* rows, which §7.5 trims, while a
+        difference returns fewer and the missing ones are not in the result
+        to be put back.
         """
         for qs in (self, *other_qs):
             if isinstance(qs, FieldsealQuerySet) and qs._verifying:
@@ -961,8 +1252,17 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                     "would contribute unverified index candidates that spec "
                     "§7.5 re-verification never sees. Materialize the "
                     "verified rows first (list(qs)) and combine in Python, "
-                    "or combine .candidates() and take on §7.5 yourself."
+                    "or combine .candidates() and take on §7.5 yourself -- "
+                    "union() and intersection() only, since difference() "
+                    "subtracts the bucket rather than widening it."
                 )
+        if combinator == "difference":
+            for qs in other_qs:
+                if isinstance(qs, FieldsealQuerySet) and qs._bucketed:
+                    self._refuse_subtractive(
+                        "`difference()` subtracts a queryset whose rows a "
+                        "blind index selected (`.candidates()`)."
+                    )
         return super()._combinator_query(combinator, *other_qs, all=all)
 
     def _refuse_projection(self, method: str) -> None:

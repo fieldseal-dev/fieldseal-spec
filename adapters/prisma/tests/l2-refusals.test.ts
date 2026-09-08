@@ -323,13 +323,88 @@ describe("candidateScope: what it hands over, and what it does not", () => {
     ).rejects.toThrow(/sorts envelope bytes/);
   });
 
-  it("does NOT lift `notIn` or `not` (G21 is open)", async () => {
+  /**
+   * G24 ([#100]), decided 2026-09-06: neither adapter's hatch lifts negation.
+   *
+   * This adapter already refused the two scalar operators, which is the half
+   * the issue recorded. It lifted every *other* negated position -- `NOT`, and
+   * the two relation wrappers that are negations -- and those are the cases
+   * below that failed before the decision landed. `some`, `every`, `is` and
+   * `OR` all widen the result when the bucket widens, so they stay lifted.
+   */
+  it("does NOT lift `notIn` or `not`", async () => {
     await expect(
       candidateScope(() => lp["patient"]!["findMany"]!({ where: { email: { notIn: [ADA] } } })),
-    ).rejects.toThrow(/does not lift it/);
+    ).rejects.toThrow(/does not lift this/);
     await expect(
       candidateScope(() => lp["patient"]!["findMany"]!({ where: { email: { not: ADA } } })),
-    ).rejects.toThrow(/does not lift it/);
+    ).rejects.toThrow(/does not lift this/);
+  });
+
+  const negated: Array<[string, () => Promise<unknown>]> = [
+    ["NOT", () => lp["patient"]!["findMany"]!({ where: { NOT: { email: ADA } } })],
+    [
+      // The `OR` claims `combinator` first, so a visitor reading negation off
+      // that slot walks straight past this one.
+      "NOT nested under OR",
+      () =>
+        lp["patient"]!["findMany"]!({
+          where: { OR: [{ NOT: { email: ADA } }, { plainName: "2-alan" }] },
+        }),
+    ],
+    [
+      "the relation filter `none`",
+      () => lp["patient"]!["findMany"]!({ where: { visits: { none: { reason: "c" } } } }),
+    ],
+    [
+      "the relation filter `isNot`",
+      () => lp["visit"]!["findMany"]!({ where: { patient: { isNot: { email: ADA } } } }),
+    ],
+  ];
+
+  for (const [name, run] of negated) {
+    it(`does NOT lift ${name}`, async () => {
+      await expect(candidateScope(run)).rejects.toThrow(/false negatives are not/);
+    });
+  }
+
+  it("measures the answer the negation refusal prevents", async () => {
+    // The SQL the extension used to compile inside the scope, run on the
+    // unextended client -- the only way left to produce it. Grace holds
+    // `grace@example.com`, so she belongs in `NOT (email = ada@example.com)`;
+    // the forged bucket drops her, and nothing is raised.
+    const { ada, grace } = await seedWithCollision();
+    const bucket = (await rawColumn(base, "Patient", "emailBidx", ada)) as Uint8Array;
+    const kept = await base.patient.findMany({
+      where: { NOT: { emailBidx: Buffer.from(bucket) } },
+      select: { id: true, plainName: true },
+    });
+    expect(kept.map((r) => r.id)).not.toContain(grace);
+    expect(kept.map((r) => r.plainName)).toEqual(["2-alan"]);
+  });
+
+  it("still lifts the relation filters that widen rather than narrow", async () => {
+    const { ada } = await seedWithCollision();
+    await lp["visit"]!["create"]!({ data: { id: "v-ada", patientId: ada, reason: "x" } });
+    for (const where of [
+      { visits: { some: { reason: "x" } } },
+      { visits: { every: { reason: "x" } } },
+    ]) {
+      await expect(
+        candidateScope(() => lp["patient"]!["findMany"]!({ where })),
+      ).resolves.toBeInstanceOf(Array);
+    }
+  });
+
+  it("still serves `NOT` over an exact NULL, which touches no bucket", async () => {
+    // §10.2's NULL-preservation invariant makes `IS NOT NULL` exact on the
+    // envelope column: no index is read, so negation loses nothing and there
+    // is no subtractive position to refuse.
+    await lp["patient"]!["create"]!({ data: { ...patient(ADA, "1-ada"), nickname: "ada" } });
+    const rows = await candidateScope(() =>
+      lp["patient"]!["findMany"]!({ where: { NOT: { nickname: null } } }),
+    );
+    expect(rows).toHaveLength(1);
   });
 
   it("does NOT lift equality on a column with no declared index", async () => {

@@ -144,6 +144,17 @@ interface Site {
   readonly answered: Answered | null;
   /** Non-null once inside an `OR` / `NOT`: a returned row is unattributable. */
   readonly combinator: string | null;
+  /**
+   * Non-null once the encrypted term sits where a *wider* index bucket yields
+   * a *narrower* result -- `NOT`, and the negating relation wrappers. Names
+   * the position, for the message.
+   *
+   * Tracked separately from `combinator` rather than read off it, because
+   * under `OR: [{ NOT: { … } }]` the `OR` claims `combinator` first and the
+   * negation would never be seen -- and that is exactly the shape
+   * `candidateScope()` must still refuse (G24, [#100]).
+   */
+  readonly subtractive: string | null;
 }
 
 export interface AnalyzeOptions {
@@ -188,6 +199,7 @@ export function analyzeOperation(
     path: NO_ROWS.has(operation) ? null : [],
     args,
     combinator: null,
+    subtractive: null,
   };
   analyzeNode(model, args, ctx, site);
 
@@ -197,7 +209,13 @@ export function analyzeOperation(
   // their payloads but must never touch their filters, so the filters are
   // walked here, exactly as the top-level `where` is -- and always as rows the
   // database acts on rather than returns.
-  const writeSite: Site = { path: null, args: null, answered: NESTED_WRITE, combinator: null };
+  const writeSite: Site = {
+    path: null,
+    args: null,
+    answered: NESTED_WRITE,
+    combinator: null,
+    subtractive: null,
+  };
   for (const key of DATA_KEYS) {
     const node = args[key];
     if (node === undefined) continue;
@@ -248,7 +266,12 @@ function walkWhere(
       continue;
     }
     if (key === "OR" || key === "NOT") {
-      const poisoned: Site = { ...site, combinator: site.combinator ?? key };
+      const poisoned: Site = {
+        ...site,
+        combinator: site.combinator ?? key,
+        subtractive:
+          key === "NOT" ? (site.subtractive ?? "negation (`NOT`)") : site.subtractive,
+      };
       for (const branch of asArray(value)) walkWhere(model, branch, ctx, `${path}.${key}`, poisoned);
       continue;
     }
@@ -282,6 +305,7 @@ function walkWhere(
           args: null,
           answered: relationFilterAnswered(model, key),
           combinator: site.combinator,
+          subtractive: site.subtractive,
         };
         // A to-many filter wraps the target's where in some/every/none, and a
         // to-one filter in is/isNot -- but a to-one filter may also BE the
@@ -290,7 +314,14 @@ function walkWhere(
         const keys = Object.keys(value);
         if (keys.every((k) => RELATION_WRAPPERS.has(k))) {
           for (const [op, nested] of Object.entries(value)) {
-            walkWhere(target, nested, ctx, `${path}.${key}.${op}`, sub);
+            // `none` and `isNot` remove a parent from the answer when the
+            // index bucket widens; `some`, `every` and `is` add one. Only the
+            // first pair is subtractive (G24, [#100]).
+            const inner: Site =
+              NEGATING_WRAPPERS.has(op) && sub.subtractive === null
+                ? { ...sub, subtractive: `negation (the relation filter \`${op}\`)` }
+                : sub;
+            walkWhere(target, nested, ctx, `${path}.${key}.${op}`, inner);
           }
         } else {
           walkWhere(target, value, ctx, `${path}.${key}`, sub);
@@ -301,6 +332,7 @@ function walkWhere(
 }
 
 const RELATION_WRAPPERS = new Set(["some", "every", "none", "is", "isNot"]);
+const NEGATING_WRAPPERS = new Set(["none", "isNot"]);
 
 /**
  * One predicate on an encrypted column: rewritten, served as-is, or refused.
@@ -366,17 +398,7 @@ function scalarFilter(
         hasResidual = true;
         continue;
       }
-      throw new FieldsealNotSupported(
-        `${label}: \`not\` is not available on an encrypted column. The SQL ` +
-          `excludes the whole index bucket, and spec §7.4 mandates that the ` +
-          `bucket holds rows whose value differs -- so the query drops rows it ` +
-          `should have kept, and they never reach the adapter for §7.5 ` +
-          `re-verification to put back. A filter's false positives are ` +
-          `recoverable; an exclusion's false negatives are not. Fetch the ` +
-          `matches and exclude their ids instead. (This is the shape G21 ([#87]) ` +
-          `was filed to settle; \`candidateScope()\` does not lift it, because ` +
-          `spec §7.10 has no row for negated membership to serve it under.)`,
-      );
+      refuseSubtractive(label, "`not`", path);
     }
     if (op === "in") {
       // SQL `IN` never matches NULL, and neither does the rewritten predicate,
@@ -386,15 +408,13 @@ function scalarFilter(
       continue;
     }
     if (op === "notIn") {
-      throw new FieldsealNotSupported(
-        `${label}: \`notIn\` is not available on an encrypted column. Spec §7.10 ` +
-          `supports membership (N index values OR'd) but has no row for negated ` +
-          `membership, and spec §10.2's rewrite permission names \`in\` only. The ` +
-          `reason is the same asymmetry that refuses \`not\`: the SQL excludes ` +
-          `whole index buckets, and spec §7.4 mandates that a bucket holds rows ` +
-          `whose value differs, so the query drops rows it should have kept and ` +
-          `§7.5 never sees them. Fetch the matches and exclude their ids. (G21, ` +
-          `[#87]; \`candidateScope()\` does not lift it.)`,
+      refuseSubtractive(
+        label,
+        "`notIn`",
+        path,
+        ` Spec §7.10 supports membership (N index values OR'd) but has no row for` +
+          ` negated membership, and spec §10.2's rewrite permission names \`in\`` +
+          ` only.`,
       );
     }
     if (op === "isSet") {
@@ -440,6 +460,8 @@ function record(
   const label = `${model.model}.${field}`;
   const verify = ctx.opts.verify;
 
+  if (site.subtractive !== null) refuseSubtractive(label, site.subtractive, path);
+
   if (verify && site.answered !== null) {
     throw new FieldsealNotSupported(
       `${label}: ${site.answered.why} Spec §7.4 mandates that the index bucket ` +
@@ -452,6 +474,9 @@ function record(
         `candidateScope(() => …) and take on §7.5 yourself. (At ${path}.)`,
     );
   }
+  // Only `OR` reaches this: `NOT` is refused above, on every scope. The
+  // closing sentence is what makes the difference matter -- the scope really
+  // does lift an `OR`, because a widened bucket can only add rows to it.
   if (verify && site.combinator !== null) {
     throw new FieldsealNotSupported(
       `${label}: an encrypted column under \`${site.combinator}\` is not ` +
@@ -583,6 +608,42 @@ function topLevelAnswered(operation: string): Answered {
         fallback: `Fetch them with findMany, where spec §7.5 re-verification can run.`,
       };
   }
+}
+
+/**
+ * The one filter-time refusal `candidateScope()` does not lift (G24, [#100];
+ * spec §10.2's negation clause).
+ *
+ * The deciding argument is what the caller can do with what they were handed.
+ * The scope hands over spec §7.5, and §7.5 is a *filter* obligation: under a
+ * positive filter the caller holds a superset of the answer and reaches it by
+ * dropping rows, which is the whole point of the opt-out. Under a negated one
+ * they hold a *subset*, and no operation on it restores a row the database
+ * already removed -- so the scope would be transferring a responsibility that
+ * is not dischargeable from what it transfers with it.
+ *
+ * Every other message in this file offers the scope as the way to take bucket
+ * semantics deliberately. That advice is false here, which is why this check
+ * runs before all of them.
+ */
+function refuseSubtractive(
+  label: string,
+  position: string,
+  at: string | null,
+  extra = "",
+): never {
+  throw new FieldsealNotSupported(
+    `${label}: ${position} is not available on an encrypted column.${extra} The ` +
+      `SQL excludes whole index buckets, and spec §7.4 mandates that a bucket ` +
+      `holds rows whose value differs -- so the query drops rows it should have ` +
+      `kept, and they never reach the adapter for spec §7.5 re-verification to ` +
+      `put back. A filter's false positives are recoverable; an exclusion's ` +
+      `false negatives are not. Fetch the matching rows with the positive form ` +
+      `and exclude their ids in application code. candidateScope() does not ` +
+      `lift this: it hands over §7.5, and no operation on an exclusion's own ` +
+      `result restores a row the database already removed (spec §10.2, decided ` +
+      `by G24, [#100]).${at === null ? "" : ` (At ${at}.)`}`,
+  );
 }
 
 function relationFilterAnswered(model: ResolvedModel, field: string): Answered {
@@ -807,7 +868,13 @@ function walkProjection(
       // `_count: { select: { rel: { where: … } } }` -- a filter the database
       // turns into a number.
       if (isRecord(value) && isRecord(value["select"])) {
-        const counted: Site = { path: null, args: null, answered: RELATION_COUNT, combinator: null };
+        const counted: Site = {
+          path: null,
+          args: null,
+          answered: RELATION_COUNT,
+          combinator: null,
+          subtractive: null,
+        };
         walkProjection(model, value["select"], ctx, counted);
       }
       continue;
@@ -821,6 +888,7 @@ function walkProjection(
       args: value,
       answered: path === null ? (site.answered ?? UNREACHABLE_ROWS) : rel.isList ? null : TO_ONE_INCLUDE,
       combinator: null,
+      subtractive: null,
     };
     analyzeNode(target, value, ctx, child);
   }
