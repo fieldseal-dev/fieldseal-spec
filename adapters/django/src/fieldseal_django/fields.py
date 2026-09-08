@@ -571,11 +571,15 @@ class _IndexedLookup(models.Lookup):
         return out
 
     def _sibling_sql(self, compiler: Any) -> tuple[str, list[Any]]:
-        # Cross-model first: it is the narrower diagnosis of the two, and it
-        # names a remedy the general one cannot (`filter the owner`). A
-        # traversal from a plain manager trips both.
+        # Three ways the statement that fetches the rows can be one spec
+        # §7.5 will never run on. Ordered narrowest diagnosis first:
+        # cross-model names a remedy the others cannot (`filter the owner`),
+        # and `unlayered` (no queryset of ours anywhere) is a plainer fault
+        # than `boundary` (a queryset of ours, on the wrong side of a
+        # subquery). A traversal from a plain manager trips the first two.
         self._refuse_cross_model(compiler)
         self._refuse_unlayered(compiler)
+        self._refuse_across_subquery_boundary(compiler)
         sibling = self.lhs.output_field.fieldseal_index_field
         col = sibling.get_col(self.lhs.alias, output_field=sibling)
         sql, params = compiler.compile(col)
@@ -664,9 +668,63 @@ class _IndexedLookup(models.Lookup):
             "Spec §10.2 requires raising instead. Use "
             f"`{owner.__name__}.objects` (system check fieldseal.E008 "
             "already requires a verifying default manager there), or "
-            "`.candidates()` on it to take on §7.5 yourself. A "
-            "`limit_choices_to` over an encrypted column reaches here "
-            "through ForeignKey.validate() and cannot be served at all."
+            f"`{owner.__name__}.objects.filter(...).candidates()` to take "
+            "on §7.5 yourself. A `limit_choices_to` over an encrypted "
+            "column reaches here through ForeignKey.validate() and cannot "
+            "be served at all."
+        )
+
+    def _refuse_across_subquery_boundary(self, compiler: Any) -> None:
+        """Refuse compiling for a *verifying* query that is a subquery.
+
+        The mark says a `FieldsealQuerySet` owns this `Query`. It does not
+        say that queryset is the one answering the statement, and those come
+        apart at exactly one place: `Exists(qs)` and `Subquery(qs)` take
+        `qs.query` and never touch the queryset again, so the lookup
+        compiles against an inner query whose mark is real while the rows
+        are fetched by an enclosing statement that may have no layer at all.
+        `_refuse_unlayered` reads the inner query and passes.
+
+        Found by the review round on [#121], measured from the plain
+        manager with a forged collision:
+        `_base_manager.filter(Exists(objects.filter(pk=OuterRef("pk"),
+        email=v)))` returned the §7.4 bucket, and the `exclude()` form
+        returned G24's subtractive wrong answer -- so the shape
+        `_refuse_unlayered` refuses could be rewritten as a correlated
+        `Exists` and served. `FieldsealQuerySet` refuses this embedding at
+        `filter()`/`annotate()` time (`_refuse_embedded_index`), which is
+        why the same subquery under a verifying *outer* was already
+        refused; this is that rule at the layer every enclosing queryset
+        passes, including the ones that never reach the first.
+
+        Stated on `verify` alone rather than `verify and indexed`: §7.5 runs
+        in `_fetch_all` on rows the queryset materializes, and a subquery's
+        rows never leave the database, so a queryset that expects to verify
+        cannot do it from here whatever its index mark says. `.candidates()`
+        (`verify = False`) is untouched -- `filter(...__in=qs.candidates())`
+        is the shape three refusal messages recommend, and bucket semantics
+        embed fine in a positive position.
+        """
+        query = compiler.query
+        if not (getattr(query, "subquery", False)
+                and getattr(query, "fieldseal_verify", False)):
+            return
+        field = self.lhs.output_field
+        owner = field.model._meta.concrete_model
+        raise FieldsealNotSupported(
+            f"`{owner.__name__}.{field.name}` is filtered inside a subquery "
+            "on a queryset that expects to re-verify. Spec §7.5 "
+            "re-verification runs in FieldsealQuerySet._fetch_all, over the "
+            "rows the queryset materializes -- and a subquery's rows never "
+            "leave the database, so the enclosing statement is answered "
+            "from the spec §7.4 bucket. In a negated position "
+            "(`exclude(Exists(...))`, `NOT EXISTS`) the bucket removes rows "
+            "that belong in the answer and nothing downstream can put them "
+            "back (spec §10.2, G24 [#100]). Materialize the verified rows "
+            "first and embed their primary keys "
+            f"(Exists({owner.__name__}.objects.filter("
+            "pk__in=[o.pk for o in qs]))), or embed `.candidates()` in a "
+            "positive position and take spec §7.5 on yourself."
         )
 
 

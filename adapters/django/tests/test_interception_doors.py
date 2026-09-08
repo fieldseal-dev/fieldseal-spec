@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import pytest
 from django import forms
+from django.db import connection
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from fieldseal_django.errors import FieldsealNotSupported
+from fieldseal_django.fields import _IndexedLookup
 
 from .models import Patient, Referral, Visit
 from .test_l2 import _forge_collision
@@ -183,6 +185,111 @@ class TestAQuerysetWithNoLayerIsRefused:
         assert ref.patient.pk == rows[0].pk
         rows[0].delete()  # cascade collection, through `_base_manager`
         assert not Referral.objects.filter(pk=ref.pk).exists()
+
+
+class TestTheBoundaryTheMarkDoesNotReach:
+    """The review round on this PR (reviewer 1, blocking) found the first
+    cut's backstop too narrow, and the tests above did not catch it.
+
+    The mark says a `FieldsealQuerySet` owns the `Query` the lookup compiles
+    for. It does not say that queryset is the one answering the statement,
+    and the two come apart at a subquery boundary: `Exists(qs)` takes
+    `qs.query` and never touches the queryset again, so from a plain manager
+    the *inner* query carries a real mark, `_refuse_unlayered` passes, and
+    the rows are fetched by an enclosing statement with no §7.5 layer. The
+    shape `TestAQuerysetWithNoLayerIsRefused` refuses was rewritable as a
+    correlated `Exists` and served.
+    """
+
+    @staticmethod
+    def _correlated():
+        return Patient.objects.filter(pk=OuterRef("pk"), email=V)
+
+    def test_a_verifying_subquery_under_a_plain_outer_is_refused(self, rows):
+        """Measured before: `[1, 2]` -- the §7.4 bucket, unverified, from
+        the manager whose direct `filter(email=v)` is refused."""
+        _forge_collision(onto=rows[1], like=rows[0])
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(Patient._base_manager.filter(Exists(self._correlated())))
+        assert "inside a subquery" in str(e.value)
+
+    def test_the_negated_form_is_refused_too(self, rows):
+        """The dangerous direction, and the one that made this blocking:
+        measured before, `[3]` -- G24's subtractive wrong answer, where the
+        answer is `[2, 3]`. A positive-only fix would have left it."""
+        _forge_collision(onto=rows[1], like=rows[0])
+        with pytest.raises(FieldsealNotSupported):
+            list(Patient._base_manager.exclude(Exists(self._correlated())))
+
+    def test_an_uncorrelated_exists_is_refused(self, rows):
+        """Measured before: `[1, 2, 3]` -- the whole table, because an
+        unverified bucket that is merely non-empty makes `EXISTS` true for
+        every row."""
+        with pytest.raises(FieldsealNotSupported):
+            list(Patient._base_manager.filter(
+                Exists(Patient.objects.filter(email=V))))
+
+    def test_a_verifying_outer_still_refuses_at_the_queryset_layer(
+            self, rows):
+        """The same embedding under a `FieldsealQuerySet` was already
+        refused (#117), with a fuller message. The compile-time rule must
+        not take that case over: it is the second layer, not the first."""
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(Patient.objects.filter(Exists(self._correlated())))
+        assert "Subquery" in str(e.value)
+
+    def test_candidates_still_embeds_in_a_positive_position(self, rows):
+        """The refusal keys on `verify`, not on the index mark, so the shape
+        three refusal messages recommend is untouched -- from a plain outer
+        too, where nothing else would have stopped it. Bucket semantics were
+        asked for and are what come back."""
+        _forge_collision(onto=rows[1], like=rows[0])
+        cands = Patient.objects.filter(email=V).candidates()
+        found = Patient.objects.filter(pk__in=cands)
+        assert {p.pk for p in found} == {rows[0].pk, rows[1].pk}
+
+    def test_the_subtractive_operand_residue_from_a_plain_outer(self, rows):
+        """**A documented residue, asserted as one so it cannot drift.**
+
+        `.candidates()` in a *subtractive* operand is refused on any
+        `FieldsealQuerySet` (G24, the bucket-as-operand rule), and there is
+        no lookup-layer backstop for it: the outer predicate is on a plain
+        column, so no `_IndexedLookup` compiles anywhere in the statement
+        and the compile-time layer is never consulted. From a plain manager
+        the rule therefore has nobody to read it. This is the same residue
+        `docs/12` §3.2 already records for a model with no encrypted column
+        of its own, with the owning model's `_base_manager` as a second
+        instance -- and it stays a residue rather than a hole because the
+        caller had to build the bucket deliberately to reach it.
+        """
+        _forge_collision(onto=rows[1], like=rows[0])
+        cands = Patient.objects.filter(email=V).candidates()
+        with pytest.raises(FieldsealNotSupported):
+            list(Patient.objects.exclude(pk__in=cands))
+        # No layer to read the position: served, and short by the collision.
+        served = list(Patient._base_manager.exclude(pk__in=cands))
+        assert {p.pk for p in served} == {rows[2].pk}
+
+
+class TestTheRefusalsAreDistinct:
+    """Reviewer 2, finding 2: the message assertions above cannot by
+    themselves show *which* backstop fired. This calls the two directly, on
+    the shape door 2 is about, and shows the cross-model one provably
+    passes there -- which is the whole reason door 2 needed a second
+    check."""
+
+    def test_cross_model_passes_where_the_layer_check_fires(self, rows):
+        query = Patient._base_manager.filter(email=V).query
+        compiler = query.get_compiler(connection=connection)
+        lookup = query.where.children[0]
+        assert isinstance(lookup, _IndexedLookup)
+
+        # Owner is the querying model, so this one passes by design ...
+        assert lookup._refuse_cross_model(compiler) is None
+        # ... and the queryset layer is what is missing.
+        with pytest.raises(FieldsealNotSupported) as e:
+            lookup._refuse_unlayered(compiler)
+        assert "no fieldseal layer" in str(e.value)
 
 
 class TestLimitChoicesTo:

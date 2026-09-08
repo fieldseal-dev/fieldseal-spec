@@ -201,12 +201,19 @@ is a plain `Manager` with no verifying queryset anywhere above it — Django
 builds it that way on purpose. Both reached the blind index unrefused and
 unverified, and Django walks both itself, for `limit_choices_to`. The
 queryset override closes the first; the second is closed one layer down, in
-the lookup: **a query no verifying queryset owns cannot compile an encrypted
-equality at all**, so `Patient._base_manager.filter(email=v)` raises. It
+the lookup: **an encrypted equality compiles only for a query whose rows a
+verifying queryset will re-verify** — or one whose caller took §7.5 on with
+`.candidates()` — so `Patient._base_manager.filter(email=v)` raises, and so
+does the correlated `Exists(...)` it can be rewritten as. `_base_manager`
 still answers primary keys, `IS [NOT] NULL` and unfiltered reads, which is
 what Django's own FK validation and cascade deletes need from it. If you hold
 a plain queryset and want the rows, go through `Model.objects` — or
-`.candidates()` on it, and take on §7.5 yourself.
+`Model.objects.filter(...).candidates()`, and take on §7.5 yourself.
+
+The one shape that stays served from a plain manager is a `.candidates()`
+bucket used as a *subtractive* operand (`exclude(pk__in=…candidates())`): no
+encrypted lookup compiles in that statement, so the lookup layer never sees
+it. `Model.objects` refuses it; a plain manager has nobody to.
 
 **A second refusal family does not depend on filtering at all** (G20,
 [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that

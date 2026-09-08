@@ -288,13 +288,21 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         survive the clone `Subquery.__init__` takes.
 
         The *presence* of the pair carries a second fact, which is what
-        `fields._IndexedLookup._refuse_unlayered` reads: this `Query`
-        belongs to a queryset that has the §7.5 layer. An unmarked `Query`
-        is one no queryset of ours ever held -- `Model._base_manager` builds
-        exactly that -- and compiling an encrypted equality there serves the
-        §7.4 bucket as the answer ([#118]). Note the asymmetry that makes
-        the distinction work: `fieldseal_verify = False` is a caller opting
-        out, and the attribute *missing* is nobody having opted in.
+        `fields._IndexedLookup` reads at compile time: this `Query` belongs
+        to a queryset that has the §7.5 layer. An unmarked `Query` is one no
+        queryset of ours ever held -- `Model._base_manager` builds exactly
+        that -- and compiling an encrypted equality there serves the §7.4
+        bucket as the answer ([#118]). Note the asymmetry that makes the
+        distinction work: `fieldseal_verify = False` is a caller opting out,
+        and the attribute *missing* is nobody having opted in.
+
+        The mark says a queryset of ours owns this `Query`. It does **not**
+        say that queryset is the one answering the statement, and the two
+        come apart at a subquery boundary, where the lookup compiles for the
+        inner query and an enclosing statement fetches the rows.
+        `_refuse_across_subquery_boundary` is the reader for that half; a
+        mark alone was not enough, which the review round on [#121]
+        measured.
         """
         self.query.fieldseal_indexed = self._fieldseal_indexed
         self.query.fieldseal_verify = self._fieldseal_verify
@@ -383,9 +391,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         materializes an `__in` iterable in place and Django consumes it
         again to compile.
         """
-        from django.db.models import Q
-
-        if not isinstance(filter_obj, Q):
+        if not isinstance(filter_obj, models.Q):
             return super().complex_filter(filter_obj)
         walked = self._q_obligations(filter_obj, None, None,
                                      self._fieldseal_verify)
@@ -402,6 +408,8 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         """
         found = [ob for ob in walked if isinstance(ob, _Obligation)]
         if found:
+            # Reads before it writes even when `clone is self`: the tuple on
+            # the right is built whole before the name is rebound.
             clone._fieldseal_obligations = (*self._fieldseal_obligations, *found)
         if walked:
             # Every entry, obligation or `_BUCKETED` marker, means the blind
