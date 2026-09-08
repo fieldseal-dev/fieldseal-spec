@@ -72,6 +72,16 @@ _XOR = ("an XOR combination -- negation once expanded, since `a XOR b` is "
         "`(a AND NOT b) OR (NOT a AND b)`")
 
 
+#: Appended to a refusal whose usual justification is bucket mechanics, when
+#: the column has no bucket for the claim to be about. The refusal itself is
+#: unchanged -- what changes is that it stops asserting a §7.4 bucket that
+#: does not exist, and stops prescribing a remedy that is itself refused.
+#: G23's precedent, one clause up: a refusal MUST NOT carry a false
+#: justification (spec §10.2).
+_NO_BUCKET_TAIL = (" Fetch the rows and filter in Python after decryption, "
+                   "which is the honest fallback in either direction.")
+
+
 class _Bucketed:
     """What the walk reports for an indexed term seen while §7.5 was off.
 
@@ -418,7 +428,8 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             # dropped, nothing raised.
             self._refuse_subtractive(
                 f"`exclude({key}=...)` is not available on an encrypted "
-                "column."
+                "column.",
+                self._bucket_absence(field, lookup, key),
             )
         if traversed:
             if verifying:
@@ -456,7 +467,41 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             "verified primary keys and use filter(...__pk__in=[...])."
         )
 
-    def _refuse_subtractive(self, lead: str) -> None:
+    def _bucket_absence(self, field: Any, lookup: str,
+                        key: str) -> str | None:
+        """Why this predicate reaches no §7.4 bucket at all, or None.
+
+        Both refusals below justify themselves with bucket mechanics -- an
+        exclusion drops the whole bucket, an `OR` branch leaves a candidate
+        undecidable -- and both run before `_obligation`, which is where the
+        column is checked for actually having one. On a column with no
+        `BlindIndex`, or under a lookup spec §7.1 keeps off the index, those
+        justifications describe a bucket that is not there, and the remedy
+        they prescribe (the positive `filter()`) is refused on its own
+        account. The ordering is not the bug and reversing it would trade
+        this for a worse one -- a caller told to run a schema migration for
+        a shape that is refused with the index too -- so the *message* is
+        what carries the fact.
+        """
+        if field.index is None:
+            return (
+                f"{self.model.__name__}.{field.name} declares no BlindIndex, "
+                "so there is no index column to compare against and the "
+                "randomized ciphertext matches nothing -- in either "
+                "direction. Declaring one would not make this shape "
+                "available either"
+            )
+        if lookup not in ("exact", "in"):
+            return (
+                f"spec §7.1 restricts a blind index to equality and "
+                f"membership, so `{key}` reaches no index column at all. A "
+                "lookup the index can serve would not make this shape "
+                "available either"
+            )
+        return None
+
+    def _refuse_subtractive(self, lead: str,
+                            absent: str | None = None) -> None:
         """The one filter-time refusal `.candidates()` does not lift.
 
         Decided by G24 ([#100]) and normative in spec §10.2: the hatch hands
@@ -468,7 +513,22 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         this shape -- which the `exclude()` message did until G24 closed --
         sends a caller following the error text onto semantics that differ
         in kind from the filter case, with nothing saying so.
+
+        `absent` carries `_bucket_absence`'s answer: when the column has no
+        bucket for this predicate, the paragraph below would be describing
+        one that does not exist, so the refusal states the real reason
+        first and keeps the G24 rule as the second half -- which is what
+        stops the caller migrating for nothing.
         """
+        if absent is not None:
+            raise FieldsealNotSupported(
+                f"{lead.rstrip('.')}: {absent}: an encrypted column in a "
+                "subtractive position is refused over a blind index too, "
+                "because the SQL excludes the whole §7.4 bucket and the "
+                "rows it should have kept never reach the adapter for spec "
+                "§7.5 re-verification to put back (spec §10.2, G24 "
+                f"[#100]).{_NO_BUCKET_TAIL}"
+            )
         raise FieldsealNotSupported(
             f"{lead} The SQL excludes the whole index bucket, and spec §7.4 "
             "mandates that the bucket holds rows whose value differs -- so "
@@ -568,7 +628,8 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                 # length: the position is the rule, not who owns the column.
                 self._refuse_subtractive(
                     f"`Q({key}=...)` reaches an encrypted column through "
-                    f"{subtractive}."
+                    f"{subtractive}.",
+                    self._bucket_absence(field, lookup, key),
                 )
             if traversed:
                 if verifying:
@@ -578,6 +639,19 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                 out.append(_BUCKETED)
                 continue
             if reason is not None:
+                absent = self._bucket_absence(field, lookup, key)
+                if absent is not None:
+                    # Same correction as the subtractive one: "a candidate
+                    # row may be present" describes a candidate set this
+                    # column does not have, and splitting the term into its
+                    # own filter() -- the remedy below -- is refused too.
+                    raise FieldsealNotSupported(
+                        f"`Q({key}=...)` reaches an encrypted column through "
+                        f"an {reason.split('-')[0]} combination: {absent}: an "
+                        "encrypted column under a combination spec §7.5 "
+                        "cannot decide row by row is refused over a blind "
+                        f"index too.{_NO_BUCKET_TAIL}"
+                    )
                 raise FieldsealNotSupported(
                     f"`Q({key}=...)` reaches an encrypted column through an "
                     f"{reason.split('-')[0]} combination. A candidate row may "

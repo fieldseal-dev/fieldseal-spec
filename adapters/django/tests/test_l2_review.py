@@ -553,3 +553,100 @@ class TestABucketEmbeddedInASubtractivePosition:
         assert matched == {rows[0].pk, rows[1].pk}  # Grace, as a match
         assert rows[1].pk not in kept               # and then dropped
         assert rows[2].pk in kept
+
+
+class TestARefusalDoesNotInventABucket:
+    """The G24 review's item 5: three refusals justified themselves with §7.4
+    bucket mechanics on columns that have no bucket, and prescribed a remedy
+    that is refused on its own account.
+
+    `exclude(note=...)` said "the SQL excludes the whole index bucket" for a
+    column with no `BlindIndex` — there is no bucket and the SQL excludes an
+    envelope column — and told the caller to "fetch the matches with a
+    positive filter()", which raises "declares no BlindIndex". The same on a
+    lookup spec §7.1 keeps off the index, and the same one clause over in the
+    `OR` refusal, which spoke of a candidate set that does not exist.
+
+    G23 settled the principle for the aggregate clause one issue earlier: a
+    refusal MUST NOT be justified by a mechanism that is not operating. The
+    fix is in the message rather than in the check order, because reversing
+    the order trades this for a worse failure — a caller sent to run a
+    schema migration for a shape that is refused *with* the index too.
+    """
+
+    NO_INDEX = "declares no BlindIndex"
+    NO_LOOKUP = "restricts a blind index to equality and membership"
+    BUCKET = "The SQL excludes the whole index bucket"
+    PYTHON = "filter in Python after decryption"
+
+    @pytest.mark.parametrize("shape, expected", [
+        (lambda qs: qs.exclude(note="x"), NO_INDEX),
+        (lambda qs: qs.exclude(age=36), NO_INDEX),
+        (lambda qs: qs.filter(~Q(note="x")), NO_INDEX),
+        (lambda qs: qs.exclude(Q(note="x")), NO_INDEX),
+        (lambda qs: qs.exclude(email__contains="x"), NO_LOOKUP),
+        (lambda qs: qs.exclude(email__gt="x"), NO_LOOKUP),
+        (lambda qs: qs.filter(~Q(email__contains="x")), NO_LOOKUP),
+    ], ids=["exclude-note", "exclude-age", "not-Q-note", "exclude-Q-note",
+            "exclude-contains", "exclude-gt", "not-Q-contains"])
+    def test_a_subtractive_refusal_names_the_real_reason(
+            self, rows, shape, expected):
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape(Patient.objects))
+        msg = str(e.value)
+        assert expected in msg
+        assert self.BUCKET not in msg   # there is no bucket to exclude
+        assert self.PYTHON in msg       # and this remedy actually works
+
+    @pytest.mark.parametrize("shape, expected", [
+        (lambda qs: qs.filter(Q(note="x") | Q(pk=1)), NO_INDEX),
+        (lambda qs: qs.filter(Q(email__gt="a") | Q(pk=1)), NO_LOOKUP),
+    ], ids=["or-note", "or-gt"])
+    def test_an_or_refusal_names_the_real_reason(self, rows, shape, expected):
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape(Patient.objects))
+        msg = str(e.value)
+        assert expected in msg
+        assert "A candidate row may be present" not in msg
+        assert self.PYTHON in msg
+
+    def test_the_same_holds_on_candidates(self, rows):
+        """`.candidates()` returns before `_obligation` runs, so this route
+        never reached the check that knows whether a bucket exists."""
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(Patient.objects.all().candidates().exclude(note="x"))
+        assert self.NO_INDEX in str(e.value)
+        assert self.BUCKET not in str(e.value)
+
+    def test_the_remedy_the_old_message_prescribed_is_itself_refused(
+            self, rows):
+        """Measured, and the reason the wording mattered rather than only the
+        justification: a caller who followed the old text landed on a second
+        refusal."""
+        for shape in (lambda: Patient.objects.filter(note="x"),
+                      lambda: Patient.objects.filter(age=36),
+                      lambda: Patient.objects.filter(email__contains="x")):
+            with pytest.raises(FieldsealNotSupported):
+                list(shape())
+
+    @pytest.mark.parametrize("shape", [
+        lambda qs: qs.exclude(email="ada@example.com"),
+        lambda qs: qs.filter(~Q(email="ada@example.com")),
+        lambda qs: qs.all().candidates().exclude(email="ada@example.com"),
+    ], ids=["exclude", "not-Q", "candidates"])
+    def test_an_indexed_column_keeps_the_bucket_justification(
+            self, rows, shape):
+        """The correction must not reach the case where the claim is true:
+        here the bucket exists, the exclusion really does drop it, and the
+        G24 wording stays exactly as it was."""
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape(Patient.objects))
+        msg = str(e.value)
+        assert self.BUCKET in msg
+        assert "false negatives are not" in msg
+        assert self.NO_INDEX not in msg
+
+    def test_an_indexed_column_keeps_the_or_justification(self, rows):
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(Patient.objects.filter(Q(email="ada@example.com") | Q(pk=1)))
+        assert "A candidate row may be present" in str(e.value)
