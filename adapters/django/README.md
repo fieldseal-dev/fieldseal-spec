@@ -211,9 +211,11 @@ a plain queryset and want the rows, go through `Model.objects` — or
 `Model.objects.filter(...).candidates()`, and take on §7.5 yourself.
 
 The one shape that stays served from a plain manager is a `.candidates()`
-bucket used as a *subtractive* operand (`exclude(pk__in=…candidates())`): no
-encrypted lookup compiles in that statement, so the lookup layer never sees
-it. `Model.objects` refuses it; a plain manager has nobody to.
+bucket used as a *subtractive* operand — `exclude(pk__in=…candidates())`, or
+the `exclude(Exists(…candidates()))` spelling. Reading the position needs the
+queryset, because the lookup is handed the operand without it, and a plain
+manager has no queryset of ours to read it from. `Model.objects` refuses
+both.
 
 **A second refusal family does not depend on filtering at all** (G20,
 [#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that

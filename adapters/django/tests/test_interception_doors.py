@@ -252,23 +252,46 @@ class TestTheBoundaryTheMarkDoesNotReach:
         """**A documented residue, asserted as one so it cannot drift.**
 
         `.candidates()` in a *subtractive* operand is refused on any
-        `FieldsealQuerySet` (G24, the bucket-as-operand rule), and there is
-        no lookup-layer backstop for it: the outer predicate is on a plain
-        column, so no `_IndexedLookup` compiles anywhere in the statement
-        and the compile-time layer is never consulted. From a plain manager
-        the rule therefore has nobody to read it. This is the same residue
-        `docs/12` §3.2 already records for a model with no encrypted column
-        of its own, with the owning model's `_base_manager` as a second
-        instance -- and it stays a residue rather than a hole because the
-        caller had to build the bucket deliberately to reach it.
+        `FieldsealQuerySet` (G24, the bucket-as-operand rule), and from a
+        plain manager the rule has nobody to read it. Both spellings are
+        asserted, because the compile-time layer misses them for different
+        reasons and only one of those is "no lookup compiles" (the second
+        was raised on this PR's re-review round, after the first version of
+        this test enumerated one spelling and the paragraph explained only
+        that one):
+
+        - `exclude(pk__in=qs.candidates())` never reaches the lookup layer
+          at all -- the outer predicate is on a plain column and the operand
+          is a queryset, so no `_IndexedLookup` compiles in the statement;
+        - `exclude(Exists(qs.candidates()))` *does* reach it, inside the
+          subquery, and is allowed through on purpose:
+          `_refuse_across_subquery_boundary` keys on `fieldseal_verify`,
+          which `.candidates()` sets to `False` so that the embedding three
+          refusal messages recommend keeps working. The lookup is handed the
+          operand without the position -- the same argument
+          `_refuse_bucket_operand` exists for one layer up.
+
+        This is the same residue `docs/12` §3.2 already records for a model
+        with no encrypted column of its own, with the owning model's
+        `_base_manager` as a second instance -- and it stays a residue
+        rather than a hole because the caller had to build the bucket
+        deliberately to reach it.
         """
         _forge_collision(onto=rows[1], like=rows[0])
-        cands = Patient.objects.filter(email=V).candidates()
+        flat = Patient.objects.filter(email=V).candidates()
+        correlated = Patient.objects.filter(
+            pk=OuterRef("pk"), email=V).candidates()
+
         with pytest.raises(FieldsealNotSupported):
-            list(Patient.objects.exclude(pk__in=cands))
-        # No layer to read the position: served, and short by the collision.
-        served = list(Patient._base_manager.exclude(pk__in=cands))
-        assert {p.pk for p in served} == {rows[2].pk}
+            list(Patient.objects.exclude(pk__in=flat))
+        with pytest.raises(FieldsealNotSupported):
+            list(Patient.objects.exclude(Exists(correlated)))
+
+        # No layer to read the position: served, and short by the collision
+        # -- the answer is {grace, alan}, both spellings return {alan}.
+        for served in (Patient._base_manager.exclude(pk__in=flat),
+                       Patient._base_manager.exclude(Exists(correlated))):
+            assert {p.pk for p in served} == {rows[2].pk}
 
 
 class TestTheRefusalsAreDistinct:
