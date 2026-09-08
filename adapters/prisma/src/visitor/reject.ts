@@ -470,12 +470,19 @@ function record(
 
   if (verify && site.answered !== null) {
     if (absence !== null) {
+      // `site.answered.fallback` is kept rather than replaced: it names the
+      // shape to run, and for the write family (`updateMany`, `deleteMany`,
+      // `update`, `delete`, `upsert`, nested writes) swapping it for the
+      // read-side tail would prescribe a remedy that never performs the write.
+      // The counterfactual clause stays site-generic for the same reason --
+      // "returns an answer rather than the rows" is false for the write family
+      // and for the relation site, which are `findMany`s that do return rows.
       throw new FieldsealNotSupported(
-        `${label}: ${site.answered.why} ${absence}: an operation the database ` +
-          `answers over an index bucket is refused with one too, because spec ` +
-          `§7.5 requires candidates to be decrypted and compared before they ` +
-          `count as results and this operation returns an answer rather than ` +
-          `the rows.${NO_BUCKET_TAIL} (At ${path}.)`,
+        `${label}: ${site.answered.why} ${absence}: this path is refused over a ` +
+          `blind index too, for the reason just given -- spec §7.5 requires ` +
+          `candidates to be decrypted and compared before they count as ` +
+          `results, and this one never presents them. ` +
+          `${site.answered.fallback}${NO_BUCKET_RIDER} (At ${path}.)`,
       );
     }
     throw new FieldsealNotSupported(
@@ -638,22 +645,6 @@ function topLevelAnswered(operation: string): Answered {
 }
 
 /**
- * The one filter-time refusal `candidateScope()` does not lift (G24, [#100];
- * spec §10.2's negation clause).
- *
- * The deciding argument is what the caller can do with what they were handed.
- * The scope hands over spec §7.5, and §7.5 is a *filter* obligation: under a
- * positive filter the caller holds a superset of the answer and reaches it by
- * dropping rows, which is the whole point of the opt-out. Under a negated one
- * they hold a *subset*, and no operation on it restores a row the database
- * already removed -- so the scope would be transferring a responsibility that
- * is not dischargeable from what it transfers with it.
- *
- * Every other message in this file offers the scope as the way to take bucket
- * semantics deliberately. That advice is false here, which is why this check
- * runs before all of them.
- */
-/**
  * Why this column carries no §7.4 bucket for a refusal to be *about*, or null.
  *
  * Three refusals below justify themselves with bucket mechanics -- an
@@ -679,11 +670,42 @@ function bucketAbsence(model: ResolvedModel, field: string): string | null {
   );
 }
 
-/** The honest fallback when there is no bucket: it works in either direction. */
+/**
+ * The fallback when there is no bucket: it works in either direction, and
+ * unlike "run the positive form instead" it is not itself refused.
+ */
 const NO_BUCKET_TAIL =
   ` Fetch the rows and filter after decryption in application code, which is ` +
   `the honest fallback here either way.`;
 
+/**
+ * The rider the *answered* sites need instead. Those already carry an
+ * operation-specific fallback naming the shape to run (findMany then act on
+ * the ids, for the write family), and replacing it would drop the write; what
+ * the missing index adds is that the encrypted term cannot be in the `where`
+ * of that shape either.
+ */
+const NO_BUCKET_RIDER =
+  ` With no index the encrypted term cannot go in the \`where\` at all: filter ` +
+  `on the remaining criteria, decrypt, and apply the encrypted one in ` +
+  `application code.`;
+
+/**
+ * The one filter-time refusal `candidateScope()` does not lift (G24, [#100];
+ * spec §10.2's negation clause).
+ *
+ * The deciding argument is what the caller can do with what they were handed.
+ * The scope hands over spec §7.5, and §7.5 is a *filter* obligation: under a
+ * positive filter the caller holds a superset of the answer and reaches it by
+ * dropping rows, which is the whole point of the opt-out. Under a negated one
+ * they hold a *subset*, and no operation on it restores a row the database
+ * already removed -- so the scope would be transferring a responsibility that
+ * is not dischargeable from what it transfers with it.
+ *
+ * Every other message in this file offers the scope as the way to take bucket
+ * semantics deliberately. That advice is false here, which is why this check
+ * runs before all of them.
+ */
 function refuseSubtractive(
   label: string,
   position: string,
@@ -698,7 +720,10 @@ function refuseSubtractive(
         `index too, because the SQL excludes the whole §7.4 bucket and the rows ` +
         `it should have kept never reach the adapter for spec §7.5 ` +
         `re-verification to put back (spec §10.2, decided by G24, ` +
-        `[#100]).${NO_BUCKET_TAIL}${at === null ? "" : ` (At ${at}.)`}`,
+        // `extra` is the operator's own reason (`notIn` and §7.10's missing
+        // negated-membership row) and is true whether or not an index exists,
+        // so it is carried here rather than dropped with the bucket paragraph.
+        `[#100]).${extra}${NO_BUCKET_TAIL}${at === null ? "" : ` (At ${at}.)`}`,
     );
   }
   throw new FieldsealNotSupported(

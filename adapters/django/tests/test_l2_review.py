@@ -650,3 +650,23 @@ class TestARefusalDoesNotInventABucket:
         with pytest.raises(FieldsealNotSupported) as e:
             list(Patient.objects.filter(Q(email="ada@example.com") | Q(pk=1)))
         assert "A candidate row may be present" in str(e.value)
+
+    @pytest.mark.parametrize("shape", [
+        lambda: Visit.objects.exclude(patient__note="x"),
+        lambda: Visit.objects.filter(~Q(patient__note="x")),
+    ], ids=["exclude-kw", "not-Q"])
+    def test_the_absence_names_the_column_that_exists(self, rows, shape):
+        """Found by the review round on this PR's own first cut.
+
+        The absence clause named the *querying* model, and this check runs
+        ahead of the traversal branch by design (the G24 reorder), so a
+        traversed key reaches it routinely: `Visit.objects.exclude(
+        patient__note=...)` reported "Visit.note declares no BlindIndex" for
+        a column `Visit` does not have. Correcting a false justification with
+        a different false statement is not a correction.
+        """
+        with pytest.raises(FieldsealNotSupported) as e:
+            list(shape())
+        msg = str(e.value)
+        assert "Patient.note declares no BlindIndex" in msg
+        assert "Visit.note" not in msg

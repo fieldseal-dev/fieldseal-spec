@@ -484,8 +484,16 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         what carries the fact.
         """
         if field.index is None:
+            # `field.model`, not `self.model`: `resolve_path` follows
+            # relations, and this check deliberately runs *ahead* of the
+            # traversal branch (the G24 reorder), so a traversed key reaches
+            # here routinely. Named off the querying model,
+            # `Visit.objects.exclude(patient__note=...)` reported
+            # "Visit.note", which is not a column that exists -- the same
+            # false-justification class this method was written to remove.
+            # `_refuse_traversal` names the owner the same way.
             return (
-                f"{self.model.__name__}.{field.name} declares no BlindIndex, "
+                f"{field.model.__name__}.{field.name} declares no BlindIndex, "
                 "so there is no index column to compare against and the "
                 "randomized ciphertext matches nothing -- in either "
                 "direction. Declaring one would not make this shape "

@@ -569,4 +569,66 @@ describe("a refusal does not invent a bucket the column does not have", () => {
       lp["patient"]!["findMany"]!({ where: { OR: [{ email: ADA }, { plainName: "a" }] } }),
     ).rejects.toThrow(/A returned row may be there/);
   });
+
+  // ---- what the review round on this PR found the first cut got wrong ----
+
+  const writes: Array<[string, () => Promise<unknown>]> = [
+    [
+      "updateMany",
+      () => lp["patient"]!["updateMany"]!({ where: { note: "x" }, data: { plainName: "z" } }),
+    ],
+    ["deleteMany", () => lp["patient"]!["deleteMany"]!({ where: { note: "x" } })],
+  ];
+
+  for (const [name, run] of writes) {
+    it(`keeps the operation's own fallback for ${name}`, async () => {
+      // The first cut replaced `answered.fallback` with the read-side tail, so
+      // the remedy a caller followed no longer performed the write at all --
+      // the same defect class this describe block exists to remove, one layer
+      // down. The operation-specific sentence is what names the shape to run.
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err!.message).toMatch(NO_INDEX);
+      expect(err!.message).toMatch(/act on their primary keys/);
+      // And the clause that contradicted `why` two sentences earlier is gone:
+      // a write does not "return an answer rather than the rows".
+      expect(err!.message).not.toMatch(/returns an answer rather than the rows/);
+      expect(err!.message).toMatch(/cannot go in the `where` at all/);
+    });
+  }
+
+  it("keeps the relation-site fallback, which is a findMany that does return rows", async () => {
+    const err = await lp["visit"]!["findMany"]!({
+      where: { patient: { is: { note: "x" } } },
+    }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(NO_INDEX);
+    expect(err!.message).toMatch(/Query that model directly and join on the result/);
+    expect(err!.message).not.toMatch(/returns an answer rather than the rows/);
+  });
+
+  it("keeps `notIn`'s own §7.10 reason, which holds with or without an index", async () => {
+    // `extra` was dropped along with the bucket paragraph in the first cut.
+    // It is the operator's reason, not the bucket's.
+    await expect(
+      lp["patient"]!["findMany"]!({ where: { note: { notIn: ["x"] } } }),
+    ).rejects.toThrow(/no row for negated membership/);
+  });
+
+  it("still justifies a database-answered refusal by the bucket when there is one", async () => {
+    // The `why` clauses were reworded (the bucket claim moved out of them and
+    // into the paragraph below), so this pins that the *justification* an
+    // indexed column gets is still the bucket one.
+    const err = await lp["patient"]!["count"]!({ where: { email: ADA } }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(/Spec §7\.4 mandates that the index bucket/);
+    expect(err!.message).not.toMatch(NO_INDEX);
+    expect(err!.message).toMatch(/which counts verified rows/);
+  });
 });
