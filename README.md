@@ -1,5 +1,7 @@
 [![Conformance](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/conformance.yml/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/conformance.yml)
 [![Build and deploy fieldseal.dev](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/pages.yml/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/pages.yml)
+[![Dependency Graph](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/dependabot/update-graph)
+
 # Fieldseal
 
 **A portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.**
