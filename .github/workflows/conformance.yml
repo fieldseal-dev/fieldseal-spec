@@ -9,6 +9,7 @@ on:
       - "vectors/**"
       - "tools/vector-gen/**"
       - "tools/ucd-gen/**"
+      - "examples/**"
       - ".github/workflows/conformance.yml"
   pull_request:
     paths:
@@ -17,6 +18,7 @@ on:
       - "vectors/**"
       - "tools/vector-gen/**"
       - "tools/ucd-gen/**"
+      - "examples/**"
       - ".github/workflows/conformance.yml"
   workflow_dispatch:
   schedule:
@@ -448,6 +450,163 @@ jobs:
             exit 1
           fi
           echo "AD-1 holds: no cryptographic imports in adapters/prisma/src."
+
+  demo:
+    name: "M5 demo: two stacks, one Postgres"
+    runs-on: ubuntu-24.04
+    # No matrix, and both candidate axes were considered and rejected rather
+    # than forgotten.
+    #
+    # `db: [sqlite, postgres]` would vary a claim the *adapter* jobs already
+    # own, and it cannot be varied here anyway: the demo's shared model has a
+    # `uuid` primary key, and SQLite has no uuid type, so the one schema the
+    # two stacks share could not exist on it.
+    #
+    # `direction: [django-first, prisma-first]` would be six `if:` guards to
+    # reorder steps that the scenario already runs in both directions in a
+    # single pass -- act 2 is Prisma reading Django's row, act 4 is Django
+    # reading Prisma's, and `check_transcript.py` fails if either is missing.
+    services:
+      postgres:
+        # Same digest as the two adapter jobs above, resolved from the
+        # registry there.
+        image: postgres:17@sha256:0b657ff48d7f76a1e907f381b1693eb4f2bf54c1d2df4feb6743d7dc601768dd
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fieldseal_demo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      # One connection string, read by both stacks. Two variables that must
+      # agree are a variable that will not.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fieldseal_demo
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Both stacks come from this checkout, never from a registry. That is
+      # the whole point of the job: the demo proves these two trees
+      # interoperate, not that two published packages do.
+      - name: Install the Python core and the Django adapter
+        run: |
+          python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
+          python -m pip install --disable-pip-version-check -e "./adapters/django[dev]"
+          python -m pip install --disable-pip-version-check psycopg[binary]
+
+      - name: Build the TypeScript core
+        working-directory: core/typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the Prisma adapter and its generator
+        working-directory: adapters/prisma
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      # A `file:` dependency links a directory, so a missing build product
+      # surfaces in the demo as a module-resolution error three layers away
+      # from its cause. `dist/` is gitignored and the package has no
+      # `prepare` script, so the build above is the only thing that creates
+      # these -- and this step is where their absence gets named.
+      - name: The adapter's entry points exist
+        run: |
+          for f in adapters/prisma/dist/index.js adapters/prisma/dist/generator/bin.js; do
+            test -f "$f" || { echo "missing $f -- the adapter did not build"; exit 1; }
+          done
+          echo "adapter entry points present."
+
+      # A `file:` dependency is recorded with `"link": true` and no integrity
+      # hash: `npm ci` here is a reproducible resolution, not a supply-chain
+      # claim.
+      - name: Install the demo
+        working-directory: examples/patient-directory/prisma
+        run: npm ci --no-audit --no-fund
+
+      # Django owns the DDL. `makemigrations --check` first, because a
+      # migration that no longer matches the models would build a schema the
+      # rest of this job then compares against the wrong declaration.
+      - name: Migrations match the models
+        working-directory: examples/patient-directory/django
+        env:
+          DJANGO_SETTINGS_MODULE: settings
+        run: |
+          python manage.py makemigrations --check --dry-run
+          python manage.py check --fail-level WARNING
+
+      - name: Build the schema
+        working-directory: examples/patient-directory/django
+        env:
+          DJANGO_SETTINGS_MODULE: settings
+        run: python manage.py migrate
+
+      # Prisma only ever generates. `prisma db push` against a table Django
+      # believes it owns is a data-loss path behind a friendly prompt.
+      - name: Generate the Prisma client and the fieldseal field map
+        working-directory: examples/patient-directory/prisma
+        run: npx prisma generate
+
+      - name: The two stacks declare the same column
+        working-directory: examples/patient-directory
+        run: python check_declarations.py
+
+      # The acts, in order, each as its own process. `--check` additionally
+      # diffs the whole narration against the committed golden file.
+      #
+      # The timeout is for one specific failure, not for flake: `PrismaPg`
+      # holds pg sockets open, and a Node process that does not exit burns to
+      # the *job* timeout rather than failing the step. `$disconnect()` in a
+      # `finally` is the fix; this is the backstop.
+      #
+      # Five minutes is not tight, which is worth writing down so it does not
+      # get raised on suspicion: the whole job -- both toolchains, two npm
+      # installs, the migration and every act -- ran in 75 seconds on its
+      # first green run, and this step is a fraction of that. The Postgres
+      # image is pulled and started in `Initialize containers`, before any
+      # step is timed.
+      - name: Run the scenario
+        working-directory: examples/patient-directory
+        timeout-minutes: 5
+        run: python run_scenario.py --check
+
+      - name: Every act ran and every assertion held
+        working-directory: examples/patient-directory
+        run: python check_transcript.py transcript/
+
+      # Tier 2: the two stacks agree on the shape of the table, not only on
+      # its identifiers. Last, because it is the piece most exposed to tool
+      # noise -- it asks the Prisma CLI what DDL it would emit.
+      - name: The two stacks agree on the schema shape
+        working-directory: examples/patient-directory
+        run: python check_schema_shape.py
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: demo-transcript
+          path: examples/patient-directory/transcript/
+
+      # ruff on the Python, `tsc --noEmit` on the TypeScript. There is no
+      # mypy gate: the adapters are libraries and are held to `--strict`,
+      # while this is an application whose Python surface is almost entirely
+      # Django's -- which ships no `py.typed`, so the check would be
+      # comparing `Any` with `Any`. The TypeScript half is checked, because
+      # Prisma's generated client is typed and the check is therefore real.
+      - name: Lint and typecheck
+        working-directory: examples/patient-directory
+        run: |
+          python -m ruff check .
+          cd prisma && npx tsc -p tsconfig.json --noEmit
 
   vectors-reproducible:
     name: Vectors match a fresh generation

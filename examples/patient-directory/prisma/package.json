@@ -1,0 +1,44 @@
+{
+  "name": "fieldseal-demo-patient-directory",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Prisma half of the fieldseal patient-directory demo. Not a package, not a starter template: it exists to prove one claim about bytes in a shared database.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "//": [
+    "Both local packages are declared explicitly, at paths relative to THIS",
+    "package. npm's history of resolving a nested relative `file:` spec",
+    "against the root project rather than the declaring package is long and",
+    "version-dependent, and this demo hands a core-constructed",
+    "StaticKeyProvider to the adapter -- so two copies of the core would",
+    "typecheck as two unrelated types even though they would work at runtime.",
+    "",
+    "A `file:` dependency is recorded in the lockfile with `\"link\": true` and",
+    "no integrity hash. `npm ci` here is a reproducible *resolution*, not a",
+    "supply-chain claim: it links the working tree beside it.",
+    "",
+    "@prisma/client, prisma and @prisma/adapter-pg are pinned to exactly the",
+    "version the adapter is verified against. The adapter's peer range is",
+    ">=7.10.0 <8 and npm auto-installs peers, so an unpinned demo would drift",
+    "off it silently -- and the `prisma` CLI's `latest` tag currently points",
+    "at an 8.0.0-rc."
+  ],
+  "dependencies": {
+    "@fieldseal/core": "file:../../../core/typescript",
+    "@fieldseal/prisma": "file:../../../adapters/prisma",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "prisma": "7.10.0",
+    "typescript": "~5.9.3"
+  }
+}

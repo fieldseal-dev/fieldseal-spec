@@ -1,0 +1,191 @@
+--- Setup * "Patient" emptied -------------------------------------------
+
+--- Act 1 * Django writes a patient ---------------------------------------
+    the value path encrypts, and the plaintext is not in the column
+
+    Patient.objects.create(id=018f5a10-0001-7000-8000-000000000001, mrn="MRN-0001",
+                           email="ada@example.com", note="peanut allergy")
+
+    "Patient"."email" now holds:
+      envelope     126 bytes = 111 fixed + 15 plaintext (spec §3.1)
+      header       01ff010123456789abcdef0123456789abcdef
+                   fmt_ver 0x01 | suite 0xFF01 | key_id 0123456789abcdef0123456789abcdef
+      plaintext    'ada@example.com' does not appear in the column
+
+    "Patient"."emailBidx" now holds:
+      blind index  2 bytes = aba0  (15 bits, spec §7.4)
+
+--- Act 2 * Prisma reads the row Django wrote -----------------------------
+    the central claim: one row, two languages, one key
+
+    prisma.patient.findUnique({ where: { id: "018f5a10-0001-7000-8000-000000000001" } })
+      # the row Django wrote, in another process, in another language
+
+      mrn          "MRN-0001"   (plaintext column)
+      email        "ada@example.com"   (decrypted from the envelope)
+      note         "peanut allergy"
+
+      the same column, read with no adapter in the path:
+        126 bytes of envelope, not "ada@example.com"
+
+--- Act 3 * Prisma searches by the encrypted address ----------------------
+    the index Python derived is derivable by TypeScript
+
+    prisma.patient.findMany({ where: { email: "ada@example.com" } })
+      # rewritten onto "emailBidx", then re-verified (spec §7.5)
+
+      1 row(s):
+        018f5a10-0001-7000-8000-000000000001  mrn="MRN-0001"
+
+      The predicate never reached the database as written: the suite
+      is randomized, so comparing against ciphertext matches nothing.
+      TypeScript derived the index value; Python wrote it.
+
+--- Act 4 * Prisma writes a patient ---------------------------------------
+    the claim in the other direction starts here
+
+    prisma.patient.create({ data: { id: "018f5a10-0001-7000-8000-000000000002", mrn: "MRN-0002",
+                                    email: "Grace@Example.COM", note: "left-handed" } })
+      # mixed case on purpose: the column's one equality is its
+      # normalizer's (nfc-casefold-v1), and Django looks it up in lower case
+
+    "Patient"."email" now holds:
+      envelope     128 bytes = 111 fixed + 17 plaintext (spec §3.1)
+      header       01ff010123456789abcdef0123456789abcdef
+                   fmt_ver 0x01 | suite 0xFF01 | key_id 0123456789abcdef0123456789abcdef
+      plaintext    "Grace@Example.COM" does not appear in the column
+
+    "Patient"."emailBidx" now holds:
+      blind index  2 bytes = 4bea  (15 bits, spec §7.4)
+
+--- Act 4 * Django reads and searches a row Prisma wrote ------------------
+    the central claim in the other direction, both halves
+
+    Patient.objects.get(id=018f5a10-0001-7000-8000-000000000002)   # written by Prisma
+      mrn          'MRN-0002'   (plaintext column)
+      email        'Grace@Example.COM'   (decrypted from the envelope)
+      note         'left-handed'
+
+    Patient.objects.get(email="grace@example.com")
+      # lower case: `nfc-casefold-v1` is the column's one equality
+      found        018f5a10-0001-7000-8000-000000000002  mrn='MRN-0002'
+
+--- Act 5 * Django writes the shared plaintext ----------------------------
+    half of the act that compares two writers
+
+    Patient.objects.create(id=018f5a10-0001-7000-8000-000000000005, mrn="MRN-0005-DJ",
+                           email="mallory@example.com")
+      # Prisma writes the same address to a different row next.
+
+    written:
+      envelope     130 bytes = 111 fixed + 19 plaintext (spec §3.1)
+      header       01ff010123456789abcdef0123456789abcdef
+                   fmt_ver 0x01 | suite 0xFF01 | key_id 0123456789abcdef0123456789abcdef
+
+--- Act 5 * Prisma writes the shared plaintext ----------------------------
+    half of the act that compares two writers
+
+    prisma.patient.create({ data: { id: "018f5a10-0001-7000-8000-000000000006", mrn: "MRN-0005-PR",
+                                    email: "mallory@example.com" } })
+      # Django wrote the same address to a different row already.
+
+    written:
+      envelope     130 bytes = 111 fixed + 19 plaintext (spec §3.1)
+      header       01ff010123456789abcdef0123456789abcdef
+                   fmt_ver 0x01 | suite 0xFF01 | key_id 0123456789abcdef0123456789abcdef
+
+      The comparison with Django's row is act 5's other half, and it
+      is made through the database by a third process.
+
+--- Act 5 * Two languages, one plaintext ----------------------------------
+    headers identical, ciphertexts different, indexes equal
+
+    Two rows, one plaintext, written by two languages:
+
+      Django   envelope 130 bytes, header 01ff010123456789abcdef0123456789abcdef
+               index    3498
+      Prisma   envelope 130 bytes, header 01ff010123456789abcdef0123456789abcdef
+               index    3498
+
+      headers  identical -- same format, same suite, same key
+      bodies   different -- a fresh nonce and msg_seed per write
+      indexes  identical -- which is what makes either stack's
+               lookup find the other stack's row
+
+--- Act 6 * Django serves what it can, and refuses the rest ---------------
+    adapters throw rather than degrade
+
+    Patient.objects.filter(email="ada@example.com").count()
+      -> 1
+      Served. Django materializes the §7.4 candidate bucket and
+      re-verifies it (spec §7.5) before counting. The Prisma
+      adapter refuses the same call -- see act 6's other half.
+
+    Patient.objects.exclude(email="ada@example.com")
+      -> FieldsealNotSupported:
+         [FIELDSEAL_ERROR] `exclude(email=...)` is not available on an
+         encrypted column. The SQL excludes the whole index bucket, and spec
+         §7.4 mandates that the bucket holds rows whose value differs -- so
+         the query drops rows it should have kept, and they never reach the
+         adapter for §7.5 re-verification to put back. A filter's false
+         positives are recoverable; an exclusion's false negatives are not.
+         Fetch the matches with a positive filter() and exclude their primary
+         keys. .candidates() does not lift this: it hands over §7.5, and no
+         operation on an exclusion's own result restores a row the database
+         already removed (spec §10.2, G24 [#100]).
+
+--- Act 6 * Prisma refuses what it cannot re-verify -----------------------
+    adapters throw rather than degrade
+
+    prisma.patient.count({ where: { email: "ada@example.com" } })
+      -> FieldsealNotSupported:
+         Patient.email: `count` is answered by the database, not by rows this
+         adapter can re-verify. Spec §7.4 mandates that the index bucket
+         holds rows whose value differs, so the answer would be computed over
+         rows that do not match, and spec §7.5 requires candidates to be
+         decrypted and compared before they count as results. Spec §10.2
+         requires rejecting a filter path the interception surface does not
+         reach rather than serving it approximately. The extension cannot
+         turn a count into a row fetch, so it cannot verify what it counted.
+         Use `(await prisma.<model>.findMany({ where })).length`, which
+         counts verified rows. If bucket semantics are what you want, say so
+         explicitly with candidateScope(() => …) and take on §7.5 yourself.
+         (At Patient.where.)
+
+      The Django adapter SERVES this call -- see act 6's other half.
+      That is a real capability difference and a designed one: a
+      Django manager can materialize the bucket and re-verify it; a
+      Prisma extension is bound to the operation it was called for,
+      and an operation whose result is a number cannot be turned
+      into a row fetch.
+
+    prisma.patient.findMany({ where: { NOT: { email: "ada@example.com" } } })
+      -> FieldsealNotSupported:
+         Patient.email: negation (`NOT`) is not available on an encrypted
+         column. The SQL excludes whole index buckets, and spec §7.4 mandates
+         that a bucket holds rows whose value differs -- so the query drops
+         rows it should have kept, and they never reach the adapter for spec
+         §7.5 re-verification to put back. A filter's false positives are
+         recoverable; an exclusion's false negatives are not. Fetch the
+         matching rows with the positive form and exclude their ids in
+         application code. candidateScope() does not lift this: it hands over
+         §7.5, and no operation on an exclusion's own result restores a row
+         the database already removed (spec §10.2, decided by G24, [#100]).
+         (At Patient.where.NOT.)
+
+--- Act 7 * What the DBA sees ---------------------------------------------
+    no plaintext anywhere; the index is two bytes
+
+    SELECT "mrn", "email", "emailBidx", "note" FROM "Patient" ORDER BY "mrn"
+      # through psycopg, with no adapter in the path
+
+      mrn          email                    emailBidx  note
+      -----------  -----------------------  ---------  ----------
+      MRN-0001     <126 bytes of envelope>   aba0       <125 bytes>
+      MRN-0002     <128 bytes of envelope>   4bea       <122 bytes>
+      MRN-0005-DJ  <130 bytes of envelope>   3498       NULL
+      MRN-0005-PR  <130 bytes of envelope>   3498       NULL
+
+      The mrn is readable because it is not encrypted. Nothing
+      else is, and no key is reachable from this connection.
+
