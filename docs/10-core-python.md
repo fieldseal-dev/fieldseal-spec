@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-08 · **Status:** Draft 1 · **Purpose:** the Python binding of `docs/09-core-architecture.md`. First implementation built in Phase 1; it also hosts the vector generator (`docs/08-test-vector-spec.md` §7), which is why it comes first.
 
-**Library-fact caveat:** dependency capabilities below were assessed from documentation knowledge as of early 2026 and are marked **[VERIFY]** where they must be re-confirmed against the versions current at implementation time, per the project's citation-or-flag rule.
+**Library-fact caveat:** dependency capabilities below were assessed from documentation knowledge as of early 2026 and were marked **[VERIFY]** where they had to be re-confirmed against the versions current at implementation time, per the project's citation-or-flag rule. **One remains** — the PyNaCl row, for the deliberately unbuilt suite `0xFF02` (G7). The rest were resolved in the 2026-09-09 currency sweep, against the versions `constraints-ci.txt` pins; each says what was measured and when, and one of them corrected a claim rather than confirming it.
 
 ---
 
@@ -12,7 +12,7 @@
 |---|---|---|
 | Distribution name | `fieldseal` | PyPI name free per PRD naming note (checked 2026-08-08); claim before first push |
 | Import package | `fieldseal` | src layout: `core/python/src/fieldseal/` |
-| Python versions | ≥ 3.10 | Chosen for `match` statements and modern typing without excluding current LTS distros. **[VERIFY]** floor against pyca/cryptography's supported floor at implementation time; raise ours to theirs if higher |
+| Python versions | ≥ 3.10 | Chosen for `match` statements and modern typing without excluding current LTS distros. **Resolved 2026-09-09:** ours is already higher and stays. `cryptography` 50.0.1 declares `Requires-Python >=3.9, !=3.9.0, !=3.9.1`, below our floor, so its floor never binds. The binding one is `argon2-cffi-bindings` 26.1.0 at `>=3.10` — the `[argon2]` extra, not the core dependency — which lands exactly on our declared floor |
 | Build backend | `hatchling` via `pyproject.toml` | Pure-Python wheel; no compiled code of our own, ever — primitives come from dependencies |
 | Type checking | mypy `--strict`; `py.typed` marker shipped | The API is small; strictness is cheap here |
 | Lint/format | ruff (lint + format) | One tool, deterministic in CI |
@@ -22,8 +22,8 @@
 
 | Purpose | Dependency | Status |
 |---|---|---|
-| AES-256-GCM, HKDF-SHA-512, HMAC, constant-time compare | `cryptography` (pyca) | Core required dependency. `AESGCM` accepts AAD and 12-byte nonces; `HKDF` with `hashes.SHA512()`; `constant_time.bytes_eq`. **[VERIFY]** exact minimum version at implementation |
-| Argon2id raw output | `argon2-cffi` | `argon2.low_level.hash_secret_raw(secret=…, salt=…, time_cost=3, memory_cost=32768, parallelism=1, hash_len=64, type=Type.ID, version=19)` — raw output with an explicit 16-byte salt, which is exactly the spec §7.3 invocation. **Viable as of the 2026-08-22 narrowing:** §7.3 now excludes Argon2's `K`, and everything it does require is in this supported API. **Naming trap, keep it in review checklists:** argon2-cffi's `secret=` keyword is the **password**, *not* RFC 9106's secret value `K`. An implementer reading the RFC and this API together can satisfy both readings and be silently wrong — no exception, just a divergent index. Pass `normalize(plaintext)` there and nothing else. **[VERIFY]** that `version=19` is the default and that `hash_len=64` is accepted |
+| AES-256-GCM, HKDF-SHA-512, HMAC, constant-time compare | `cryptography` (pyca) | Core required dependency. `AESGCM` accepts AAD and 12-byte nonces; `HKDF` with `hashes.SHA512()`; `constant_time.bytes_eq`. **Resolved 2026-09-09, in two halves.** The capability claims are confirmed: the core passes 178/178 against `cryptography` 50.x through exactly these APIs. The declared floor `>=42` is **declared, not tested** — CI resolves against `constraints-ci.txt`'s pinned `cryptography==50.0.0` and nothing in the suite has ever run against 42. Stated rather than flagged, because the flag implied someone would go and measure it, and lowering a floor honestly means testing at it |
+| Argon2id raw output | `argon2-cffi` | `argon2.low_level.hash_secret_raw(secret=…, salt=…, time_cost=3, memory_cost=32768, parallelism=1, hash_len=64, type=Type.ID, version=19)` — raw output with an explicit 16-byte salt, which is exactly the spec §7.3 invocation. **Viable as of the 2026-08-22 narrowing:** §7.3 now excludes Argon2's `K`, and everything it does require is in this supported API. **Naming trap, keep it in review checklists:** argon2-cffi's `secret=` keyword is the **password**, *not* RFC 9106's secret value `K`. An implementer reading the RFC and this API together can satisfy both readings and be silently wrong — no exception, just a divergent index. Pass `normalize(plaintext)` there and nothing else. **Confirmed 2026-09-09** against argon2-cffi 25.1.0: `hash_secret_raw`'s `version` parameter defaults to `19`, `argon2.low_level.ARGON2_VERSION` is `19`, an explicit `version=19` produces byte-identical output to the default, and `hash_len=64` returns 64 bytes |
 | XChaCha20-Poly1305 (suite 0xFF02) | `PyNaCl` (libsodium binding), optional extra `fieldseal[xchacha]` | pyca `cryptography` ships `ChaCha20Poly1305` but **not** XChaCha20-Poly1305 **[VERIFY — if pyca has added it, drop PyNaCl]**. PyNaCl's `crypto_aead_xchacha20poly1305_ietf_*` is the de-facto-normative libsodium construction (spec gap G7) |
 | KMS wrappers | `fieldseal[aws]` → `boto3`, `fieldseal[gcp]`, `fieldseal[azure]` optional extras | Never in the required set (docs/09 §11); each implements the `Wrapper` interface only |
 | CSPRNG | stdlib `secrets.token_bytes` | Kernel-backed, fork-safe; no dependency |
@@ -109,7 +109,7 @@ fs.indexes           # -> Mapping[str, ValidatedIndex], keyed by index_registry_
 - **Constant-time compares:** all commitment/tag-adjacent comparisons via `cryptography.hazmat.primitives.constant_time.bytes_eq`; never `==` on secret-derived values.
 - **GIL and threading:** the client is thread-safe; the cache uses a single `threading.Lock` around metadata with the singleflight pattern for refresh (docs/09 §8.3). No `asyncio` primitives in the sync path.
 - **Fork-safety:** `secrets` is kernel-backed. Docs carry the prefork-server guidance from docs/09 §10 (construct the client after fork in gunicorn `post_fork`).
-- **Argon2id blocking cost:** 10–100 ms per term (spec §7.3) *holds the GIL* for most of that time in a CFFI call **[VERIFY: whether argon2-cffi releases the GIL during hashing — if it does, note it; if not, this is a stated product constraint for threaded Django deployments]**.
+- **Argon2id blocking cost:** 10–100 ms per term (spec §7.3), and **the GIL is released for it** — measured 2026-09-09 on argon2-cffi 25.1.0 / argon2-cffi-bindings 26.1.0, CPython 3.14.6: one `hash_secret_raw` at the §7.3 parameters takes 36.9 ms, two on separate threads take 40.0 ms rather than the ~74 ms serialization would cost. **This corrects the claim that stood here, which was the opposite** — the cost is wall-clock latency on the requesting thread, not a process-wide stall, so a threaded deployment serves other requests through it. It remains a product constraint per query term; it is not a concurrency ceiling.
 
 ## 6. Testing plan
 

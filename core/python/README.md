@@ -106,6 +106,11 @@ Promoting it also found what the hold-out had been hiding: eight of the family's
 - **Error precedence is provisional.** Everything under "what this core pins"
   above may change at Gate 0b; the pins are declared so that a change is
   visible, not because they are settled.
-- **Argon2id holds the GIL** for most of its 10–100 ms per term. **[VERIFY]**
-  whether `argon2-cffi` releases it; if not, that is a stated product
-  constraint for threaded deployments, not a bug to fix.
+- **Argon2id costs 10–100 ms per query term** (spec §7.3). That is wall-clock
+  latency on the requesting thread and a product constraint, not a bug to
+  fix. It is **not** a process-wide stall: this README previously said the
+  GIL is held for most of it, and that was wrong. Measured 2026-09-09 on
+  argon2-cffi 25.1.0 / argon2-cffi-bindings 26.1.0, CPython 3.14.6 — one
+  hash at the §7.3 parameters takes 36.9 ms and two on separate threads take
+  40.0 ms, where serialization would cost ~74 ms. A threaded deployment
+  serves other requests through it.
