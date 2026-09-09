@@ -66,6 +66,15 @@ const key = keyfile.keys[KEY_REF];
 if (key === undefined) throw new Error(`no key_ref ${KEY_REF} in test-keys.json`);
 const H = (s: string) => Buffer.from(s, "hex");
 const SUITE = Number.parseInt(key["suite_id"] ?? "", 16);
+if (!Number.isInteger(SUITE)) {
+  // `parseInt` returns NaN rather than throwing, and NaN would travel all the
+  // way into `allowedSuites` and `writeSuite` before anything noticed -- the
+  // failure would then name the suite policy rather than the key file.
+  throw new Error(
+    `key_ref ${KEY_REF} in test-keys.json has no usable suite_id ` +
+      `(${JSON.stringify(key["suite_id"])}); it must be a hex literal such as "0xFF01".`,
+  );
+}
 
 const DB_URL =
   process.env["DATABASE_URL"] ?? "postgresql://postgres:postgres@localhost:5432/fieldseal_demo";
@@ -183,8 +192,25 @@ function clients(act: Act) {
 /** The loose view: see the file header on why the casts are honest. */
 type Loose = Record<string, Record<string, (a?: unknown) => Promise<any>>>;
 
+/**
+ * The only columns `raw()` will read.
+ *
+ * A column name cannot be a bound parameter, so it is interpolated into the
+ * SQL below. Every call site passes a literal, which makes that safe *today*;
+ * an allow-list makes it a property of the function instead, which is where
+ * the guarantee would otherwise stop being true first.
+ */
+const RAW_COLUMNS = new Set(["email", "emailBidx", "note"]);
+
 /** A column as the database holds it, with no adapter in the path. */
 async function raw(base: PrismaClient, column: string, id: string): Promise<Buffer | null> {
+  if (!RAW_COLUMNS.has(column)) {
+    throw new Error(
+      `raw() reads one of ${[...RAW_COLUMNS].join(", ")}; got ${JSON.stringify(column)}. ` +
+        `The column name is interpolated into the SQL, so it is an allow-list rather ` +
+        `than a parameter.`,
+    );
+  }
   const rows = await base.$queryRawUnsafe<{ v: Uint8Array | null }[]>(
     `SELECT "${column}" AS v FROM "Patient" WHERE "id" = $1::uuid`,
     id,
@@ -206,11 +232,20 @@ function showEnvelope(a: Act, label: string, envelope: Buffer, plaintext: string
   );
 }
 
-/** Deterministic wrapping, so a refusal message is one shape every run. */
+/**
+ * Deterministic wrapping, so a refusal message is one shape every run.
+ *
+ * **This must stay identical to `scenario.py`'s `_wrap`,** including the
+ * width and the tokenization: both halves of act 6 print wrapped refusal
+ * messages into one golden narration, so a divergence here would fail
+ * `run_scenario.py --check` for a reason that says nothing about either
+ * adapter. `trim()` before splitting is what makes `/\s+/` match Python's
+ * argument-less `str.split()`, which never yields an empty leading token.
+ */
 function wrap(text: string, width = 68): string[] {
   const out: string[] = [];
   let line = "";
-  for (const word of text.split(/\s+/)) {
+  for (const word of text.trim().split(/\s+/)) {
     if (line !== "" && line.length + 1 + word.length > width) {
       out.push(line);
       line = word;

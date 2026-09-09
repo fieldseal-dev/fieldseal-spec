@@ -149,6 +149,15 @@ into the narration, or — for an index parameter — as nothing at all.
   fieldseal.
 - **No benchmark numbers.** If a timing prints, it prints with no claim
   attached; the benchmark programme is Phase 2 (`docs/07` §8).
+- **The two stacks do not agree about `id` defaults, and nothing here checks
+  it.** Django declares `default=uuid.uuid4` and Prisma declares no default at
+  all; both are client-side, so neither emits a database default and
+  `check_schema_shape.py` sees one empty `column_default` on each side. Every
+  act passes ids explicitly, so the divergence is never exercised. That is
+  deliberate — it is the one assumption the shape check would otherwise have
+  to make about a tool's behaviour rather than read out of the database — but
+  it means *omitting* `id` on a write is uncovered behaviour here, not agreed
+  behaviour.
 - **The two stacks warn differently about the key provider.** The TypeScript
   core emits a `static-key-provider` warning on every client it builds; the
   Python core does not have an equivalent. The Prisma acts record theirs in the

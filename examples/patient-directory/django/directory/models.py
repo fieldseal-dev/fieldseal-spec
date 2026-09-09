@@ -62,6 +62,16 @@ class Patient(models.Model):
     #: one to look different from.
     mrn = models.TextField()
 
+    #: The committed migration serializes only the *non-default* arguments of
+    #: this `BlindIndex` -- `idf` and `projected_population` -- because
+    #: `BlindIndex.deconstruct()` emits only what differs from the adapter's
+    #: defaults, deliberately, so a later default change shows up as a diff
+    #: rather than being baked in. The consequence is worth knowing: a reader
+    #: of `0001_initial.py` alone sees a thinner declaration than
+    #: `check_declarations.py` compares, and the two agree only while
+    #: `index_id`, `normalize` and `truncate_bits` still equal the adapter
+    #: defaults. This note lives here rather than in the migration because
+    #: `makemigrations` rewrites that file and would drop it.
     email = Encrypted(
         models.EmailField(),
         column_uuid=COL_EMAIL,

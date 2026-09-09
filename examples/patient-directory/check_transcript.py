@@ -118,7 +118,24 @@ def main(argv: list[str]) -> int:
     assertions = 0
     for stem in sorted(set(found) & set(EXPECTED)):
         act, stack, minimum, required = EXPECTED[stem]
-        rec = json.loads((root / f"{stem}.json").read_text("utf-8"))
+        # Guarded: this file promises a FAILED diagnostic, and a truncated or
+        # hand-edited transcript would otherwise hand back a traceback
+        # instead -- which is the shape of failure it exists to replace.
+        try:
+            rec = json.loads((root / f"{stem}.json").read_text("utf-8"))
+            act_no, stack_name = rec["act"], rec["stack"]
+            assertions_in = rec["assertions"]
+            warnings_in = rec["warnings"]
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            problems.append(
+                f"{stem}: could not be read as a transcript entry "
+                f"({type(e).__name__}: {e}). An act writes this file as its "
+                f"last action, so a malformed one means the act died "
+                f"mid-write or the file was edited."
+            )
+            continue
+        rec = {"act": act_no, "stack": stack_name,
+               "assertions": assertions_in, "warnings": warnings_in}
         acts_seen.add(rec["act"])
 
         if rec["act"] != act or rec["stack"] != stack:

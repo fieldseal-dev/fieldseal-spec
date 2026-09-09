@@ -80,6 +80,14 @@ def command(stack: str, step: str) -> tuple[list[str], pathlib.Path, dict[str, s
     )
 
 
+#: Seconds any one step may take. The whole run is about ten on a laptop, and
+#: CI's slowest step is under a minute, so this is not a performance budget --
+#: it is the local counterpart of the job's `timeout-minutes`. Without it a
+#: step wedged on a database lock hangs an interactive run with no output at
+#: all, because stdout is captured rather than streamed.
+STEP_TIMEOUT = 300
+
+
 def run() -> tuple[str, int]:
     if TRANSCRIPT.exists():
         shutil.rmtree(TRANSCRIPT)
@@ -88,7 +96,17 @@ def run() -> tuple[str, int]:
     out: list[str] = []
     for stack, step in STEPS:
         argv, cwd, env = command(stack, step)
-        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True)
+        try:
+            proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True,
+                                  timeout=STEP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            sys.stderr.write(
+                f"\nrun_scenario: {stack} {step} did not finish within "
+                f"{STEP_TIMEOUT}s and was killed. The likeliest cause is a "
+                f"database lock held by an earlier step, or a Node process "
+                f"holding pg sockets open after its work is done.\n"
+            )
+            return "".join(out), 1
         # Captured as bytes and normalized here rather than read as text: a
         # Python child on Windows writes CRLF, a Node child and every Linux
         # child write LF, and `expected-narration.txt` is one file compared on

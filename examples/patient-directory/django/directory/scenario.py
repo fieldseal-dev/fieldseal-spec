@@ -97,6 +97,15 @@ class Act:
 # -- helpers ---------------------------------------------------------------
 
 
+#: The only columns `raw()` will read.
+#:
+#: A column name cannot be a bound parameter, so it is interpolated into the
+#: SQL below. Every call site passes a literal, which makes that safe *today*
+#: -- an allow-list makes it a property of the function instead, which is
+#: where the guarantee would otherwise stop being true first.
+RAW_COLUMNS = frozenset({"email", "emailBidx", "note"})
+
+
 def raw(column: str, pk: uuid.UUID) -> bytes | None:
     """A column as the database holds it, read through a cursor.
 
@@ -106,6 +115,12 @@ def raw(column: str, pk: uuid.UUID) -> bytes | None:
     """
     from django.db import connection
 
+    if column not in RAW_COLUMNS:
+        raise ValueError(
+            f"raw() reads one of {sorted(RAW_COLUMNS)}; got {column!r}. The "
+            f"column name is interpolated into the SQL, so it is an "
+            f"allow-list rather than a parameter."
+        )
     with connection.cursor() as cur:
         cur.execute(f'SELECT "{column}" FROM "Patient" WHERE id = %s', [str(pk)])
         row = cur.fetchone()
@@ -340,7 +355,16 @@ def act7_raw_sql(a: Act) -> None:
 
 
 def _wrap(text: str, width: int = 68) -> list[str]:
-    """Deterministic wrapping, so a refusal message is one shape every run."""
+    r"""Deterministic wrapping, so a refusal message is one shape every run.
+
+    **This must stay identical to `scenario.ts`'s `wrap`,** including the
+    width and the tokenization: both halves of act 6 print wrapped refusal
+    messages into one golden narration, so a divergence here would fail
+    `run_scenario.py --check` for a reason that says nothing about either
+    adapter. `str.split()` with no argument splits on runs of whitespace and
+    yields no empty tokens, which is what the other side's `trim()` before
+    `/\s+/` reproduces.
+    """
     out: list[str] = []
     line = ""
     for word in text.split():

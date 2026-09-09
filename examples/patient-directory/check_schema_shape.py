@@ -32,6 +32,9 @@ import os
 import pathlib
 import subprocess
 import sys
+from typing import Any
+
+import psycopg
 
 HERE = pathlib.Path(__file__).resolve().parent
 PRISMA_DIR = HERE / "prisma"
@@ -82,8 +85,8 @@ def prisma_ddl() -> str:
     return proc.stdout
 
 
-def columns(cur: object, schema: str) -> dict[tuple[str, str], tuple]:
-    rows = cur.execute(  # type: ignore[attr-defined]
+def columns(cur: psycopg.Cursor[Any], schema: str) -> dict[tuple[str, str], tuple]:
+    rows = cur.execute(
         "SELECT table_name, column_name, " + ", ".join(COLUMN_ATTRS) + " "
         "FROM information_schema.columns WHERE table_schema = %s "
         "ORDER BY table_name, column_name",
@@ -92,8 +95,8 @@ def columns(cur: object, schema: str) -> dict[tuple[str, str], tuple]:
     return {(r[0], r[1]): tuple(r[2:]) for r in rows}
 
 
-def indexes(cur: object, schema: str) -> dict[tuple[str, str], str]:
-    rows = cur.execute(  # type: ignore[attr-defined]
+def indexes(cur: psycopg.Cursor[Any], schema: str) -> dict[tuple[str, str], str]:
+    rows = cur.execute(
         "SELECT tablename, indexname, indexdef FROM pg_indexes "
         "WHERE schemaname = %s ORDER BY tablename, indexname",
         (schema,),
@@ -104,8 +107,6 @@ def indexes(cur: object, schema: str) -> dict[tuple[str, str], str]:
 
 
 def main() -> int:
-    import psycopg
-
     url = os.environ.get(
         "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/fieldseal_demo"
     )

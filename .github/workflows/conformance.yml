@@ -567,6 +567,13 @@ jobs:
       # holds pg sockets open, and a Node process that does not exit burns to
       # the *job* timeout rather than failing the step. `$disconnect()` in a
       # `finally` is the fix; this is the backstop.
+      #
+      # Five minutes is not tight, which is worth writing down so it does not
+      # get raised on suspicion: the whole job -- both toolchains, two npm
+      # installs, the migration and every act -- ran in 75 seconds on its
+      # first green run, and this step is a fraction of that. The Postgres
+      # image is pulled and started in `Initialize containers`, before any
+      # step is timed.
       - name: Run the scenario
         working-directory: examples/patient-directory
         timeout-minutes: 5

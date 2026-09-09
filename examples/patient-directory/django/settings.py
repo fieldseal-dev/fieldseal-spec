@@ -31,6 +31,9 @@ from fieldseal.keyprovider import StaticKeyProvider
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 REPO = BASE_DIR.parents[2]
 
+# Demo only, and published in this repository: this value signs nothing that
+# matters here -- there are no sessions, no cookies and no users -- and Django
+# refuses to start without one.
 SECRET_KEY = "fieldseal-patient-directory-demo-not-a-real-secret"
 DEBUG = False
 ALLOWED_HOSTS: list[str] = []

@@ -131,13 +131,34 @@ def load_prisma() -> dict[str, Any]:
     marker = "export const fieldsealFieldMap"
     try:
         start = text.index("{", text.index(marker))
-        end = text.rindex("}") + 1
     except ValueError:
         _fail(
             f"{FIELD_MAP} does not contain a `{marker}` object literal. The "
             f"generator's output shape changed; this checker reads it as JSON."
         )
-    raw = json.loads(text[start:end])
+    # `raw_decode` from the opening brace, rather than a scan to the file's
+    # last `}`. The module holds exactly one object literal today; a `rindex`
+    # would silently widen to swallow a second export or a trailing helper and
+    # then fail somewhere inside `json.loads`, reporting a parse error for
+    # what is actually a change in the generator's output shape. Refusing the
+    # trailer says which of the two happened.
+    try:
+        raw, end = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError as e:
+        _fail(
+            f"{FIELD_MAP}: the `{marker}` object literal is not valid JSON "
+            f"({e}). `renderModule()` quotes every key and value with "
+            f"`JSON.stringify`, so this means the generator stopped emitting "
+            f"plain data."
+        )
+    trailer = text[end:].strip()
+    if trailer not in ("", ";"):
+        _fail(
+            f"{FIELD_MAP}: unexpected content after the field map object -- "
+            f"{trailer[:80]!r}. This checker reads the module as one JSON "
+            f"object and nothing else; a generator emitting more than that is "
+            f"a shape change to look at rather than to parse around."
+        )
     if raw.get("version") != EXPECTED_MAP_VERSION:
         _fail(
             f"field map version is {raw.get('version')!r}, and this checker "
@@ -286,21 +307,33 @@ def compare(django: dict[str, Any], prisma: dict[str, Any]) -> list[str]:
         d, p = dj[key], pr[key]
         label = f"{_hyphenate(key)} ({d['model']}.{d['field']})"
 
-        if d["logical_type"] not in PORTABLE_LOGICAL_TYPES:
+        portable = ", ".join(PORTABLE_LOGICAL_TYPES)
+        if d["logical_type"] is None:
+            # Not "an unportable type" -- an unknown one. The dump could not
+            # say what bytes Django would write for it, so there is nothing to
+            # compare, and saying "its logical type is None" would describe
+            # the checker's state rather than the declaration's problem.
             problems.append(
-                f"{label}: Django declares an inner type whose logical type is "
-                f"{d['logical_type']!r} ({d['declared_type']}). This demo's "
-                f"model is restricted to {', '.join(PORTABLE_LOGICAL_TYPES)}, "
-                f"because the two adapters render the others differently -- "
-                f"`boolean` is `b\"True\"` on one side and `b\"true\"` on the "
-                f"other, and each refuses the other's -- and nothing normative "
-                f"pins which is right. See this file's PORTABLE_LOGICAL_TYPES."
+                f"{label}: {d['declared_type']} has no entry in "
+                f"directory/dump_declarations.py's LOGICAL_TYPES, so this "
+                f"checker cannot say what bytes Django writes for it -- let "
+                f"alone whether Prisma writes the same ones. Add the mapping "
+                f"there first; if the answer is not one of {portable}, read "
+                f"this file's PORTABLE_LOGICAL_TYPES before adding the column."
+            )
+        elif d["logical_type"] not in PORTABLE_LOGICAL_TYPES:
+            problems.append(
+                f"{label}: {d['declared_type']} renders as "
+                f"{d['logical_type']!r}, which these two adapters do not agree "
+                f"on -- measured, in three different failure classes, one of "
+                f"them silent. This demo's model is restricted to {portable}. "
+                f"The measurements are in this file's PORTABLE_LOGICAL_TYPES; "
+                f"the specification gap underneath them is G25."
             )
         if p["logical_type"] not in PORTABLE_LOGICAL_TYPES:
             problems.append(
                 f"{label}: Prisma declares `as: \"{p['logical_type']}\"`, which "
-                f"is outside {', '.join(PORTABLE_LOGICAL_TYPES)} for the same "
-                f"reason."
+                f"is outside {portable} for the same reason."
             )
 
         for what, consequence in COMPARED.items():
