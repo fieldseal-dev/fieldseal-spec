@@ -118,8 +118,14 @@ Gate 0a (see below) opened on 2026-08-22. What exists under those directories to
   job, which is the central claim tested at the layer people actually deploy rather than
   only between cores.
 
-The remaining cores, the other five adapters, the backfill and leakage tools, `bench/` and
-`examples/` hold only a README describing what lands there.
+- **One demonstration application** — [`examples/patient-directory/`](examples/patient-directory/),
+  a Django frontend and a Prisma frontend over one shared Postgres table, with a scripted
+  seven-act scenario asserting that a row written by either stack reads, searches and matches
+  from the other. It is gated in CI like everything else. Design and reasoning:
+  [`docs/20-demo-patient-directory.md`](docs/20-demo-patient-directory.md).
+
+The remaining cores, the other five adapters, the backfill and leakage tools and `bench/`
+hold only a README describing what lands there.
 
 **None of it is frozen.** Every suite identifier is provisional (spec §4.8), Gate 0b is
 open, and the project does not invite adoption — see the two gates below. For the plan see

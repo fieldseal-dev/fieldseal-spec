@@ -90,11 +90,16 @@ docs/
                           statement, divergence/ambiguity list (D-01..D-20)
   19-what-encrypted-search-costs.md  the blind-index cost argument for readers who
                           will not read the spec
+  20-demo-patient-directory.md  the two-stack demonstration app: what it asserts,
+                          who owns the DDL, and what it deliberately cannot show
 www/                      the fieldseal.dev site: Hugo, hand-written templates, no
                           theme and no third-party JavaScript. docs/ is synced in by
                           www/scripts/sync-docs.py; .github/workflows/pages.yml builds
                           and link-checks on PRs and deploys from main
-examples/                 end-to-end demonstration applications (Phase 1+)
+examples/
+  patient-directory/      the M5 / WS-G demonstration: a Django frontend and a Prisma
+                          frontend over one shared Postgres table, with a scripted
+                          seven-act scenario gated in CI (docs/20)
 CONTRIBUTING.md           how to contribute spec changes
 SECURITY.md               how to report security issues
 GOVERNANCE.md             licensing and governance
@@ -235,7 +240,7 @@ When starting on this codebase:
 
 ## Code and the Split Gate (Phase 0 → Phase 1)
 
-This repository contains the specification, its documentation, the vector generator, two Phase 1 cores (`core/python`, `core/typescript`), two Phase 1 adapters (`adapters/django`, `adapters/prisma`) and the fieldseal.dev site; the remaining adapters, the tools in `tools/{leakage-estimator,backfill}`, the benchmark programme and the examples are not started. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
+This repository contains the specification, its documentation, the vector generator, two Phase 1 cores (`core/python`, `core/typescript`), two Phase 1 adapters (`adapters/django`, `adapters/prisma`), one demonstration application (`examples/patient-directory`) and the fieldseal.dev site; the remaining adapters, the tools in `tools/{leakage-estimator,backfill}` and the benchmark programme are not started. The Phase 0 exit gate is split (`docs/01-prd.md` §8): **Gate 0a** authorizes implementation and is closed; **Gate 0b** — independent cryptographic review — authorizes freezing and remains open. Phase 1 work may start. When implementations are written:
 
 - Core libraries will be in `core/{python,typescript,java,dotnet,go}` and MUST pass the shared test vectors in CI.
 - ORM adapters will be in `adapters/{django,sqlalchemy,...}` and MUST contain zero cryptographic code.
@@ -256,7 +261,9 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 **Prisma adapter** (`adapters/prisma`): build the core first (`npm ci && npm run build` in `core/typescript`), then `npm ci`, `npm run build`, `node tests/fixture/build.ts && npx prisma generate && npx prisma db push`, `npm test`. `npm run report` emits the `docs/14` §4 report. CI runs SQLite and Postgres legs.
 
-**AD-1 (spec §11.3):** an adapter contains no cryptographic code. CI greps `src/` for crypto imports in both adapters and fails the build on a hit. This is a conformance rule, not a style preference.
+**Patient-directory demo** (`examples/patient-directory`, Postgres only): both adapters installed from this checkout, then `DATABASE_URL=… ` and, from the demo directory, `(cd prisma && npm ci && npx prisma generate)`, `(cd django && python manage.py migrate)`, `python check_declarations.py`, `python run_scenario.py --check`, `python check_transcript.py transcript/`, `python check_schema_shape.py`. Django owns the DDL and Prisma only ever generates — never `prisma db push` here. Design: `docs/20-demo-patient-directory.md`.
+
+**AD-1 (spec §11.3):** an adapter contains no cryptographic code. CI greps `src/` for crypto imports in both adapters and fails the build on a hit. This is a conformance rule, not a style preference. It deliberately does **not** extend to `examples/`: an application is not an adapter, and widening a normative rule to a new class of thing gets an issue first.
 
 **Site** (`www/`): `python www/scripts/sync-docs.py` then `hugo server --source www`; before pushing, `hugo --source www --minify --gc` and `python www/scripts/check-links.py www/public`.
 
