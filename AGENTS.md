@@ -82,7 +82,7 @@ docs/
   15-tooling.md           backfill tool and leakage-estimator design
   adr/                    architecture decision records for Phase-1-blocking decisions
                           (incl. Appendix A to ADR-0001: AWS-format expressibility mapping)
-  issues/                 spec-gap issue drafts G01–G24 (see docs/07 §5)
+  issues/                 spec-gap issue drafts G01–G25 (see docs/07 §5)
   16-reviewer-brief.md    the Phase 0 cryptographic-review brief (reading path, gating questions)
   17-m2-implementer-brief.md  handoff for building a second core in isolation (the
                           independence rule as a followable protocol)
