@@ -1,0 +1,17 @@
+# Lint configuration for the demo. A `ruff.toml` rather than a
+# `pyproject.toml`: this directory is an application, not a package, and a
+# `pyproject.toml` here would claim otherwise.
+#
+# The rule set is the Django adapter's, so a contributor moving between the
+# two is held to one standard.
+line-length = 88
+target-version = "py312"
+
+# The migration is written by `makemigrations`, not by a person, and Django
+# emits one long line per field. What guards it is `makemigrations --check
+# --dry-run` in CI -- which fails if the file stops matching the models --
+# not a line-length rule it was never going to satisfy.
+exclude = ["django/directory/migrations"]
+
+[lint]
+select = ["E", "F", "W", "I", "B"]

@@ -1,0 +1,58 @@
+// The demo's one table, as Prisma declares it.
+//
+// The same table is declared a second time in
+// `../django/directory/models.py`, and `../check_declarations.py` compares
+// the two -- joined on `column_uuid`, which spec §6.1 makes the column's
+// immutable identity, with every other field as a comparison rather than a
+// key.
+//
+// **No `@map` / `@@map` anywhere, deliberately.** The generated field map has
+// no representation of a physical-name mapping, so a mapping declared here
+// would be invisible to the checker; on the Django side `db_table` and
+// `column` are readable off the model. With no mapping here, `(model, field)`
+// *is* `(table, column)`, which is what lets the checker compare physical
+// names without parsing this file. The cost is mixed-case identifiers that
+// must be quoted in hand-written SQL (`SELECT "email" FROM "Patient"`); both
+// ORMs always quote, and the raw-SQL act quotes.
+//
+// **Django owns the DDL.** This schema is only ever `prisma generate`d --
+// never `prisma db push`, never `prisma migrate`. `db push` reaches a target
+// state by dropping and recreating columns, and against a table Django
+// believes it owns that is a data-loss path behind a friendly prompt.
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+// The spelling the adapter README documents. Nothing in the repository had
+// ever used it before this demo: `adapters/prisma/tests/generator.test.ts`
+// writes a shim, because a package cannot link its own bin.
+generator fieldseal {
+  provider = "fieldseal-prisma-generator"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// @fieldseal(table_uuid: "018f5a10-0000-7000-8000-000000000001")
+model Patient {
+  // No `@default(uuid())`: both stacks pass ids explicitly. Prisma's `uuid()`
+  // is a client-side default that should emit no database default, and that
+  // is the one assumption `check_schema_shape.py` would have to make about a
+  // tool's behaviour rather than read out of the database.
+  id        String  @id @db.Uuid
+  mrn       String
+  /// @fieldseal(encrypted, column_uuid: "018f5a10-0000-7000-8000-000000000002")
+  email     Bytes
+  /// @fieldseal(index: "email", index_id: "exact", idf: "hmac-sha512",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
+  emailBidx Bytes?
+  /// @fieldseal(encrypted, column_uuid: "018f5a10-0000-7000-8000-000000000003")
+  note      Bytes?
+
+  @@index([emailBidx], map: "Patient_emailBidx_idx")
+}
