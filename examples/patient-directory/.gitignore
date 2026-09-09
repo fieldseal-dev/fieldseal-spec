@@ -1,0 +1,11 @@
+# Emitted by the scenario. Each act appends one file; `check_transcript.py`
+# reads the directory. Nothing in it is a source.
+transcript/
+
+# `prisma generate` writes both the Prisma client and the fieldseal field map
+# here. The field map is committable in a real project -- it is declarations
+# only, no key material -- but in this repository it is a build product of a
+# schema three directories away, and a stale copy would be worse than none.
+prisma/generated/
+
+node_modules/
