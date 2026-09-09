@@ -135,13 +135,20 @@ def show_envelope(a: Act, label: str, envelope: bytes, plaintext: str) -> None:
 
 
 def reset() -> int:
-    """Not an act: empty the table so the narration is the same every run."""
+    """Not an act: empty the table so the narration is the same every run.
+
+    The count of what was deleted goes to stderr rather than stdout, and
+    that is not fussiness: it is the one number in the whole run that depends
+    on what happened before it, and stdout is diffed against a golden file.
+    A first run on a fresh database would otherwise disagree with every run
+    after it, for a reason that says nothing about either stack.
+    """
     from directory.models import Patient
 
     deleted, _ = Patient.objects.all().delete()
-    print(f"--- Setup * cleared {deleted} row(s) from \"Patient\" "
-          + "-" * 24)
+    print('--- Setup * "Patient" emptied ' + "-" * 43)
     print()
+    print(f"    (cleared {deleted} row(s))", file=sys.stderr)
     return 0
 
 

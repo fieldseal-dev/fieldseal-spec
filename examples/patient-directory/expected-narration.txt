@@ -1,4 +1,4 @@
---- Setup * cleared 4 row(s) from "Patient" ------------------------
+--- Setup * "Patient" emptied -------------------------------------------
 
 --- Act 1 * Django writes a patient ---------------------------------------
     the value path encrypts, and the plaintext is not in the column
