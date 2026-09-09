@@ -516,7 +516,7 @@ npm run build                    # dist/, and the generator bin
 node tests/fixture/build.ts      # the fixture's field map
 npx prisma generate              # the fixture's Prisma client
 npx prisma db push               # the fixture database
-npm test                         # 250 tests
+npm test                         # 268 tests
 npm run typecheck
 
 # The same suite against Postgres. `build.ts` derives schema.postgres.prisma
