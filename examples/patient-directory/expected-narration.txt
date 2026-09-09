@@ -139,16 +139,16 @@
 
     prisma.patient.count({ where: { email: "ada@example.com" } })
       -> FieldsealNotSupported:
-         Patient.email: `count` is answered by the database as a COUNT over
-         the index bucket. Spec §7.4 mandates that the index bucket holds
-         rows whose value differs, so the answer would be computed over rows
-         that do not match, and spec §7.5 requires candidates to be decrypted
-         and compared before they count as results. Spec §10.2 requires
-         rejecting a filter path the interception surface does not reach
-         rather than serving it approximately. The extension cannot turn a
-         count into a row fetch, so it cannot verify what it counted. Use
-         `(await prisma.<model>.findMany({ where })).length`, which counts
-         verified rows. If bucket semantics are what you want, say so
+         Patient.email: `count` is answered by the database, not by rows this
+         adapter can re-verify. Spec §7.4 mandates that the index bucket
+         holds rows whose value differs, so the answer would be computed over
+         rows that do not match, and spec §7.5 requires candidates to be
+         decrypted and compared before they count as results. Spec §10.2
+         requires rejecting a filter path the interception surface does not
+         reach rather than serving it approximately. The extension cannot
+         turn a count into a row fetch, so it cannot verify what it counted.
+         Use `(await prisma.<model>.findMany({ where })).length`, which
+         counts verified rows. If bucket semantics are what you want, say so
          explicitly with candidateScope(() => …) and take on §7.5 yourself.
          (At Patient.where.)
 

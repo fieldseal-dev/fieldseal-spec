@@ -80,6 +80,17 @@ and the envelope header is fixed by the suite and the key id. Nothing random is
 printed. If a change makes the narration legitimately different,
 `--write-expected` and commit the diff — the diff is the review artifact.
 
+**It pins the adapters' refusal messages, and that is the intended coupling**
+— act 6 exists to show what a caller is told, so the text is part of what is
+being demonstrated, and this repository already treats refusal wording as
+load-bearing enough to assert in adapter tests. The cost is real and worth
+stating: changing a refusal message in either adapter makes this file stale,
+and the failure surfaces here rather than where the message was edited. It
+earned itself immediately — the first CI run failed because the local
+`adapters/prisma/dist/` was a stale build with an older `count` refusal in it,
+which the adapter's own suite could not see, because vitest runs from `src/`.
+**This demo is the first consumer of the adapter's built output.**
+
 ## The two declarations, and the checker between them
 
 The same table is declared twice: in
