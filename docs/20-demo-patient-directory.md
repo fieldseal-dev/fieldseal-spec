@@ -12,7 +12,7 @@ The plan for this workstream framed the demo as presentational — the CI cross 
 
 The existing N×N `cross-produce` / `cross-consume` jobs move a **JSON document** between implementations: a producer records `{plaintext, envelope, context}`, and a consumer decrypts the envelope and compares against the producer's own recorded plaintext. That is a real and load-bearing test, and it has a shape: **every producer grades its own homework at the logical-value layer.** Nothing in it asks whether the *other* adapter would have produced those bytes for that value, and nothing in this repository had ever pointed two adapters at one live database or compared the two declarations of the same column.
 
-Planning that comparison found a live interoperability defect in ten minutes — the two adapters render `boolean` differently, and each refuses the other's rendering — which is now [G25](issues/G25-logical-type-byte-rendering.md) ([#123](https://github.com/fieldseal-dev/fieldseal-spec/issues/123)). §7 below says what the demo does about it.
+Planning that comparison found a live interoperability defect in ten minutes, and pressing on it found two worse ones: nothing pins what bytes a logical type becomes, so a `date` written by one stack is read by the other as an instant and comes back in a form the first can no longer read, a `Decimal` silently loses digits, and a `boolean` cannot cross at all. That is [G25](issues/G25-logical-type-byte-rendering.md) ([#123](https://github.com/fieldseal-dev/fieldseal-spec/issues/123)). §7 below says what the demo does about it.
 
 ## 2. What it asserts
 
@@ -89,9 +89,15 @@ The job installs both stacks from the checkout — never from a registry, becaus
 
 ## 7. What this cannot demonstrate, and why
 
-**Three logical types, not six.** The shared model uses `string`, `int` and `bytes` only, because `boolean` and `datetime` do not round-trip between these two adapters — [G25](issues/G25-logical-type-byte-rendering.md). Django's codec renders `True` as `b"True"` and Prisma's renders it as `b"true"`; each side refuses the other's rendering rather than coercing it, which is the correct behaviour and is why the defect is loud rather than silent. `datetime` round-trips today only because V8 accepts Django's non-ISO-8601 form, which ECMA-262 §21.4.3.2 leaves implementation-defined.
+**Three logical types, not six.** The shared model uses `string`, `int` and `bytes` only, because the other three do not survive a trip between these two adapters — [G25](issues/G25-logical-type-byte-rendering.md), measured in three different failure classes.
 
-The restriction is enforced rather than commented: `check_declarations.py` refuses any inner type outside the three, with the reason in the failure message. The demo does not fix the divergence, and must not — which rendering is right is the normative question G25 exists to answer, and either edit is a plaintext encoding change, which under §7.8's reasoning is a backfill rather than an edit.
+**`date`** is the one that matters. Django writes `b"2026-09-08"`; Prisma reads it *successfully*, as an instant at UTC midnight, because there is no `as: "date"` and the nearest declaration is `datetime`. Re-writing that value — an ordinary read-modify-write — stores `b"2026-09-08T00:00:00.000Z"`, which Django then refuses outright. So one write through the second stack makes a row permanently unreadable to the first, with nothing raised at the moment the damage is done. And before any rewrite, a calendar date rendered as an instant is the *previous day* in local time anywhere west of UTC — an encrypted date of birth, off by one, with no error.
+
+**`Decimal`** has no entry in the adapter vocabulary at all, so it has to be declared `as: "float"`, an IEEE-754 double: `b"12345678901234567.89"` comes back as `12345678901234568` and re-writes as that. Silent in both directions. This is the wrong-answer class spec §10.2 exists to prevent, arriving through the one door §10.2 does not cover, since its rule is written entirely about query shapes.
+
+**`boolean`** is the loud one and the least dangerous: `b"True"` against `b"true"`, with each side refusing the other rather than coercing, which is the correct behaviour. It is also barely reachable — an encrypted boolean cannot be blind-indexed at all, because P=2 fails §7.4's hard floor of 16 and §7.6's override does not reach that floor, making it a column nobody can filter on. `datetime` proper does round-trip, but only because V8 accepts Django's non-ISO-8601 form, which ECMA-262 §21.4.3.2 leaves implementation-defined.
+
+The restriction is enforced rather than commented: `check_declarations.py` refuses any inner type outside the three, with the measurements in the failure message. The demo does not fix the divergence, and must not — which rendering is right is the normative question G25 exists to answer, and either edit is a plaintext encoding change, which under §7.8's reasoning is a backfill rather than an edit.
 
 **No L3 tenant binding and no L4.** Both are orthogonal to the claim, both adapter suites already cover them, and Django cannot do L4 at all — a demo using it would show an asymmetry that is a property of Django rather than of fieldseal.
 

@@ -62,22 +62,37 @@ EXPECTED_MAP_VERSION = 2
 
 #: The logical types this demo's shared model is allowed to use.
 #:
-#: `boolean` and `datetime` are excluded because they do not round-trip
-#: between these two adapters. Measured 2026-09-08 through each adapter's real
-#: codec: Django writes `b"True"` where Prisma writes `b"true"`, and each side
-#: *refuses* the other's rendering rather than coercing it (Django raises
-#: `ValidationError`, Prisma throws `FieldsealNotSupported`). `datetime` does
-#: round-trip today, but only because V8 accepts Django's
+#: The others are excluded because they do not survive a trip between these
+#: two adapters. Measured 2026-09-08 and 2026-09-09 through each adapter's
+#: real codec, and the three failures are in three different classes:
+#:
+#:  - **`date` is silent going in and fatal coming back.** Django writes
+#:    `b"2026-09-08"`; Prisma reads it *successfully*, as an instant at UTC
+#:    midnight (there is no `as: "date"`, only `datetime`), and re-writing
+#:    that value -- an ordinary read-modify-write -- stores
+#:    `b"2026-09-08T00:00:00.000Z"`, which Django then refuses. One write
+#:    through the other stack makes the row permanently unreadable here, with
+#:    nothing raised when the damage is done. Rendered in local time west of
+#:    UTC, that instant is also the previous day.
+#:  - **`Decimal` has no declaration to reach for**, so it becomes
+#:    `as: "float"`, an IEEE-754 double: `b"12345678901234567.89"` comes back
+#:    as `12345678901234568` and re-writes as that. Silent, both directions.
+#:  - **`boolean` is the loud one.** `b"True"` against `b"true"`, each side
+#:    refusing the other rather than coercing -- which is correct behaviour,
+#:    and why this is the least dangerous of the three.
+#:
+#: `datetime` proper does round-trip, but only because V8 accepts Django's
 #: `"2026-09-08 12:00:00+00:00"`, and a non-ISO-8601 string is
 #: implementation-defined in ECMA-262 §21.4.3.2 -- so that direction rests on
 #: a behaviour no standard requires.
 #:
 #: The root cause is a specification gap, not an adapter bug: spec §3 pins the
 #: byte layer -- envelope, AAD, commitment -- and nothing anywhere pins the
-#: logical-type-to-bytes rendering. Both adapters are conformant and they
-#: disagree. Which rendering is correct is a normative question, so it is not
-#: settled here; this demo stays inside the types where the two agree, and
-#: fails the build rather than leaving that as a comment somebody deletes.
+#: logical-type-to-bytes rendering, nor even the vocabulary of logical types,
+#: which has no entry for a decimal. Both adapters are conformant and they
+#: disagree. Which rendering is correct is a normative question (G25), so it
+#: is not settled here; this demo stays inside the types where the two agree,
+#: and fails the build rather than leaving that as a comment somebody deletes.
 PORTABLE_LOGICAL_TYPES = ("string", "int", "bytes")
 
 

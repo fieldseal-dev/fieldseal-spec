@@ -22,14 +22,17 @@ different things -- the Django one to a table, the Prisma one to a column --
 so a copy-paste from the wrong fixture would type-check, pass the checker, and
 be wrong.
 
-**Three logical types only: string, int and bytes.** `boolean` and `datetime`
-are left out because they do **not** round-trip between these two adapters
-today: Django's codec renders `True` as `b"True"` and Prisma's renders it as
-`b"true"`, and each stack refuses the other's rendering rather than coercing
-it. That is an interoperability gap in the adapters, not in this demo, and it
-is a specification gap underneath -- nothing normative pins what bytes a
-logical type becomes. `check_declarations.py` refuses any inner type outside
-the three, so the constraint is a tripwire rather than a comment.
+**Three logical types only: string, int and bytes.** The others do **not**
+survive a trip between these two adapters today, in three different ways: a
+`date` written here is read by Prisma as an instant and comes back in a form
+this stack can no longer read at all; a `Decimal` has no declaration on the
+Prisma side and becomes a double, losing digits silently; a `boolean` is
+`b"True"` here and `b"true"` there, and each side refuses the other. That is
+an interoperability gap in the adapters, not in this demo, and it is a
+specification gap underneath -- nothing normative pins what bytes a logical
+type becomes, or even what the logical types are. `check_declarations.py`
+refuses any inner type outside the three and states the measurements, so the
+constraint is a tripwire rather than a comment.
 """
 
 from __future__ import annotations
