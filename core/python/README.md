@@ -98,11 +98,43 @@ Promoting it also found what the hold-out had been hiding: eight of the family's
 
 ## Honest limitations
 
-- **No zeroization.** CPython `bytes` are immutable and freely copied; true
-  erasure is not achievable. Nothing here claims otherwise (`docs/09` §8.3).
-- **No key caching, no KMS providers yet.** `StaticKeyProvider` is test-only,
-  holds key material for the process lifetime, and does not yet emit the
-  outside-test-configuration warning spec §8 asks for.
+The specification requires every implementation to state these, and
+`docs/07` §4 requires every shipped artifact to carry them.
+
+- **No protection against a compromised application process** (spec §2.2
+  N1). The keys are in that process. Query logs, slow-query logs and
+  replication logs are sensitive artifacts and must be protected like the
+  ciphertext (§2.3).
+- **Storage overhead is real** (§3.3). Every envelope carries 111 bytes of
+  fixed overhead under `0xFF01`: a 9-byte value becomes 120 bytes binary.
+  This core is bytes in, bytes out and never emits base64; a deployment that
+  stores base64 pays a further 33% on every row (about 160 bytes for the same
+  value) and must document it. Across a 20-column, 100M-row table the fixed
+  overhead alone is roughly 220 GB, before index bloat.
+- **The key service is a hard dependency in the read path** (§8.1).
+  `EnvelopeKeyProvider` unwraps KMS-wrapped DEKs only in `warm()`; the value
+  path reads the cache and nothing else, so a miss is `KEY_UNAVAILABLE`, and a
+  KMS outage means `KEY_UNAVAILABLE` for everything not already cached. The
+  `degradation` argument records the deployment's mode (`fail-closed` /
+  `serve-cached`); on the value path both mean the same thing — serve only
+  what the cache can decrypt (`docs/09` §8.2). No KMS client ships: the
+  provider calls a `Wrapper` you supply.
+- **The DEK cache is an in-memory plaintext key cache** (§5.5). It is
+  exposed to memory dumps, core files and swap. Entries are held as
+  `bytearray` and overwritten with zeros when evicted — by max-age, max-uses,
+  capacity or `DekCache.clear()` — which narrows that window and does not
+  close it: CPython `bytes` are immutable and freely copied, copies inside
+  dependencies are out of reach, and there is no `mlock` (`docs/10` §5). The
+  per-operation record key and the §7.3 Argon2id salt are `bytes` and are not
+  erased at all. `CachePolicy.max_age` and `max_uses` are security
+  parameters, not tuning knobs. In a prefork server, construct the client
+  after the fork (gunicorn `post_fork`): cache contents that survive a fork
+  are DEK copies in every child (`docs/09` §10).
+- **Two of spec §8's three providers ship.** `StaticKeyProvider` is
+  test-only, holds key material for the process lifetime, and does not yet
+  emit the outside-test-configuration warning spec §8 asks for.
+  `EnvelopeKeyProvider` is the production path above. `DerivedKeyProvider` is
+  not yet ported (`docs/10` §3).
 - **Error precedence is provisional.** Everything under "what this core pins"
   above may change at Gate 0b; the pins are declared so that a change is
   visible, not because they are settled.
