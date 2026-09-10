@@ -42,7 +42,7 @@ const fs = new Fieldseal(
     indexes: [
       {
         tableUuid, columnUuid, indexId: "email-eq",
-        idf: "hmac-sha512", normalize: "nfc-casefold-v1",
+        idf: "argon2id", normalize: "nfc-casefold-v1", // §7.3: email is enumerable
         truncateBits: 15, projectedPopulation: 100_000,
       },
     ],
