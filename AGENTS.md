@@ -273,6 +273,16 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 ---
 
+## Reading Large Files
+
+Most files here are short; a few dozen are not — the spec, the Django query layer, the vector harnesses, the vector families, the lockfiles. A whole-file read stays in the session's context for every later turn, so read what the task needs, not the file.
+
+- **Search, then read the range.** Search for the symbol, section heading or vector `id`, then read the lines around the hits. For the spec, find the section rather than reading `docs/02` top to bottom.
+- **Never read these whole:** `package-lock.json` files; the generated Unicode tables (`core/python/src/fieldseal/unicode/_tables.py`, `core/typescript/src/unicode/tables-*.ts`, `tools/vector-gen/fieldseal_vectorgen/_ucd_tables.py`); the `vectors/**/*.json` families, which are searched by `id`.
+- **A cheaper model may find things; it does not stand in for the text.** Delegating a search, or a "where is X" question, to a smaller model is fine. Anything you will edit, quote, or state as fact — spec text, a vector value, a claim about what code does — read yourself, in range. A summary that is subtly wrong is believed downstream, and *every claim gets a citation or a flag* applies to what an agent tells itself as much as to what the docs say.
+
+---
+
 ## Contact and References
 
 - **Report security issues:** See `SECURITY.md`. Do not open public issues for suspected vulnerabilities.
