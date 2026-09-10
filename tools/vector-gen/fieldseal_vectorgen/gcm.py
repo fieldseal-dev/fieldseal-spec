@@ -9,7 +9,9 @@ here is a primitive an implementation needs: a core only ever *verifies* the
 commitment that makes this attack fail.
 
 Field arithmetic and GHASH follow NIST SP 800-38D §6.3-§6.4 (bit-reflected
-representation, R = 0xE1 || 0^120). `cryptography` supplies AES.
+representation, R = 0xE1 || 0^120). `cryptography` supplies AES. The tag
+and keystream are checked against NIST CAVP known answers on every run
+(kat_aesgcm.py).
 """
 
 from __future__ import annotations

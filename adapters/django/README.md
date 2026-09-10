@@ -28,7 +28,8 @@ class Patient(models.Model):
         column_uuid="018f3c2e-...",         # REQUIRED, immutable (spec §6.1)
         index=BlindIndex(
             index_id="exact",
-            idf="hmac-sha512",
+            # idf defaults to "argon2id": spec §7.3 requires it for an
+            # enumerable domain such as email (see "Honest limitations")
             normalize="nfc-casefold-v1",
             truncate_bits=15,
             projected_population=100_000,   # DISTINCT values; sizes §7.4
@@ -295,6 +296,57 @@ and every test process, and a migration that cannot run because the KMS is
 unreachable is a worse failure than a cold cache. Tenant-bound columns need
 their tenants named (`--tenant`, or `FIELDSEAL["WARM_TENANTS"]`) — the adapter
 cannot enumerate them.
+
+## Honest limitations
+
+The specification requires every implementation to state these, and
+`docs/07` §4 requires every shipped artifact to carry them. The adapter holds
+no key material and does no cryptography (AD-1), so several are the core's
+costs — they still reach anyone who installs this package.
+
+- **No protection against a compromised application process** (spec §2.2).
+  The keys are in that process. Database query logs, slow-query logs and
+  replication logs are sensitive artifacts (spec §2.3): an equality lookup
+  sends the blind-index value as a query parameter, and a logged statement
+  carries it.
+- **Storage overhead is real** (spec §3.3). Under `0xFF01` every envelope
+  carries 111 bytes of fixed overhead, so a 9-byte value becomes 120 bytes.
+  `storage="binary"` (a `BinaryField`) is the default. `storage="base64"`
+  stores a `TextField` for text-only stores and pays a further 33% on every
+  row — about 160 bytes for the same value — and check `fieldseal.W003` says
+  so at startup. Across a 20-column, 100M-row table the fixed overhead alone
+  is roughly 220 GB, before the index sibling columns and index bloat.
+- **Argon2id is the default, and it costs 10–100 ms per query term** (spec
+  §7.3). `BlindIndex` defaults to `idf="argon2id"` because §7.3 requires it
+  for enumerable domains — email, phone, national ID, date of birth — so a
+  column that declares no `idf` pays this. It is paid on every write that
+  derives an index value and on every equality term: `filter(email=v)` derives
+  one, `filter(email__in=[...])` derives one per value. It is latency on the
+  requesting thread, not a process-wide stall — two derivations on separate
+  threads take about as long as one (measured 2026-09-09; see
+  `core/python/README.md`) — so a threaded server serves other requests
+  through it. `hmac-sha512` costs microseconds, and §7.3 permits it only for
+  high-entropy, non-enumerable values such as opaque random tokens.
+  `time_cost` and `memory_kib` raise the cost above the §7.3 minimum. This is
+  a product constraint, not tuning.
+- **The key service is a hard dependency in the read path** (spec §8.1).
+  Under an `EnvelopeKeyProvider`, every read and write of an encrypted column
+  needs its key in the core's cache, and only `warm()` fills it (see *Warming
+  the cache* above). A KMS outage therefore means `KEY_UNAVAILABLE` for every
+  tenant and key version not already cached. The provider's `degradation`
+  records the deployment's mode — `fail-closed` or `serve-cached` — and on the
+  value path both mean the same thing, serve only what the cache can decrypt,
+  because the value path never waits on the network.
+- **That cache holds plaintext keys in memory** (spec §5.5). It is exposed to
+  memory dumps, core files and swap. The core overwrites evicted entries, but
+  CPython copies `bytes` freely and there is no `mlock`, so this narrows the
+  window rather than closing it (`core/python/README.md` states exactly what
+  is and is not erased). The cache's `max_age` and `max_uses` are security
+  parameters, not tuning knobs: a longer TTL means fewer KMS calls and a
+  longer exposure. A server that loads the application before forking
+  (gunicorn's `--preload`) runs `ready()` in the parent, so
+  `WARM_ON_READY` there copies the warmed cache into every worker; warm in
+  each worker instead (`docs/09` §10).
 
 ## Known gaps
 
