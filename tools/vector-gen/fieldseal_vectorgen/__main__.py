@@ -10,10 +10,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from .families import (blind_index_family, commitment_family, context_family,
-                       cross_corpus_family, envelope_family, errors_family,
-                       kdf_family, keys_family)
-from .manifest import HELD_OUT, build_manifest, write_json
+from .families import (
+    blind_index_family,
+    commitment_family,
+    context_family,
+    cross_corpus_family,
+    envelope_family,
+    errors_family,
+    kdf_family,
+    keys_family,
+)
+from .manifest import build_manifest, write_json
 
 STDLIB_FAMILIES = {
     "context/canonical.json": context_family.generate,
@@ -93,6 +100,11 @@ def main(argv: list[str] | None = None) -> int:
         k = check_argon2id()
         print(f"  primitive check: Argon2id matches libsodium's {k} published "
               "known answers (empty K and X)")
+        from .kat_aesgcm import check as check_aesgcm
+        n_enc, n_fail = check_aesgcm()
+        print(f"  primitive check: AES-256-GCM matches NIST CAVP's {n_enc} "
+              f"encrypt and {n_fail} FAIL known answers, through cryptography "
+              "and through gcm.py")
 
     manifest = args.out / "MANIFEST.json"
     payload = build_manifest(args.out, written)
