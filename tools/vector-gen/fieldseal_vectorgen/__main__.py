@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         k = check_argon2id()
         print(f"  primitive check: Argon2id matches libsodium's {k} published "
               "known answers (empty K and X)")
+        from .kat_aesgcm import check as check_aesgcm
+        n_enc, n_fail = check_aesgcm()
+        print(f"  primitive check: AES-256-GCM matches NIST CAVP's {n_enc} "
+              f"encrypt and {n_fail} FAIL known answers, through cryptography "
+              "and through gcm.py")
 
     manifest = args.out / "MANIFEST.json"
     payload = build_manifest(args.out, written)

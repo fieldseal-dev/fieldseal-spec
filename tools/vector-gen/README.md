@@ -35,7 +35,9 @@ py -3 -m fieldseal_vectorgen --out ../../vectors --stdlib-only
 | `keys.py` | Record-key and index-key derivation (spec §5.3, §7.2) |
 | `blindindex.py` | HMAC-SHA-512 and Argon2id IDFs (spec §7.3) |
 | `envelope.py` | Envelope assembly and commitment (spec §3.1, §4.6) |
-| `gcm.py` | GF(2^128), GHASH and the GCM tag — only to build the invisible-salamander vector (docs/08 §4.6); checked against `cryptography`'s tags at generation time |
+| `gcm.py` | GF(2^128), GHASH and the GCM tag — only to build the invisible-salamander vector (docs/08 §4.6); checked against NIST CAVP by `kat_aesgcm.py` |
+| `kat_argon2id.py` | libsodium's published Argon2id known answers, checked on every run (docs/08 §7) |
+| `kat_aesgcm.py` | NIST CAVP AES-256-GCM known answers, checked on every run against both `cryptography`'s `AESGCM` and `gcm.py` (docs/08 §7) |
 | `families/` | One module per vector family; each returns a file dict. `errors_family.py` cuts its inputs from `envelope_family`'s output so the bytes match; `keys_family.py` emits the `cross/` key material |
 | `manifest.py` | `MANIFEST.json` with per-file sha256; `files` (run), `support` (hashed, never run), `held_out` |
 
