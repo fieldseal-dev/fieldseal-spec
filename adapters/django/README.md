@@ -144,9 +144,19 @@ The `name` column now holds a binary envelope of 123 bytes, and
 
 ## Declaring columns
 
-`Encrypted(inner_field, column_uuid=..., index=None, tenant_bound=None,
+`Encrypted(inner_field, *, column_uuid, index=None, tenant_bound=None,
 storage="binary")` wraps an ordinary Django field. The inner field keeps its
 validation and form behaviour and decides the value type.
+
+- **`column_uuid`** (required): the column's identifier; see below.
+- **`index`**: a `BlindIndex(...)` to make the column searchable by equality,
+  or `None` (the default) for a column you only read and write.
+- **`tenant_bound`**: `None` (the default) follows the model's
+  `FieldsealMeta(tenant_bound=...)`; `True` or `False` overrides it for this
+  column. See [Tenant binding](#tenant-binding).
+- **`storage`**: `"binary"` (the default) stores the envelope in a
+  `BinaryField`. `"base64"` stores it as text in a `TextField`, for databases
+  that cannot hold binary, and costs a third more space.
 
 **The UUIDs are part of the key derivation.** Never change one once a row has
 been written, and never derive one from a model or field name: either makes
@@ -168,19 +178,55 @@ follow from storing one canonical form per value:
 - A stored value that is not in canonical form raises on read rather than
   being coerced.
 
-**Blind indexes.** `BlindIndex()` makes a column searchable by equality. The
-defaults suit an email address:
+**Blind indexes.** `BlindIndex(...)` makes a column searchable by equality.
+Only `projected_population` is required:
 
-| Option | Default | Meaning |
-|---|---|---|
-| `idf` | `"argon2id"` | The index function. Keep Argon2id for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"` is permitted only for high-entropy values such as random tokens. |
-| `normalize` | `"nfc-casefold-v1"` | Values are Unicode-normalized and case-folded before indexing, so `Ada@Example.com` matches `ada@example.com`. |
-| `truncate_bits` | `15` | Index width in bits. Short on purpose: unrelated values share index values, which limits what the index reveals about which rows are equal. |
-| `projected_population` | none | The number of distinct values you expect. Used to check that `truncate_bits` is in a safe range. |
-| `on_unindexable` | `"refuse"` | What to do with a value containing a character the pinned Unicode version does not define: refuse it, or `"bucket"` it (needs a recorded approval). |
-
-A column with too few distinct values to index safely is refused at startup
-unless you record an explicit override.
+- **`projected_population`** (required): how many *distinct* values you
+  expect the column to hold, at least 16. It checks `truncate_bits` (below),
+  and it gates the index: a column with fewer than 1,024 distinct values is
+  refused unless you record a `cardinality_override`, because an index over
+  so few values reveals too much about which rows are equal.
+- **`idf`**, the index function:
+  - `"argon2id"` (the default): deliberately slow, so an attacker with the
+    database cannot cheaply try every likely value. Use it for anything
+    guessable: emails, phone numbers, national IDs, birth dates.
+  - `"hmac-sha512"`: microseconds instead of milliseconds. Only for
+    high-entropy values nobody could enumerate, such as random tokens.
+- **`time_cost`** and **`memory_kib`**: the Argon2id cost. The defaults are
+  the minimum the specification allows, 3 passes and 32 MiB (`32768`); you
+  can raise either per column, not lower it. Only valid with `"argon2id"`.
+- **`normalize`**, how a value is prepared before indexing. Lookups match
+  whatever the normalizer makes equal:
+  - `"nfc-casefold-v1"` (the default): Unicode-normalized and case-folded, so
+    `Ada@Example.com` matches `ada@example.com`, and `é` matches `e` plus a
+    combining accent.
+  - `"identity"`: the exact value, so matching is case-sensitive.
+  - `"digits-only-v1"`: keeps only the digits 0–9, so `+1 (555) 010-0199`
+    matches `15550100199`. For phone numbers and similar identifiers.
+- **`truncate_bits`** (default `15`): how many bits of each index value are
+  kept. Short on purpose: unrelated values share index values, which limits
+  what the index reveals, and the extra rows are removed by the re-check. It
+  must satisfy 2 ≤ P / 2<sup>b</sup> < √P, where P is `projected_population`.
+  The default fits from 65,536 to about a billion distinct values; for 5,000
+  use 7–11, for 100,000 use 9–15. A value outside the range is refused at
+  startup.
+- **`index_id`** (default `"exact"`): the index's name, 1–32 lowercase
+  letters, digits and hyphens. It is part of the index key, so changing it
+  means rebuilding the index.
+- **`skewed`** (default `False`): set `True` if a few values dominate the
+  column, for example when most rows share one value. A skewed column is
+  gated like a low-cardinality one.
+- **`cardinality_override`**: `Override(reason=..., approved_by=...,
+  date=...)`, to index a column the two rules above would refuse. It records
+  who accepted the risk, and the adapter refuses it unfilled.
+- **`on_unindexable`**, for a value containing a character the pinned Unicode
+  version does not define, which cannot be indexed:
+  - `"refuse"` (the default): the value fails validation. Right for a login
+    email, where such a character usually means something upstream is broken.
+  - `"bucket"`: the row saves, under a reserved index value shared by all such
+    rows, and the re-check keeps lookups correct. Right for names, where rare
+    characters are legitimate. Needs `unindexable_override=Override(...)`, and
+    only applies with `"nfc-casefold-v1"`.
 
 ## Settings
 
