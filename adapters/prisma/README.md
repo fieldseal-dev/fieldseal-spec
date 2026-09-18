@@ -344,7 +344,7 @@ the target matrix in `docs/13` §6.
 | `NULL` | ✅ stays NULL; its index is NULL too | `stays NULL rather than becoming an envelope` |
 | `where: { field: null }`, `{ equals: null }`, `{ not: null }` | ✅ served — `IS [NOT] NULL` is exact over envelopes, because NULL stays NULL | `serves literal-NULL equality…` |
 | Non-text logical types in the fixture (`as: "int"`, `"datetime"`, `"boolean"`, `"float"`, `"bytes"`) | ✅ round-trip as their own type, incl. a bare `Date` | `every declared \`as:\` type round-trips as itself` |
-| Spec §3.6 renderings, all eight `as:` types incl. `"decimal"` and `"date"`, both directions and the refusals | ✅ byte-exact against the `codec/` vectors | `tests/codec-vectors.test.ts` |
+| Spec §3.6 renderings, all eight `as:` types incl. `"decimal"` and `"date"`, both directions and the refusals | ✅ byte-exact against the `codec/` vectors (the 4 needing a CPython-only capability are skipped with the reason) | `codec/` |
 | A value that does not match the declared `as:` | 🛑 refused rather than coerced | `refuses a value whose type does not match…` |
 | `storage: "base64"` on a `String` column | ✅ ASCII in the column, ~33% overhead | `round-trips through a String column…` |
 | Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `is derived on write…`, `folds case…` |
