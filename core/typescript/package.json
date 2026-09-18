@@ -1,9 +1,23 @@
 {
   "name": "@fieldseal/core",
-  "version": "0.1.0-provisional",
-  "description": "Fieldseal core (TypeScript/Node): transparent field-level encryption at the data-access layer. Provisional suite 0xFF01 only; not independently reviewed; not for production use.",
+  "version": "0.1.0",
+  "description": "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Portable field-level encryption at rest: the TypeScript/Node core.",
   "license": "Apache-2.0",
-  "private": true,
+  "homepage": "https://fieldseal.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fieldseal-dev/fieldseal-spec.git",
+    "directory": "core/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/fieldseal-dev/fieldseal-spec/issues"
+  },
+  "keywords": [
+    "encryption",
+    "field-level-encryption",
+    "encryption-at-rest",
+    "blind-index"
+  ],
   "type": "module",
   "engines": {
     "node": ">=24.7.0"
@@ -20,7 +34,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -37,5 +52,8 @@
     "fast-check": "^4.3.0",
     "typescript": "~5.9.3",
     "vitest": "^4.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

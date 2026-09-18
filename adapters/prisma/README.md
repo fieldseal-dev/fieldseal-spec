@@ -1,7 +1,15 @@
 # @fieldseal/prisma
 
+> **Experimental release: not independently reviewed, not for production data.**
+> The cryptographic design this package implements has not been reviewed by
+> anyone outside the project. It is pre-1.0: the stored format may change
+> before 1.0, and data written with it now may have to be re-encrypted if
+> review changes a construction. Writing refuses until you explicitly arm
+> provisional use (spec §4.8). This release is for evaluation and feedback;
+> the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
+
 Transparent field-level encryption at rest for Prisma. Design:
-[`docs/13-adapter-prisma.md`](../../docs/13-adapter-prisma.md).
+[`docs/13-adapter-prisma.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/13-adapter-prisma.md).
 
 **Status: L1 + L2(b), and not usable in production.** Values encrypt and decrypt
 transparently, blind-index siblings are derived on write, and equality and
@@ -237,7 +245,7 @@ value (spec §7.5) before you see them.
 
 That is only possible where the rows come back. Measured against Prisma 7.10.0
 (the classification, with the evidence, is
-[`docs/13` §2.0](../../docs/13-adapter-prisma.md)), exactly **two** `where`
+[`docs/13` §2.0](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/13-adapter-prisma.md)), exactly **two** `where`
 sites in Prisma's surface qualify:
 
 1. the top-level `where` of **`findMany`**, and
@@ -523,6 +531,14 @@ whether it touches an encrypted column. `strictRaw: true` refuses them outright.
 **Database query logs are in scope as sensitive artifacts.** Blind-index values
 appear in logged statements; the ETH Zurich MongoDB QE analysis (USENIX '23)
 recovered 40–100% of field values from logs alone, with no client queries.
+
+**The DEK cache holds plaintext keys in memory** (spec §5.5). The core this
+adapter runs caches unwrapped data keys, and L4's `warm()` fills that cache on
+purpose. It is exposed to memory dumps, core files and swap. Zeroization on
+eviction reaches only the visible allocation: V8 may have copied the bytes, and
+there is no `mlock` for GC-managed memory. Cache TTL and max-uses are security
+parameters, not tuning knobs. Construct the client after forking in a prefork
+server.
 
 **No protection against a compromised application process.** The keys are in
 that process.

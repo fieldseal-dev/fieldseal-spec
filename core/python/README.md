@@ -1,12 +1,20 @@
 # fieldseal — Python core
 
+> **Experimental release: not independently reviewed, not for production data.**
+> The cryptographic design this package implements has not been reviewed by
+> anyone outside the project. It is pre-1.0: the stored format may change
+> before 1.0, and data written with it now may have to be re-encrypted if
+> review changes a construction. Writing refuses until you explicitly arm
+> provisional use (spec §4.8). This release is for evaluation and feedback;
+> the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
+
 The reference Python implementation of the Fieldseal specification, built to
-[`docs/10-core-python.md`](../../docs/10-core-python.md).
+[`docs/10-core-python.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/10-core-python.md).
 
 > **Not for production use, and the library will refuse.** Every registered
 > cipher suite is *provisional* (spec §4.8): its constructions have not been
 > independently reviewed, and Gate 0b of the Phase 0 exit gate
-> ([`docs/01-prd.md`](../../docs/01-prd.md) §8) is still open. `encrypt()` and
+> ([`docs/01-prd.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md) §8) is still open. `encrypt()` and
 > `rotate()` raise `SUITE_PROVISIONAL` unless you explicitly arm provisional
 > use — `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment, or
 > `arm_provisional_suites=True` on the constructor. Decryption is deliberately
@@ -19,8 +27,8 @@ The reference Python implementation of the Fieldseal specification, built to
 | Vector suite | **178/178** pinned results pass on suite `0.7.0-provisional` (146 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
 | Gate, parity and totality tests | 131 pass (`tests/test_gates.py`, `tests/test_parity.py`) |
 | Suites | `0xFF01` (AES-256-GCM). `0xFF02` is registered and refused at construction — it needs an XChaCha backend, blocked on gap G7 |
-| Conformance report | `tests/run_vectors.py` writes the [`docs/14`](../../docs/14-conformance-ci.md) §4 JSON to stdout, including `pinned_decisions` and `harness_notes`; the TypeScript core's report has the same shape and the same result ids, so the two diff cleanly |
-| Milestone | **M1 met** for the families in the pinned suite. M2 (the independent TypeScript reproduction, [`docs/18`](../../docs/18-m2-report.md)) is what makes these values trustworthy |
+| Conformance report | `tests/run_vectors.py` writes the [`docs/14`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/14-conformance-ci.md) §4 JSON to stdout, including `pinned_decisions` and `harness_notes`; the TypeScript core's report has the same shape and the same result ids, so the two diff cleanly |
+| Milestone | **M1 met** for the families in the pinned suite. M2 (the independent TypeScript reproduction, [`docs/18`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/18-m2-report.md)) is what makes these values trustworthy |
 
 ## Running
 
@@ -36,7 +44,7 @@ py -3 -m venv .venv
 
 Spec §9 leaves the precedence among its error codes open (gap G5) and obliges a
 Gate 0a implementation to pin an order and declare it. This core follows
-[`docs/09`](../../docs/09-core-architecture.md) §3.2 step for step and declares
+[`docs/09`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/09-core-architecture.md) §3.2 step for step and declares
 every pin under `pinned_decisions` in its report, under the keys `docs/14` §4
 reserves. The ones an operator will meet:
 
@@ -66,7 +74,7 @@ reserves. The ones an operator will meet:
   interpreter's (`unicodedata.unidata_version`, reported in the report's
   `environment`) — CPython 3.14 folds with Unicode 16.0 where the TypeScript
   core vendors 17.0, which is a real cross-core risk for shared indexes until
-  [`docs/09`](../../docs/09-core-architecture.md) §7 pins a table (D-10).
+  [`docs/09`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/09-core-architecture.md) §7 pins a table (D-10).
 
 `fieldseal.testing.encrypt_with_materials` runs the same API boundary as
 `encrypt()` — mode, arming and length gates included — and replaces only the two
@@ -75,7 +83,7 @@ entropy draws (docs/08 §6).
 ## What is deliberately not proven yet
 
 **Passing these vectors is weak evidence on its own.** The generator that
-produced them is not an oracle ([`docs/08`](../../docs/08-test-vector-spec.md)
+produced them is not an oracle ([`docs/08`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/08-test-vector-spec.md)
 §7); what makes an expected value trustworthy is two independently written
 implementations agreeing on it. This core is one. The TypeScript core, written
 from the specification without reading this source, is the other, and that is
@@ -90,7 +98,7 @@ generator importing `fieldseal.testing`. Had it done so, M1 would have been
 close to tautological — the same code checking itself. The cross-check is
 narrower than "independent", though: the two share the `canonical_context`
 layout by construction, so the independence is in HKDF only. See the
-divergence note in [`docs/07`](../../docs/07-implementation-plan.md) §7.
+divergence note in [`docs/07`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/07-implementation-plan.md) §7.
 
 **`blind-index/argon2id.json` is pinned** as of suite `0.6.0-provisional` (2026-08-31, `docs/07` §7) and this core runs it like any other family. It was held out while the primitive had no external known-answer source: RFC 9106 §5.3's vector supplies a nonzero secret (`K`) and associated data (`X`), both forbidden by spec §7.3 and unsuppliable from Python, so passing the project's own vectors would have proved only that two implementations copied one unverified assumption. That is answered — the generator checks argon2-cffi against libsodium's seven published `crypto_pwhash` answers on every run (libsodium cannot supply `K` or `X` either, which makes it the right source for the case §7.3 uses), and the TypeScript core reproduces the same values through `node:crypto`.
 

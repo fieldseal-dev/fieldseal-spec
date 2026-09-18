@@ -1,14 +1,38 @@
 [project]
 name = "fieldseal-django"
-version = "0.1.0.dev0"
-description = "Transparent field-level encryption at rest for Django -- fieldseal adapter"
+version = "0.1.0"
+# PRD §8 condition 3: the registry description opens with the warning.
+description = "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Transparent field-level encryption at rest for Django: the fieldseal adapter."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Fieldseal contributors" }]
+keywords = ["encryption", "field-level-encryption", "encryption-at-rest", "blind-index"]
+classifiers = [
+    # PRD §8 condition 1: Alpha or lower until Gate 0b.
+    "Development Status :: 3 - Alpha",
+    "Framework :: Django",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 # AD-1 (spec §11.3): zero cryptography in this package. The only calls into
 # `fieldseal` are the five sync operations plus `warm`, and the only reason
 # `cryptography` appears anywhere in this tree is transitively, through the
 # core. Adding a direct crypto dependency here is a conformance failure, not
 # a style question.
-dependencies = ["fieldseal>=0.1.0.dev0", "django>=5.2"]
+# Pre-1.0, a minor version may break the format or the API, so the adapter
+# is pinned to the core minor it was built and tested against.
+dependencies = ["fieldseal>=0.1.0,<0.2", "django>=5.2"]
+
+[project.urls]
+Homepage = "https://fieldseal.dev"
+Documentation = "https://fieldseal.dev/docs/"
+Repository = "https://github.com/fieldseal-dev/fieldseal-spec"
+Issues = "https://github.com/fieldseal-dev/fieldseal-spec/issues"
+Specification = "https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-django>=4.9", "mypy>=1.8", "ruff>=0.5"]
@@ -16,6 +40,12 @@ dev = ["pytest>=8", "pytest-django>=4.9", "mypy>=1.8", "ruff>=0.5"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The sdist carries the source and its metadata only. The tests read the
+# shared vectors from ../../vectors and cannot run outside this repository,
+# and an explicit list keeps local caches (.hypothesis/) out of the artifact.
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fieldseal_django"]

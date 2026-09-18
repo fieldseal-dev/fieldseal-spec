@@ -19,7 +19,7 @@
  * supported form.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import helper from "@prisma/generator-helper";
@@ -28,12 +28,18 @@ import { buildFieldMap, type Datamodel, renderModule } from "./emit.ts";
 
 const DEFAULT_IMPORT = "@fieldseal/prisma";
 
+// The package version, read rather than written down: src/generator/bin.ts and
+// dist/generator/bin.js both sit two levels below package.json.
+const VERSION = (
+  JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
+
 helper.generatorHandler({
   onManifest() {
     return {
       defaultOutput: "./fieldseal",
       prettyName: "fieldseal declarations",
-      version: "0.1.0-provisional",
+      version: VERSION,
     };
   },
 
@@ -54,7 +60,7 @@ helper.generatorHandler({
 
     const map = buildFieldMap(
       options.dmmf.datamodel as unknown as Datamodel,
-      "fieldseal-prisma-generator@0.1.0-provisional",
+      `fieldseal-prisma-generator@${VERSION}`,
     );
 
     const file = join(out, "fieldseal-map.ts");
