@@ -51,3 +51,10 @@ Push a `v0.MINOR.PATCH` tag that matches all four package versions.
   first; that is what the two `0.0.0` placeholders are.
 - npm provenance is generated at publish time. It requires npm ≥ 11.5.1, which
   the job installs, and a `repository.url` that matches this repository.
+- **npm's "Allowed actions" must include `npm publish`.** A trusted publisher
+  created after 3 September 2026 allows only `npm stage publish` by default,
+  and the registry refuses a direct publish with `403 OIDC permission denied
+  for this action`. That, not the job, is why v0.1.2's first attempt failed.
+- The publish job must not give npm a token of its own: no `registry-url` on
+  `setup-node`, which writes one into `.npmrc`. A guard refuses to publish if
+  one is configured.
