@@ -11,7 +11,7 @@ back to be checked**, which in Prisma is two places (see
 [Querying an indexed column](#querying-an-indexed-column)). Everywhere the
 database answers instead, the shape is refused rather than approximated.
 Nothing here is frozen: the suite identifier is provisional (spec §4.8), Gate 0b
-is open, and the project does not invite adoption.
+is open, and the project does not invite production adoption (PRD §8).
 
 **AD-1 (spec §11.3): this package contains no cryptography.** It calls the
 core's published operations and nothing else. Installing it pulls in

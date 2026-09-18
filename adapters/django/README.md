@@ -7,7 +7,7 @@ Transparent field-level encryption at rest for Django. Design:
 transparently, and `filter(email=...)` / `__in` are served through the blind
 index with the spec §7.5 re-verification that makes them correct. Nothing here
 is frozen: the suite identifier is provisional (spec §4.8), Gate 0b is open,
-and the project does not invite adoption.
+and the project does not invite production adoption (PRD §8).
 
 **AD-1 (spec §11.3): this package contains no cryptography.** It calls the
 core's sync operations and nothing else. `pip`-installing it pulls in
