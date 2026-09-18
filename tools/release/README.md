@@ -37,8 +37,9 @@ Push a `v0.MINOR.PATCH` tag that matches all four package versions.
    then uploads to PyPI and to npm (the core before the adapter). A version
    already on a registry is skipped, so re-running after a partial failure is
    safe.
-3. **`draft-release`** creates the GitHub release as a draft, with the
-   artifacts and their hashes. Condition 5 covers release notes, so a person
+3. **`draft-release`** creates the GitHub release as a draft pre-release, with
+   the artifacts and their hashes. Every 0.x release is a pre-release, so none
+   is shown as "Latest". Condition 5 covers release notes, so a person
    writes the "what changed" section, reads the note, and publishes it.
 
 **No stored credentials.** Both registries use trusted publishing (OIDC):
