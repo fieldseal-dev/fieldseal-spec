@@ -2,6 +2,27 @@
 title: "Fieldseal"
 ---
 
+## Latest release: v0.1.2 (experimental)
+
+> **Not independently reviewed, not for production data.** The format may change
+> before 1.0, and data written now may have to be re-encrypted if review changes
+> a construction. Writing refuses until provisional use is explicitly armed.
+
+The two reference cores and two ORM adapters can now be installed, for evaluation
+and feedback:
+
+- Python: `pip install fieldseal` · Django: `pip install fieldseal-django`
+- TypeScript/Node: `npm install @fieldseal/core` · Prisma: `npm install @fieldseal/prisma`
+
+Both cores pass the same 146 test vectors. Each decrypts what the other
+encrypts: CI checks this on every run, and the release process checked it again
+on the published packages. That shows the implementations agree with each other
+and with the specification. It does not show that the design is sound. That
+needs independent cryptographic review, which is the gate on 1.0.
+
+[Release notes](https://github.com/fieldseal-dev/fieldseal-spec/releases/tag/v0.1.2) ·
+[How to review the design](/docs/reviewer-brief/)
+
 ## The problem
 
 A company holding regulated consumer data has three options today, and all three

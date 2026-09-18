@@ -17,8 +17,9 @@
 > | GitHub org `fieldseal-dev` | **Ours.** Canonical home; holds this repository |
 > | `fieldseal.dev` | **Ours.** Registered and live — this repository's `www/` published to GitHub Pages, HTTPS enforced |
 > | npm `fieldseal` | **Claimed** — 0.0.0 placeholder |
-> | npm `@fieldseal/*` scope | **Claimed** — org created, `@fieldseal/core` 0.0.0 placeholder published |
-> | PyPI `fieldseal` | **Claimed** — 0.0.0 placeholder |
+> | npm `@fieldseal/*` scope | **Released** — `@fieldseal/core` and `@fieldseal/prisma` 0.1.2 (experimental, PRD §8), published by trusted publishing with provenance |
+> | PyPI `fieldseal` | **Released** — 0.1.2 (experimental, PRD §8), trusted publishing; 0.1.0 and 0.1.1 are the same code from two release runs whose npm half failed |
+> | PyPI `fieldseal-django` | **Released** — as `fieldseal` |
 > | PyPI `field-seal` | **Protected, not claimable** (checked 2026-09-18). PEP 503 does not fold it into `fieldseal`, but PyPI's upload check goes further: it strips `.`, `_` and `-`, maps `l`/`i` to `1` and `o` to `0`, and refuses any name that then matches an existing project (Warehouse `ultranormalize_name`). The upload was refused with "too similar to an existing project", so `fieldseal` itself blocks `field-seal`, `field_seal` and look-alikes such as `fie1dseal` |
 > | Maven Central `dev.fieldseal` | **Unclaimed.** The groupId needs the domain, which is now held, so this is claimable whenever Phase 1 needs it |
 > | crates.io · NuGet | **Unclaimed and free** |

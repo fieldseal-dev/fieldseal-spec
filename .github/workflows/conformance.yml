@@ -1025,8 +1025,28 @@ jobs:
       # parse, because nothing had ever run this command before the real upload.
       - name: npm would accept the tarballs as the publish job passes them
         run: |
+          # `npm publish --dry-run` also refuses a version already on the
+          # registry -- right for the release build, which should stop before
+          # approval, but here it would fail every change between releases. So a
+          # published version is repacked under a throwaway prerelease version and
+          # that is dry-run instead: same ./path argument, same parsing.
+          mkdir -p ci-repack
           for tgz in dist-release/fieldseal-core-*.tgz dist-release/fieldseal-prisma-*.tgz; do
-            npm publish "./$tgz" --access public --dry-run
+            meta=$(tar -xzOf "$tgz" package/package.json)
+            name=$(node -p "JSON.parse(process.argv[1]).name" "$meta")
+            version=$(node -p "JSON.parse(process.argv[1]).version" "$meta")
+            target="$tgz"
+            tag=""
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              work=$(mktemp -d)
+              tar -xzf "$tgz" -C "$work"
+              file=$(cd "$work/package" && npm pkg set version="$version-ci.${GITHUB_RUN_ID}"                 && npm pack --pack-destination "$GITHUB_WORKSPACE/ci-repack" | tail -n 1)
+              target="ci-repack/$file"
+              # npm refuses a prerelease version without an explicit dist-tag.
+              tag="--tag ci-dry-run"
+              echo "$name@$version is already published; dry-running $target instead"
+            fi
+            npm publish "./$target" --access public --dry-run $tag
           done
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
