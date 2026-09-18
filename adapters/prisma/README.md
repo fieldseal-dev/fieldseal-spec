@@ -1,5 +1,7 @@
 # @fieldseal/prisma
 
+Encrypt Prisma model fields at rest, and keep looking rows up by them.
+
 > **Experimental release: not independently reviewed, not for production data.**
 > The cryptographic design this package implements has not been reviewed by
 > anyone outside the project. It is pre-1.0: the stored format may change
@@ -8,595 +10,384 @@
 > provisional use (spec §4.8). This release is for evaluation and feedback;
 > the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
 
-Transparent field-level encryption at rest for Prisma. Design:
-[`docs/13-adapter-prisma.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/13-adapter-prisma.md).
+`@fieldseal/prisma` is a Prisma Client extension. It encrypts the fields you
+mark in your schema before they reach the database, and decrypts them when you
+read them back. The database, its backups and its replicas hold only
+ciphertext. A blind index keeps `findMany({ where: { email } })` working on an
+encrypted column.
 
-**Status: L1 + L2(b), and not usable in production.** Values encrypt and decrypt
-transparently, blind-index siblings are derived on write, and equality and
-membership are rewritten onto the declared index with the spec §7.5
-re-verification that makes the rewrite correct — but **only where the rows come
-back to be checked**, which in Prisma is two places (see
-[Querying an indexed column](#querying-an-indexed-column)). Everywhere the
-database answers instead, the shape is refused rather than approximated.
-Nothing here is frozen: the suite identifier is provisional (spec §4.8), Gate 0b
-is open, and the project does not invite production adoption (PRD §8).
+It is the Prisma adapter for [Fieldseal](https://fieldseal.dev), an open
+specification for field-level encryption. What this package writes, any
+conformant implementation can read, including the
+[Python core](https://pypi.org/project/fieldseal/) and the
+[Django adapter](https://pypi.org/project/fieldseal-django/).
 
-**AD-1 (spec §11.3): this package contains no cryptography.** It calls the
-core's published operations and nothing else. Installing it pulls in
-`@fieldseal/core`, and that is where every cipher, KDF and random draw lives.
-CI asserts this with a grep rather than trusting review — a tripwire, not a
-proof: it matches `import`/`from` lines and would not catch a dynamic
-`import()`.
+## Features
 
-Targets **Prisma 7.10.x**. Note that the `prisma` CLI's `latest` dist-tag
-currently points at an `8.0.0-rc`, so pin both packages explicitly.
+- **Declared in the schema.** Mark fields with `/// @fieldseal(...)` comments;
+  a Prisma generator turns them into a field map at `prisma generate`, and a
+  malformed declaration fails the generate, not the first request.
+- **Transparent.** `create`, `createMany`, `update`, `updateMany` and nested
+  relation writes encrypt; reads decrypt, including `include` and `select`.
+- **Equality search on encrypted columns.** `findMany` with equality or `in`
+  goes through a blind index. The index is deliberately lossy, so every
+  candidate row is decrypted and re-checked before you get it: you never see a
+  false match.
+- **Refuses what it cannot answer.** Ordering, ranges, `contains`, aggregates,
+  negation and `count` over an encrypted column throw an error naming what to
+  run instead, rather than returning a plausible wrong answer.
+- **Eight value types**: text, bytes, integers, decimals, floats, booleans,
+  dates and datetimes, stored exactly as the Django adapter stores them.
+- **Keys fetched when needed.** With a KMS-backed key provider, a query that
+  needs a key not yet in the cache waits for it instead of failing.
+- **Tenant binding.** A row encrypted for one tenant cannot be decrypted as
+  another tenant's, even by the same application.
+- **No cryptography of its own.** Every cipher, key derivation and random draw
+  lives in [`@fieldseal/core`](https://www.npmjs.com/package/@fieldseal/core).
 
----
+## Requirements
 
-## Declaring a column
+- **Node 24.7 or later**, and **Prisma 7.10 or later, below 8**
+  (`@prisma/client` and the `prisma` CLI). Pin both: the `prisma` CLI's
+  `latest` tag currently points at an 8.0 release candidate.
+- CI runs the test suite on **PostgreSQL and SQLite**.
+- **`prisma generate` does not run this generator on Windows.** With Prisma
+  7.10 and Node 24, Prisma fails to start it (`spawn … ENOENT`). Run
+  `prisma generate` under WSL, Linux or macOS; the generated field map is an
+  ordinary file you commit, so the application itself runs anywhere.
 
-Prisma has no schema extension point, so declarations are `///` doc comments:
+## Install
+
+```sh
+npm install @fieldseal/prisma @fieldseal/core @prisma/client@7.10
+npm install --save-dev prisma@7.10
+```
+
+The quickstart also uses SQLite's driver adapter,
+`@prisma/adapter-better-sqlite3@7.10`; use your own database's instead.
+
+## Quickstart
+
+**1. Declare the encrypted fields** in `schema.prisma`. Each encrypted table
+and column needs a UUID that never changes; generate them once
+(`node -e "console.log(crypto.randomUUID())"`) and paste them in:
 
 ```prisma
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
 generator fieldseal {
   provider = "fieldseal-prisma-generator"
   output   = "../src/generated"
 }
 
-/// @fieldseal(table_uuid: "018f3c2e-…")
+datasource db {
+  provider = "sqlite"   // the url goes in prisma.config.ts, as usual in Prisma 7
+}
+
+/// @fieldseal(table_uuid: "a3e1f7c2-5b94-4d08-b6e3-9f2a7c1d4e85")
 model Patient {
-  id        String  @id @default(uuid())
-  /// @fieldseal(encrypted, column_uuid: "018f3c2e-…")
+  id        Int     @id @default(autoincrement())
+  /// @fieldseal(encrypted, column_uuid: "6f1d8a52-3b7e-4c0a-9e21-5d4c7b8a9f10")
+  name      Bytes
+  /// @fieldseal(encrypted, column_uuid: "0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64")
   email     Bytes
-  /// @fieldseal(index: "email", index_id: "exact", idf: "argon2id",
-  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
-  ///            projected_population: 100000)
+  /// @fieldseal(index: "email", idf: "argon2id", normalize: "nfc-casefold-v1",
+  ///            truncate_bits: 15, projected_population: 100000)
   emailBidx Bytes?
-  plainName String
 
   @@index([emailBidx])
 }
 ```
 
-The UUIDs are surrogates written literally in the schema. They must never be
-derived from the model or field name: spec §6.1 binds key derivation to them,
-so a rename would make every existing row undecryptable.
+An encrypted column is `Bytes`, because it holds an envelope. `emailBidx` is
+the blind index for `email`: optional, indexed, never `@unique`.
 
-**`as:` says what the value is.** The Prisma column type is the storage type
-(`Bytes`, because it holds an envelope), so a non-text column declares its
-logical type: `@fieldseal(encrypted, as: "decimal", column_uuid: "…")`. The
-eight types are spec §3.6's: `string` (the default), `bytes`, `int`,
-`decimal`, `float`, `boolean`, `date` and `datetime`. Each is rendered exactly
-as §3.6 pins, which is the same bytes the Django adapter writes, and the
-`codec/` vectors check both. JavaScript has no decimal and no calendar date,
-so two conventions apply:
+**2. Generate and create the tables:**
 
-- **`decimal`** is written as a string (`"1.50"`, `"15E-1"`) or a
-  `Prisma.Decimal`, and read back as its canonical string (`"1.5"`). A
-  `number` is refused, because it is already a binary64.
-- **`date`** is written and read as a `Date` at exactly UTC midnight. Any other
-  instant is refused rather than truncated to a day.
+```sh
+npx prisma generate      # also writes src/generated/fieldseal-map.ts; commit it
+npx prisma db push
+```
 
-A `datetime` whose stored value has microseconds a `Date` cannot hold is
-refused on read, not truncated. Reads are strict in general: bytes that are
-not the canonical rendering raise `FieldsealNotSupported`. Changing `as:` on a
-column with rows is a new plaintext encoding and needs a backfill.
-
-**The index sibling must be optional (`Bytes?`).** Prisma's generated `create`
-input requires every non-optional column, so a required sibling would force
-callers to supply the one value the adapter refuses to accept from them — it is
-derived. A NULL value also has no index, so the column must accept NULL anyway.
-The generator refuses a required sibling.
-
-`truncate_bits` must sit inside the spec §7.4 band (9–15 bits at
-P = 100,000), which **mandates collisions**. A `@unique` sibling is therefore
-wrong and spec §7.10 forbids it outright.
-
-### Why a generator, and not runtime introspection
-
-`docs/13` §1 was written against reading the `///` comments "from the DMMF at
-runtime". **That is not possible in Prisma 7.** Measured against 7.10.0 on
-2026-08-27:
-
-- `Prisma.dmmf` no longer exists — the generated namespace exports `DMMF` as a
-  *type* only.
-- The client's private `_runtimeDataModel` carries the model and relation graph
-  but **no `documentation`**. The annotations are simply not in it.
-- They survive only in the schema source text.
-
-So the declarations are read where they *are* available and the route is
-supported: at `prisma generate`, from `options.dmmf`, which Prisma's own parser
-populates with documentation on every model and field. Two consequences, both
-better than the original design:
-
-- A malformed declaration **fails `prisma generate`**, not the first request —
-  the Prisma analogue of Django's startup system checks.
-- The declarations and the relation graph arrive together, from one source. The
-  args-tree visitor needs both, and at runtime they live in different places.
-
-The emitted file contains declarations only — no key material, nothing derived,
-nothing secret. Commit it.
-
-## Wiring it up
+**3. Extend the client.** Register the extension **last**, so every other
+extension sees plaintext:
 
 ```ts
+import { randomBytes } from "node:crypto";
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { DerivedKeyProvider } from "@fieldseal/core";
 import { fieldsealExtension } from "@fieldseal/prisma";
-import { fieldsealFieldMap } from "./generated/fieldseal-map.js";
+import { PrismaClient } from "./generated/prisma/client.ts";
+import { fieldsealFieldMap } from "./generated/fieldseal-map.ts";
 
-const prisma = new PrismaClient({ adapter }).$extends(
+const prisma = new PrismaClient({
+  adapter: new PrismaBetterSqlite3({ url: "file:./dev.db" }),
+}).$extends(
   fieldsealExtension({
     fieldMap: fieldsealFieldMap,
-    keyProvider,
+    // Evaluation only: keep a real root secret in a secret manager. See "Keys" below.
+    keyProvider: new DerivedKeyProvider({ rootSecret: randomBytes(32) }),
     allowedSuites: [0xff01],
     writeSuite: 0xff01,
-    readMode: "strict",
+    armProvisionalSuites: true,   // writing refuses without it; see the warning above
   }),
 );
 ```
 
-**Register fieldseal last.** The extension registered *first* is outermost, so
-the one registered last sits closest to the engine — which is where this must
-be, so every other extension sees plaintext rather than envelopes. "Last"
-reading like "runs last" is exactly backwards, which is why it is spelled out;
-`tests/prisma-private-api.test.ts` pins the ordering so a Prisma change cannot
-invert it quietly.
+**4. Use it** like any other model:
 
-There is no `client` option. This extension always builds the index registry
-from the schema, so a supplied client would be a second source for declarations
-that already have one.
+```ts
+await prisma.patient.create({
+  data: { name: "Ada Lovelace" as never, email: "ada@example.com" as never },
+});
 
-## Tenant binding (spec §10, L3)
+await prisma.patient.findMany({ where: { email: "ADA@example.com" as never } });
+await prisma.patient.findMany({
+  where: { email: { in: ["ada@example.com", "grace@example.com"] as never } },
+});
 
-The extension runs before the query and never sees the record, so the tenant
-arrives out of band — `AsyncLocalStorage`, or a callback over the arguments:
+await prisma.patient.count({ where: { email: "ada@example.com" as never } });
+// throws FieldsealNotSupported: the database would count the index bucket
+```
+
+The `as never` casts are there because Prisma types an encrypted column as
+`Uint8Array` (its storage type), while you write the value itself. See
+*Declaring columns* below for the alternative.
+
+## Declaring columns
+
+Declarations are `///` comments, read by the generator at `prisma generate`.
+
+**On the model:** `@fieldseal(table_uuid: "...")`, required on any model with
+an encrypted column.
+
+**On an encrypted field:** `@fieldseal(encrypted, column_uuid: "...", ...)`:
+
+| Key | Default | Accepted values |
+|---|---|---|
+| `column_uuid` | **required** | The column's UUID. |
+| `as` | `"string"` | The value's type: `"string"`, `"bytes"`, `"int"`, `"decimal"`, `"float"`, `"boolean"`, `"date"`, `"datetime"`. |
+| `storage` | `"binary"` | `"binary"` on a `Bytes` column; `"base64"` on a `String` column, which costs a third more space but types as `string`, so text values need no cast. |
+| `tenant_bound` | off | A flag, written bare: `@fieldseal(encrypted, tenant_bound, ...)`. See *Tenant binding* below. |
+| `noun` | the field name | The word used for the value in error messages. |
+
+**The UUIDs are part of the key derivation.** Never change one once a row has
+been written, and never derive one from a model or field name: either makes
+every existing row in that column unreadable.
+
+**Types.** Each type is stored in one canonical form, byte-for-byte what the
+Django adapter writes. JavaScript has no decimal or calendar-date type, so:
+
+- **`decimal`** is written as a string (`"1.50"`) or a `Prisma.Decimal`, and
+  read back as its canonical string (`"1.5"`). A `number` is refused.
+- **`date`** is written and read as a `Date` at exactly UTC midnight. Any
+  other time of day is refused rather than truncated.
+- A stored `datetime` with microseconds a `Date` cannot hold is refused on
+  read, and so is any stored value not in canonical form.
+
+Changing `as` on a column that has rows needs a backfill.
+
+## Blind indexes
+
+A blind index is what makes an encrypted column searchable. The index field
+stores a short keyed hash of the encrypted field's value. `findMany({ where:
+{ email: v } })` is rewritten to look for `v`'s hash instead. The hash is
+deliberately truncated, so unrelated values share hashes: the database returns
+a few extra rows, and the extension decrypts every candidate and drops the
+ones that do not match before you see them.
+
+The index field must be `Bytes?` (optional), should have an `@@index`, and
+must not be `@unique` or `@id`: the generator refuses those. Its value is
+derived on every write; you never set it, and it is left out of results unless
+`exposeIndexColumns: true`.
+
+The options decide what counts as a match, how hard the hashes are to attack,
+and how much the index reveals. Choose them before the first write: changing
+`idf`, `normalize`, `truncate_bits`, `index_id` or the Argon2id cost later
+changes every stored hash, so the index has to be rebuilt.
+
+**On the index field:** `@fieldseal(index: "<encrypted field>", ...)`:
+
+| Key | Default | Accepted values |
+|---|---|---|
+| `index` | **required** | The name of the encrypted field this indexes. |
+| `projected_population` | **required** | How many *distinct* values the column will hold, at least 16. |
+| `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
+| `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |
+| `truncate_bits` | **required** | Bits of each hash kept. Must satisfy 2 ≤ P / 2<sup>b</sup> < √P, where P is `projected_population`: 7–11 for 5,000 distinct values, 9–15 for 100,000, 10–18 for 1,000,000. |
+| `argon2_time_cost`, `argon2_memory_kib` | the minimum | Both together, to raise the Argon2id cost above 3 passes and 32 MiB (`32768`). They cannot lower it. |
+| `index_id` | `"exact"` | 1–32 lowercase letters, digits and hyphens. Another implementation searching this column must use the same value. |
+| `skewed` | `false` | `true` if a few values dominate the column. A skewed column is gated like a small one (below). |
+| `on_unindexable` | `"refuse"` | For a value containing a character `"nfc-casefold-v1"` cannot index: `"refuse"` it with `FieldsealUnindexable`, or `"bucket"` it under the column's reserved hash. |
+
+**Overrides, in code.** A column with fewer than 1,024 distinct values, or a
+skewed one, is refused unless you record who accepted the risk, because an
+index over so few values reveals too much. `"bucket"` needs the same record.
+Both are extension options, not schema comments, so they sit in reviewed code:
+
+```ts
+fieldsealExtension({
+  // ...
+  cardinalityOverride: [
+    { model: "Patient", field: "email", reason: "...", approvedBy: "...", date: "2026-09-18" },
+  ],
+  unindexableOverride: [ /* the same shape */ ],
+});
+```
+
+**Argon2id and the event loop.** Each Argon2id derivation takes tens of
+milliseconds, and this adapter still derives synchronously, so it blocks the
+Node event loop, and every other request in the process, for that time. See
+*Limitations*.
+
+## Extension options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `fieldMap` | **required** | The generated `fieldsealFieldMap`. |
+| `keyProvider` | **required** | A key provider from `@fieldseal/core`. |
+| `allowedSuites` | **required** | The cipher suites this deployment accepts. `[0xff01]` is the only one implemented. |
+| `writeSuite` | **required** | The suite new values are written under: `0xff01`. |
+| `armProvisionalSuites` | `false` | `true` to allow writing under a provisional suite. Setting `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment does the same. Reading never needs it. |
+| `readMode` | `"strict"` | `"permissive"` or `"readonly"` pass non-envelope values through, for migrating a column that still holds plaintext; `onPlaintextRead` is called for each. |
+| `tenant` | none | A function `(args, model, operation) => tenant` resolving the tenant from the query, as an alternative to `tenantScope`. |
+| `warmOnKeyMiss` | `true` | Fetch a missing key and retry, instead of failing; see *Keys* below. |
+| `strictRaw` | `false` | `true` makes `$queryRaw` and `$executeRaw` throw; see *Raw SQL* below. |
+| `onRawOperation` | none | Called with the operation name for every raw query. |
+| `exposeIndexColumns` | `false` | Leave index fields in returned objects. |
+| `cardinalityOverride`, `unindexableOverride` | none | See *Blind indexes* above. |
+| `onWarning` | none | A callback for warnings, such as a static key provider outside tests. |
+
+## Keys
+
+The key provider comes from `@fieldseal/core`:
+
+- **`StaticKeyProvider`**: one data key and one index key, for tests.
+- **`DerivedKeyProvider`**: keys derived from one root secret, with several
+  versions valid at once.
+- **`EnvelopeKeyProvider`**: data keys stored wrapped by your KMS, unwrapped
+  into a cache.
+
+With `EnvelopeKeyProvider`, a key that is not in the cache would normally mean
+`KEY_UNAVAILABLE`. Because Prisma queries are asynchronous, this extension
+instead fetches the keys the query needs and runs it again. It retries only
+while each attempt needs keys no earlier fetch covered, so it never loops, and
+if fetching fails, that error is thrown. `warmOnKeyMiss: false` turns this
+off, so no query ever waits on the KMS.
+
+## Tenant binding
+
+Mark a field `tenant_bound`, then write and read inside a tenant scope, or
+pass a `tenant` resolver:
 
 ```ts
 import { tenantScope } from "@fieldseal/prisma";
 
 await tenantScope("tenant-a", async () => {
-  await prisma.patient.create({ data: { email: "ada@example.com" } });
+  await prisma.patient.create({ data: { name: "Ada Lovelace" as never, email: "ada@example.com" as never } });
 });
 ```
 
-**An unresolvable tenant on a tenant-bound column refuses the write.** Falling
-back to a tenantless context would store a row no correctly configured reader
-can decrypt — and because spec §6.3 binds the context into the derived key, the
-reader's error would be `COMMITMENT_INVALID`: a decrypt-side failure reported
-for a write-side mistake, arbitrarily far from the cause. (`AAD_MISMATCH` never
-fires on the `0xFF01` path, for the same reason.)
+A write to a tenant-bound field with no tenant is refused. A row written for
+one tenant fails to decrypt under another: the binding is cryptographic, not a
+filter.
 
----
+## Querying encrypted columns
 
-## Key acquisition in the value path (L4)
+The extension can only re-check rows that come back to it. In Prisma that is
+the top-level `where` of `findMany`, and a relation `where` under `include` or
+`select`. Anywhere the database computes the answer itself, it is refused:
 
-Every field hook in Django, SQLAlchemy, Hibernate and GORM is synchronous, so
-`docs/09` §8.2 confines KMS unwrapping to `warm()` and forbids the value path
-from blocking on the network. The consequence is exact: an
-`EnvelopeKeyProvider` deployment whose cache is cold serves `KEY_UNAVAILABLE`
-for **every** operation until something warms it — and in a sync adapter that
-something is an operator, a management command, or a startup hook that guessed
-the right tenants.
+| Works | Refused |
+|---|---|
+| `findMany` with `equals` or `in` on an indexed field | `findFirst`, `findUnique` |
+| A relation `where` under `include` / `select` | `count`, `aggregate`, `groupBy` with such a filter |
+| `where: { field: null }` and `{ not: null }` | `update`, `updateMany`, `delete`, `deleteMany`, `upsert` with such a filter |
+| Reading the field after filtering on another one | `take`, `skip`, `cursor`, `distinct` beside such a filter |
+| `_count` over an encrypted field (it reads no bytes) | `OR` including the field; `not`, `notIn`, `NOT`, `none`, `isNot` |
+| | `contains`, `startsWith`, `endsWith`, `lt`/`gte`, `search`, `mode: "insensitive"` |
+| | `orderBy`, `distinct`, `groupBy`, `_min`/`_max`/`_sum`/`_avg` on the field |
+| | Relation filters (`some`, `every`, `none`, `is`) naming the field |
+| | Equality on an encrypted field with no index |
 
-Prisma does not have to guess. `$allOperations` is `async` and runs **before
-the query engine acquires a connection**, so on a `KEY_UNAVAILABLE` the
-extension awaits `client.warm(…)` for the contexts this operation actually
-named and runs the pass again. That is spec §10.1's L4, and it is why the matrix
-marks it reachable for Prisma and for almost nothing else.
+Each refusal throws `FieldsealNotSupported`, naming what to run instead. To
+paginate, fetch the verified rows with `findMany` and slice them in your code.
 
-```ts
-fieldsealExtension({ …, warmOnKeyMiss: true })  // the default
-```
-
-Three things worth being precise about:
-
-- **The core's rule is not bent.** `encrypt`, `decrypt` and `blindIndex` are
-  still synchronous and still refuse a cache miss. What changed is what the
-  *adapter* does with the refusal — it awaits between two synchronous core
-  calls. `tests/l4.test.ts` instruments the key provider and fails the run if an
-  unwrap is ever observed from inside a synchronous core call, so a regression
-  that "fixed" L4 by making the core block on the network would be caught.
-- **It is reactive, not a pre-flight check.** There is no cache-membership
-  probe, and there should not be one: a §5.5 cache can evict between the probe
-  and the use, and `encryptionKey` used as a probe would advance the §5.5 use
-  counter for a key nobody used. The miss is the signal.
-- **It gives up rather than looping.** A cycle runs only if the next attempt
-  needs a context no previous cycle warmed. A miss on a context that *was* just
-  warmed means warming did not help (key destroyed, wrong tenant, an eviction
-  faster than the pass), and the error is raised — blocking a query on
-  repeated KMS round trips is the availability failure spec §8.1 warns about.
-  The accounting is per **pass**, not per operation: the write pass and the
-  read pass each keep their own ledger, because a §5.5 cache can evict between
-  them — the write pass's own derivations advance the use counter — and the
-  warm that saved the write pass says nothing about the read side's misses.
-
-Set `warmOnKeyMiss: false` to keep the stricter property that no query ever
-blocks on the key service. The option is inert either way unless the provider
-implements `warm`, so `StaticKeyProvider` and `DerivedKeyProvider` deployments
-are unaffected.
-
-**Retrying a pass is only safe because the failed attempt leaves nothing
-behind.** Every mutation the visitors make is journalled and rolled back before
-a retry (`src/journal.ts`); without it the retry would read the envelope the
-first attempt wrote as if it were the caller's value and encrypt it twice.
-
----
-
-## Querying an indexed column
-
-A declared index makes equality and membership serveable:
-
-```ts
-await prisma.patient.findMany({ where: { email: "ada@example.com" } });
-await prisma.patient.findMany({ where: { email: { in: ["a@x.com", "b@x.com"] } } });
-```
-
-The predicate never reaches the database as written — the suite is randomized,
-so comparing against ciphertext matches nothing. It is rewritten onto the
-sibling (`emailBidx`), which is spec §7.10's supported membership shape and is
-what spec §10.2 permits for Prisma as of G13.
-
-### The index is a filter, never an answer
-
-Spec §7.4 **mandates** collisions: the truncation band is chosen so that every
-index value corresponds to at least two distinct plaintexts, because that
-ambiguity is the privacy mechanism. So the database returns a *superset*, and
-the adapter decrypts the candidates and drops the ones that do not hold the
-value (spec §7.5) before you see them.
-
-That is only possible where the rows come back. Measured against Prisma 7.10.0
-(the classification, with the evidence, is
-[`docs/13` §2.0](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/13-adapter-prisma.md)), exactly **two** `where`
-sites in Prisma's surface qualify:
-
-1. the top-level `where` of **`findMany`**, and
-2. a relation `where` under **`include` / `select`**, whose matched rows arrive
-   nested inside their parents.
-
-Everywhere else the database computes the answer and only the answer comes
-back — `count`, `aggregate`, `groupBy`, `findFirst` (its `LIMIT 1` is applied
-below the extension and cannot be widened: Prisma refuses a `take` on
-`findFirst` that is not 1 or -1), `updateMany`, `deleteMany`, `update`,
-`delete`, `upsert`, relation filters (`some`/`every`/`none`/`is`), `_count`,
-and the filters nested writes carry. Those are **refused**, and each refusal
-names what to run instead. `take`, `skip`, `cursor` and `distinct` are refused
-*beside* a rewritten filter for the same reason: the database applies them to
-the candidate set before re-verification shrinks it.
-
-This is narrower than the Django adapter, which can serve `count()`,
-`first()` and `get()` by materializing the bucket itself. A Prisma extension
-cannot: `query` is bound to the operation it was called for, so an operation
-whose result is a number cannot be turned into a row fetch.
-
-**Pagination built directly on an indexed encrypted column is incorrect**
-(spec §7.5). The correct pattern is over-fetch → decrypt → filter → paginate:
-fetch the verified rows with `findMany` and slice them in application code.
-
-### Equality is the index's own equality
-
-**On a column whose declared normalizer is not `identity`, an equality lookup
-is equality under that normalizer, not byte equality of the plaintext.** With
-`nfc-casefold-v1`, a query for `ada@example.com` can return a row stored as
-`Ada@Example.COM`. That is spec §7.5's rule (G19), and it is why
-`mode: "insensitive"` is refused rather than mapped onto the index: the column
-has exactly one equality, and no second, differently-folded one may be offered
-beside it.
-
-### `candidateScope` — the documented opt-out
-
-When bucket semantics are what you want, say so:
+**`candidateScope`** turns the re-check off for one callback, and hands you the
+raw candidates:
 
 ```ts
 import { candidateScope } from "@fieldseal/prisma";
 
-const approx = await candidateScope(() =>
-  prisma.patient.count({ where: { email: "ada@example.com" } }),
+const bucketSize = await candidateScope(() =>
+  prisma.patient.count({ where: { email: "ada@example.com" as never } }),
 );
 ```
 
-Inside the callback, §7.5 re-verification is **off** and every shape above is
-served. What comes back is the raw candidate set: a superset of the answer, and
-decrypt-and-compare becomes yours. `count` returns the bucket size; a
-`take`-limited page can hold rows that do not match and miss ones that do; and
-**`deleteMany` deletes the whole bucket, which is not recoverable** — the test
-suite measures each of these rather than describing them. It mirrors the Django
-adapter's `.candidates()`, which lifts the same family.
+Inside it, `count` returns the bucket size, a `take`-limited page can hold rows
+that do not match, and **`deleteMany` deletes the whole bucket**. It does not
+lift the refusals on negation, ordering, grouping or aggregates. Construct the
+operation inside the callback.
 
-Three caveats:
+### Raw SQL
 
-- **The scope is the callback, not the next call.** Everything awaited inside
-  it is unverified. The idiom is one operation per scope.
-- **It must be awaited from `candidateScope` itself.** A Prisma client method
-  returns a lazy promise that dispatches nothing until something awaits it, so
-  a callback that merely *constructs* a promise and returns it unawaited would
-  escape the scope. `candidateScope` awaits inside for exactly this reason.
-  The boundary is dispatch, not construction — which also means a promise
-  constructed *before* the scope but first awaited *inside* it dispatches
-  inside and is served at bucket semantics (measured). Construct the operation
-  inside the callback, and nowhere else.
-- **It does not lift everything.** Ordering, grouping, `DISTINCT` and
-  byte-reading aggregates over an encrypted column stay refused (G20) — bucket
-  semantics are a meaningful thing to accept, ciphertext order is not. Nor does
-  it lift **negation in any position** — `not`, `notIn`, a term under `NOT`,
-  or the relation filters `none` and `isNot` (G24, [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100), spec §10.2):
-  the scope hands you §7.5, and §7.5 is a *filter* obligation. A superset can be
-  narrowed to the answer; an exclusion cannot be widened back to it, because the
-  rows the database dropped are not in what you were handed. `OR`, `some`,
-  `every` and `is` all widen when the bucket widens, so those stay lifted.
-  Equality on a column with no declared index and `findUnique` on an encrypted
-  column stay refused too.
+`$queryRaw` and `$executeRaw` are not intercepted: their parameters are written
+as given, which means plaintext in an encrypted column. By default they pass
+through and call `onRawOperation`; `strictRaw: true` makes them throw.
 
----
+## Limitations
 
-## Coverage matrix
+The specification requires every implementation to state these.
 
-What the code does **today**, each row verified by the test named in it — not
-the target matrix in `docs/13` §6.
+- **No protection against a compromised application process.** The keys are
+  in that process, so anything the application can read, an attacker inside
+  it can read.
+- **Logs and caches can hold sensitive data.** An equality lookup sends the
+  blind-index value as a query parameter, so database query logs, slow-query
+  logs and replication logs record it. Any cache outside the extension holds
+  decrypted values.
+- **Storage overhead.** Each encrypted value carries 111 bytes of overhead: a
+  9-byte value becomes about 120 bytes, or 160 as base64. Across a 20-column,
+  100-million-row table the overhead alone is about 220 GB.
+- **Argon2id stalls the whole process.** Each derivation takes 44–70 ms, and
+  this adapter runs it synchronously, so it blocks the event loop for every
+  request in the process, not only the one that asked. Measured: under eight
+  concurrent Argon2id lookups, an unrelated query's p99 went from 0.8 ms to
+  352 ms. Prefer `"hmac-sha512"` wherever the value is high-entropy. The core
+  has asynchronous derivation; this adapter does not use it yet.
+- **The KMS is a hard dependency in the read path.** With
+  `EnvelopeKeyProvider`, a KMS outage fails every query that needs a key not
+  already in the cache.
+- **The key cache holds plaintext keys in memory**, exposed to memory dumps,
+  core files and swap. Evicted keys are zeroed, but V8 may hold copies and
+  garbage-collected memory cannot be locked, so this narrows the exposure
+  rather than closing it. The cache's lifetime and use limits are security
+  settings. In a server that forks workers, create the client after the fork.
+- **Equality is the normalizer's.** A lookup matches values that are equal
+  after the index's normalization, such as a different case, not only
+  identical strings.
+- **Writes to `Bytes` columns need a cast**, because Prisma types them by
+  storage. For text, `String` with `storage: "base64"` avoids it, at a third
+  more space.
+- **No row binding.** A value is bound to its table, column and tenant, but
+  not to its row, so someone with database write access can swap encrypted
+  values between rows of the same column.
 
-| Path | Behaviour | Test |
-|---|---|---|
-| `create`, `createMany`, `update`, `updateMany` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
-| Nested relation writes (`create`, `connectOrCreate`, `upsert`, nested `update`) | ✅ reached through the relation graph, not path patterns | `encrypts a nested relation write…` |
-| **Filters inside nested writes** (`updateMany.where`, `deleteMany`, `upsert.where`, unique inputs) | 🛑 refused when they name an encrypted column — same walk as the top-level `where` | `refuses a nested updateMany.where…`, `refuses a nested deleteMany…` |
-| Nested `deleteMany`/`connect`/`disconnect`/`delete`/`set` off encrypted columns | ✅ served — they write no ciphertext | `serves a nested deleteMany over plaintext columns…` |
-| `undefined` in a payload | ✅ touches nothing — not the value, not the sibling (Prisma's "do not touch" contract) | `touches nothing: not the value, and not the sibling` |
-| **A model with no declarations** (relations to declared ones) | ✅ in the map as a relation-only entry; writes, reads and filters through it traverse the pipeline | `reaching Patient through the undeclared Referral model` |
-| A model missing from the field map — as the operation's model **or as a relation target** any walk reaches | 🛑 refused — a stale or edited map, never a passthrough; a skipped relation would write plaintext or return envelopes one hop down | `refuses an operation on a model the field map does not carry`, `refuses a nested write through a relation…` |
-| Database holds an envelope, never plaintext | ✅ | `stores an envelope in the database…` |
-| **Both database backends** — an encrypted column is a SQLite `BLOB` and a Postgres `bytea`; `storage: "base64"` is text on both | ✅ the whole suite runs on each as a separate CI leg | `stores an envelope in the database…`, `round-trips through a String column…` |
-| Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `writes a different envelope every time…` |
-| `update` re-encrypts | ✅ including the `{ set: … }` form | `re-encrypts on update…`, `accepts the { set: value } update form` |
-| `update` with `increment`/arithmetic | 🛑 refused — the database would compute on an envelope | `refuses an arithmetic update…` |
-| Reads, including `include` nesting | ✅ decrypts recursively | `encrypts a nested relation write…` |
-| Non-ASCII values | ✅ round-trip byte-for-byte | `round-trips a non-ASCII value…` |
-| Empty string | ✅ a value, not an absence | `treats the empty string as a value…` |
-| `NULL` | ✅ stays NULL; its index is NULL too | `stays NULL rather than becoming an envelope` |
-| `where: { field: null }`, `{ equals: null }`, `{ not: null }` | ✅ served — `IS [NOT] NULL` is exact over envelopes, because NULL stays NULL | `serves literal-NULL equality…` |
-| Non-text logical types in the fixture (`as: "int"`, `"datetime"`, `"boolean"`, `"float"`, `"bytes"`) | ✅ round-trip as their own type, incl. a bare `Date` | `every declared \`as:\` type round-trips as itself` |
-| Spec §3.6 renderings, all eight `as:` types incl. `"decimal"` and `"date"`, both directions and the refusals | ✅ byte-exact against the `codec/` vectors (the 4 needing a CPython-only capability are skipped with the reason) | `codec/` |
-| A value that does not match the declared `as:` | 🛑 refused rather than coerced | `refuses a value whose type does not match…` |
-| `storage: "base64"` on a `String` column | ✅ ASCII in the column, ~33% overhead | `round-trips through a String column…` |
-| Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `is derived on write…`, `folds case…` |
-| Index sibling in results | ✅ stripped unless `exposeIndexColumns` | `is stripped from returned objects…` |
-| A hand-written index value | 🛑 refused — those bytes are derived | `refuses a hand-written index value` |
-| Tenant-bound column, no tenant | ✅ refuses the write | `refuses the write when no tenant is resolvable` |
-| Wrong tenant reading a row | ✅ raises — the binding is cryptographic, not a filter | `cannot be read under a different tenant…` |
-| Tampered ciphertext | ✅ raises; never returns garbage | `raises rather than returning garbage` |
-| **`findMany` equality / `in` on an indexed encrypted column** | ✅ rewritten onto the sibling + §7.5 re-verified | `finds the row by its plaintext value`, `rewrites \`in\` as spec §7.10 membership`, `returns only the true match when the bucket holds another row` |
-| Equality on a column with **no declared index** | 🛑 refused — nothing to rewrite onto | `refuses on a column with no declared index…` |
-| Equality under a **non-identity normalizer** | ⚠️ equality *under that normalizer* — a query for `ada@…` returns a row stored `Ada@Example.COM` (spec §7.5, G19) | `a query for the lowercase value returns the row stored mixed-case` |
-| A relation `where` under `include`/`select` | ✅ rewritten + re-verified in the nested rows, at any depth incl. a to-one hop | `filters the nested rows and re-verifies them`, `verifies through a to-one hop in the path` |
-| Bucketed unindexable values sharing one index value | ✅ separated by §7.5's raw-bytes fallback | `returns only the queried value, though both share one index value` |
-| **`findFirst`/`findFirstOrThrow`** on a rewritten filter | 🛑 refused — the `LIMIT 1` is applied below the extension and cannot be widened (`take` must be 1 or -1) | `names findFirst's invisible LIMIT…`, `measures why findFirst is refused…` |
-| **`count`, `aggregate`, `groupBy`** on a rewritten filter | 🛑 refused — the database answers over the §7.4 bucket; measured overcount 2 vs 1 | `measures why count is refused: it counts the bucket` |
-| **`updateMany`, `deleteMany`, `update`, `delete`, `upsert`** on a rewritten filter | 🛑 refused — would write to or delete rows that do not match; measured `deleteMany` = 2 of 2 | `measures why deleteMany is refused…` |
-| `take`, `skip`, `cursor`, `distinct` beside a rewritten filter | 🛑 refused — applied to the candidate set before §7.5 shrinks it; the page holds the collision and misses the match | `measures why \`take\` is refused…`, `refuses \`distinct\` even on a plaintext column` |
-| A `take` on the **parent** of a nested obligation | ✅ served — dropping child rows cannot change which parents matched | `a \`take\` on the *parent* is fine…` |
-| An encrypted term under `OR` | 🛑 refused — a returned row may be there for the other branch, so §7.5 cannot attribute it; `candidateScope` lifts it | `refuses \`OR\`…` |
-| An encrypted term under `NOT`, or under the relation filters `none` / `isNot` | 🛑 refused on **every** scope (G24) — a widened bucket removes rows from the answer, and nothing recovers them | `does NOT lift NOT…` |
-| Relation filters (`some`/`every`/`none`/`is`, unwrapped to-one) naming an encrypted column | 🛑 refused — the rewrite lands in a join the database answers (spec §10.2: a path the surface does not reach) | `refuses the \`some\` form` (5-way sweep) |
-| `_count` whose relation filter names an encrypted column | 🛑 refused — computed in the database | `refuses a \`_count\` whose relation filter…` |
-| A projection that drops the column being verified (`select`, query `omit`, **client-level `omit`**) | 🛑 refused on the result — the client-level form never appears in `args` at all | `refuses a *client-level* omit…` |
-| `candidateScope(fn)` | ⚠️ serves the rows above at **bucket semantics**, negation excepted; §7.5 becomes the caller's | `candidateScope: what it hands over, and what it does not` (18 tests) |
-| `candidateScope` over G20 shapes, **any negated position** (`not`, `notIn`, `NOT`, `none`, `isNot`), an unindexed column, `findUnique` | 🛑 still refused | `does NOT lift the G20 family…`, `does NOT lift \`notIn\` or \`not\`…`, `does NOT lift NOT…` |
-| `contains`, `startsWith`, `endsWith`, `lt`/`gte`, `search` | 🛑 refused (spec §7.1, §4.7) | `refuses \`contains\`…` (8-way sweep) |
-| `mode: "insensitive"` | 🛑 refused — the column has exactly one equality (G19) | `refuses \`mode: insensitive\`…` |
-| `not`, `notIn` (non-null operands) | 🛑 refused — an exclusion's false negatives are unrecoverable, and no scope lifts that (G24) | `explains notIn as an exclusion asymmetry…` |
-| An unrecognised filter operator | 🛑 hard error — fails closed, never passed through | `fails closed on an operator it does not recognise` |
-| Filtering the index sibling directly | 🛑 refused — cannot re-verify a filter it did not construct | `refuses a filter on the index sibling directly` |
-| `findUnique` on an encrypted column or its sibling | 🛑 refused — neither can be unique (spec §7.10); use `findMany` + equality | `refuses findUnique on an encrypted column…` |
-| `orderBy` over an encrypted column | 🛑 refused (G20) — sorts envelope bytes | `refuses orderBy…` |
-| `distinct`, `groupBy.by`, `having` over one | 🛑 refused (G20) — one group per row, wrong counts | `refuses distinct…`, `refuses groupBy…` |
-| `distinct` on the **index sibling** | ⚠️ served — deduplicates by index value, §7.4 collisions included: a filter-grade answer, not an exact one | `serves distinct on the index sibling…` |
-| `_min`/`_max`/`_sum`/`_avg` over one | 🛑 refused (G20) — computes on bytes | `refuses aggregates…` |
-| `_count` over an encrypted field | ✅ served — counts non-NULL rows, reads no bytes, exact under spec §10.2's NULL-preservation invariant (G23 [#89](https://github.com/fieldseal-dev/fieldseal-spec/issues/89), closed) | `serves _count over an encrypted field…` |
-| `cursor` on an encrypted column | 🛑 refused — ciphertext has no stable total order | `refuses cursor pagination…` |
-| Plaintext columns of the same model | ✅ untouched — filter, sort and group normally | `leaves filters on plaintext columns…`, `leaves orderBy and groupBy…` |
-| `count()` over rows | ✅ counts rows, reads no bytes | `allows _count over rows…` |
-| Raw SQL (`$queryRaw`, `$executeRaw`) | ⚠️ passthrough + hook (default) / 🛑 `strictRaw` | `passes through with a hook…`, `throws under strictRaw` |
-| Malformed declaration | 🛑 fails `prisma generate` | `fails the generate on a malformed declaration…` |
-| `@unique`/`@id`/`@@unique` on an encrypted column or sibling | 🛑 fails `prisma generate` (spec §7.10) — a unique sibling is delayed data loss under §7.4 collisions | `uniqueness refusals (spec §7.10)` |
-| Legacy plaintext row on a base64 column | 🛑 strict raises NOT_CIPHERTEXT / ⚠️ permissive returns the actual value and fires `onPlaintextRead` | `a stored value that is not an envelope…` |
-| Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
-| Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
-| `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction, naming the column | `refuses \`on_unindexable: "bucket"\` without the §7.2 ceremony`, `constructs once the ceremony is supplied in code` |
-| A §7.6 / §7.2 override naming a column with no declared index, or naming one twice | 🛑 refused — a recorded human approval pointing at the wrong place, while the column it was meant for stays ungated | `refuses an override that names a column with no declared index`, `refuses the same column listed twice in one override` |
-| **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v2`; the N×N CI job has both cores decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
-| **Cross-language: a blind index written here, re-derived by another core** | ✅ the index half — six cases including the fold pair, a base64-stored source column, and the §7.2 marker the extension stores unasked. A mismatched index is a *silent lookup miss*, which the envelope half above cannot catch | `derives every index case from the shared key material alone`, `lands the fold pair on one index value`, `stores the §7.2 marker for a value the normalizer refuses, unasked` |
-| `row_id` binding (L3-row) | ❌ not in v0 | — |
-| **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out; warm accounting is per pass, so an eviction between the write and read passes is retried rather than misread as an unproductive warm | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…`, `warms again for the read pass…` |
-| Warm cycles beyond the first | ✅ a cycle runs whenever the next attempt needs a context no earlier cycle warmed — strict progress, bounded by the contexts one pass can build | `runs a second warm cycle when the next attempt needs a context the first never reached` |
-| The key service is unreachable when L4 tries to warm | 🛑 the warm failure propagates, and the pass is not retried around a warm that did not happen — spec §8.1's "hard dependency in the read path", surfaced as the actionable cause rather than as the `KEY_UNAVAILABLE` that triggered it | `propagates a warm() that fails rather than retrying around it` |
-| The core's value path still does no I/O under L4 | ✅ asserted by instrumentation, not by review | `never unwraps from inside a synchronous core call…` |
-| A pass that throws leaves the argument and result trees as it found them | ✅ journalled and rolled back, which is what makes the retry safe | `writes each column exactly once when the write pass is retried`, `decrypts each column exactly once…` |
+## Learn more
 
-Legend: ✅ intercepted correctly · ⚠️ works with a documented caveat ·
-🛑 refuses rather than degrading · ❌ not implemented.
-
-### Why refusals, and not best effort
-
-`docs/04` §3 records what the existing `prisma-field-encryption` library does
-with these shapes, verified against its source: only `where.field`,
-`.equals`, `.not`, `connect.field` and `cursor.field` are rewritten. Everything
-else — `in`, `contains`, `startsWith` — gets **the operand encrypted instead**,
-and the query returns **zero rows, silently, with no error**. `orderBy` on an
-encrypted field is deleted with a `console.error`.
-
-Spec §10.2 requires an adapter to throw on all of it, and that is the single
-most important behavioural difference between this adapter and that one.
-
-The G20 family is worth separating out, because those shapes *do* return an
-answer. The test suite measures them rather than asserting them from the spec:
-`distinct` over two rows holding one value returns **two** rows; `groupBy`
-returns **two groups of one** where the truth is one group of two. And on a
-`storage: "base64"` column, `_min` returns the byte-wise minimum **envelope**,
-handed back as the minimum value with nothing raised — silent and plausible,
-which is what makes it the dangerous one.
-
-One honest narrowing: on a `Bytes` column, Prisma's own deserializer throws on
-an aggregate result, so that particular hazard is not silently reachable there
-even without this adapter. The refusal is still right — it names the reason and
-does not depend on a Prisma implementation detail — but the base64 case is where
-it bites.
-
----
-
-## Cross-language: what this adapter stores, read by another language
-
-The project's central claim is that a value encrypted by one implementation is
-decryptable by another. The core-level harness proves that for the cores. What
-it cannot prove is that the bytes an *adapter* puts in a column are those bytes,
-because the decisions between an application value and the stored column belong
-to the adapter and to nothing the cores test — the codec's rendering, the
-storage form, and how the context is assembled.
-
-So `tests/cross/produce.ts` writes rows through the **real extension** (real
-`create()`, runtime CSPRNG, no test-mode injection), reads the raw columns back
-through `$queryRawUnsafe`, and emits the standard `fieldseal-vectors/cross/v1`
-document that every existing consumer already reads:
-
-```
-npm run cross:produce -- --out ../../cross-prisma.json
-```
-
-CI adds it to the N×N matrix as one more producer, and the Python core decrypts
-it. Prisma carries one decision the other adapters do not: its schema type is
-the **storage** type, so the logical type is an `as:` declaration and its
-rendering is an adapter choice — the producer exercises all six, plus the base64
-storage form, and the test asserts the expected plaintext rather than merely
-round-tripping it. A consumer that expected a platform integer encoding or a
-locale-aware date would decrypt successfully and read the wrong value, which is
-exactly the failure no round trip catches.
-
----
-
-## Honest limitations
-
-**Types describe the column, not the value.** An encrypted column is declared
-`Bytes` because that is what holds the envelope, so Prisma generates
-`Uint8Array` for it — while the value you write is a string, an int, or whatever
-`as:` declares. **Writes to a `Bytes`-stored encrypted column do not typecheck
-against the generated client and need a cast.** Two ways out today: declare the
-column `String` with `storage: "base64"`, which typechecks naturally at ~33%
-storage cost; or cast the logical value at the write site:
-
-```ts
-await prisma.patient.create({
-  data: {
-    email: "ada@example.com" as never, // Bytes column; the adapter encrypts the string
-    plainName: "Ada",
-  },
-});
-```
-
-`as never` rather than `as unknown as Uint8Array`, so the cast reads as "the
-generated type is wrong here" and nothing downstream believes the value is
-bytes. A generator-emitted typed surface that fixes this properly is a
-follow-up, recorded rather than pretended away.
-
-**Storage overhead is real.** A 9-byte value becomes ~120 bytes binary or ~160
-bytes base64. Across a 20-column, 100M-row table that is ~220 GB before index
-bloat.
-
-**The key service is a hard dependency in the read path.** External key stores
-trade security for availability; a KMS outage affects every query touching an
-encrypted field.
-
-**Argon2id blind indexes cost ~44–70 ms per query term and `blindIndex` is
-synchronous, so on Node they stall the whole process** — not just the query
-that asked for one. Measured through this extension on 2026-08-31: a
-`findMany` on a table with **no encrypted column at all** went from p99
-0.8 ms to **352 ms** under eight concurrent Argon2id-indexed lookups. The
-event loop took **1 turn** during twenty derivations — measured on two
-machines, an x86-64 desktop (871 ms) and an arm64 Mac (1373 ms). The
-per-call cost is hardware-dependent; the total stall is not.
-
-Prefer `hmac-sha512` wherever the §7.3 domain table permits — microseconds
-rather than milliseconds. Where the domain requires Argon2id, the core ships
-an async companion on the strength of that benchmark (`docs/11` §2, shipped
-2026-09-04) and **this adapter does not use it yet** — every derivation on
-this page's paths is still synchronous. A deployment that does use it must
-also size `UV_THREADPOOL_SIZE` at or above its concurrent-derivation
-count, because the async form moves the cost to the libuv threadpool rather
-than removing it — measured on two machines, four concurrent derivations
-take an unrelated file read from ~0.28 ms to 67 ms (x86-64) or 402 ms
-(arm64). This is a product constraint, not tuning.
-
-**Application caches hold plaintext** (spec §10.2, "All ORMs"). Any cache
-sitting outside the extension stores decrypted values.
-
-**Raw SQL parameters are never encrypted**, by any ORM surveyed. The extension
-sees an opaque SQL template for `$queryRaw`/`$executeRaw` and cannot tell
-whether it touches an encrypted column. `strictRaw: true` refuses them outright.
-
-**Database query logs are in scope as sensitive artifacts.** Blind-index values
-appear in logged statements; the ETH Zurich MongoDB QE analysis (USENIX '23)
-recovered 40–100% of field values from logs alone, with no client queries.
-
-**The DEK cache holds plaintext keys in memory** (spec §5.5). The core this
-adapter runs caches unwrapped data keys, and L4's `warm()` fills that cache on
-purpose. It is exposed to memory dumps, core files and swap. Zeroization on
-eviction reaches only the visible allocation: V8 may have copied the bytes, and
-there is no `mlock` for GC-managed memory. Cache TTL and max-uses are security
-parameters, not tuning knobs. Construct the client after forking in a prefork
-server.
-
-**No protection against a compromised application process.** The keys are in
-that process.
-
----
-
-## Development
-
-```bash
-npm ci
-npm run build                    # dist/, and the generator bin
-node tests/fixture/build.ts      # the fixture's field map
-npx prisma generate              # the fixture's Prisma client
-npx prisma db push               # the fixture database
-npm test                         # 268 tests
-npm run typecheck
-
-# The same suite against Postgres. `build.ts` derives schema.postgres.prisma
-# from schema.prisma, so re-run it (and `prisma generate`) when switching.
-export FIELDSEAL_TEST_DB=postgres
-export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fieldseal_test
-node tests/fixture/build.ts && npx prisma generate && npx prisma db push && npm test
-npm run cross:produce -- --out ../../cross-prisma.json   # the cross-language artifact
-npm run --silent report > conformance-prisma-adapter.json  # the docs/14 §4 report
-```
-
-`@fieldseal/core` is a `file:` dependency on this repository's own core, so the
-adapter is verified against the core it ships beside, not against a release.
-`core/typescript` must be built first — its `dist/` is gitignored.
-
-**Both backends run in CI as separate legs.** This adapter builds no SQL, so
-the backend-sensitive surface is narrow — an encrypted column is a `Bytes`
-column, which is a SQLite `BLOB` and a Postgres `bytea` — but that is exactly
-the round trip the whole design rests on, and "never treat one database backend
-as representative" is a house rule. A datasource `provider` must be a string
-literal, so the Postgres leg needs its own schema file;
-`tests/fixture/build.ts` derives it from `schema.prisma` and it is gitignored,
-because a second *committed* schema would drift apart precisely where the
-second backend was supposed to catch something.
-
-### The conformance report
-
-`npm run report` runs the suite and emits the `docs/14` §4 conformance report.
-An adapter's report claims no `L0` — this package runs no vector families,
-because it contains no cryptography — and carries instead a `coverage_matrix`
-block that `docs/14` §4 requires to mirror this README's table.
-
-It is **generated from the table above**, not written to match it: the
-generator parses the rows, resolves each row's cited test names against the
-run, and takes the row's status from those tests. A row that names a test which
-no longer exists, or that claims behaviour and cites no test at all, fails the
-report and turns CI red. That is what "the claim and the docs cannot drift
-apart" has to mean to mean anything — and on its first run it found a row
-claiming a refusal and pointing at a fixture instead of a test.
-
-`pinned_decisions` is this adapter's own list, and the first entry is the one
-no core report can carry: **the codec's renderings**. `as: "int"` becoming
-`b"45"` was a decision this package made until spec §3.6 pinned it (G25,
-#123); the `codec/` vectors now pin every rendering, and
-`tests/codec-vectors.test.ts` runs them. A consumer in another language that
-decoded one differently would decrypt successfully and read the wrong value.
+- [`REFERENCE.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/adapters/prisma/REFERENCE.md):
+  every query path and its test, the reasoning behind each refusal, how key
+  fetching retries, why declarations come from a generator, and development
+  setup.
+- [Adapter design](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/13-adapter-prisma.md)
+  and the [specification](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md).
+- [Reviewer brief](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/16-reviewer-brief.md):
+  if you can review the cryptographic design, this is where to start.
+- Bugs and interoperability problems:
+  [issues](https://github.com/fieldseal-dev/fieldseal-spec/issues).
+  Suspected vulnerabilities:
+  [`SECURITY.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/SECURITY.md),
+  not a public issue.

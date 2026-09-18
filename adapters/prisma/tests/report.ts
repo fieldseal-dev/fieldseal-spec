@@ -19,14 +19,15 @@
  *   claim and the six `pinned_decisions` keys `docs/14` §4 obliges a core to
  *   declare. Recorded in `harness_notes` rather than left to be noticed.
  * - **Its evidence is the `coverage_matrix`**, which `docs/14` §4 requires an
- *   adapter to attach "mirroring their README table so the claim and the docs
- *   cannot drift apart". This generator takes that literally: the block is
- *   **parsed out of `README.md`** and each row's status is the status of the
- *   tests that row names, read from the run. So the README is the source, not a
- *   description of one, and the two cannot disagree.
+ *   adapter to attach, mirroring its published coverage table "so the claim
+ *   and the docs cannot drift apart". This generator takes that literally: the
+ *   block is **parsed out of `REFERENCE.md`** (the table moved there from the
+ *   README when the README was rewritten for users) and each row's status is
+ *   the status of the tests that row names, read from the run. So the table is
+ *   the source, not a description of one, and the two cannot disagree.
  * - **A row that names a test which does not exist fails the report.** That is
  *   the anti-drift mechanism doing its job: a renamed or deleted test leaves a
- *   README row asserting something nothing verifies, which is exactly the
+ *   table row asserting something nothing verifies, which is exactly the
  *   quiet decay the block exists to prevent.
  *
  * Exit status is 1 if any matrix row failed, any named test is missing, or any
@@ -73,9 +74,9 @@ function gitCommit(): string {
 
 /** The `## Coverage matrix` table, as rows. */
 function readMatrix(): Array<{ path: string; claim: string; testCell: string }> {
-  const md = readFileSync(join(ADAPTER, "README.md"), "utf-8");
+  const md = readFileSync(join(ADAPTER, "REFERENCE.md"), "utf-8");
   const start = md.indexOf("## Coverage matrix");
-  if (start === -1) throw new Error("report: README has no `## Coverage matrix` section");
+  if (start === -1) throw new Error("report: REFERENCE.md has no `## Coverage matrix` section");
   const body = md.slice(start).split("### Why refusals")[0]!;
   const lines = body.split(/\r?\n/).filter((l) => l.startsWith("|"));
   // Drop the header row and its separator.
@@ -261,7 +262,7 @@ function main(): number {
         "spec §11.3). The families, and the six pinned_decisions keys docs/14 §4 obliges a core to " +
         "carry, belong to @fieldseal/core's own report. The keys above are this adapter's own, " +
         "which docs/14 §4 permits.",
-      "coverage_matrix is parsed out of README.md and each row's status is the status of the tests " +
+      "coverage_matrix is parsed out of REFERENCE.md and each row's status is the status of the tests " +
         "that row names, so the block and the documentation cannot drift apart. A row naming a " +
         "test that does not exist fails this report.",
       "L3 (tenant binding) works through an AsyncLocalStorage or a callback -- documented side " +
@@ -277,7 +278,7 @@ function main(): number {
     out_of_band: [],
     async_companions: false,
     coverage_matrix: {
-      source: "adapters/prisma/README.md#coverage-matrix",
+      source: "adapters/prisma/REFERENCE.md#coverage-matrix",
       rows,
       summary: {
         rows: rows.length,

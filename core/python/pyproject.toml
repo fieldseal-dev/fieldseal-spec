@@ -2,7 +2,7 @@
 name = "fieldseal"
 version = "0.1.2"
 # PRD §8 condition 3: the registry description opens with the warning.
-description = "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Portable field-level encryption at rest: the reference Python core."
+description = "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA; format may change before 1.0, data may need re-encrypting. Field-level encryption with searchable blind indexes, readable from Python and TypeScript."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
