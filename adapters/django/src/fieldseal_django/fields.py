@@ -86,6 +86,14 @@ class Encrypted(models.Field):
             raise FieldsealConfigurationError(
                 f"storage must be 'binary' or 'base64', got {storage!r}"
             )
+        # Spec §3.6 / §10.2: a column whose type has no pinned rendering is
+        # refused here, at declaration, rather than rendered by str() and
+        # discovered when another language reads it differently.
+        kind = codec.logical_type(inner)
+        if kind is None:
+            raise FieldsealConfigurationError(codec.unmapped_message(inner))
+        #: The spec §3.6 logical type this column's plaintext is rendered as.
+        self.logical_type = kind
         self.inner = inner
         self.column_uuid = parse_uuid(column_uuid, "column_uuid")
         self.column_uuid_raw = column_uuid

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .families import (
     blind_index_family,
+    codec_family,
     commitment_family,
     context_family,
     cross_corpus_family,
@@ -28,6 +29,7 @@ STDLIB_FAMILIES = {
     "kdf/index-key.json": kdf_family.generate_index_key,
     "commitment/ff01.json": commitment_family.generate,
     "blind-index/hmac-sha512.json": blind_index_family.generate_hmac,
+    "codec/logical-types.json": codec_family.generate,  # adapter_files
 }
 
 DEPENDENT_FAMILIES = {
@@ -106,10 +108,14 @@ def main(argv: list[str] | None = None) -> int:
               f"encrypt and {n_fail} FAIL known answers, through cryptography "
               "and through gcm.py")
 
+    c = codec_family.selfcheck()
+    print(f"  self-check: {c} codec renderings parse back to their own value")
+
     manifest = args.out / "MANIFEST.json"
     payload = build_manifest(args.out, written)
     write_json(manifest, payload)
     print(f"  wrote MANIFEST.json ({len(payload['files'])} pinned, "
+          f"{len(payload['adapter_files'])} adapter, "
           f"{len(payload['support'])} support, "
           f"{len(payload['held_out'])} held out)")
     for h in payload["held_out"]:

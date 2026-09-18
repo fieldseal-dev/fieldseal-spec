@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-VECTOR_SUITE_VERSION = "0.6.0-provisional"
+VECTOR_SUITE_VERSION = "0.7.0-provisional"
 SPEC_VERSION = "0.1-draft"
 
 # Families generated but deliberately NOT part of the pinned suite. Listed
@@ -43,15 +43,22 @@ def _entry(root: Path, f: Path) -> dict:
 # nothing to run. Hashed like everything else; a harness MUST NOT iterate them.
 SUPPORT = {"keys/test-keys.json", "cross/corpus.json"}
 
+# Pinned families that bind adapters, not cores (spec §3.6, docs/08 §4.8). A
+# core's conformance run iterates `files` and never sees these; an adapter's
+# run iterates both.
+ADAPTER = {"codec/logical-types.json"}
+
 
 def build_manifest(root: Path, written: list[Path]) -> dict:
-    pinned, held, support = [], [], []
+    pinned, adapter, held, support = [], [], [], []
     for f in sorted(written):
         rel = f.relative_to(root).as_posix()
         if rel in HELD_OUT:
             held.append({**_entry(root, f), **HELD_OUT[rel]})
         elif rel in SUPPORT:
             support.append(_entry(root, f))
+        elif rel in ADAPTER:
+            adapter.append(_entry(root, f))
         else:
             pinned.append(_entry(root, f))
     return {
@@ -66,6 +73,12 @@ def build_manifest(root: Path, written: list[Path]) -> dict:
             "expected values may change when Gate 0b closes."
         ),
         "files": pinned,
+        "adapter_files": adapter,
+        "adapter_files_note": (
+            "Pinned families that bind adapters rather than cores (spec §3.6). "
+            "A core's conformance run iterates `files` only; an adapter's run "
+            "iterates `files` through its core and `adapter_files` itself."
+        ),
         "support": support,
         "held_out": held,
         "held_out_note": (

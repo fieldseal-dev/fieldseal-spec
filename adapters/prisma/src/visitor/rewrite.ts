@@ -226,7 +226,10 @@ export function operandOf(
   enc: EncryptedFieldDecl,
   label: string,
 ): string | Uint8Array {
-  return typeof value === "string" ? value : toBytes(value, enc, label);
+  // Only an `as: "string"` column's value is text to the core. A decimal is
+  // also written as a JS string, but its plaintext is the §3.6 canonical form
+  // -- "1.50" encrypts as 1.5 -- so it must reach the index the same way.
+  return enc.valueType === "string" && typeof value === "string" ? value : toBytes(value, enc, label);
 }
 
 /** `null` when the normalizer refuses -- §7.5's raw-bytes fallback side. */
