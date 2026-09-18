@@ -11,7 +11,7 @@ End-to-end demonstration applications. One exists:
 **These are demonstrations, not starter templates.** Each one exists to make a
 claim checkable by a person rather than only by CI. Nothing under this
 directory is frozen, the suite identifiers are provisional (spec §4.8), Gate 0b
-is open, and the project does not invite adoption. Key material in an example
+is open, and the project does not invite production adoption. Key material in an example
 comes from `vectors/keys/test-keys.json` by reference, so the
 public-test-material banner in that file travels with anything copied out.
 
