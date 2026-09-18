@@ -31,6 +31,7 @@ REPO = Path(__file__).resolve().parents[3]
 VECTORS = REPO / "vectors"
 sys.path.insert(0, str(REPO / "core" / "python" / "src"))
 
+import fieldseal  # noqa: E402
 from fieldseal import (  # noqa: E402
     CardinalityOverride,
     FieldContext,
@@ -192,7 +193,7 @@ def produce() -> dict:
         "schema": ("fieldseal-vectors/cross/v2" if index_cases
                    else "fieldseal-vectors/cross/v1"),
         "producer": {
-            "implementation": "python", "version": "0.1.0.dev0",
+            "implementation": "python", "version": fieldseal.__version__,
             "commit": _commit(),
             "produced_at": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(timespec="seconds"),

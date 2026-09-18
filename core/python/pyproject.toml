@@ -1,9 +1,30 @@
 [project]
 name = "fieldseal"
-version = "0.1.0.dev0"
-description = "Portable field-level encryption at rest -- reference Python core"
+version = "0.1.0"
+# PRD §8 condition 3: the registry description opens with the warning.
+description = "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Portable field-level encryption at rest: the reference Python core."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Fieldseal contributors" }]
+keywords = ["encryption", "field-level-encryption", "encryption-at-rest", "blind-index"]
+classifiers = [
+    # PRD §8 condition 1: Alpha or lower until Gate 0b.
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+    "Typing :: Typed",
+]
 requires-python = ">=3.10"
 dependencies = ["cryptography>=42"]
+
+[project.urls]
+Homepage = "https://fieldseal.dev"
+Documentation = "https://fieldseal.dev/docs/"
+Repository = "https://github.com/fieldseal-dev/fieldseal-spec"
+Issues = "https://github.com/fieldseal-dev/fieldseal-spec/issues"
+Specification = "https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md"
 
 [project.optional-dependencies]
 argon2 = ["argon2-cffi>=23"]
@@ -12,6 +33,12 @@ dev = ["pytest>=8", "hypothesis>=6", "jsonschema>=4", "mypy>=1.8", "ruff>=0.5"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The sdist carries the source and its metadata only. The tests read the
+# shared vectors from ../../vectors and cannot run outside this repository,
+# and an explicit list keeps local caches (.hypothesis/) out of the artifact.
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fieldseal"]

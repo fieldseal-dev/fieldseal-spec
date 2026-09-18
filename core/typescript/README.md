@@ -1,7 +1,15 @@
 # @fieldseal/core (TypeScript / Node)
 
+> **Experimental release: not independently reviewed, not for production data.**
+> The cryptographic design this package implements has not been reviewed by
+> anyone outside the project. It is pre-1.0: the stored format may change
+> before 1.0, and data written with it now may have to be re-encrypted if
+> review changes a construction. Writing refuses until you explicitly arm
+> provisional use (spec §4.8). This release is for evaluation and feedback;
+> the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
+
 The TypeScript reference core for the Fieldseal specification
-([`docs/02-spec-v0.1.md`](../../docs/02-spec-v0.1.md)): transparent field-level
+([`docs/02-spec-v0.1.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md)): transparent field-level
 encryption at the data-access layer, in a portable envelope that any conformant
 core in any language can read.
 
@@ -9,12 +17,12 @@ core in any language can read.
 implements suite `0xFF01` (`FLE-AES256GCM-HKDF-SHA512-PROVISIONAL`). Every
 identifier in the `0xFF00`–`0xFFFF` range is provisional (spec §4.8): its
 constructions have not been independently reviewed (Gate 0b,
-[`docs/01-prd.md`](../../docs/01-prd.md) §8) and may change. Writing under a
+[`docs/01-prd.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md) §8) and may change. Writing under a
 provisional suite therefore requires an affirmative arming act, described
 below. This package is the M2 deliverable of
-[`docs/17-m2-implementer-brief.md`](../../docs/17-m2-implementer-brief.md); the
+[`docs/17-m2-implementer-brief.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/17-m2-implementer-brief.md); the
 divergence report it was built to produce is
-[`docs/18-m2-report.md`](../../docs/18-m2-report.md).
+[`docs/18-m2-report.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/18-m2-report.md).
 
 ## Requirements
 
