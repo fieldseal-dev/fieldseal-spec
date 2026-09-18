@@ -1,5 +1,7 @@
 # fieldseal-django
 
+Encrypt Django model fields at rest, and keep looking rows up by them.
+
 > **Experimental release: not independently reviewed, not for production data.**
 > The cryptographic design this package implements has not been reviewed by
 > anyone outside the project. It is pre-1.0: the stored format may change
@@ -8,426 +10,300 @@
 > provisional use (spec §4.8). This release is for evaluation and feedback;
 > the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
 
-Transparent field-level encryption at rest for Django. Design:
-[`docs/12-adapter-django.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/12-adapter-django.md).
+`fieldseal-django` encrypts the model fields you choose inside your application,
+before they reach the database, and decrypts them when you read them back. The
+database, its backups and its replicas hold only ciphertext. A blind index keeps
+`filter(email=...)` working on an encrypted column.
 
-**Status: L1 + L2, and not usable in production.** Values encrypt and decrypt
-transparently, and `filter(email=...)` / `__in` are served through the blind
-index with the spec §7.5 re-verification that makes them correct. Nothing here
-is frozen: the suite identifier is provisional (spec §4.8), Gate 0b is open,
-and the project does not invite production adoption (PRD §8).
+It is the Django adapter for [Fieldseal](https://fieldseal.dev), an open
+specification for field-level encryption. What this package writes, any
+conformant implementation can read, including the
+[TypeScript core](https://www.npmjs.com/package/@fieldseal/core) and the
+[Prisma adapter](https://www.npmjs.com/package/@fieldseal/prisma).
 
-**AD-1 (spec §11.3): this package contains no cryptography.** It calls the
-core's sync operations and nothing else. `pip`-installing it pulls in
-`fieldseal`, and that is where every cipher, KDF and random draw lives.
+## Features
 
----
+- **Transparent.** `save()`, `create()`, `bulk_create()`, `bulk_update()` and
+  `update()` encrypt; reads, `values()` and `raw()` results decrypt. Your model
+  code and forms keep working with plain values.
+- **Equality search on encrypted columns.** `filter(email=...)` and `__in` go
+  through a blind index. The index is deliberately lossy, so every candidate row
+  is decrypted and re-checked before you get it: you never see a false match.
+- **Refuses what it cannot answer.** Ordering, ranges, `startswith`, aggregates
+  and `exclude()` over an encrypted column raise an error instead of returning
+  a plausible wrong answer.
+- **Eight value types**: text, bytes, integers, decimals, floats, booleans,
+  dates and datetimes, stored exactly as the Prisma adapter stores them.
+- **Tenant binding.** A row encrypted for one tenant cannot be decrypted as
+  another tenant's, even by the same application.
+- **No cryptography of its own.** Every cipher, key derivation and random draw
+  lives in the [`fieldseal`](https://pypi.org/project/fieldseal/) core, which
+  is AES-256-GCM with key commitment and a fresh derived key for every write.
 
-## Declaring a column
+## Requirements
+
+Python 3.12 or later, and Django 5.2 or later. CI runs the test suite on
+PostgreSQL and SQLite.
+
+## Install
+
+```sh
+pip install fieldseal-django
+```
+
+This also installs the `fieldseal` core and `argon2-cffi`, which the default
+blind index needs.
+
+## Quickstart
+
+**1. Create evaluation keys and add the app.** This example uses static keys
+from environment variables, which is fine for evaluation and wrong for anything
+else (see [Keys](#keys)). Every `manage.py` command needs them, so set them
+first:
+
+```sh
+export FIELDSEAL_KEY_ID=$(python -c "import secrets; print(secrets.token_hex(16))")
+export FIELDSEAL_DEK=$(python -c "import secrets; print(secrets.token_hex(32))")
+export FIELDSEAL_INDEX_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+```
+
+Keep them: data written under one set of keys cannot be read under another.
 
 ```python
+# settings.py
+import os
+from fieldseal.keyprovider import StaticKeyProvider
+
+INSTALLED_APPS = [
+    # ...
+    "fieldseal_django",
+    "patients",
+]
+
+def fieldseal_keys():
+    return StaticKeyProvider(
+        key_id=bytes.fromhex(os.environ["FIELDSEAL_KEY_ID"]),              # 16 bytes
+        tenant_dek=bytes.fromhex(os.environ["FIELDSEAL_DEK"]),             # 32 bytes
+        tenant_index_key=bytes.fromhex(os.environ["FIELDSEAL_INDEX_KEY"]), # 32 bytes, not the DEK
+    )
+
+FIELDSEAL = {
+    "KEY_PROVIDER": fieldseal_keys,
+    "ALLOWED_SUITES": {0xFF01},
+    "WRITE_SUITE": 0xFF01,
+    "ARM_PROVISIONAL_SUITES": True,   # writing refuses without it; see the warning above
+}
+```
+
+**2. Get identifiers for your table and columns.** Each encrypted table and
+column needs a UUID that never changes:
+
+```sh
+python manage.py fieldseal_gen_uuids --count 3
+```
+
+**3. Declare the encrypted fields**, pasting in the UUIDs:
+
+```python
+# patients/models.py
 from django.db import models
 from fieldseal_django import BlindIndex, Encrypted, FieldsealMeta
 
 class Patient(models.Model):
-    email = Encrypted(
-        models.EmailField(),                # the logical type; keeps its
-                                            # validation, forms and to_python
-        column_uuid="018f3c2e-...",         # REQUIRED, immutable (spec §6.1)
-        index=BlindIndex(
-            index_id="exact",
-            # idf defaults to "argon2id": spec §7.3 requires it for an
-            # enumerable domain such as email (see "Honest limitations")
-            normalize="nfc-casefold-v1",
-            truncate_bits=15,
-            projected_population=100_000,   # DISTINCT values; sizes §7.4
-        ),
+    name = Encrypted(
+        models.CharField(max_length=200),
+        column_uuid="6f1d8a52-3b7e-4c0a-9e21-5d4c7b8a9f10",
     )
-    email_bidx = Encrypted.index_column("email")   # must come *after* `email`
+    email = Encrypted(
+        models.EmailField(),
+        column_uuid="0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64",
+        index=BlindIndex(projected_population=100_000),   # makes it searchable
+    )
+    email_bidx = Encrypted.index_column("email")          # must come after `email`
 
-    fieldseal = FieldsealMeta(table_uuid="018f3c2e-...")
+    fieldseal = FieldsealMeta(table_uuid="a3e1f7c2-5b94-4d08-b6e3-9f2a7c1d4e85")
 ```
 
-The UUIDs are surrogates written literally in the source and captured into
-migrations. They must never be derived from the app, model or field name:
-spec §6.1 binds key derivation to them, so a rename would make every existing
-row undecryptable. System check `fieldseal.E004` fails startup without them.
+**4. Migrate and use it** like any other model:
 
-The index column is explicit rather than auto-injected because
-`SQLInsertCompiler.as_sql` iterates fields in declaration order, and the
-index's `pre_save` must run after the encrypted field's. Check
-`fieldseal.E001` asserts the order at startup rather than trusting it.
+```sh
+python manage.py makemigrations patients && python manage.py migrate
+```
 
-### Which inner fields, and how their values become bytes
+```python
+Patient.objects.create(name="Ada Lovelace", email="ada@example.com")
 
-The inner field decides which of spec §3.6's eight logical types the column
-holds, and the plaintext is §3.6's canonical rendering of that type. That
-rendering is the same one the Prisma adapter writes, and the `codec/` vectors
-pin it:
+Patient.objects.get(email="ADA@example.com").name   # 'Ada Lovelace'
+Patient.objects.filter(email__in=["ada@example.com", "grace@example.com"])
 
-| Inner field | Logical type | Rendering, e.g. |
+Patient.objects.filter(email__startswith="ada")     # raises FieldsealNotSupported
+```
+
+The `name` column now holds a binary envelope of 123 bytes, and
+`email_bidx` holds a 2-byte index value, not the address.
+
+## Declaring columns
+
+`Encrypted(inner_field, column_uuid=..., index=None, tenant_bound=None,
+storage="binary")` wraps an ordinary Django field. The inner field keeps its
+validation and form behaviour and decides the value type.
+
+**The UUIDs are part of the key derivation.** Never change one once a row has
+been written, and never derive one from a model or field name: either makes
+every existing row in that column unreadable. Startup fails (system check
+`fieldseal.E004`) if a model declares an encrypted column without a
+`FieldsealMeta`.
+
+**Supported inner fields.** `CharField`, `TextField` and their subclasses
+(`EmailField`, `SlugField`, `URLField`, …), `BinaryField`, the `IntegerField`
+family, `DecimalField`, `FloatField`, `BooleanField`, `DateField` and
+`DateTimeField`. Any other field is refused when the model is declared,
+including `UUIDField`, `JSONField`, `TimeField` and `DurationField`; store
+those as a `CharField` holding a format your application owns. Three details
+follow from storing one canonical form per value:
+
+- `Decimal("1.50")` is read back as `Decimal("1.5")`, which is what lets
+  `filter(amount=Decimal("1.50"))` find it.
+- A naive `datetime` is refused on write. Datetimes are read back as aware UTC.
+- A stored value that is not in canonical form raises on read rather than
+  being coerced.
+
+**Blind indexes.** `BlindIndex()` makes a column searchable by equality. The
+defaults suit an email address:
+
+| Option | Default | Meaning |
 |---|---|---|
-| `CharField`, `TextField` and subclasses (`EmailField`, `SlugField`, `URLField`, …) | `string` | UTF-8 |
-| `BinaryField` | `bytes` | unchanged |
-| `IntegerField` family | `int` | `-42` |
-| `DecimalField` | `decimal` | `1.5` |
-| `FloatField` | `float` | `10000000000000000` (ECMAScript's form, not CPython's `1e+16`) |
-| `BooleanField` | `boolean` | `true` |
-| `DateField` | `date` | `2026-09-08` |
-| `DateTimeField` | `datetime` | `2026-09-08T12:00:00.000000Z` |
+| `idf` | `"argon2id"` | The index function. Keep Argon2id for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"` is permitted only for high-entropy values such as random tokens. |
+| `normalize` | `"nfc-casefold-v1"` | Values are Unicode-normalized and case-folded before indexing, so `Ada@Example.com` matches `ada@example.com`. |
+| `truncate_bits` | `15` | Index width in bits. Short on purpose: unrelated values share index values, which limits what the index reveals about which rows are equal. |
+| `projected_population` | none | The number of distinct values you expect. Used to check that `truncate_bits` is in a safe range. |
+| `on_unindexable` | `"refuse"` | What to do with a value containing a character the pinned Unicode version does not define: refuse it, or `"bucket"` it (needs a recorded approval). |
 
-**Any other inner field is refused by `Encrypted()` at declaration.** That
-includes `UUIDField`, `TimeField`, `DurationField`, `JSONField` and
-`GenericIPAddressField`. §3.6 pins no rendering for them, and a column rendered
-by `str()` becomes a backfill the day another language reads it differently.
-To encrypt one of these, store it as a `CharField` holding a rendering your
-application owns.
-
-**Three consequences you will see:**
-
-- **A `Decimal` comes back without trailing zeros.** `Decimal("1.50")` is
-  stored and read back as `Decimal("1.5")`. Rendering by value is what makes
-  `filter(amount=Decimal("1.50"))` find a row written as `Decimal("1.5")`:
-  equal values are one plaintext, so one blind-index value. Before §3.6 they
-  were two, and the lookup missed. A `float` given to a `DecimalField` is
-  refused rather than rounded.
-- **A naive `datetime` is refused on write**, whatever `USE_TZ` says, instead
-  of being assumed to be in the default time zone. Values are read back as
-  aware UTC datetimes.
-- **Reads are strict.** A row whose decrypted bytes are not the canonical
-  rendering raises `FieldsealNotSupported` instead of being coerced. This
-  includes rows written by this adapter before §3.6, which wrote booleans as
-  `True`, datetimes as `2026-09-08 12:00:00+00:00`, and floats in CPython's
-  form. Nothing had been released at the time, so no deployment holds such
-  rows.
+A column with too few distinct values to index safely is refused at startup
+unless you record an explicit override.
 
 ## Settings
 
-```python
-FIELDSEAL = {
-    "KEY_PROVIDER": lambda: ...,   # returns a fieldseal KeyProvider
-    "ALLOWED_SUITES": {0xFF01},
-    "WRITE_SUITE": 0xFF01,
-    "READ_MODE": "strict",         # strict | permissive | readonly
-}
-```
+| Key | Required | Meaning |
+|---|---|---|
+| `KEY_PROVIDER` | yes | A `KeyProvider`, or a callable returning one. |
+| `ALLOWED_SUITES` | yes | The cipher suites this deployment accepts. `{0xFF01}` is the only one implemented. |
+| `WRITE_SUITE` | yes | The suite new values are written under: `0xFF01`. |
+| `ARM_PROVISIONAL_SUITES` | to write | `True` to allow writing under a provisional suite. Setting `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment does the same. Reading never needs it. |
+| `READ_MODE` | no | `"strict"` (default), `"permissive"` or `"readonly"`. The last two are for migrating existing plaintext columns and warn while active. |
+| `WARM_ON_READY` | no | Load keys at startup; see [Keys](#keys). |
+| `WARM_TENANTS` | no | The tenants to load keys for when warming. |
+| `CLIENT` | no | A `fieldseal.Fieldseal` client you built yourself, instead of the one the adapter builds from your models. |
 
-The adapter builds the `Fieldseal` client itself, in `AppConfig.ready()`,
-assembling the index registry from the model declarations. That is not a
-convenience: the core's §7.4 truncation band and §7.6 cardinality gate run at
-client construction, and this is the only arrangement where they see the
-columns that actually exist. `FIELDSEAL["CLIENT"]` overrides it, and
-`fieldseal.E006` then checks the supplied client's registry against the model
-declarations — an exact match in both directions, comparing the validated
-form, because a client carrying an index the models do not declare stores
-values for that column under rules no model states and nothing raises.
+An unknown key raises at startup, so a typo cannot silently change nothing.
 
-## Tenant binding (spec §10, L3)
+## Keys
 
-Django field types cannot see the record, so the tenant arrives through a
-contextvar. **An unset tenant on a tenant-bound column refuses the write**
-rather than falling back to a tenantless context, which would store a row no
-correctly configured reader can decrypt:
+The core offers two key providers in Python:
+
+- **`StaticKeyProvider`**: one data key and one index key held in memory. For
+  tests and evaluation only.
+- **`EnvelopeKeyProvider`**: data keys stored wrapped by your KMS. You supply
+  a wrapper with an async `unwrap` method and a directory of wrapped keys. Keys
+  are unwrapped only when the cache is **warmed**, never while serving a query,
+  so a query never waits on the KMS.
+
+With `EnvelopeKeyProvider`, a cold cache means every read fails with
+`KEY_UNAVAILABLE`. Run `python manage.py fieldseal_warm` before serving
+traffic, or set `WARM_ON_READY = True`. Warming at startup is off by default
+because `ready()` also runs for `makemigrations`, `shell` and tests. If your
+server loads the application before forking workers (gunicorn's `--preload`),
+warm in each worker instead, so the warmed keys are not copied into all of them.
+
+## Tenant binding
+
+Set `FieldsealMeta(table_uuid=..., tenant_bound=True)`, then write and read
+inside a tenant scope:
 
 ```python
 from fieldseal_django import tenant_scope
 
 with tenant_scope(b"tenant-a"):
-    Patient.objects.create(email="ada@example.com")
+    Patient.objects.create(name="Ada Lovelace", email="ada@example.com")
 ```
 
-Management commands, Celery tasks and shell sessions run outside any
-middleware and must set it themselves.
+A write to a tenant-bound column with no tenant set is refused. A row written
+for one tenant fails to decrypt under another: the binding is cryptographic,
+not a filter. Management commands, Celery tasks and shell sessions run outside
+your middleware, so they must set the tenant themselves.
 
----
+## Querying encrypted columns
 
-## Coverage matrix
+| Works | Refused |
+|---|---|
+| `filter(field=v)`, `filter(field__in=[...])` | `startswith`, `contains`, `gt`/`lt`, `range`, `regex`, `iexact` |
+| `get()`, `first()`, `last()`, `count()`, `exists()`, `iterator()` | `order_by()`, `earliest()`, `latest()` on the column |
+| `filter(field=None)`, `__isnull` | `exclude()`, `~Q` and `XOR` over the column |
+| Reading the column after filtering on another one | Slicing and pagination of a query filtered on the column |
+| `.candidates()`: the raw candidate rows, unchecked | `aggregate()`, `Min`, `Sum`, `distinct` and grouping on the column |
+| | `update()` and `delete()` on a query filtered on the column |
 
-This is what the code does **today**, verified by the test named in each row —
-not the target matrix in `docs/12` §6.
+Counts, `exists()` and `get()` answer for the verified rows, not the
+candidates. Slicing is refused because the database would apply `LIMIT` before
+the re-check; to paginate, fetch the verified rows and page through them in
+Python. If you need the unchecked candidates, `.candidates()` returns them and
+says so; it does not lift the refusals on negation or ordering.
 
-| Path | Behaviour | Test |
-|---|---|---|
-| `Model.save()`, `create()` | ✅ encrypts; index sibling written | `test_save_then_read_returns_the_plaintext` |
-| Database holds an envelope, never plaintext | ✅ | `test_the_database_holds_an_envelope_not_the_plaintext` |
-| Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `test_two_writes_of_one_value_differ` |
-| `bulk_create()` | ✅ encrypts and indexes | `test_bulk_create_encrypts_and_indexes` |
-| `bulk_update()` | ✅ encrypts (Case/When carries literals) | `test_bulk_update_encrypts` |
-| `QuerySet.update(field=value)` | ✅ encrypts | `test_plain_update_encrypts` |
-| `update(field=F(...))`, arithmetic, DB functions | 🛑 raises `FieldsealNotSupported` | `test_expression_rhs_is_refused` |
-| Reads: `get()`, `filter()` on other columns | ✅ decrypts | `test_save_then_read_returns_the_plaintext` |
-| `.values()`, `values_list()`, `only()`, `raw()` results | ✅ decrypts | `TestReadPathsTheMatrixClaims` |
-| `NULL` | ✅ stays `NULL`, not an envelope | `test_null_stays_null` |
-| Non-text inner types (`IntegerField`, …) | ✅ round-trips as its own type | `test_non_text_inner_type_round_trips_as_its_own_type` |
-| `dumpdata` | ✅ ciphertext, never plaintext, in fixtures | `test_dumpdata_emits_ciphertext_not_plaintext` |
-| **`loaddata`** | 🛑 **refused — would double-encrypt silently** | `TestLoaddataIsRefused` |
-| Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `TestIndexSibling` |
-| Tampered ciphertext | ✅ raises; never returns garbage | `test_a_tampered_envelope_raises_rather_than_returning_garbage` |
-| Tenant-bound column, no tenant set | ✅ refuses the write | `test_writing_without_a_tenant_refuses_rather_than_falling_back` |
-| Wrong tenant reading a row | ✅ raises (binding is cryptographic, not a filter) | `test_another_tenant_cannot_read_the_row` |
-| **`filter(field=...)` / `__in`** | ✅ rewritten to the index, then §7.5-verified | `TestEqualityRoundTrips`, `TestReVerification` |
-| A colliding candidate row | ✅ dropped before it reaches the caller | `test_a_colliding_candidate_is_dropped` |
-| `count()`, `exists()`, `first()`, `last()` | ✅ count/answer **verified** rows, not candidates | `TestReVerification` |
-| `get()` | ✅ materializes the whole bucket — Django's `LIMIT 21` sample could hide the match past the window | `test_get_finds_a_match_behind_a_full_window_of_collisions` |
-| `iterator()` / `aiterator()` | ✅ verified, still streaming — both bypass `_fetch_all` by design | `test_iterator_yields_only_verified_rows`, `test_aiterator_…` |
-| `filter(field=None)`, `__isnull`, `exclude(field=None)` | ✅ served exactly — `IS [NOT] NULL` on the envelope column, no index touched | `TestNullSemantics` |
-| Case variant / canonical-equivalent spelling | ✅ matches — equality is the normalizer's (G19) | `TestNormalizedEquality` |
-| Plain-AND `Q` over an encrypted column | ✅ records the obligation, verifies like a keyword | `TestPlainAndQ` |
-| Slicing / pagination / `qs[i]` on a verified queryset | 🛑 refused — LIMIT precedes verification (§7.5) | `test_slicing_refuses`, `test_int_indexing_refuses` |
-| `earliest()` / `latest()` | 🛑 refused — `LIMIT 1` before verification, `first()`'s failure renamed | `test_earliest_and_latest_refuse` |
-| `update()`, `delete()` on a verified queryset | 🛑 refused — would write to collision rows | `test_sql_answered_paths_refuse` |
-| `aggregate()`, `values()`, `values_list()`, `only()`, `defer()` | 🛑 refused — answered from SQL, or drop the column verification needs | same |
-| `exclude(field=...)` | 🛑 refused on **every** queryset (G24) — false negatives are unrecoverable, so `.candidates()` does not lift it | `test_exclude_refuses`, `TestCandidatesDoesNotLiftNegation` |
-| `Q` with `OR` over an encrypted column | 🛑 refused — cannot decide a candidate; `.candidates()` lifts it | `test_or_through_q_refuses`, `test_or_through_q_on_candidates_works` |
-| `Q` negated (`~Q`) or `XOR` over an encrypted column | 🛑 refused on **every** queryset (G24) — a widened bucket drops rows from both | `test_negation_still_refuses`, `TestCandidatesDoesNotLiftNegation` |
-| Subquery embedding (`__in=qs`, `Subquery`, `Exists`) | 🛑 refused — the outer query would receive unverified candidates. Two layers: `resolve_expression` for the bare `__in=qs`, and an expression walk for `Exists`/`Subquery`, which keep `qs.query` and never reach it — refused wherever the wrapper appears (positional `filter()`/`exclude()` argument, `Q` child, keyword operand, `annotate()`/`alias()`) | `test_a_verifying_queryset_refuses_to_become_a_subquery`, `test_every_expression_route_refuses` |
-| `union()` / `intersection()` / `difference()` | 🛑 refused on either side — obligations cannot span operands. `.candidates()` lifts the first two and not `difference()`, which subtracts a bucket | `test_combinators_refuse_on_either_side`, `test_union_and_intersection_still_lift` |
-| Relation traversal (`filter(rel__enc=...)`, forward or reverse) | 🛑 refused at `filter()` time **and** at compile time — the second layer holds for plain-manager models too. A *negated* traversal is refused as a negation, checked first: the compile-time layer passes by design when the column's owner is the querying model | `TestRelationTraversal`, `TestNegationIsAPositionNotAnOwner` |
-| A `.candidates()` queryset **embedded** in a subtractive position — `exclude(pk__in=…)`, `~Q(…__in=…)`, `difference(…)`, `annotate(Exists(…)).filter(alias=False)` | 🛑 refused (G24) — the outer predicate names no encrypted column and still subtracts the whole bucket. The positive `filter(…__in=qs.candidates())` the refusal messages recommend is unaffected | `TestABucketEmbeddedInASubtractivePosition` |
-| `.candidates()` | ✅ bucket semantics, unverified, every *verification* refusal lifted (`Q` under `OR` included). Three exceptions: negation (G24) — wherever it stands, including as the operand of an outer one — the cross-model traversal (embed the owner's `.candidates()` instead), and the G20 family | `TestCandidatesOptOut`, `TestCandidatesLiftsFilterTimeRefusals`, `TestCandidatesDoesNotLiftNegation` |
-| `order_by()` over an encrypted column — direct, relation path, or expression | 🛑 refused on **every** queryset (G20) — sorts envelope bytes; `.candidates()` does not lift it | `TestOrderBy` |
-| `earliest()`/`latest()` naming one (or via `Meta.get_latest_by`) | 🛑 refused (G20) — the same ordering through a different door | `TestEarliestLatest` |
-| Aggregate/function expressions over one (`Min`, `Sum`, `Count`, `Length`, …) | 🛑 refused (G20) — measured: `Min("age")` over {30, 40} returned **40**, decrypted cleanly | `TestAggregates` |
-| `values(enc).annotate(<aggregate>)` grouping / `distinct` over an encrypted projection | 🛑 refused (G20) — one group per row; dedup removes nothing | `TestGroupingAndDistinct` |
-| Bare `F("enc")` annotation · `order_by("enc_bidx")` sibling ordering · bare `distinct()` on full rows | ✅ allowed — exact select-and-decrypt; deterministic documented-meaningless tiebreaker; full-row distinct is pk-keyed and cannot dedupe wrongly, only no-op | `TestAggregates`, `TestOrderBy`, `TestGroupingAndDistinct` |
-| `Meta.ordering`/`get_latest_by` naming one · admin sortable encrypted column | 🛑 **E009** (Error) / ⚠️ **W005** (Warning) — the compiler applies these where no queryset refusal can see them | `TestE009`, `TestW005` |
-| Verifying manager auto-installed | ✅ when the model declares no manager | `test_the_manager_is_installed_without_being_asked_for` |
-| Hand-written manager | 🛑 E008 — not overwritten, reported | `test_a_hand_written_manager_is_not_replaced_but_is_reported` |
-| **`filter(field_bidx=...)`** | 🛑 **refused — cannot re-verify from a field hook** | `test_exact_on_the_index_column_refuses_naming_the_collision_rule` |
-| `contains`, `startswith`, `gt`, `range`, `regex`, `iexact`, … | 🛑 raise (spec §7.10 lists the fallback for each) | `test_refused_lookups_raise_rather_than_return_nothing` |
-| `.extra()`, `RawSQL()`, `cursor.execute()` params | 🛑 **cannot intercept — plaintext hazard** | — see below |
-| `django.core.cache` of model instances | ⚠️ holds plaintext (spec §10.2) | — |
-| `on_unindexable="refuse"` | ✅ field-level `ValidationError`, §10.2 wording | `TestRefuse`, `TestTheMessage` |
-| `on_unindexable="bucket"` | ✅ row saves, stays findable by its own value | `TestBucket` |
-| Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
-| `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
-| `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
-| `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
-| A row written here, read by the TypeScript core | ✅ CI cross matrix; `django` is a producer | `tests/test_cross_produce.py` |
-| A blind index written here, derived by another core | ❌ next cross-language increment | — |
-| `row_id` binding (L3-row) | ❌ not in v0 | — |
+Two more things do not go through the adapter:
 
-### Equality, and the part that is not the rewrite
+- **`loaddata` is refused.** A fixture holds ciphertext, and loading it
+  through Django would encrypt it a second time without any error. To move
+  encrypted data, copy the ciphertext columns directly.
+- **Raw SQL is not intercepted.** `.extra()`, `RawSQL()` and
+  `cursor.execute()` write their parameters as given, which means plaintext
+  in an encrypted column. Use the ORM, or encrypt with the core yourself.
 
-`filter(email="ada@example.com")` compiles to a comparison on the `email_bidx`
-sibling, not on the ciphertext — a direct comparison against a randomized
-envelope matches nothing and would return an empty queryset, which is a wrong
-answer rather than an error.
+The full list of query paths, each with the test that proves its behaviour, is
+in [`REFERENCE.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/adapters/django/REFERENCE.md).
 
-**That rewrite alone is only half of it.** Spec §7.4 *mandates* collisions in
-a truncated index, so the rows the database returns are a **superset** of the
-answer. Spec §7.5 requires candidates to be decrypted and re-verified before
-they reach the caller, and `FieldsealQuerySet` does that in `_fetch_all` — so
-the default path is the safe path and there is nothing to remember. The
-manager is installed automatically on models that declare none of their own;
-where you wrote your own, system check **E008** asks you to mix
-`FieldsealQuerySet` in rather than the adapter silently replacing it.
+## Limitations
 
-**What shrinks is the design work.** Verification drops rows after the
-database has already applied `COUNT`, `LIMIT` and `OFFSET`, so anything
-answered from SQL would be answering about candidates. `count()`, `exists()`,
-`first()`, `last()` and `get()` are implemented against verified rows (Django's
-`get()` samples a `LIMIT 21` window of candidates; ours reads the whole
-bucket), and `iterator()`/`aiterator()` filter the stream as it passes;
-slicing, `qs[i]`, `earliest()`/`latest()`, `update()`, `delete()`,
-`aggregate()`, the projections, subquery embedding and the set combinators are
-**refused**, and so is `exclude()` — a filter's false positives are
-recoverable, an exclusion's false negatives are not. NULL is the exception
-that needs none of this: `filter(field=None)` and `__isnull` compile to
-`IS [NOT] NULL` on the envelope column itself, which is exact. `.candidates()`
-opts out of the rest and hands you bucket semantics, documented as
-unverified.
+The specification requires every implementation to state these.
 
-**`.candidates()` does not lift negation** (G24, [#100](https://github.com/fieldseal-dev/fieldseal-spec/issues/100), spec §10.2):
-`exclude()`, `~Q`, and `XOR`, which is negation once expanded. Bucket
-semantics are a coherent thing to accept for a filter, where they hand you
-*more* rows than the answer and you reach it by dropping some; they are not
-for an exclusion, where they hand you fewer and the missing rows are not in
-what you were handed. The hatch lifted `exclude()` until that issue closed,
-and the refusal message recommended it.
+- **No protection against a compromised application process.** The keys are
+  in that process, so anything the application can read, an attacker inside
+  it can read.
+- **Logs and caches can hold sensitive data.** An equality lookup sends the
+  blind-index value as a query parameter, so database query logs, slow-query
+  logs and replication logs record it. Django's cache framework holds
+  whatever model instances you put in it, decrypted.
+- **Storage overhead.** Each encrypted value carries 111 bytes of overhead: a
+  9-byte value becomes 120 bytes. `storage="base64"` (for text-only stores)
+  adds another third on top. Across a 20-column, 100-million-row table the
+  overhead alone is about 220 GB, before the index columns.
+- **Argon2id costs 10–100 ms per query term.** It is paid on every write that
+  derives an index value and on every value you search for: `__in` with ten
+  values derives ten. The cost falls on the requesting thread, not the whole
+  process. It is a security property, not a tuning option.
+- **The KMS is a hard dependency in the read path.** With
+  `EnvelopeKeyProvider`, a KMS outage means `KEY_UNAVAILABLE` for every key not
+  already in the cache.
+- **The key cache holds plaintext keys in memory**, exposed to memory dumps,
+  core files and swap. Evicted keys are overwritten, but Python copies `bytes`
+  freely and cannot lock memory, so this narrows the exposure rather than
+  closing it. The cache's lifetime and use limits are security settings.
+- **Equality is the normalizer's.** A lookup matches values that are equal
+  after Unicode normalization and case folding, not only identical strings.
+- **No row binding.** A value is bound to its table, column and tenant, but
+  not to its row, so someone with database write access can swap encrypted
+  values between rows of the same column.
 
-**`filter()` is not the only door, and the rules above do not live behind
-it** ([#118](https://github.com/fieldseal-dev/fieldseal-spec/issues/118)).
-`complex_filter(Q)` calls `query.add_q` directly, and `Model._base_manager`
-is a plain `Manager` with no verifying queryset anywhere above it — Django
-builds it that way on purpose. Both reached the blind index unrefused and
-unverified, and Django walks both itself, for `limit_choices_to`. The
-queryset override closes the first; the second is closed one layer down, in
-the lookup: **an encrypted equality compiles only for a query whose rows a
-verifying queryset will re-verify** — or one whose caller took §7.5 on with
-`.candidates()` — so `Patient._base_manager.filter(email=v)` raises, and so
-does the correlated `Exists(...)` it can be rewritten as. `_base_manager`
-still answers primary keys, `IS [NOT] NULL` and unfiltered reads, which is
-what Django's own FK validation and cascade deletes need from it. If you hold
-a plain queryset and want the rows, go through `Model.objects` — or
-`Model.objects.filter(...).candidates()`, and take on §7.5 yourself.
+## Learn more
 
-The one shape that stays served from a plain manager is a `.candidates()`
-bucket used as a *subtractive* operand — `exclude(pk__in=…candidates())`, or
-the `exclude(Exists(…candidates()))` spelling. Reading the position needs the
-queryset, because the lookup is handed the operand without it, and a plain
-manager has no queryset of ours to read it from. `Model.objects` refuses
-both.
-
-**A second refusal family does not depend on filtering at all** (G20,
-[#80](https://github.com/fieldseal-dev/fieldseal-spec/issues/80)): SQL that
-*computes on envelope bytes* — `order_by()`, `earliest()`/`latest()`,
-`distinct`, grouping, aggregate and function expressions over an encrypted
-column — is refused on every queryset, and `.candidates()` does **not** lift
-it, because there is nothing meaningful to accept: measured before the
-refusals were written, `Min("age")` over `{30, 40}` returned `40` (the
-byte-wise minimum *envelope*, decrypted cleanly and presented as the
-minimum), and grouping returned one group per row under keys that print
-identically. A bare `F("field")` annotation stays allowed — it only selects,
-and the converter decrypts what comes back.
-
-**Equality is the column's normalizer's** (G19). On a `nfc-casefold-v1`
-column, `filter(email="ada@example.com")` matches a row stored as
-`Ada@Example.com`, and precomposed `é` matches decomposed `e`+`◌́`. That is
-why `iexact` is refused: the column has exactly one equality, and a second
-would be a second question the index cannot answer.
-
-**Pagination is the one to read twice.** Spec §7.5 states outright that
-pagination built directly on an indexed encrypted column is incorrect. The
-documented pattern is over-fetch → decrypt → filter → paginate.
-
-### Why `loaddata` is refused
-
-`dumpdata` writes base64 ciphertext, which is what stops fixtures leaking
-plaintext. Reloading one is the problem: Django's deserializer routes every
-fixture value through `to_python`, the same hook that sees plaintext a user
-typed, so the ciphertext is accepted as text, stored, and **encrypted a second
-time**. The row then reads back as base64 instead of the value, with no error
-anywhere. Measured: text columns corrupted while an `IntegerField` column
-survived, so the damage is per-inner-type and a smoke test on the wrong column
-reports success.
-
-The refusal keys on the core's `is_ciphertext`, which spec §3.4 defines as
-total over arbitrary input, and is used in the fail-closed direction only — the
-worst case is refusing a plaintext that happens to be valid base64 for a valid
-envelope. Supporting `loaddata` properly needs a way to tell fixture ciphertext
-from user plaintext at that hook, which is a design question, not an oversight.
-To move encrypted data between databases, use the backfill tooling (`docs/15`)
-or copy the ciphertext column directly.
-
-### Raw SQL is a real hazard
-
-No ORM encrypts raw query parameters, and this adapter cannot either.
-`.extra()`, `RawSQL()` and `cursor.execute()` write whatever you hand them —
-in plaintext, into the encrypted column. Use ORM paths, or call the core
-directly and pass the resulting envelope.
-
-### Unindexable values, and the transaction footnote
-
-A value containing a character the pinned Unicode version does not define
-**stores fine and cannot be indexed**. Per column you choose `refuse` (the
-default — right for a login email, where such a character usually means
-something upstream is broken) or `bucket` (right for a legal name, where rare
-characters legitimately appear). `bucket` needs the same
-`{reason, approved_by, date}` ceremony spec §7.6 requires elsewhere.
-
-Under `refuse`, **validate through a form or `full_clean()`**. The index can
-only be derived in `pre_save`, which runs inside the INSERT, so a refusal
-there marks the transaction for rollback — Django does that for any exception
-out of `save()`. `Encrypted.validate()` moves the failure to `full_clean()`,
-which every `ModelForm` calls first, so the form path never touches the
-database. A direct `Model.objects.create()` still raises *and* leaves the
-transaction needing a rollback.
-
-### Warming the cache is not optional under an `EnvelopeKeyProvider`
-
-Every field hook is synchronous, so the core confines KMS unwrapping to
-`warm()` and forbids the value path from blocking on network (`docs/09` §8.2).
-A cold cache therefore serves `KEY_UNAVAILABLE` on **every** read. Run
-`manage.py fieldseal_warm` before serving traffic, or set
-`FIELDSEAL["WARM_ON_READY"] = True`.
-
-It is off by default on purpose: `ready()` runs for `makemigrations`, `shell`
-and every test process, and a migration that cannot run because the KMS is
-unreachable is a worse failure than a cold cache. Tenant-bound columns need
-their tenants named (`--tenant`, or `FIELDSEAL["WARM_TENANTS"]`) — the adapter
-cannot enumerate them.
-
-## Honest limitations
-
-The specification requires every implementation to state these, and
-`docs/07` §4 requires every shipped artifact to carry them. The adapter holds
-no key material and does no cryptography (AD-1), so several are the core's
-costs — they still reach anyone who installs this package.
-
-- **No protection against a compromised application process** (spec §2.2).
-  The keys are in that process. Database query logs, slow-query logs and
-  replication logs are sensitive artifacts (spec §2.3): an equality lookup
-  sends the blind-index value as a query parameter, and a logged statement
-  carries it.
-- **Storage overhead is real** (spec §3.3). Under `0xFF01` every envelope
-  carries 111 bytes of fixed overhead, so a 9-byte value becomes 120 bytes.
-  `storage="binary"` (a `BinaryField`) is the default. `storage="base64"`
-  stores a `TextField` for text-only stores and pays a further 33% on every
-  row — about 160 bytes for the same value — and check `fieldseal.W003` says
-  so at startup. Across a 20-column, 100M-row table the fixed overhead alone
-  is roughly 220 GB, before the index sibling columns and index bloat.
-- **Argon2id is the default, and it costs 10–100 ms per query term** (spec
-  §7.3). `BlindIndex` defaults to `idf="argon2id"` because §7.3 requires it
-  for enumerable domains — email, phone, national ID, date of birth — so a
-  column that declares no `idf` pays this. It is paid on every write that
-  derives an index value and on every equality term: `filter(email=v)` derives
-  one, `filter(email__in=[...])` derives one per value. It is latency on the
-  requesting thread, not a process-wide stall — two derivations on separate
-  threads take about as long as one (measured 2026-09-09; see
-  `core/python/README.md`) — so a threaded server serves other requests
-  through it. `hmac-sha512` costs microseconds, and §7.3 permits it only for
-  high-entropy, non-enumerable values such as opaque random tokens.
-  `time_cost` and `memory_kib` raise the cost above the §7.3 minimum. This is
-  a product constraint, not tuning.
-- **The key service is a hard dependency in the read path** (spec §8.1).
-  Under an `EnvelopeKeyProvider`, every read and write of an encrypted column
-  needs its key in the core's cache, and only `warm()` fills it (see *Warming
-  the cache* above). A KMS outage therefore means `KEY_UNAVAILABLE` for every
-  tenant and key version not already cached. The provider's `degradation`
-  records the deployment's mode — `fail-closed` or `serve-cached` — and on the
-  value path both mean the same thing, serve only what the cache can decrypt,
-  because the value path never waits on the network.
-- **That cache holds plaintext keys in memory** (spec §5.5). It is exposed to
-  memory dumps, core files and swap. The core overwrites evicted entries, but
-  CPython copies `bytes` freely and there is no `mlock`, so this narrows the
-  window rather than closing it (`core/python/README.md` states exactly what
-  is and is not erased). The cache's `max_age` and `max_uses` are security
-  parameters, not tuning knobs: a longer TTL means fewer KMS calls and a
-  longer exposure. A server that loads the application before forking
-  (gunicorn's `--preload`) runs `ready()` in the parent, so
-  `WARM_ON_READY` there copies the warmed cache into every worker; warm in
-  each worker instead (`docs/09` §10).
-
-## Known gaps
-
-- **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump
-  is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
-  tenant-bound model outside `tenant_scope(...)` refuses. Both are correct
-  (fail closed) and neither is obvious.
-- **The AD-1 CI grep is a tripwire, not a proof** — it matches `import`/`from`
-  lines and would not catch `importlib`.
-- **E001 is hygiene, not a live bug.** Declaration order does not affect the
-  index value today (measured); the check exists for column-order determinism
-  and because L3-row binding would make order load-bearing. `docs/12` §1.2
-  carries the correction.
-- **Postgres and SQLite both run in CI**, per `docs/12` §8. This earned
-  itself immediately: `bulk_update` wraps each `Value` in a `Cast` on
-  PostgreSQL (`requires_casted_case_in_updates`) and not on SQLite, so the
-  same call builds a different expression tree per backend and the
-  expression refusal passed on one and failed on the other. Run Postgres
-  locally with `FIELDSEAL_TEST_DB=postgres`.
-- **`docs/12` §1 writes `from fieldseal.django import ...`.** The import path
-  is `fieldseal_django`. `fieldseal.django` would require making the core a
-  namespace package or shipping adapter code inside the core distribution,
-  and the second would put adapter code in the package that holds all the
-  cryptography.
-
-## Development
-
-```
-python -m venv .venv && .venv/bin/pip install -e ".[dev]" -e ../../core/python
-.venv/bin/pytest tests -q
-.venv/bin/ruff check src tests
-.venv/bin/mypy --strict src/fieldseal_django
-```
+- [`REFERENCE.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/adapters/django/REFERENCE.md):
+  every query path and its test, the reasoning behind each refusal, known gaps
+  and development setup.
+- [Adapter design](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/12-adapter-django.md)
+  and the [specification](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md).
+- [Reviewer brief](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/16-reviewer-brief.md):
+  if you can review the cryptographic design, this is where to start.
+- Bugs and interoperability problems:
+  [issues](https://github.com/fieldseal-dev/fieldseal-spec/issues).
+  Suspected vulnerabilities:
+  [`SECURITY.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/SECURITY.md),
+  not a public issue.
