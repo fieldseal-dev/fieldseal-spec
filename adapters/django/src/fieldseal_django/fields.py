@@ -204,8 +204,13 @@ class Encrypted(models.Field):
         Everything else goes through the codec, which is what the write path
         encrypts, so an index and its ciphertext are derived from the same
         rendering of the same value.
+
+        **Only a `string` column's value is text.** A `DecimalField` written
+        as `"1.50"` is encrypted as spec §3.6's `1.5`; passing the raw `str`
+        here indexed `"1.50"` instead, and a lookup for the value missed the
+        row (#133 review; Prisma's `operandOf` has the same guard).
         """
-        if isinstance(value, str):
+        if self.logical_type == "string" and isinstance(value, str):
             return value
         return codec.to_bytes(self.inner, value)
 

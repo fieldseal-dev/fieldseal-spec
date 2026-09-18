@@ -156,3 +156,29 @@ def test_equal_decimals_index_identically() -> None:
 def test_float_is_refused_for_a_decimal_column() -> None:
     with pytest.raises(FieldsealNotSupported, match="not a decimal"):
         codec.to_bytes(FIELDS["decimal"], 0.1)
+
+
+@pytest.mark.parametrize(("inner", "value", "canonical"), [
+    (models.DecimalField(max_digits=10, decimal_places=2), "1.50", b"1.5"),
+    (models.IntegerField(), "042", b"42"),
+    (models.FloatField(), "1.50", b"1.5"),
+    (models.BooleanField(), "True", b"true"),
+    (models.DateField(), "2026-09-08", b"2026-09-08"),
+], ids=lambda x: type(x).__name__ if isinstance(x, models.Field) else None)
+def test_index_operand_is_the_encrypted_rendering_for_str_input(
+        inner: models.Field[Any, Any], value: str, canonical: bytes) -> None:
+    """Reviewer 3 on #133: `index_operand` passed every `str` through raw, so
+    a `DecimalField` written as "1.50" was encrypted as 1.5 and indexed as
+    "1.50" -- a lookup miss §7.5 cannot repair. Only a `string` column's value
+    is text to the core; every other type's index operand is exactly the
+    bytes the write path encrypts."""
+    field = Encrypted(inner, column_uuid="0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b")
+    assert field.index_operand(value) == codec.to_bytes(inner, value) == canonical
+
+
+def test_index_operand_keeps_text_as_text_for_a_string_column() -> None:
+    """G16 part A is unchanged: a `string` column's value reaches the core as
+    `str`, so an unpaired surrogate is refused there as INVALID_ARGUMENT."""
+    field = Encrypted(
+        models.TextField(), column_uuid="0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b")
+    assert field.index_operand("1.50") == "1.50"
