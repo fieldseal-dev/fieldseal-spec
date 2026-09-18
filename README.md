@@ -19,7 +19,7 @@
 > | npm `fieldseal` | **Claimed** — 0.0.0 placeholder |
 > | npm `@fieldseal/*` scope | **Claimed** — org created, `@fieldseal/core` 0.0.0 placeholder published |
 > | PyPI `fieldseal` | **Claimed** — 0.0.0 placeholder |
-> | PyPI `field-seal` | **Not yet claimed** — distribution built, upload pending. PEP 503 does *not* fold this into `fieldseal`; they are separate names |
+> | PyPI `field-seal` | **Protected, not claimable** (checked 2026-09-18). PEP 503 does not fold it into `fieldseal`, but PyPI's upload check goes further: it strips `.`, `_` and `-`, maps `l`/`i` to `1` and `o` to `0`, and refuses any name that then matches an existing project (Warehouse `ultranormalize_name`). The upload was refused with "too similar to an existing project", so `fieldseal` itself blocks `field-seal`, `field_seal` and look-alikes such as `fie1dseal` |
 > | Maven Central `dev.fieldseal` | **Unclaimed.** The groupId needs the domain, which is now held, so this is claimable whenever Phase 1 needs it |
 > | crates.io · NuGet | **Unclaimed and free** |
 > | `fieldseal.org` | **Available** — no DNS delegation as of this check |
