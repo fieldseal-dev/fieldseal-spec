@@ -44,9 +44,10 @@ These commitments define what the spec will be judged on. When proposing changes
 
 ```
 spec/                     normative specification (moves here as versioned releases)
-vectors/                  machine-readable test vectors — six families emitted and pinned
-                          by hash in MANIFEST.json (146 vectors, 178 results), nothing
-                          held out; cross/ runs as a dynamic CI exchange and cross/static/
+vectors/                  machine-readable test vectors — six core families emitted and
+                          pinned by hash in MANIFEST.json (146 vectors, 178 results), nothing
+                          held out; codec/ (124 vectors, spec §3.6) binds adapters, not cores,
+                          via MANIFEST.adapter_files; cross/ runs as a dynamic CI exchange and cross/static/
                           waits for a first release (see vectors/README.md)
 core/
   python/  typescript/    reference implementations — both built, both pass the pinned suite

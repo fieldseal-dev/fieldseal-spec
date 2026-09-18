@@ -693,12 +693,29 @@ jobs:
           fail = []
 
           pinned = {f["path"] for f in m["files"]}
+          adapter = {f["path"] for f in m.get("adapter_files", [])}
           held = {h["path"] for h in m.get("held_out", [])}
 
-          # A file cannot be both vouched for and held out.
+          # A file cannot be both vouched for and held out, and a family binds
+          # either cores or adapters -- listed in both, a core would run a
+          # family it has no codec for (spec §3.6).
           overlap = pinned & held
           if overlap:
               fail.append(f"listed as both pinned and held out: {sorted(overlap)}")
+          if adapter & (pinned | held):
+              fail.append(f"adapter_files overlaps files/held_out: {sorted(adapter & (pinned | held))}")
+
+          # Adapter families are pinned exactly like core ones.
+          for entry in m.get("adapter_files", []):
+              p = root / entry["path"]
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != entry["sha256"]:
+                  fail.append(f"{entry['path']}: sha256 {got} != {entry['sha256']}")
+              doc = json.loads(p.read_text("utf-8"))
+              if doc.get("status") != "pinned":
+                  fail.append(f"{entry['path']}: in MANIFEST.adapter_files but status={doc.get('status')!r}")
+              if doc.get("vector_suite_version") != m["vector_suite_version"]:
+                  fail.append(f"{entry['path']}: vector_suite_version {doc.get('vector_suite_version')!r} != manifest's")
 
           for entry in m["files"]:
               p = root / entry["path"]
@@ -777,7 +794,7 @@ jobs:
               for f in fail:
                   print(f"  - {f}")
               sys.exit(1)
-          print(f"OK: {len(pinned)} pinned ({counted} vectors), {len(m.get('support', []))} support, {len(held)} held out, all provisional; README current.")
+          print(f"OK: {len(pinned)} pinned ({counted} vectors), {len(adapter)} adapter, {len(m.get('support', []))} support, {len(held)} held out, all provisional; README current.")
           PY
 
   # docs/14 §3: the N x N cross-implementation job -- the one that matters.

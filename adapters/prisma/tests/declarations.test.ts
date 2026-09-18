@@ -104,6 +104,17 @@ describe("resolution", () => {
     const m = resolve(model({ name: "P", fields: [encField("age", ', as: "int"')] }))!;
     expect(m.encrypted[0]?.valueType).toBe("int");
   });
+
+  it.each(["decimal", "date"])("accepts spec §3.6's `%s`, added by G25", (t) => {
+    const m = resolve(model({ name: "P", fields: [encField("v", `, as: "${t}"`)] }))!;
+    expect(m.encrypted[0]?.valueType).toBe(t);
+  });
+
+  it("refuses a logical type §3.6 does not pin", () => {
+    expect(() => resolve(model({ name: "P", fields: [encField("v", ', as: "uuid"')] }))).toThrow(
+      /as must be one of string, bytes, int, decimal, float, boolean, date, datetime/,
+    );
+  });
 });
 
 describe("refusals", () => {

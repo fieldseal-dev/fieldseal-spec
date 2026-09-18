@@ -189,7 +189,12 @@ function deriveIndex(
   // substitutes U+FFFD for an unpaired surrogate, so a caller who encodes
   // first has already collapsed two distinct values into one before the core
   // is entered -- the exact false match the refusal exists to prevent.
-  const operand = typeof written === "string" ? written : toBytes(written, encDecl, label);
+  // `as: "string"` only: a decimal arrives as a JS string too, and its index
+  // operand is its canonical §3.6 bytes, as in rewrite.ts's operandOf.
+  const operand =
+    encDecl.valueType === "string" && typeof written === "string"
+      ? written
+      : toBytes(written, encDecl, label);
   try {
     return client.blindIndex(operand, indexContext(fieldCtx, idx.indexId, opts));
   } catch (e) {

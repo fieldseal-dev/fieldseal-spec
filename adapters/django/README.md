@@ -50,6 +50,49 @@ The index column is explicit rather than auto-injected because
 index's `pre_save` must run after the encrypted field's. Check
 `fieldseal.E001` asserts the order at startup rather than trusting it.
 
+### Which inner fields, and how their values become bytes
+
+The inner field decides which of spec §3.6's eight logical types the column
+holds, and the plaintext is §3.6's canonical rendering of that type. That
+rendering is the same one the Prisma adapter writes, and the `codec/` vectors
+pin it:
+
+| Inner field | Logical type | Rendering, e.g. |
+|---|---|---|
+| `CharField`, `TextField` and subclasses (`EmailField`, `SlugField`, `URLField`, …) | `string` | UTF-8 |
+| `BinaryField` | `bytes` | unchanged |
+| `IntegerField` family | `int` | `-42` |
+| `DecimalField` | `decimal` | `1.5` |
+| `FloatField` | `float` | `10000000000000000` (ECMAScript's form, not CPython's `1e+16`) |
+| `BooleanField` | `boolean` | `true` |
+| `DateField` | `date` | `2026-09-08` |
+| `DateTimeField` | `datetime` | `2026-09-08T12:00:00.000000Z` |
+
+**Any other inner field is refused by `Encrypted()` at declaration.** That
+includes `UUIDField`, `TimeField`, `DurationField`, `JSONField` and
+`GenericIPAddressField`. §3.6 pins no rendering for them, and a column rendered
+by `str()` becomes a backfill the day another language reads it differently.
+To encrypt one of these, store it as a `CharField` holding a rendering your
+application owns.
+
+**Three consequences you will see:**
+
+- **A `Decimal` comes back without trailing zeros.** `Decimal("1.50")` is
+  stored and read back as `Decimal("1.5")`. Rendering by value is what makes
+  `filter(amount=Decimal("1.50"))` find a row written as `Decimal("1.5")`:
+  equal values are one plaintext, so one blind-index value. Before §3.6 they
+  were two, and the lookup missed. A `float` given to a `DecimalField` is
+  refused rather than rounded.
+- **A naive `datetime` is refused on write**, whatever `USE_TZ` says, instead
+  of being assumed to be in the default time zone. Values are read back as
+  aware UTC datetimes.
+- **Reads are strict.** A row whose decrypted bytes are not the canonical
+  rendering raises `FieldsealNotSupported` instead of being coerced. This
+  includes rows written by this adapter before §3.6, which wrote booleans as
+  `True`, datetimes as `2026-09-08 12:00:00+00:00`, and floats in CPython's
+  form. Nothing had been released at the time, so no deployment holds such
+  rows.
+
 ## Settings
 
 ```python

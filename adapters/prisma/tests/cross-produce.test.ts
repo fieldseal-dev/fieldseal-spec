@@ -305,7 +305,7 @@ describe("cross-language producer (docs/14 §3)", () => {
     expect(text(caseNamed(doc, "as-int"))).toBe("45");
     expect(text(caseNamed(doc, "as-boolean"))).toBe("true");
     expect(text(caseNamed(doc, "as-float"))).toBe("1.5");
-    expect(text(caseNamed(doc, "as-datetime"))).toBe("1815-12-10T11:22:33.000Z");
+    expect(text(caseNamed(doc, "as-datetime"))).toBe("1815-12-10T11:22:33.000000Z"); // §3.6: six digits
     expect(caseNamed(doc, "as-bytes").plaintext).toBe("0001feff");
   });
 

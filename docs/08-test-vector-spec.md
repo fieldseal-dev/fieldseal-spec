@@ -22,7 +22,8 @@ Extends the planned layout in `vectors/README.md` with schema and shared-key fil
 
 ```
 vectors/
-  MANIFEST.json            suite-wide metadata: vector-suite version, file list, sha256 per file
+  MANIFEST.json            suite-wide metadata: vector-suite version, file list, sha256 per file;
+                           `files` bind cores, `adapter_files` bind adapters (§4.8)
   schema/                  JSON Schema (draft 2020-12), one per family (extracted from §4 of this doc)
     common.schema.json
     envelope.schema.json
@@ -56,6 +57,8 @@ vectors/
     format.json            structural failures: truncation, unknown fmt_ver, unregistered suite
     policy.json            allow-list, read-mode cases
     crypto.json            tag flips, AAD alteration, commitment mismatch, salamander case
+  codec/
+    logical-types.json     spec §3.6 renderings, both directions (MANIFEST.adapter_files; §4.8)
   cross/
     keys → ../keys/test-keys.json (by reference, not symlink — see §4.7's key_ref rule)
     static/
@@ -305,7 +308,7 @@ Two mechanisms, one file format:
 - **Dynamic cross validation**: in CI, each implementation produces a fresh cross file as a build artifact; every other implementation consumes all of them (full N×N including self). Defined in `docs/14-conformance-ci.md`. CI MUST fail on any divergence (spec §12).
 - Case set per producer, **split by producer kind as of 2026-08-31** — the single rule this line used to carry was written when only cores produced, and it asks for coverage an adapter structurally cannot give:
   - **Core producers** MUST emit ≥16 envelope cases per supported suite spanning §4.1's size and shape coverage, plus ≥1 case per context shape (`row_id` present/absent, tenant present/absent).
-  - **Adapter producers** are governed by a different axis, because their corpus is their own fixture and their coverage dimension is the decisions *they* own: ≥1 case per codec rendering supported, ≥1 per storage form supported, and ≥1 tenant-bound case. They MUST additionally carry a `producer.limitations` array naming every context shape they cannot produce and why — `[{"shape": "row_id-present", "reason": "L3-row binding is not built (docs/13 §8)"}]`. That makes the gap visible in the artifact rather than absent from it, the same move `out_of_band` and `harness_notes` already make elsewhere, and it closes itself the day L3-row ships instead of needing a documentation edit.
+  - **Adapter producers** are governed by a different axis, because their corpus is their own fixture and their coverage dimension is the decisions *they* own: ≥1 per storage form supported and ≥1 tenant-bound case. *(Until 2026-09-18 this also asked for ≥1 case per codec rendering supported. The `codec/` family (§4.8) now pins every rendering against spec §3.6 directly, which a producer's cross case never could — it only compared a producer with its own recorded plaintext — so the obligation moved there. Neither shipped producer had ever met it for more than `string`, `int` and the Prisma `as:` types.)* They MUST additionally carry a `producer.limitations` array naming every context shape they cannot produce and why — `[{"shape": "row_id-present", "reason": "L3-row binding is not built (docs/13 §8)"}]`. That makes the gap visible in the artifact rather than absent from it, the same move `out_of_band` and `harness_notes` already make elsewhere, and it closes itself the day L3-row ships instead of needing a documentation edit.
 
 #### The index half (`cross/v2`, 2026-08-31)
 
@@ -340,6 +343,53 @@ A producer that emits index cases writes `"schema": "fieldseal-vectors/cross/v2"
 **Case set for the index half:** at least one non-ASCII value; at least one pair that MUST collide (a case-fold or NFC pair); the marker case wherever a column declares `on_unindexable: "bucket"`; and at least one case per normalizer **the producer can reach** — which differs by producer kind for the same reason the envelope rule above does. A **core** producer can declare any normalizer in the registry and MUST cover all of them. An **adapter** producer can only derive under the normalizers its own schema declares, so it covers those and names the rest in `producer.limitations` rather than being held to a rule its fixture cannot satisfy. *(Rewritten in the #103 review round. As first written the rule said "the producer supports", which the two adapters failed — and so did both cores, whose corpus covered two of the three registry normalizers. The cores now cover all three; the adapters declare the gap.)*
 
 
+
+### 4.8 `codec/` — logical-type rendering (binds adapters, not cores)
+
+Spec §3.6 pins the plaintext an adapter renders for each of eight logical types. A core never sees a logical type — it is handed bytes — so this family is the first to bind adapters. It is listed in `MANIFEST.json` under **`adapter_files`**, not `files`:
+
+- A **core's** conformance run iterates `files` only and never loads it.
+- An **adapter's** run loads it from `adapter_files`, verifies its hash and `"status": "pinned"`, and runs every vector through the adapter's real codec — the function its write path and its index path both call, not a test double.
+
+A file may be in `files` or `adapter_files`, never both; CI checks this, along with the hash and the version.
+
+**Vector shape.** Every vector has `id` (`codec/<type>/<write|read>/<slug>`), `logical_type`, `direction`, `requires` and `spec_ref`.
+
+- A **write** vector carries an `input` literal. Its `expected` is either `{"plaintext": "<hex>"}` or `{"refused": true}`.
+- A **read** vector carries `plaintext` (hex). Its `expected` is either `{"value": <literal>}` or `{"refused": true}`.
+- A refusal is the adapter's not-supported error, and never a §9 error: the envelope is fine.
+
+**Value literals** are one shape per type, used both for a write's `input` and a read's `expected.value`:
+
+| Type | Literal | Notes |
+|---|---|---|
+| `string` | `{"text": "…"}` or `{"utf16": "<hex UTF-16BE code units>"}` | `utf16` exists so an unpaired surrogate, which JSON text cannot carry portably, can be an input |
+| `bytes` | `{"hex": "…"}` | |
+| `int` | `{"decimal": "…"}` | A string, never a JSON number: the values exceed 2⁵³ |
+| `decimal` | `{"decimal": "…"}` | Any notation on input (`15E-1`); canonical on output |
+| `float` | `{"binary64": "<16 hex digits>"}` | The IEEE 754 bits, big-endian, so no decimal-to-binary conversion stands between the vector and the value |
+| `boolean` | `{"boolean": true}` | |
+| `date` | `{"date": "YYYY-MM-DD"}` | `{"utc_midnight_instant": "<RFC 3339>"}` for §3.6's no-calendar-date convention |
+| `datetime` | `{"instant": "<RFC 3339 with offset>"}` | `{"naive": "…"}` for a value with no zone. On read, `instant` is the canonical six-digit `Z` form |
+
+**Capabilities.** `requires` lists platform capabilities, defined in the file's `capabilities` object:
+
+- `calendar-date` and `date-as-utc-midnight-instant`
+- `microsecond-instants` and `millisecond-instants`
+- `naive-datetimes`
+
+A vector requiring a capability the adapter's platform lacks is reported **skipped, with that reason** — the rule in §5 item 7 — and MUST NOT be counted as passed. A skip for any other reason is a harness bug.
+
+Each capability names something a platform can or cannot *represent*, not a choice, so a platform cannot opt out of one it has. Django's platform holds `calendar-date`, `microsecond-instants` and `naive-datetimes`; Prisma's holds `date-as-utc-midnight-instant` and `millisecond-instants`. Both adapters' tests assert the exact number of vectors they skip, so a vector silently moved behind a capability is caught.
+
+The platform-precision cases are the reason capabilities exist. The same bytes, `2026-09-08T12:00:00.123456Z`, MUST be read exactly by a microsecond platform and MUST be refused by a millisecond one. They appear as two vectors, each gated on its capability, so each platform is held to its own half.
+
+**What the generator guarantees.** Every expected value is computed by the generator's own §3.6 implementation (`tools/vector-gen/fieldseal_vectorgen/codec.py`), written from the specification text, not from either adapter. The case list states for each case whether it is a refusal, and generation fails if the rules disagree with that statement.
+
+- Every non-refused write is re-parsed and must return its own value.
+- The float renderer was checked against Node's `String(number)` on 23,160 doubles, with no disagreement. That was a one-off check at authoring time, not a CI job; the `float` vectors carry the cases it found interesting.
+
+**Independence, stated honestly.** The generator's rules and the Django adapter's codec were written in the same session by the same author. They are two implementations, but not independent ones in the sense of `docs/17`. The Prisma codec is a third, in another language. A shared misreading of §3.6 would pass all three. Only an adapter built under the `docs/17` protocol would test that.
 
 ---
 
@@ -410,6 +460,8 @@ Found while writing this document. Each needs a spec issue (per `CONTRIBUTING.md
 **`blind-index/argon2id.json` is part of the pinned suite as of `0.6.0-provisional` (2026-08-31).** It was held out on 2026-08-22 because its primitive had never been checked against an external known-answer source: two reference implementations would otherwise inherit the same unverified assumption from one generator and agree with each other while being wrong, which is precisely the failure the two-implementation rule exists to prevent, so their agreement would have been evidence of nothing. Since 2026-08-23 the primitive is checked against libsodium's seven published answers on every generator run (§7) and the TypeScript core reproduces the file's values through an independent backend, which left only the project decision — taken in `docs/07` §7. **No expected value changed.** Both cores now run it and report `held_out: 0`; `MANIFEST.held_out` is empty and the mechanism is retained for the next family that needs it.
 
 **Status 2026-08-31 — suite `0.6.0-provisional`: both cores pass 175/175 with identical result ids, and nothing is held out.** The 30 new results are the argon2id family's 19 vectors plus the 11 `#pipeline` companions its primitive vectors earn. Promoting it surfaced two defects that a held-out family structurally cannot surface, both now fixed: eight of its vectors declared `idf: argon2id` with no `idf_params` (§4.4 makes that malformed, and both cores reject rather than assume the minimum), and the Python core's harness refused every non-HMAC IDF, so it could not have run the family at all.
+
+**Status 2026-09-18 — suite `0.7.0-provisional`.** The core families are unchanged apart from the version string: 146 vectors and 178 results, identical ids across both cores. New in this version is `codec/logical-types.json`, 124 vectors under `MANIFEST.adapter_files` (§4.8), which both adapters run and no core iterates.
 
 **Status 2026-09-01 — suite `0.6.0-provisional`, revised in the #108 review round before it was published: 146 vectors, 178 results, both cores green with identical ids.** *(From 2026-09-04 the id sets are identical on the **synchronous** pass: the TypeScript core additionally carries 178 `#async` results, item 10's second pass through the spec §11.1 companions it now ships. **Only 65 of those 178 route through a companion** — the `blind-index/` family and the two `errors/` `blind_index` cases; the other 113 re-run the synchronous operation, because this core ships companions for `blind_index` and `unindexable_marker` only and item 10 asks for the *entire* suite a second time. Each result records which it was in `details.async_route`, and the report's harness notes carry the same split as a computed line, so the second pass cannot be read as 178 results' worth of companion coverage. The Python core has none and reports `async_companions: false`.)* *("Identical ids" was prose with nothing behind it until 2026-09-04: each core job uploaded its own report and no CI job ever opened both, so the claim rested on a hand check. The **Both cores report the same result ids** job now enforces it on every run — not only on green ones, since it runs under `if: !cancelled()` and a red core is when a dropped family is easiest to miss. What it fails on, exactly: a synchronous id set either core ran and the other did not; a first-pass result left untwinned where a report declares `async_companions`; a skipped result, which is coverage lost rather than agreement; a differing or non-passing `out_of_band` set; and any file in `MANIFEST.json` that neither core reached — the last being the only one of these that can see a drop hitting **both** cores. It cannot see a family removed from the manifest as well; that is a suite change, and `suite-integrity` and `vectors-reproducible` own it. The counts below are what the job reports, not what it asserts: it compares sets and coverage, never a hard-coded total, so adding vectors does not fail it.)* The family gains two vectors at a raised cost (`raised-cost-t4-b15` and `unindexable-marker-t4-b15`, §4.4): what would have caught the third defect the round found — the TypeScript harness deriving the reserved marker at its own default cost — and what meets the G2 draft's raised-cost obligation. The round also found that "both cores reject" above hid a difference: the Python harness aborted with no report where the TypeScript one recorded failures. Both record now. `docs/07` §7 has the account.
 
