@@ -228,11 +228,11 @@ function main(): number {
     },
     pinned_decisions: {
       "codec-renderings":
-        'as: string -> UTF-8; int -> decimal ASCII ("45"); float -> String(v); boolean -> "true"/"false"; ' +
-        "datetime -> ISO-8601 UTC via Date#toISOString; bytes -> the bytes unchanged. " +
-        "Nothing in the spec or the vector suite pins these, and a consumer in another language " +
-        "that decoded one differently would decrypt successfully and read the wrong value -- " +
-        "so they are exercised by the cross-language producer (cross/prisma/as-*).",
+        "spec §3.6, all eight logical types (string, bytes, int, decimal, float, boolean, date, datetime), " +
+        "pinned by the codec/ family in MANIFEST.adapter_files and run by tests/codec-vectors.test.ts, so a " +
+        "failing rendering fails this report's L1. JavaScript conventions §3.6 states: decimal read back as its " +
+        "canonical string, date as a Date at UTC midnight, sub-millisecond datetimes refused on read. " +
+        "The cross-language producer (cross/prisma/as-*) carries six of the types across languages.",
       "storage-forms":
         'binary (a Bytes column holds the envelope) and base64 (a String column holds its base64, ~33% overhead, spec §3.3). ' +
         "The cross producer emits the decoded envelope for both.",

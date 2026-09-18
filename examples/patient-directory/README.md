@@ -120,21 +120,16 @@ into the narration, or — for an index parameter — as nothing at all.
 
 ## Honest limitations
 
-- **Three logical types, not six.** The shared model uses `string`, `int` and
-  `bytes` only, because the others do not survive a trip between these two
-  adapters — measured, in three different failure classes ([G25](https://github.com/fieldseal-dev/fieldseal-spec/issues/123)):
-  a **`date`** written by Django is read by Prisma as an *instant*, and one
-  ordinary rewrite through Prisma stores a form Django can no longer read at
-  all — silent when the damage is done; a **`Decimal`** has no declaration on
-  the Prisma side and becomes an IEEE-754 double, so
-  `b"12345678901234567.89"` returns `12345678901234568`, silently; a
-  **`boolean`** is `b"True"` here and `b"true"` there, and each side refuses
-  the other, which is the loud case and the least dangerous. The root cause is
-  a specification gap rather than an adapter bug — spec §3 pins the byte layer
-  and nothing pins the logical-type-to-bytes rendering, or even the vocabulary
-  — so it is not fixed here; which rendering is right is a normative question.
-  `check_declarations.py` refuses any other inner type and carries the
-  measurements, so the restriction is a tripwire rather than a comment.
+- **Three logical types, not eight.** The shared model uses `string`, `int`
+  and `bytes` only. When the demo was built the others did not survive a trip
+  between the two adapters ([G25](https://github.com/fieldseal-dev/fieldseal-spec/issues/123)):
+  a `date` written by Django became unreadable to Django after one rewrite
+  through Prisma, a `Decimal` lost precision through a binary64, and a
+  `boolean` was spelled differently on each side. Spec §3.6 has since pinned
+  all eight types, both adapters implement it, and the `codec/` vectors check
+  them — so the restriction is now the demo's scope rather than a workaround.
+  Widening it changes the checked-in transcript and is left as its own change;
+  `check_declarations.py` still refuses any other inner type until then.
 - **`npm ci` here is not a supply-chain claim.** Both fieldseal packages are
   `file:` dependencies, and npm records those with `"link": true` and no
   integrity hash. What the lockfile pins is the resolution, not the bytes.

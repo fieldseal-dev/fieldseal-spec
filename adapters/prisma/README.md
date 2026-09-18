@@ -54,6 +54,26 @@ The UUIDs are surrogates written literally in the schema. They must never be
 derived from the model or field name: spec §6.1 binds key derivation to them,
 so a rename would make every existing row undecryptable.
 
+**`as:` says what the value is.** The Prisma column type is the storage type
+(`Bytes`, because it holds an envelope), so a non-text column declares its
+logical type: `@fieldseal(encrypted, as: "decimal", column_uuid: "…")`. The
+eight types are spec §3.6's: `string` (the default), `bytes`, `int`,
+`decimal`, `float`, `boolean`, `date` and `datetime`. Each is rendered exactly
+as §3.6 pins, which is the same bytes the Django adapter writes, and the
+`codec/` vectors check both. JavaScript has no decimal and no calendar date,
+so two conventions apply:
+
+- **`decimal`** is written as a string (`"1.50"`, `"15E-1"`) or a
+  `Prisma.Decimal`, and read back as its canonical string (`"1.5"`). A
+  `number` is refused, because it is already a binary64.
+- **`date`** is written and read as a `Date` at exactly UTC midnight. Any other
+  instant is refused rather than truncated to a day.
+
+A `datetime` whose stored value has microseconds a `Date` cannot hold is
+refused on read, not truncated. Reads are strict in general: bytes that are
+not the canonical rendering raise `FieldsealNotSupported`. Changing `as:` on a
+column with rows is a new plaintext encoding and needs a backfill.
+
 **The index sibling must be optional (`Bytes?`).** Prisma's generated `create`
 input requires every non-optional column, so a required sibling would force
 callers to supply the one value the adapter refuses to accept from them — it is
@@ -323,7 +343,8 @@ the target matrix in `docs/13` §6.
 | Empty string | ✅ a value, not an absence | `treats the empty string as a value…` |
 | `NULL` | ✅ stays NULL; its index is NULL too | `stays NULL rather than becoming an envelope` |
 | `where: { field: null }`, `{ equals: null }`, `{ not: null }` | ✅ served — `IS [NOT] NULL` is exact over envelopes, because NULL stays NULL | `serves literal-NULL equality…` |
-| Non-text logical types (`as: "int"`, `"datetime"`, `"boolean"`, `"float"`, `"bytes"`) | ✅ round-trip as their own type, incl. a bare `Date` | `every declared \`as:\` type round-trips as itself` |
+| Non-text logical types in the fixture (`as: "int"`, `"datetime"`, `"boolean"`, `"float"`, `"bytes"`) | ✅ round-trip as their own type, incl. a bare `Date` | `every declared \`as:\` type round-trips as itself` |
+| Spec §3.6 renderings, all eight `as:` types incl. `"decimal"` and `"date"`, both directions and the refusals | ✅ byte-exact against the `codec/` vectors (the 4 needing a CPython-only capability are skipped with the reason) | `codec/` |
 | A value that does not match the declared `as:` | 🛑 refused rather than coerced | `refuses a value whose type does not match…` |
 | `storage: "base64"` on a `String` column | ✅ ASCII in the column, ~33% overhead | `round-trips through a String column…` |
 | Blind index written on insert | ✅ deterministic, case-folded, `ceil(b/8)` bytes | `is derived on write…`, `folds case…` |
@@ -559,6 +580,7 @@ claiming a refusal and pointing at a fixture instead of a test.
 
 `pinned_decisions` is this adapter's own list, and the first entry is the one
 no core report can carry: **the codec's renderings**. `as: "int"` becoming
-`b"45"` is a decision this package makes, nothing in the spec or the vector
-suite pins it, and a consumer in another language that decoded it differently
-would decrypt successfully and read the wrong value.
+`b"45"` was a decision this package made until spec §3.6 pinned it (G25,
+#123); the `codec/` vectors now pin every rendering, and
+`tests/codec-vectors.test.ts` runs them. A consumer in another language that
+decoded one differently would decrypt successfully and read the wrong value.

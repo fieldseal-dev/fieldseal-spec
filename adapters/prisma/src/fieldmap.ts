@@ -46,14 +46,25 @@ export type Storage = "binary" | "base64";
  * is what a consumer in another language must decode, which is why the
  * cross-language producer exercises every one of these.
  */
-export type ValueType = "string" | "bytes" | "int" | "float" | "boolean" | "datetime";
+/** Spec §3.6's closed vocabulary; `decimal` and `date` were added by G25 (#123). */
+export type ValueType =
+  | "string"
+  | "bytes"
+  | "int"
+  | "decimal"
+  | "float"
+  | "boolean"
+  | "date"
+  | "datetime";
 
 export const VALUE_TYPES: readonly ValueType[] = [
   "string",
   "bytes",
   "int",
+  "decimal",
   "float",
   "boolean",
+  "date",
   "datetime",
 ];
 

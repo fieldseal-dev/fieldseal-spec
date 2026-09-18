@@ -292,12 +292,11 @@ async function main(): Promise<number> {
     utf8("日本語とEmoji \u{1f510}"),
     null,
   );
-  // **The adapter decides these renderings.** A consumer that expected a
-  // platform integer encoding, or a locale-aware date, would decrypt
-  // successfully and read the wrong value -- which is the failure no core round
-  // trip can catch and this file exists to pin.
+  // **Spec §3.6 decides these renderings** (G25, #123); until it did, this
+  // adapter did, and disagreed with Django on four types. The `codec/` vector
+  // family pins every rule; these cases carry the same bytes across languages.
   await record("as-int", "Patient", "Patient", "age", p1id, utf8("45"), null);
-  await record("as-datetime", "Patient", "Patient", "born", p1id, utf8(born.toISOString()), null);
+  await record("as-datetime", "Patient", "Patient", "born", p1id, utf8("1815-12-10T11:22:33.000000Z"), null);
   await record("as-boolean", "Patient", "Patient", "active", p1id, utf8("true"), null);
   await record("as-float", "Patient", "Patient", "score", p1id, utf8("1.5"), null);
   await record("as-bytes", "Patient", "Patient", "blob", p1id, blob, null);
