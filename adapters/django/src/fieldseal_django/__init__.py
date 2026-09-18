@@ -39,7 +39,7 @@ __all__ = [
     "Encrypted",
     "index_column",
 ]
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 def __getattr__(name: str) -> object:
     # `Encrypted` imports `django.db.models`, which requires settings to be
