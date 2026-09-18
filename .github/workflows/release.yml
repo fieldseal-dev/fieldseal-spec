@@ -1,0 +1,196 @@
+name: Release
+
+# An experimental pre-1.0 release under PRD §8 (docs/01-prd.md §8), and
+# nothing else. Pushing a `v0.*` tag builds the six artifacts, checks them
+# against the five conditions, installs and uses them, and then waits for a
+# person: the `publish` job runs in the `release` environment, which requires
+# the maintainer's approval and accepts only `v0.*` tags. After the upload, the
+# GitHub release is created as a *draft*, because condition 5 covers release
+# notes and only a person can read them.
+#
+# No stored credentials. PyPI and npm both authenticate by trusted publishing
+# (OIDC): the registries were told to trust this repository, this workflow file
+# and the `release` environment, and nothing else.
+
+on:
+  push:
+    tags: ["v0.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+
+jobs:
+  build:
+    name: Build, check and smoke-test the artifacts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # The tag names the release, and every package must agree with it. A
+      # tag that disagrees is a mistake nobody should have to approve.
+      - name: The tag matches all four package versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, re, sys, tomllib
+          tag = os.environ["TAG"]
+          want = tag.removeprefix("v")
+          if not re.fullmatch(r"0\.\d+\.\d+", want):
+              sys.exit(f"tag {tag!r} is not v0.MINOR.PATCH (PRD §8 condition 1)")
+          found = {
+              "fieldseal": tomllib.load(open("core/python/pyproject.toml", "rb"))["project"]["version"],
+              "fieldseal-django": tomllib.load(open("adapters/django/pyproject.toml", "rb"))["project"]["version"],
+              "@fieldseal/core": json.load(open("core/typescript/package.json"))["version"],
+              "@fieldseal/prisma": json.load(open("adapters/prisma/package.json"))["version"],
+          }
+          bad = {k: v for k, v in found.items() if v != want}
+          if bad:
+              sys.exit(f"tag {tag} disagrees with {bad}")
+          print(f"all four packages are {want}")
+          PY
+
+      - name: Install the build front end and both npm packages' dependencies
+        run: |
+          python -m pip install --disable-pip-version-check build
+          (cd core/typescript && npm ci --no-audit --no-fund)
+          (cd adapters/prisma && npm ci --no-audit --no-fund)
+
+      - name: Build the six release artifacts
+        run: python tools/release/build_dists.py --out dist-release
+
+      - name: Check the PRD §8 conditions against the artifacts
+        run: python tools/release/check_release_conditions.py dist-release
+
+      - name: Install the artifacts and use them
+        run: python tools/release/smoke.py dist-release
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts
+          path: dist-release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI and npm (needs approval)
+    needs: build
+    runs-on: ubuntu-24.04
+    # Required reviewer, and only `v0.*` tags may deploy (docs: PRD §8).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # trusted publishing, both registries
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-artifacts
+          path: dist-release
+
+      # The approved bytes are the built bytes: re-verify the hashes the build
+      # job recorded before uploading anything.
+      - name: Verify the artifacts against SHA256SUMS
+        working-directory: dist-release
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Separate the Python distributions
+        run: |
+          mkdir pypi
+          mv dist-release/*.whl dist-release/*.tar.gz pypi/
+          ls -l pypi dist-release
+
+      # skip-existing makes a re-run after a partial failure safe: a version
+      # PyPI already has is skipped, never overwritten (PyPI forbids that).
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: pypi/
+          skip-existing: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      # npm trusted publishing needs npm CLI >= 11.5.1 (docs.npmjs.com/trusted-publishers).
+      # Provenance is generated automatically when publishing this way.
+      - name: npm new enough for trusted publishing
+        run: |
+          npm install --global npm@^11.5.1
+          npm --version
+
+      # The core first: the adapter depends on it by version. A version npm
+      # already has is skipped, so a re-run after a partial failure is safe.
+      - name: Publish to npm
+        run: |
+          for tgz in dist-release/fieldseal-core-*.tgz dist-release/fieldseal-prisma-*.tgz; do
+            meta=$(tar -xzOf "$tgz" package/package.json)
+            name=$(node -p "JSON.parse(process.argv[1]).name" "$meta")
+            version=$(node -p "JSON.parse(process.argv[1]).version" "$meta")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm; skipping"
+            else
+              # --provenance is implied by trusted publishing; stated anyway,
+              # since some publishes have needed it explicitly.
+              npm publish "$tgz" --access public --provenance
+            fi
+          done
+
+  draft-release:
+    name: Draft the GitHub release
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-artifacts
+          path: dist-release
+
+      # A draft: PRD §8 condition 5 says no release note may overclaim, and
+      # that is a human read. Publish the draft after reading it.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<EOF
+          > **Experimental release: not independently reviewed, not for production data.**
+          > The cryptographic design has not been reviewed by anyone outside the project.
+          > The stored format may change before 1.0, and data written with this release may
+          > have to be re-encrypted if review changes a construction. Writing refuses until
+          > provisional use is explicitly armed (spec §4.8). Terms: PRD §8.
+
+          | Registry | Package |
+          |---|---|
+          | PyPI | [\`fieldseal\`](https://pypi.org/project/fieldseal/${TAG#v}/) |
+          | PyPI | [\`fieldseal-django\`](https://pypi.org/project/fieldseal-django/${TAG#v}/) |
+          | npm | [\`@fieldseal/core\`](https://www.npmjs.com/package/@fieldseal/core/v/${TAG#v}) |
+          | npm | [\`@fieldseal/prisma\`](https://www.npmjs.com/package/@fieldseal/prisma/v/${TAG#v}) |
+
+          <!-- Write what changed here, then read the whole note against PRD §8 condition 5 before publishing. -->
+
+          SHA-256 of the published artifacts:
+
+          \`\`\`
+          $(cat dist-release/SHA256SUMS)
+          \`\`\`
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$TAG (experimental)" --notes-file notes.md dist-release/*
