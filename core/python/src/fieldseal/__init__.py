@@ -41,4 +41,4 @@ __all__ = ["Fieldseal", "FieldContext", "IndexDeclaration", "ValidatedIndex",
            "first_unassigned", "Unassigned", "UNICODE_VERSION",
            "errors", "SUITES",
            "is_provisional"]
-__version__ = "0.1.1"
+__version__ = "0.1.2"

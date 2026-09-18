@@ -1,6 +1,6 @@
 {
   "name": "@fieldseal/core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Portable field-level encryption at rest: the TypeScript/Node core.",
   "license": "Apache-2.0",
   "homepage": "https://fieldseal.dev",
