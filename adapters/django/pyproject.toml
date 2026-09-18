@@ -1,6 +1,6 @@
 [project]
 name = "fieldseal-django"
-version = "0.1.1"
+version = "0.1.2"
 # PRD §8 condition 3: the registry description opens with the warning.
 description = "EXPERIMENTAL, NOT INDEPENDENTLY REVIEWED, NOT FOR PRODUCTION DATA: the format may change before 1.0 and data written now may need re-encrypting. Transparent field-level encryption at rest for Django: the fieldseal adapter."
 readme = "README.md"

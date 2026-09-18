@@ -131,10 +131,14 @@ jobs:
           packages-dir: pypi/
           skip-existing: true
 
+      # No `registry-url` here, on purpose. With it, setup-node writes
+      # `_authToken=${NODE_AUTH_TOKEN}` into .npmrc and fills in a placeholder
+      # token; npm then believes it is already authenticated, skips the
+      # trusted-publishing exchange, and the registry answers "403 OIDC
+      # permission denied for this action" -- which is how v0.1.1 failed.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
 
       # npm trusted publishing needs npm CLI >= 11.5.1 (docs.npmjs.com/trusted-publishers).
       # Provenance is generated automatically when publishing this way.
@@ -146,7 +150,23 @@ jobs:
       # The core first: the adapter depends on it by version. A version npm
       # already has is skipped, so a re-run after a partial failure is safe.
       - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
+          # Trusted publishing only works if npm has no token of its own to
+          # prefer. Refuse to try with one configured, rather than finding out
+          # from a 403 after PyPI has already been published. The config files
+          # are read directly: `npm config get` refuses to print _authToken.
+          for rc in "$(npm config get userconfig)" "$(npm config get globalconfig)" .npmrc; do
+            if [ -f "$rc" ] && grep -qi '_authToken' "$rc"; then
+              echo "::error::$rc sets an npm auth token; trusted publishing would be bypassed"
+              exit 1
+            fi
+          done
+          if [ -n "${NODE_AUTH_TOKEN}${NPM_TOKEN}" ]; then
+            echo "::error::an npm token is set in the environment; trusted publishing would be bypassed"
+            exit 1
+          fi
           for tgz in dist-release/fieldseal-core-*.tgz dist-release/fieldseal-prisma-*.tgz; do
             meta=$(tar -xzOf "$tgz" package/package.json)
             name=$(node -p "JSON.parse(process.argv[1]).name" "$meta")
