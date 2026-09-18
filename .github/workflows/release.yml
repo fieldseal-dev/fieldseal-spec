@@ -195,7 +195,9 @@ jobs:
           path: dist-release
 
       # A draft: PRD §8 condition 5 says no release note may overclaim, and
-      # that is a human read. Publish the draft after reading it.
+      # that is a human read. Publish the draft after reading it. Marked a
+      # pre-release, so no pre-1.0 release is ever shown as "Latest" (v0.1.2
+      # had to be changed by hand).
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,5 +225,5 @@ jobs:
           $(cat dist-release/SHA256SUMS)
           \`\`\`
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --verify-tag \
             --title "$TAG (experimental)" --notes-file notes.md dist-release/*
