@@ -1,7 +1,15 @@
 # fieldseal-django
 
+> **Experimental release: not independently reviewed, not for production data.**
+> The cryptographic design this package implements has not been reviewed by
+> anyone outside the project. It is pre-1.0: the stored format may change
+> before 1.0, and data written with it now may have to be re-encrypted if
+> review changes a construction. Writing refuses until you explicitly arm
+> provisional use (spec §4.8). This release is for evaluation and feedback;
+> the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
+
 Transparent field-level encryption at rest for Django. Design:
-[`docs/12-adapter-django.md`](../../docs/12-adapter-django.md).
+[`docs/12-adapter-django.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/12-adapter-django.md).
 
 **Status: L1 + L2, and not usable in production.** Values encrypt and decrypt
 transparently, and `filter(email=...)` / `__in` are served through the blind

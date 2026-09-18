@@ -306,11 +306,13 @@ def produce() -> dict:
     index_cases.append(_index_case("bucket-marker", Person, "legal_name",
                                    bucketed.pk, None, None))
 
+    import fieldseal_django
+
     return {
         "schema": "fieldseal-vectors/cross/v2",
         "producer": {
             "implementation": "django",
-            "version": "0.1.0.dev0",
+            "version": fieldseal_django.__version__,
             "commit": _commit(),
             # docs/08 §4.7: an adapter producer declares the context shapes
             # and normalizers it cannot produce, so the gap is visible in the
