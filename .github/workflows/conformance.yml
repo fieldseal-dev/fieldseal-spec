@@ -1020,6 +1020,15 @@ jobs:
       - name: Install the artifacts and use them
         run: python tools/release/smoke.py dist-release
 
+      # The exact npm invocation the publish job uses, dry-run: no credentials,
+      # same argument parsing. v0.1.0 reached approval with a path npm could not
+      # parse, because nothing had ever run this command before the real upload.
+      - name: npm would accept the tarballs as the publish job passes them
+        run: |
+          for tgz in dist-release/fieldseal-core-*.tgz dist-release/fieldseal-prisma-*.tgz; do
+            npm publish "./$tgz" --access public --dry-run
+          done
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
