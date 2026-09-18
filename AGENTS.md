@@ -61,6 +61,8 @@ tools/
   ucd-gen/                generates the vendored Unicode tables for both cores and
                           the vector generator from the published UCD (docs/09 §7.1);
                           CI re-runs it with --check, so a hand edit fails the build
+  release/                builds, checks and smoke-tests the four packages PRD §8 lets the
+                          project publish as experimental pre-1.0 releases; publishes nothing
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
   backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model
