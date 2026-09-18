@@ -1,5 +1,8 @@
 # @fieldseal/core (TypeScript / Node)
 
+Field-level encryption for Node applications, with a format that other
+languages can read.
+
 > **Experimental release: not independently reviewed, not for production data.**
 > The cryptographic design this package implements has not been reviewed by
 > anyone outside the project. It is pre-1.0: the stored format may change
@@ -8,233 +11,255 @@
 > provisional use (spec §4.8). This release is for evaluation and feedback;
 > the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
 
-The TypeScript reference core for the Fieldseal specification
-([`docs/02-spec-v0.1.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md)): transparent field-level
-encryption at the data-access layer, in a portable envelope that any conformant
-core in any language can read.
+`@fieldseal/core` encrypts individual values, such as a column in a database
+row, inside your application, so the database and its backups hold only
+ciphertext. It also derives **blind indexes**, short keyed hashes that let you
+find a row by an encrypted value without decrypting the whole table.
 
-**Status: provisional, unreviewed, not for production use.** This core
-implements suite `0xFF01` (`FLE-AES256GCM-HKDF-SHA512-PROVISIONAL`). Every
-identifier in the `0xFF00`–`0xFFFF` range is provisional (spec §4.8): its
-constructions have not been independently reviewed (Gate 0b,
-[`docs/01-prd.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md) §8) and may change. Writing under a
-provisional suite therefore requires an affirmative arming act, described
-below. This package is the M2 deliverable of
-[`docs/17-m2-implementer-brief.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/17-m2-implementer-brief.md); the
-divergence report it was built to produce is
-[`docs/18-m2-report.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/18-m2-report.md).
+It is the TypeScript core of [Fieldseal](https://fieldseal.dev), an open
+specification for field-level encryption. What it writes, the
+[Python core](https://pypi.org/project/fieldseal/) can read, and the reverse.
+Most applications use it through an ORM adapter instead:
+[`@fieldseal/prisma`](https://www.npmjs.com/package/@fieldseal/prisma) for
+Prisma.
+
+## Features
+
+- **Authenticated encryption with key commitment.** AES-256-GCM, with a fresh
+  key derived for every value, and a commitment that makes decrypting under
+  the wrong key fail instead of producing garbage.
+- **Context binding.** Each value is bound to its table, column and, if you
+  use one, tenant. Moving a ciphertext to another column or tenant makes it
+  fail to decrypt.
+- **Blind indexes** for equality lookups, with Argon2id or HMAC-SHA-512 and
+  three normalizers (case-insensitive, exact, digits only).
+- **Key rotation.** Several key versions can be valid at once, and `rotate()`
+  re-encrypts a value under the active one.
+- **Three key providers**: static for tests, derived from a root secret, and
+  KMS-wrapped keys unwrapped ahead of time so encryption never waits on the
+  network.
+- **Zero runtime dependencies.** Everything comes from `node:crypto`.
+- **Cross-language.** The same test vectors pin this core and the Python core,
+  and CI checks on every run that each decrypts what the other wrote.
 
 ## Requirements
 
-- **Node ≥ 24.7.0** (`engines` is enforced). The floor is set by
-  `crypto.argon2Sync`, which this core uses as its Argon2id backend with no
-  external dependency; it requires OpenSSL ≥ 3.2 in the Node build.
-- **Server-side only.** Browser and edge runtimes are out of scope: the five
-  operations are synchronous by specification (§11.1) and Web Crypto's AEAD API
-  is async-only. The two asynchronous companions below are additive — they do
-  not make the core callable from a runtime without a synchronous AEAD.
-- Zero runtime dependencies. `node:crypto` supplies AES-256-GCM, HKDF-SHA-512,
-  HMAC-SHA-512, Argon2id, the CSPRNG and the constant-time compare.
+- **Node 24.7 or later**, built with OpenSSL 3.2 or later. The floor comes
+  from `crypto.argon2Sync`, which this core uses for Argon2id.
+- **Server-side only.** Browsers and edge runtimes are not supported: the
+  core's operations are synchronous, and Web Crypto's AES-GCM is async-only.
 
-## Usage
+## Install
+
+```sh
+npm install @fieldseal/core
+```
+
+## Quickstart
 
 ```ts
+import { randomBytes } from "node:crypto";
 import { Fieldseal, DerivedKeyProvider } from "@fieldseal/core";
+
+// Fixed identifiers for the table and column. Never derive them from names.
+const uuid = (s: string) => Buffer.from(s.replaceAll("-", ""), "hex");
+const USERS = uuid("a3e1f7c2-5b94-4d08-b6e3-9f2a7c1d4e85");
+const EMAIL = uuid("0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64");
 
 const fs = new Fieldseal(
   {
-    keyProvider: new DerivedKeyProvider({ rootSecret, versions: [1], activeVersion: 1 }),
-    allowedSuites: [0xff01], // explicit; there is no default (spec §4.3)
+    // Evaluation only: keep a real root secret in a secret manager. See "Keys" below.
+    keyProvider: new DerivedKeyProvider({ rootSecret: randomBytes(32) }),
+    allowedSuites: [0xff01],
     writeSuite: 0xff01,
-    readMode: "strict",      // strict | permissive | readonly (spec §10.3)
-    indexes: [
-      {
-        tableUuid, columnUuid, indexId: "email-eq",
-        idf: "argon2id", normalize: "nfc-casefold-v1", // §7.3: email is enumerable
-        truncateBits: 15, projectedPopulation: 100_000,
-      },
-    ],
-    onWarning: (w) => log.warn(w.message),
+    indexes: [{
+      tableUuid: USERS, columnUuid: EMAIL,
+      idf: "argon2id", normalize: "nfc-casefold-v1",
+      truncateBits: 15, projectedPopulation: 100_000,
+    }],
   },
-  // Spec §4.8: arming is a SEPARATE argument so a copied config cannot inherit it.
-  { armProvisionalSuites: true },
+  { armProvisionalSuites: true },   // writing refuses without it; see the warning above
 );
 
-const ctx = { tableUuid, columnUuid, tenantId, rowId: null, purpose: "encrypt" };
-const envelope = fs.encrypt(plaintextBytes, ctx);   // Buffer, 111 + |plaintext| bytes
-const plaintext = fs.decrypt(envelope, ctx);        // Buffer
-const bidx = fs.blindIndex(plaintextBytes, { ...ctx, purpose: "index:email-eq" }); // ⌈b/8⌉ raw bytes
-fs.isCiphertext(value);                              // boolean; never decrypts
-fs.rotate(envelope, ctx);                            // fresh envelope under the active key
-fs.unindexableMarker({ ...ctx, purpose: "index:email-eq" }); // this column's reserved bucket
-await fs.warm([ctx]);                                // spec §11.2 prefetch; all KMS I/O lives here
+const ctx = { tableUuid: USERS, columnUuid: EMAIL, purpose: "encrypt" };
+const plaintext = new TextEncoder().encode("ada@example.com");
 
-// spec §11.1 asynchronous companions: the two Argon2id derivations, and only
-// those. See "Argon2id blind indexes cost real time per query term" below.
-await fs.blindIndexAsync(plaintextBytes, { ...ctx, purpose: "index:email-eq" });
-await fs.unindexableMarkerAsync({ ...ctx, purpose: "index:email-eq" });
+const envelope = fs.encrypt(plaintext, ctx);   // Buffer, 126 bytes: 111 + the value
+fs.decrypt(envelope, ctx);                     // Buffer: "ada@example.com"
+fs.isCiphertext(envelope);                     // true, without decrypting
+
+const index = { ...ctx, purpose: "index:exact" };
+await fs.blindIndexAsync("Ada@Example.com", index);   // 2 bytes; the same as for "ada@example.com"
+
+fs.rotate(envelope, ctx);                      // a fresh envelope under the active key
 ```
 
-All five operations are synchronous and perform no I/O (spec §11.1). Inputs are
-`Uint8Array`; outputs are `Buffer`. **Strings are not accepted by the envelope
-operations** — an implicit UTF-8 coercion there is exactly the kind of
-cross-language divergence the vector suite exists to catch. `blindIndex` is the
-deliberate exception and takes text *or* bytes (docs/09 §7.1): index derivation
-is the one operation whose answer depends on the difference between a string
-and its encoding, because `TextEncoder` silently substitutes U+FFFD for an
-unpaired surrogate — so a caller who encodes first has already collapsed two
-distinct values into one index before this core is entered.
+Store `envelope` in the encrypted column and the blind-index value in a
+sibling column; *Blind indexes* below explains how to look values up.
 
-`blindIndexAsync` and `unindexableMarkerAsync` are the spec §11.1 companions to
-the two Argon2id derivations: byte-identical output, the same §9 error for the
-same condition (as a rejection), and the synchronous forms are **not**
-implemented by blocking on them. The conformance report runs the entire vector
-suite a second time through them (`async_companions: true`, 178 `#async`
-results).
+## Blind indexes
 
-### Arming provisional writes (spec §4.8)
+A blind index is what makes an encrypted column searchable. Next to each
+encrypted value, you store a short keyed hash of it, derived with the context's
+`purpose` set to `"index:<indexId>"`. To find a value, derive its hash the same
+way, select the rows whose index column matches, then **decrypt each candidate
+and compare**. The hash is deliberately truncated, so unrelated values share
+hashes and the query returns a few rows that do not match; the comparison is
+what makes the answer correct. The ORM adapters do this for you.
 
-`encrypt()` and `rotate()` raise `SUITE_PROVISIONAL` unless the deployment has
-armed provisional use by **either** passing `{ armProvisionalSuites: true }` as
-the *second* constructor argument **or** setting
-`FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment. A property inside the
-config object does nothing — that is deliberate. `decrypt()`, `blindIndex()`
-and `isCiphertext()` never require arming: reading data one has already
-written is not what the gate exists to prevent. Arming does not make the suite
-reviewed; it records that the operator was told.
+Each index is declared up front in `indexes: [...]`. An invalid declaration is
+refused when the `Fieldseal` client is constructed, not at the first lookup.
+Choose the options before the first write: changing `idf`, `argon2`,
+`normalize`, `truncateBits` or `indexId` later changes every stored hash, so
+the index has to be rebuilt.
+
+| Field | Default | Accepted values |
+|---|---|---|
+| `tableUuid`, `columnUuid` | **required** | The column the index belongs to, 16 bytes each. |
+| `projectedPopulation` | **required** | How many *distinct* values the column will hold, at least 16. |
+| `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
+| `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |
+| `truncateBits` | **required** | Bits of each hash kept. Must satisfy 2 ≤ P / 2<sup>b</sup> < √P, where P is `projectedPopulation`: 7–11 for 5,000 distinct values, 9–15 for 100,000, 10–18 for 1,000,000. |
+| `argon2` | the minimum | `{ timeCost, memoryKib }`, to raise the Argon2id cost above 3 passes and 32 MiB. It cannot lower it, and it is refused with `"hmac-sha512"`. |
+| `indexId` | `"exact"` | 1–32 lowercase letters, digits and hyphens. Selected with `purpose: "index:<indexId>"`. |
+| `skewed` | `false` | `true` if a few values dominate the column. A skewed column is gated like a small one (next row). |
+| `cardinalityOverride` | none | `{ reason, approvedBy, date }`. A column with fewer than 1,024 distinct values, or a skewed one, is refused without it: an index over so few values reveals too much. |
+| `onUnindexable` | `"refuse"` | For a value containing a character `"nfc-casefold-v1"` cannot index: `"refuse"` it, or `"bucket"` it under the column's reserved hash (`unindexableMarker`). |
+| `unindexableOverride` | none | `{ reason, approvedBy, date }`, required for `"bucket"`. |
+
+`nfc-casefold-v1` uses Unicode 17.0.0 tables bundled with the package
+(`UNICODE_VERSION`), so an index value does not depend on the Node version's
+ICU, and matches the Python core's.
+
+**Argon2id and the event loop.** An Argon2id derivation takes tens of
+milliseconds, and `blindIndex()` blocks the event loop for all of it. In a
+server, use `blindIndexAsync()` and `unindexableMarkerAsync()`, which run on
+libuv's threadpool and return the same bytes; see *Limitations* for sizing
+that pool.
+
+## Concepts
+
+### Contexts
+
+A context names where a value lives: `tableUuid` and `columnUuid` (16 bytes
+each), optionally `tenantId`, and a `purpose`: `"encrypt"` for values,
+`"index:<indexId>"` for blind indexes. The context is bound into the
+encryption, so decrypting with a different one fails with
+`COMMITMENT_INVALID`. The two UUIDs are part of the key derivation: never
+change one once a value has been written, and never derive one from a table
+or column name, or a rename makes every existing value unreadable.
+
+### Operations
+
+| Method | What it does |
+|---|---|
+| `encrypt(plaintext, ctx)` | Encrypts a `Uint8Array`. Needs arming. |
+| `decrypt(envelope, ctx)` | Decrypts, or throws. Never returns unauthenticated data. |
+| `blindIndex(value, indexCtx)` | Derives the index value for a string or bytes. Blocks during Argon2id. |
+| `blindIndexAsync(value, indexCtx)` | The same, off the event loop. |
+| `unindexableMarker(indexCtx)`, `unindexableMarkerAsync(indexCtx)` | The column's reserved index value for values that cannot be indexed. |
+| `rotate(envelope, ctx)` | Re-encrypts under the active key version. Needs arming. |
+| `isCiphertext(value)` | Recognises an envelope without decrypting it. Never throws. |
+| `warm(contexts)` | Async. Loads keys ahead of time; see *Keys* below. |
+
+Everything except `warm()` and the two `Async` methods is synchronous and
+never touches the network. Inputs are `Uint8Array` and outputs are `Buffer`.
+The envelope operations refuse strings: encode text yourself, and encode other
+types the same way every time. The ORM adapters use the canonical forms in
+spec §3.6, so follow them if another implementation will read your data.
+
+### Keys
+
+| Provider | Use |
+|---|---|
+| `StaticKeyProvider({ dek, keyId, indexKey })` | One data key and one index key, for tests. The client warns through `onWarning` unless `FIELDSEAL_TEST_MODE=1`. |
+| `DerivedKeyProvider({ rootSecret, versions, activeVersion })` | Data and index keys derived from one root secret (32 bytes or more) with HKDF-SHA-512. Several versions can be valid at once; `activeVersion` is the one new values are written under. |
+| `EnvelopeKeyProvider({ wrapper, directory, cache })` | Data keys stored wrapped by your KMS. `wrapper` is your object with an `unwrap` method; no KMS client ships with the package. `directory` lists the wrapped keys (`InMemoryKeyDirectory`, or your own), and `cache` is `{ maxAgeMs, maxUses, capacity }`. |
+
+With `EnvelopeKeyProvider`, keys are unwrapped only by `await fs.warm(contexts)`,
+never during `encrypt` or `decrypt`. A cold cache therefore means
+`KEY_UNAVAILABLE`: warm the contexts you will use before serving traffic.
+
+### Configuration
+
+| Option | Meaning |
+|---|---|
+| `keyProvider` | One of the providers above. Required. |
+| `allowedSuites` | The cipher suites this deployment accepts. Required, with no default. `[0xff01]` is the only one implemented. |
+| `writeSuite` | The suite new values are written under: `0xff01`. Required. |
+| `readMode` | `"strict"` (default) throws `NOT_CIPHERTEXT` for anything that is not an envelope. `"permissive"` returns it unchanged, and `"readonly"` does the same and refuses writes. Both are for migrating a column that still holds plaintext, and warn while active. |
+| `indexes` | Blind-index declarations; see above. |
+| `onWarning` | A callback for warnings, such as a static provider outside tests. |
+| `metrics` | Optional callbacks, `plaintextReads()` and `decryptErrors(code)`, to feed your own counters. |
+
+**Arming.** `encrypt()` and `rotate()` throw `SUITE_PROVISIONAL` until you arm
+provisional use: pass `{ armProvisionalSuites: true }` as the *second*
+constructor argument, or set `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the
+environment. The flag does nothing inside the config object, so copying a
+config does not copy the decision. Decrypting never needs it. Arming does not
+make the design reviewed: it records that you were told.
 
 ### Errors
 
-Every failure is a `FieldsealError` with a machine-readable `code` — the ten
-spec §9 codes (`UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`,
-`KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`,
-`NOT_CIPHERTEXT`, `MODE_VIOLATION`, `LENGTH_EXCEEDED`, `SUITE_PROVISIONAL`)
-plus two implementation-local ones that never describe envelope bytes:
-`CONFIGURATION_ERROR` (construction-time refusals) and `INVALID_ARGUMENT`
-(malformed non-byte call arguments). Arbitrary bytes handed to `decrypt()`
-always resolve to a §9 code. Messages never contain plaintext or key material.
+Every failure is a `FieldsealError` with a `code`: `UNKNOWN_FORMAT_VERSION`,
+`SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`, `AAD_MISMATCH`, `TAG_INVALID`,
+`COMMITMENT_INVALID`, `NOT_CIPHERTEXT`, `MODE_VIOLATION`, `LENGTH_EXCEEDED` and
+`SUITE_PROVISIONAL`, plus `CONFIGURATION_ERROR` and `INVALID_ARGUMENT` for bad
+setup and arguments. Each has its own class (`CommitmentInvalidError`, …).
+Messages never contain plaintext or key material. A wrong key and a wrong
+context look the same and both throw `COMMITMENT_INVALID`, so `AAD_MISMATCH`
+is never thrown under this suite. The order in which errors are checked is
+provisional and may change before 1.0.
 
-The decrypt-path precedence is pinned by this core under the still-open G5
-question and declared verbatim in its conformance report
-(`pinned_decisions.decrypt-order`). One consequence to know: **`AAD_MISMATCH`
-is never raised on the `0xFF01` path.** Under dual-layer binding (§6.3) a wrong
-context changes the derived key, so at decrypt time it is indistinguishable
-from a wrong key and surfaces as `COMMITMENT_INVALID`.
+## Limitations
 
-### Key providers (spec §8)
+The specification requires every implementation to state these.
 
-| Provider | Use | Value-path I/O |
-|---|---|---|
-| `StaticKeyProvider` | tests and development only; the client warns through `onWarning` unless `FIELDSEAL_TEST_MODE=1` | none |
-| `DerivedKeyProvider` | tenant DEK and sibling index key derived from a root secret with HKDF-SHA-512 under distinct labels; multiple versions, one active | none |
-| `EnvelopeKeyProvider` | KMS-wrapped DEKs behind a `Wrapper { unwrap }` seam; **unwrap happens only in `warm()`**; the value path is cache-only and a miss is `KEY_UNAVAILABLE` | none |
+- **No protection against a compromised application process.** The keys are
+  in that process, so anything the application can read, an attacker inside
+  it can read.
+- **Logs are sensitive.** A lookup sends a blind-index value as a query
+  parameter, so database query logs, slow-query logs and replication logs
+  record it. Protect them like the ciphertext.
+- **Storage overhead.** Each envelope carries 111 bytes of overhead: a 9-byte
+  value becomes 120 bytes. Storing it as base64 adds another third.
+- **Argon2id costs real time per query term**: 44–70 ms measured at the
+  minimum cost, paid for every value written with an index and every value
+  searched for. It is a security property, not a tuning option. In Node it
+  also competes for the event loop or the threadpool:
+  1. Prefer `"hmac-sha512"` wherever the value is high-entropy. It costs
+     microseconds, but it is not safe for guessable values, which is exactly
+     where an index is most wanted.
+  2. Otherwise use the `Async` methods, and set `UV_THREADPOOL_SIZE` to at
+     least the number of concurrent derivations. The threadpool also serves
+     `fs`, `dns` and `zlib`: with the default four threads, four concurrent
+     derivations delayed an unrelated `fs.readFile` from about 0.3 ms to tens
+     or hundreds of milliseconds.
+  3. Worker threads work, but each needs its own client, so each has its own
+     key cache and makes its own KMS calls.
+- **The KMS is a hard dependency in the read path.** With
+  `EnvelopeKeyProvider`, a KMS outage means `KEY_UNAVAILABLE` for every key not
+  already in the cache.
+- **The key cache holds plaintext keys in memory**, exposed to memory dumps,
+  core files and swap. Evicted keys are zeroed, but V8 and OpenSSL may hold
+  copies and garbage-collected memory cannot be locked, so this narrows the
+  exposure rather than closing it. The cache's `maxAgeMs` and `maxUses` are
+  security settings. In a server that forks workers, construct clients after
+  the fork.
+- **Only one cipher suite is implemented.** `0xff01` (AES-256-GCM).
+  `0xff02` (XChaCha20-Poly1305) is recognised and refused.
 
-## Honest limitations (required by the specification)
+## Learn more
 
-These are stated because the specification requires every implementation to
-state them, and because the project's credibility rests on not overclaiming.
-
-- **No protection against a compromised application process** (spec §2.2 N1).
-  The keys are in that process. Anything the application can read, the
-  adversary can read. Query logs, slow-query logs, the DBMS buffer cache and
-  replication logs are sensitive artifacts and must be protected like the
-  ciphertext (§2.3).
-- **Storage overhead is real** (§3.3). Every envelope carries 111 bytes of
-  fixed overhead under `0xFF01`: a 9-byte value becomes 120 bytes binary. This
-  core is bytes-in/bytes-out and never emits base64; a deployment that stores
-  base64 pays a further 33% on every row and must document it.
-- **The key service is a hard dependency in the read path** (§8.1). With
-  `EnvelopeKeyProvider`, every query touching an encrypted field depends on
-  what `warm()` has loaded into the cache; a KMS outage means `KEY_UNAVAILABLE`
-  for everything not cached. The degradation mode is recorded in the provider
-  (`fail-closed` / `serve-cached`) and on the value path both mean the same
-  thing: serve only what the cache can decrypt.
-- **The DEK cache is an in-memory plaintext key cache** (§5.5). It is exposed
-  to memory dumps, core files and swap. Zeroization on eviction is
-  `Buffer.fill(0)` on the visible allocation; V8 may have copied the bytes and
-  `node:crypto` may hold internal copies; there is no `mlock` for GC-managed
-  memory. Cache TTL and max-uses are security parameters, not tuning knobs.
-  Construct clients after forking in prefork servers.
-- **Argon2id blind indexes cost real time per query term** (§7.3): roughly
-  44–70 ms per term at the spec-minimum 3 iterations / 32 MiB, measured on two
-  machines (docs/07 §7). **A synchronous derivation blocks the event loop** for
-  that whole time, stalling every concurrent request in the process — twenty
-  derivations let the loop take **one turn**. In order:
-  1. Prefer `hmac-sha512` wherever the §7.3 domain class permits it —
-     microseconds instead of milliseconds. §7.3 requires Argon2id precisely for
-     the low-entropy domains where a blind index is most needed, so this is not
-     available everywhere the problem is.
-  2. Otherwise use `blindIndexAsync` / `unindexableMarkerAsync`, **and size
-     `UV_THREADPOOL_SIZE` at or above the number of concurrent derivations.**
-     The companion moves the cost to the libuv threadpool rather than removing
-     it, and that pool is shared with `fs`, `dns` and `zlib`: four concurrent
-     derivations against the default pool took an unrelated `fs.readFile` from
-     p50 ~0.28 ms into the tens-to-hundreds of milliseconds on both machines.
-     An under-sized pool delays unrelated work instead of index lookups, which
-     is not an improvement.
-  3. Worker threads remain possible and are not free here: the DEK cache is
-     per-instance with no `SharedArrayBuffer` key storage, so a pool of four
-     means four clients, four caches, four times the KMS unwrap traffic, and a
-     `max_uses` counter fragmented across instances.
-- **Blind indexes are filters, never answers** (§7.5). Candidates fetched by
-  index must be decrypted and compared before being returned; pagination
-  directly on an indexed column is incorrect (over-fetch → decrypt → filter →
-  paginate).
-- **What blind indexes do not support** (§7.10, reproduced as required):
-
-  | Operation | Supported | Honest fallback |
-  |---|---|---|
-  | Equality | **Yes** | — |
-  | Membership (`IN`) | **Yes** — N indexes OR'd | — |
-  | Prefix | Gated, §7.9 | — |
-  | `GROUP BY` / `DISTINCT` on an indexed column | Yes, groups by index including collisions | — |
-  | Equi-join across encrypted columns | **No** | Keep the join key in plaintext |
-  | Range, `<`, `>`, `ORDER BY` | **No** | A coarse plaintext bucket column with its own risk assessment, plus exact filtering after decryption |
-  | `LIKE '%x%'`, regex | **No** | Decrypt-and-search over a bounded candidate set |
-  | Full-text search | **No** | A separate search system, risk-assessed |
-  | Aggregates (`SUM`, `AVG`) | **No** | Out of scope |
-  | Unique constraints | **No** — not on randomized ciphertext, not on a blind index (§7.4 mandates collisions) | Application-level check inside a transaction, with the race documented (§7.10) |
-  | Foreign keys | **No** | Keep the join key plaintext |
-
-- **Cardinality gate** (§7.6): an index on a column with fewer than 2¹⁰ distinct
-  values, or declared skewed, is refused at construction unless an explicit
-  `cardinalityOverride { reason, approvedBy, date }` is given.
-- **`nfc-casefold-v1`** uses vendored Unicode 17.0.0 tables for **both** NFC
-  and full case folding, so an index value does not depend on the runtime's
-  ICU. The conformance report records the platform's ICU/Unicode versions for
-  information only, and names the vendored version it actually used. A value
-  containing a code point the pinned version does not assign is refused, or —
-  where the column declares it — bucketed under a reserved marker; it is never
-  silently indexed under a substituted character.
-- **Plaintext length** is bounded at 2³¹−1 bytes (§3.5); the bound is a
-  ceiling, not a guarantee that a runtime can allocate it. Node 24's buffer
-  maximum (2⁵³−1) is above the bound, so on this platform the spec bound is the
-  binding one.
-- **Suite `0xFF02`** is registered (recognized by `isCiphertext()`) but not
-  implemented (gap G7); allow-listing it is refused at construction.
-
-## Testing namespace
-
-`@fieldseal/core/testing` exports `encrypt_with_materials(client, plaintext,
-ctx, msgSeed, nonce)`, which runs the full production pipeline with
-caller-supplied seed and nonce in place of the two CSPRNG draws. It is inert —
-every call throws — unless `FIELDSEAL_TEST_MODE=1` is set. *An implementation
-that accepts a caller-supplied nonce or seed outside of vector-test mode is
-non-conformant* (`vectors/README.md`). The main entry never reaches this
-module, and the production `encrypt()` takes no seed or nonce in any form.
-
-## Developing
-
-```
-npm ci
-npm test            # vitest: vector suite (both passes) + gates + totality +
-                    # primitives + providers + async companions
-npm run vectors     # emit the docs/14 §4 conformance report to stdout
-npm run build       # tsc → dist/
-npm run typecheck
-```
-
-The harness iterates `vectors/MANIFEST.json` `files` only and never
-`held_out`. The suite has held nothing out since `0.6.0-provisional` —
-`blind-index/argon2id.json` was the last entry, and has been pinned and counted since then
-(`docs/07` §7), so a green run reports `held_out: 0`.
+- [`REFERENCE.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/core/typescript/REFERENCE.md):
+  where this core came from, the behaviours it pins, the testing namespace and
+  development setup.
+- [Core design](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/11-core-typescript.md)
+  and the [specification](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md).
+- [Reviewer brief](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/16-reviewer-brief.md):
+  if you can review the cryptographic design, this is where to start.
+- Bugs and interoperability problems:
+  [issues](https://github.com/fieldseal-dev/fieldseal-spec/issues).
+  Suspected vulnerabilities:
+  [`SECURITY.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/SECURITY.md),
+  not a public issue.
