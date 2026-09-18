@@ -9,7 +9,7 @@ is provisional.
 
 **Status: a demonstration, and not usable in production.** Nothing here is
 frozen — the suite identifier is provisional (spec §4.8), Gate 0b (independent
-cryptographic review) is open, and the project does not invite adoption. The
+cryptographic review) is open, and the project does not invite production adoption. The
 key material comes from `vectors/keys/test-keys.json`, which says of itself:
 *"No value here may ever be used outside a test."*
 

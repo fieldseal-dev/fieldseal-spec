@@ -16,7 +16,8 @@
  * come back to be checked. Everywhere the database answers instead, the shape
  * is refused rather than approximated, and `candidateScope()` is the explicit
  * opt-out. Nothing here is frozen: the suite identifier is provisional (spec
- * §4.8), Gate 0b is open, and the project does not invite adoption.
+ * §4.8), Gate 0b is open, and the project does not invite production
+ * adoption (PRD §8).
  */
 
 export { fieldsealExtension } from "./extension.ts";
