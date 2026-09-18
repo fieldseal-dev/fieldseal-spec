@@ -235,6 +235,6 @@ npm run typecheck
 ```
 
 The harness iterates `vectors/MANIFEST.json` `files` only and never
-`held_out`. As of suite `0.6.0-provisional` the suite holds nothing out —
-`blind-index/argon2id.json` was the last entry and is now pinned and counted
+`held_out`. The suite has held nothing out since `0.6.0-provisional` —
+`blind-index/argon2id.json` was the last entry, and has been pinned and counted since then
 (`docs/07` §7), so a green run reports `held_out: 0`.
