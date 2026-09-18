@@ -17,6 +17,8 @@ node_modules/
 dist/
 # tools/release/build_dists.py output
 dist-release/
+# the CI npm dry-run's repacked copies (conformance.yml, release-readiness)
+ci-repack/
 
 # Java / .NET / Go
 target/
