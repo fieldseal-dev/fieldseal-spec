@@ -1,4 +1,7 @@
-# fieldseal — Python core
+# fieldseal (Python core)
+
+Field-level encryption for Python applications, with a format that other
+languages can read.
 
 > **Experimental release: not independently reviewed, not for production data.**
 > The cryptographic design this package implements has not been reviewed by
@@ -8,149 +11,245 @@
 > provisional use (spec §4.8). This release is for evaluation and feedback;
 > the terms it is published under are in [PRD §8](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md#8-scope-and-phasing).
 
-The reference Python implementation of the Fieldseal specification, built to
-[`docs/10-core-python.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/10-core-python.md).
+`fieldseal` encrypts individual values, such as a column in a database row,
+inside your application, so the database and its backups hold only ciphertext.
+It also derives **blind indexes**, short keyed hashes that let you find a row
+by an encrypted value without decrypting the whole table.
 
-> **Not for production use, and the library will refuse.** Every registered
-> cipher suite is *provisional* (spec §4.8): its constructions have not been
-> independently reviewed, and Gate 0b of the Phase 0 exit gate
-> ([`docs/01-prd.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/01-prd.md) §8) is still open. `encrypt()` and
-> `rotate()` raise `SUITE_PROVISIONAL` unless you explicitly arm provisional
-> use — `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment, or
-> `arm_provisional_suites=True` on the constructor. Decryption is deliberately
-> ungated.
+It is the Python core of [Fieldseal](https://fieldseal.dev), an open
+specification for field-level encryption. What it writes, the
+[TypeScript core](https://www.npmjs.com/package/@fieldseal/core) can read, and
+the reverse. Most applications use it through an ORM adapter instead:
+[`fieldseal-django`](https://pypi.org/project/fieldseal-django/) for Django.
 
-## Status
+## Features
 
-| | |
-|---|---|
-| Vector suite | **178/178** pinned results pass on suite `0.7.0-provisional` (146 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
-| Gate, parity and totality tests | 131 pass (`tests/test_gates.py`, `tests/test_parity.py`) |
-| Suites | `0xFF01` (AES-256-GCM). `0xFF02` is registered and refused at construction — it needs an XChaCha backend, blocked on gap G7 |
-| Conformance report | `tests/run_vectors.py` writes the [`docs/14`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/14-conformance-ci.md) §4 JSON to stdout, including `pinned_decisions` and `harness_notes`; the TypeScript core's report has the same shape and the same result ids, so the two diff cleanly |
-| Milestone | **M1 met** for the families in the pinned suite. M2 (the independent TypeScript reproduction, [`docs/18`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/18-m2-report.md)) is what makes these values trustworthy |
+- **Authenticated encryption with key commitment.** AES-256-GCM, with a fresh
+  key derived for every value, and a commitment that makes decrypting under
+  the wrong key fail instead of producing garbage.
+- **Context binding.** Each value is bound to its table, column and, if you
+  use one, tenant. Moving a ciphertext to another column or tenant makes it
+  fail to decrypt.
+- **Blind indexes** for equality lookups, with Argon2id or HMAC-SHA-512 and
+  three normalizers (case-insensitive, exact, digits only).
+- **Key rotation.** Several key versions can be valid at once, and `rotate()`
+  re-encrypts a value under the active one.
+- **KMS-backed keys**, unwrapped ahead of time so encryption and decryption
+  never wait on the network.
+- **Cross-language.** The same test vectors pin this core and the TypeScript
+  core, and CI checks on every run that each decrypts what the other wrote.
 
-## Running
+## Requirements
+
+Python 3.10 or later. The cryptography comes from
+[`cryptography`](https://cryptography.io) (AES-GCM, HKDF, HMAC) and, for
+Argon2id blind indexes, [`argon2-cffi`](https://pypi.org/project/argon2-cffi/).
+
+## Install
 
 ```sh
-py -3 -m venv .venv
-.venv/Scripts/python -m pip install -e ".[argon2,dev]"
-.venv/Scripts/python -m pytest tests -q
-.venv/Scripts/python tests/run_vectors.py > conformance-python.json   # report on stdout, prose on stderr
-.venv/Scripts/python -m mypy --strict src
+pip install "fieldseal[argon2]"
 ```
 
-## What the vectors do not reach, and what this core pins
+The `argon2` extra is needed for Argon2id blind indexes, which is what the
+specification requires for guessable values such as email addresses. Without
+it, the first Argon2id derivation raises `ModuleNotFoundError`. Leave it out
+only if you use no blind indexes, or only HMAC-SHA-512 ones.
 
-Spec §9 leaves the precedence among its error codes open (gap G5) and obliges a
-Gate 0a implementation to pin an order and declare it. This core follows
-[`docs/09`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/09-core-architecture.md) §3.2 step for step and declares
-every pin under `pinned_decisions` in its report, under the keys `docs/14` §4
-reserves. The ones an operator will meet:
+## Quickstart
 
-- **Read modes (spec §10.3).** `strict` raises `NOT_CIPHERTEXT` on non-envelope
-  input; `permissive` and `readonly` return it as-is, warn at construction
-  (`FieldsealWarning`) and count it in `Fieldseal.plaintext_reads`. `readonly`
-  refuses `encrypt()` and `rotate()` with `MODE_VIOLATION` before reading
-  anything. `rotate()` in `permissive` mode is literally decrypt-then-encrypt,
-  so it *encrypts* unmigrated plaintext (D-13).
-- **Recognition before policy (spec §3.4).** An unregistered suite, an
-  unrecognized version byte or an implausible length is "not one of ours" —
-  never `SUITE_NOT_ALLOWED`. Only a registered suite that the allow-list
-  excludes is `SUITE_NOT_ALLOWED`. One exception: `fmt_ver = 0x02` at a
-  plausible length raises `UNKNOWN_FORMAT_VERSION` in every mode (D-03).
-- **Every currently-valid key version is tried (spec §8).**
-  `KeyProvider.decryption_keys(header)` returns the candidates in preference
-  order; the core verifies each one's commitment constant-time before any AEAD
-  open. No candidate → `KEY_UNAVAILABLE`; none commits → `COMMITMENT_INVALID`;
-  an open that fails after a verified commitment → `TAG_INVALID`.
-  **`AAD_MISMATCH` is never raised**: under dual-layer binding a wrong context
-  derives a wrong record key and is indistinguishable from key confusion (G5).
-- **Blind indexes are bytes-in/bytes-out.** `nfc-casefold-v1` over bytes
-  decodes strict UTF-8 first and refuses invalid input with `INVALID_ARGUMENT`
-  rather than folding through replacement characters; `identity` and
-  `digits-only-v1` never decode. An unknown IDF or normalizer is a
-  `CONFIGURATION_ERROR`, never a default. The Unicode version is the
-  interpreter's (`unicodedata.unidata_version`, reported in the report's
-  `environment`) — CPython 3.14 folds with Unicode 16.0 where the TypeScript
-  core vendors 17.0, which is a real cross-core risk for shared indexes until
-  [`docs/09`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/09-core-architecture.md) §7 pins a table (D-10).
+```python
+import secrets, uuid
+from fieldseal import Fieldseal, FieldContext, IndexDeclaration
+from fieldseal.keyprovider import StaticKeyProvider
 
-`fieldseal.testing.encrypt_with_materials` runs the same API boundary as
-`encrypt()` — mode, arming and length gates included — and replaces only the two
-entropy draws (docs/08 §6).
+# Evaluation only: keys held in memory, no KMS. See "Keys" below.
+keys = StaticKeyProvider(
+    key_id=secrets.token_bytes(16),
+    tenant_dek=secrets.token_bytes(32),
+    tenant_index_key=secrets.token_bytes(32),
+)
 
-## What is deliberately not proven yet
+# Fixed identifiers for the table and column. Never derive them from names.
+USERS = uuid.UUID("a3e1f7c2-5b94-4d08-b6e3-9f2a7c1d4e85").bytes
+EMAIL = uuid.UUID("0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64").bytes
 
-**Passing these vectors is weak evidence on its own.** The generator that
-produced them is not an oracle ([`docs/08`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/08-test-vector-spec.md)
-§7); what makes an expected value trustworthy is two independently written
-implementations agreeing on it. This core is one. The TypeScript core, written
-from the specification without reading this source, is the other, and that is
-M2. The behaviours listed above are *not* covered by any vector; they are
-covered by `tests/test_parity.py` against this core's own pins, and the
-`errors/` vector family that would make them a shared check does not exist yet.
+fs = Fieldseal(
+    key_provider=keys,
+    allowed_suites={0xFF01},
+    write_suite=0xFF01,
+    indexes=[IndexDeclaration(
+        table_uuid=USERS, column_uuid=EMAIL,
+        idf="argon2id", normalize="nfc-casefold-v1",
+        truncate_bits=15, projected_population=100_000,
+    )],
+    arm_provisional_suites=True,   # writing refuses without it; see the warning above
+)
 
-This core was written without importing anything from `tools/vector-gen/`, and
-takes HKDF from pyca/cryptography where the generator hand-rolls it from `hmac`.
-That is a deliberate divergence from `docs/10` §7, which anticipated the
-generator importing `fieldseal.testing`. Had it done so, M1 would have been
-close to tautological — the same code checking itself. The cross-check is
-narrower than "independent", though: the two share the `canonical_context`
-layout by construction, so the independence is in HKDF only. See the
-divergence note in [`docs/07`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/07-implementation-plan.md) §7.
+ctx = FieldContext(table_uuid=USERS, column_uuid=EMAIL)
 
-**`blind-index/argon2id.json` is pinned**, and has been since suite `0.6.0-provisional` (2026-08-31, `docs/07` §7), and this core runs it like any other family. It was held out while the primitive had no external known-answer source: RFC 9106 §5.3's vector supplies a nonzero secret (`K`) and associated data (`X`), both forbidden by spec §7.3 and unsuppliable from Python, so passing the project's own vectors would have proved only that two implementations copied one unverified assumption. That is answered — the generator checks argon2-cffi against libsodium's seven published `crypto_pwhash` answers on every run (libsodium cannot supply `K` or `X` either, which makes it the right source for the case §7.3 uses), and the TypeScript core reproduces the same values through `node:crypto`.
+envelope = fs.encrypt(b"ada@example.com", ctx)    # 126 bytes: 111 + the value
+fs.decrypt(envelope, ctx)                          # b'ada@example.com'
+fs.is_ciphertext(envelope)                         # True, without decrypting
 
-Promoting it also found what the hold-out had been hiding: eight of the family's nineteen vectors declared `idf: argon2id` with no `idf_params`, and both cores reject a missing cost as malformed rather than assuming the minimum (`docs/08` §4.4). Nothing had run them, so nothing had said so. The #108 review then found that this harness's rejection was an abort with no report where the TypeScript harness's was eight recorded failures; `run_blind_index` now has the per-vector boundary the other runners had, and a vector it cannot derive — malformed `idf_params`, or the `argon2` extra not installed — is a recorded failure with a reason. The same round added two vectors at a raised cost (`t = 4`), the only ones that can tell a harness deriving at the declared cost from one deriving at its default (`docs/07` §7, 2026-09-01).
+index = ctx.for_index("exact")
+fs.blind_index("Ada@Example.com", index)           # 2 bytes; the same as for "ada@example.com"
 
-## Honest limitations
+fs.rotate(envelope, ctx)                           # a fresh envelope under the active key
+```
 
-The specification requires every implementation to state these, and
-`docs/07` §4 requires every shipped artifact to carry them.
+Store `envelope` in the encrypted column and the blind-index value in a
+sibling column; *Blind indexes* below explains how to look values up.
 
-- **No protection against a compromised application process** (spec §2.2
-  N1). The keys are in that process. Query logs, slow-query logs and
-  replication logs are sensitive artifacts and must be protected like the
-  ciphertext (§2.3).
-- **Storage overhead is real** (§3.3). Every envelope carries 111 bytes of
-  fixed overhead under `0xFF01`: a 9-byte value becomes 120 bytes binary.
-  This core is bytes in, bytes out and never emits base64; a deployment that
-  stores base64 pays a further 33% on every row (about 160 bytes for the same
-  value) and must document it. Across a 20-column, 100M-row table the fixed
-  overhead alone is roughly 220 GB, before index bloat.
-- **The key service is a hard dependency in the read path** (§8.1).
-  `EnvelopeKeyProvider` unwraps KMS-wrapped DEKs only in `warm()`; the value
-  path reads the cache and nothing else, so a miss is `KEY_UNAVAILABLE`, and a
-  KMS outage means `KEY_UNAVAILABLE` for everything not already cached. The
-  `degradation` argument records the deployment's mode (`fail-closed` /
-  `serve-cached`); on the value path both mean the same thing — serve only
-  what the cache can decrypt (`docs/09` §8.2). No KMS client ships: the
-  provider calls a `Wrapper` you supply.
-- **The DEK cache is an in-memory plaintext key cache** (§5.5). It is
-  exposed to memory dumps, core files and swap. Entries are held as
-  `bytearray` and overwritten with zeros when evicted — by max-age, max-uses,
-  capacity or `DekCache.clear()` — which narrows that window and does not
-  close it: CPython `bytes` are immutable and freely copied, copies inside
-  dependencies are out of reach, and there is no `mlock` (`docs/10` §5). The
-  per-operation record key and the §7.3 Argon2id salt are `bytes` and are not
-  erased at all. `CachePolicy.max_age` and `max_uses` are security
-  parameters, not tuning knobs. In a prefork server, construct the client
-  after the fork (gunicorn `post_fork`): cache contents that survive a fork
-  are DEK copies in every child (`docs/09` §10).
-- **Two of spec §8's three providers ship.** `StaticKeyProvider` is
-  test-only, holds key material for the process lifetime, and does not yet
-  emit the outside-test-configuration warning spec §8 asks for.
-  `EnvelopeKeyProvider` is the production path above. `DerivedKeyProvider` is
-  not yet ported (`docs/10` §3).
-- **Error precedence is provisional.** Everything under "what this core pins"
-  above may change at Gate 0b; the pins are declared so that a change is
-  visible, not because they are settled.
-- **Argon2id costs 10–100 ms per query term** (spec §7.3). That is wall-clock
-  latency on the requesting thread and a product constraint, not a bug to
-  fix. It is **not** a process-wide stall: this README previously said the
-  GIL is held for most of it, and that was wrong. Measured 2026-09-09 on
-  argon2-cffi 25.1.0 / argon2-cffi-bindings 26.1.0, CPython 3.14.6 — one
-  hash at the §7.3 parameters takes 36.9 ms and two on separate threads take
-  40.0 ms, where serialization would cost ~74 ms. A threaded deployment
-  serves other requests through it.
+## Blind indexes
+
+A blind index is what makes an encrypted column searchable. Next to each
+encrypted value, you store a short keyed hash of it: `blind_index(value,
+ctx.for_index(index_id))`. To find a value, derive its hash the same way,
+select the rows whose index column matches, then **decrypt each candidate and
+compare**. The hash is deliberately truncated, so unrelated values share
+hashes and the query returns a few rows that do not match; the comparison is
+what makes the answer correct. The ORM adapters do this for you.
+
+Each index is declared up front in `indexes=[IndexDeclaration(...)]`. An
+invalid declaration is refused when the `Fieldseal` client is built, not at
+the first lookup. Choose the options before the first write: changing `idf`,
+`argon2`, `normalize`, `truncate_bits` or `index_id` later changes every
+stored hash, so the index has to be rebuilt.
+
+| Field | Default | Accepted values |
+|---|---|---|
+| `table_uuid`, `column_uuid` | **required** | The column the index belongs to, 16 bytes each. |
+| `projected_population` | **required** | How many *distinct* values the column will hold, at least 16. |
+| `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
+| `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |
+| `truncate_bits` | **required** | Bits of each hash kept. Must satisfy 2 ≤ P / 2<sup>b</sup> < √P, where P is `projected_population`: 7–11 for 5,000 distinct values, 9–15 for 100,000, 10–18 for 1,000,000. |
+| `argon2` | the minimum | `Argon2Params(time_cost=..., memory_kib=...)`, to raise the Argon2id cost above 3 passes and 32 MiB. It cannot lower it, and it is refused with `"hmac-sha512"`. |
+| `index_id` | `"exact"` | 1–32 lowercase letters, digits and hyphens. Selected with `ctx.for_index(index_id)`. |
+| `skewed` | `False` | `True` if a few values dominate the column. A skewed column is gated like a small one (next row). |
+| `cardinality_override` | `None` | `CardinalityOverride(reason=..., approved_by=..., date=...)`. A column with fewer than 1,024 distinct values, or a skewed one, is refused without it: an index over so few values reveals too much. |
+| `on_unindexable` | `"refuse"` | For a value containing a character `"nfc-casefold-v1"` cannot index: `"refuse"` it, or `"bucket"` it under the column's reserved hash (`unindexable_marker`). |
+| `unindexable_override` | `None` | A `CardinalityOverride`, required for `"bucket"`. |
+
+`nfc-casefold-v1` uses Unicode 17.0.0 tables bundled with the package
+(`fieldseal.UNICODE_VERSION`), so an index value does not depend on the Python
+version, and matches the TypeScript core's.
+
+## Concepts
+
+### Contexts
+
+A `FieldContext` names where a value lives: `table_uuid` and `column_uuid`
+(16 bytes each), and optionally `tenant_id`. The context is bound into the
+encryption, so decrypting with a different one fails with
+`COMMITMENT_INVALID`. The two UUIDs are part of the key derivation: never
+change one once a value has been written, and never derive one from a table
+or column name, or a rename makes every existing value unreadable.
+
+### Operations
+
+All of these are synchronous and never touch the network:
+
+| Method | What it does |
+|---|---|
+| `encrypt(plaintext, ctx)` | Encrypts bytes. Needs arming. |
+| `decrypt(envelope, ctx)` | Decrypts, or raises. Never returns unauthenticated data. |
+| `blind_index(value, index_ctx)` | Derives the index value for text or bytes. |
+| `unindexable_marker(index_ctx)` | The column's reserved index value for values that cannot be indexed. |
+| `rotate(envelope, ctx)` | Re-encrypts under the active key version. Needs arming. |
+| `is_ciphertext(value)` | Recognises an envelope without decrypting it. Never raises. |
+
+`warm(contexts)` (async) and `warm_blocking(contexts)` load keys ahead of time;
+see *Keys* below.
+
+Values are bytes. Encode text yourself, and encode other types the same way
+every time: the ORM adapters use the canonical forms in spec §3.6, so follow
+them if another implementation will read your data.
+
+### Keys
+
+- **`StaticKeyProvider`**: one data key and one index key held in memory, for
+  tests and evaluation. It does not yet warn when used outside tests.
+- **`EnvelopeKeyProvider(wrapper=..., directory=..., cache=...)`**: data keys
+  stored wrapped by your KMS. `wrapper` is your object with an async
+  `unwrap(wrapped, scope)` method; no KMS client ships with the package.
+  `directory` lists the wrapped keys per tenant (`InMemoryKeyDirectory`, or
+  your own); `cache` is a `CachePolicy(max_age=..., max_uses=..., capacity=...)`.
+
+With `EnvelopeKeyProvider`, keys are unwrapped only by `warm()` or
+`warm_blocking()`, never during `encrypt` or `decrypt`. A cold cache therefore
+means `KEY_UNAVAILABLE`: warm the contexts you will use before serving
+traffic. A third provider in the specification, `DerivedKeyProvider`, is
+available in the TypeScript core and not yet in Python.
+
+### Arming
+
+`encrypt()` and `rotate()` raise `SUITE_PROVISIONAL` until you arm provisional
+use, with `arm_provisional_suites=True` on the constructor or
+`FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment. Decrypting never
+needs it. Arming does not make the design reviewed: it records that you were
+told.
+
+### Read modes
+
+`read_mode="strict"` (the default) raises `NOT_CIPHERTEXT` for anything that is
+not an envelope. `"permissive"` returns non-envelope input unchanged, and
+`"readonly"` does the same and also refuses writes. Both are for migrating a
+column that still holds plaintext: they warn when the client is built and
+count what they pass through in `fs.plaintext_reads`.
+
+### Errors
+
+Every failure is a subclass of `fieldseal.errors.FieldsealError` with a
+`code`: `UNKNOWN_FORMAT_VERSION`, `SUITE_NOT_ALLOWED`, `KEY_UNAVAILABLE`,
+`AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `NOT_CIPHERTEXT`,
+`MODE_VIOLATION`, `LENGTH_EXCEEDED` and `SUITE_PROVISIONAL`, plus
+`CONFIGURATION_ERROR` and `INVALID_ARGUMENT` for bad setup and arguments.
+Messages never contain plaintext or key material. A wrong key and a wrong
+context look the same and both raise `COMMITMENT_INVALID`, so `AAD_MISMATCH`
+is never raised under this suite. The order in which errors are checked is
+provisional and may change before 1.0.
+
+## Limitations
+
+The specification requires every implementation to state these.
+
+- **No protection against a compromised application process.** The keys are
+  in that process, so anything the application can read, an attacker inside
+  it can read.
+- **Logs are sensitive.** A lookup sends a blind-index value as a query
+  parameter, so database query logs, slow-query logs and replication logs
+  record it. Protect them like the ciphertext.
+- **Storage overhead.** Each envelope carries 111 bytes of overhead: a 9-byte
+  value becomes 120 bytes. Storing it as base64 adds another third. Across a
+  20-column, 100-million-row table the overhead alone is about 220 GB.
+- **Argon2id costs 10–100 ms per query term** (about 37 ms measured). It is
+  paid for every value written with an index and every value searched for.
+  It delays the requesting thread only: two derivations on separate threads
+  take about as long as one. It is a security property, not a tuning option.
+- **The KMS is a hard dependency in the read path.** With
+  `EnvelopeKeyProvider`, a KMS outage means `KEY_UNAVAILABLE` for every key not
+  already in the cache.
+- **The key cache holds plaintext keys in memory**, exposed to memory dumps,
+  core files and swap. Evicted keys are overwritten with zeros, but Python
+  copies `bytes` freely and cannot lock memory, so this narrows the exposure
+  rather than closing it. The cache's `max_age` and `max_uses` are security
+  settings. In a server that forks workers, build the client after the fork,
+  or every worker inherits a copy of the cached keys.
+- **Only one cipher suite is implemented.** `0xFF01` (AES-256-GCM).
+  `0xFF02` (XChaCha20-Poly1305) is recognised and refused.
+
+## Learn more
+
+- [`REFERENCE.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/core/python/REFERENCE.md):
+  conformance status, the behaviours this core pins where the specification
+  leaves a choice, what its tests do and do not prove, and development setup.
+- [Core design](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/10-core-python.md)
+  and the [specification](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/02-spec-v0.1.md).
+- [Reviewer brief](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/16-reviewer-brief.md):
+  if you can review the cryptographic design, this is where to start.
+- Bugs and interoperability problems:
+  [issues](https://github.com/fieldseal-dev/fieldseal-spec/issues).
+  Suspected vulnerabilities:
+  [`SECURITY.md`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/SECURITY.md),
+  not a public issue.

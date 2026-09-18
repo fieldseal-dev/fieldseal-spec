@@ -125,7 +125,7 @@ function expectValue(t: ValueType, got: unknown, lit: Literal): void {
 const missingFor = (v: Vector): string[] => v.requires.filter((c) => !CAPABILITIES.has(c));
 
 // Vectors needing a capability JavaScript lacks are registered as skips with
-// the reason, and are titled without their `codec/` id: the README's coverage
+// the reason, and are titled without their `codec/` id: REFERENCE.md's coverage
 // row cites `codec/`, and a skipped test matched by a row fails it (report.ts).
 describe("spec §3.6 vectors needing a capability JavaScript lacks", () => {
   for (const vec of VECS.filter((v) => missingFor(v).length > 0)) {
