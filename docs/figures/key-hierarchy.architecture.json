@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Fieldseal Key Hierarchy",
+    "quality_profile": "showcase",
+    "viewBox": [
+      980,
+      600
+    ],
+    "views": [
+      {
+        "id": "tenant",
+        "label": "Tenant keys",
+        "focus": [
+          "kek",
+          "dek",
+          "ikey"
+        ],
+        "note": "The KEK wraps two sibling tenant keys; the index key is never derived from the DEK (§5.2)."
+      },
+      {
+        "id": "data",
+        "label": "Data branch",
+        "focus": [
+          "dek",
+          "record",
+          "envelope"
+        ],
+        "note": "Each write derives a single-use record key from the DEK and a fresh msg_seed (§5.3)."
+      },
+      {
+        "id": "index",
+        "label": "Index branch",
+        "focus": [
+          "ikey",
+          "bik",
+          "index"
+        ],
+        "note": "Each (table, column, index) derives its own blind-index key from the index key (§7.2)."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "kek",
+      "type": "security",
+      "label": "Root KEK",
+      "sublabel": "KMS / HSM",
+      "pos": [
+        400,
+        60
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "tag": "never leaves"
+    },
+    {
+      "id": "dek",
+      "type": "security",
+      "label": "Tenant DEK",
+      "sublabel": "unwrapped by warm()",
+      "pos": [
+        150,
+        210
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "ikey",
+      "type": "security",
+      "label": "Tenant index key",
+      "sublabel": "sibling, not derived",
+      "pos": [
+        650,
+        210
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "record",
+      "type": "backend",
+      "label": "Record key",
+      "sublabel": "one per write",
+      "pos": [
+        150,
+        350
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "bik",
+      "type": "backend",
+      "label": "Blind-index key",
+      "sublabel": "one per index",
+      "pos": [
+        650,
+        350
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "envelope",
+      "type": "database",
+      "label": "Envelope",
+      "sublabel": "names key_id",
+      "pos": [
+        150,
+        490
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "index",
+      "type": "database",
+      "label": "Blind index",
+      "sublabel": "truncated value",
+      "pos": [
+        650,
+        490
+      ],
+      "size": [
+        180,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "KMS",
+      "wraps": [
+        "kek"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Cache (§5.5)",
+      "wraps": [
+        "dek",
+        "ikey"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Row",
+      "wraps": [
+        "envelope",
+        "index"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "wrap-dek",
+      "from": "kek",
+      "to": "dek",
+      "label": "wraps §5.1",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "wrap-ikey",
+      "from": "kek",
+      "to": "ikey",
+      "label": "wraps §5.1",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "derive-record",
+      "from": "dek",
+      "to": "record",
+      "label": "HKDF per write §5.3",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 46
+    },
+    {
+      "id": "derive-bik",
+      "from": "ikey",
+      "to": "bik",
+      "label": "HKDF per index §7.2",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 46
+    },
+    {
+      "id": "seal",
+      "from": "record",
+      "to": "envelope",
+      "label": "AEAD + commit §4.6",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "hash",
+      "from": "bik",
+      "to": "index",
+      "label": "IDF, truncate §7.3",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Siblings, not derivatives",
+      "items": [
+        "The index key is never derived from the DEK (§5.2)",
+        "Rotating data keys leaves every index valid (§5.8)",
+        "Shredding a tenant destroys both keys (§5.2)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Where keys live",
+      "items": [
+        "The KEK stays in the KMS; tenant keys are stored wrapped",
+        "Only warm() unwraps them, into a zeroized cache (§5.5)",
+        "Record and blind-index keys are derived, never stored"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "One purpose per key",
+      "items": [
+        "No single global DEK by default (§5.1)",
+        "A fresh msg_seed makes every record key single-use",
+        "Each index on each column has its own key (§7.2)"
+      ]
+    }
+  ]
+}
