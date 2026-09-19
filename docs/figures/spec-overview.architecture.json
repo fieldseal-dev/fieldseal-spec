@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Fieldseal at a Glance",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1060,
+      600
+    ]
+  },
+  "components": [
+    {
+      "id": "vectors",
+      "type": "external",
+      "label": "Test vectors",
+      "sublabel": "pinned, language-neutral",
+      "pos": [
+        430,
+        50
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "app-a",
+      "type": "frontend",
+      "label": "App + ORM adapter",
+      "sublabel": "language A, no crypto",
+      "pos": [
+        20,
+        268
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "core-a",
+      "type": "backend",
+      "label": "Fieldseal core",
+      "sublabel": "language A, sync API",
+      "pos": [
+        240,
+        268
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "env",
+      "type": "database",
+      "label": "Encrypted column",
+      "sublabel": "envelope §3",
+      "pos": [
+        450,
+        215
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "idx",
+      "type": "database",
+      "label": "Index column",
+      "sublabel": "blind index §7",
+      "pos": [
+        450,
+        325
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "core-b",
+      "type": "backend",
+      "label": "Fieldseal core",
+      "sublabel": "language B, sync API",
+      "pos": [
+        660,
+        268
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "app-b",
+      "type": "frontend",
+      "label": "App + ORM adapter",
+      "sublabel": "language B, no crypto",
+      "pos": [
+        870,
+        268
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "kms",
+      "type": "security",
+      "label": "Key management",
+      "sublabel": "KMS / HSM, root KEK",
+      "pos": [
+        430,
+        490
+      ],
+      "size": [
+        200,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "One database row",
+      "wraps": [
+        "env",
+        "idx"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "a-values",
+      "from": "app-a",
+      "to": "core-a",
+      "label": "plaintext",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "a-env",
+      "from": "core-a",
+      "to": "env",
+      "label": "seal §4",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "a-idx",
+      "from": "core-a",
+      "to": "idx",
+      "label": "index",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "b-env",
+      "from": "env",
+      "to": "core-b",
+      "label": "open",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "b-idx",
+      "from": "core-b",
+      "to": "idx",
+      "label": "query",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "b-values",
+      "from": "app-b",
+      "to": "core-b",
+      "label": "plaintext",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "vec-a",
+      "from": "vectors",
+      "to": "core-a",
+      "label": "must pass §12",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "top"
+    },
+    {
+      "id": "vec-b",
+      "from": "vectors",
+      "to": "core-b",
+      "label": "must pass §12",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "kms-a",
+      "from": "kms",
+      "to": "core-a",
+      "label": "warm() unwraps §5.5",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "id": "kms-b",
+      "from": "kms",
+      "to": "core-b",
+      "label": "warm() unwraps §5.5",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "One format, any language",
+      "items": [
+        "What core A writes, core B reads with the same key",
+        "Both must pass the same pinned vectors (§12)",
+        "One frozen suite: no per-field algorithm choice (§4)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Adapters hold no crypto",
+      "items": [
+        "An adapter only routes values to the core (§10)",
+        "Where an ORM path would write plaintext, it throws",
+        "The value path is synchronous; warm() prefetches keys"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Search without plaintext",
+      "items": [
+        "A blind index finds candidate rows by equality (§7)",
+        "Candidates are decrypted and re-verified (§7.5)",
+        "Low-cardinality columns are refused an index (§7.6)"
+      ]
+    }
+  ]
+}

@@ -18,6 +18,7 @@ docstring.
 | `query-path.svg` | `query-path.sequence.json` | [`docs/23-query-path.md`](../../docs/23-query-path.md) |
 | `key-hierarchy.svg` | `key-hierarchy.architecture.json` | [`docs/24-key-lifecycle.md`](../../docs/24-key-lifecycle.md) |
 | `key-lifecycle.svg` | `key-lifecycle.lifecycle.json` | [`docs/24-key-lifecycle.md`](../../docs/24-key-lifecycle.md) |
+| `spec-overview.svg` | `spec-overview.architecture.json` | the fieldseal.dev home page ([`www/content/_index.md`](../../www/content/_index.md)) |
 
 ## Regenerating a figure
 
@@ -43,6 +44,7 @@ The `--desc` text becomes the SVG's `<desc>`, which screen readers announce:
 - `query-path`: Sequence diagram of an equality query through the Django adapter: index the query value, fetch the candidate rows that share its blind index, decrypt and re-verify each, and return only true matches.
 - `key-hierarchy`: Key hierarchy: a root KEK in the KMS wraps two sibling tenant keys, the DEK and the index key; the DEK derives a single-use record key per write that seals the envelope, and the index key derives a blind-index key per index that produces the truncated blind index.
 - `key-lifecycle`: Lifecycle of one key version: created, active for write, decrypt-only once a newer version is active, re-encrypted away by a sweep, unreferenced, scheduled for destruction with a cancellable delay window, destroyed; destroying a version that envelopes still name loses those rows.
+- `spec-overview`: Overview of the specification: two implementations in different languages, each an application and ORM adapter over a Fieldseal core, share one database row. Core A seals the encrypted column and writes the blind index; core B opens the same envelope and queries the same index. Both cores unwrap tenant keys from the KMS in warm(), and both must pass the same pinned test vectors.
 
 `deliver` must exit 0: it validates the layout (label collisions, crossings,
 legibility) before it writes the page. Never edit an SVG by hand — the next
