@@ -57,6 +57,10 @@ body {
 
 .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 1rem; }
 @media (min-width: 40rem) { .wrap { padding: 0 2rem; } }
+/* Pages with no side columns (home, 404): one centered column about as wide
+   as a document page's content column, with the text filling it. In the
+   full-width wrap the text would sit in the left third of the screen. */
+.wrap-narrow { max-width: 64rem; --measure: none; }
 
 a { color: var(--accent); text-underline-offset: 2px; }
 a:hover { text-decoration-thickness: 2px; }
