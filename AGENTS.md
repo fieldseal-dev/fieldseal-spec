@@ -63,6 +63,8 @@ tools/
                           CI re-runs it with --check, so a hand edit fails the build
   release/                builds, checks and smoke-tests the four packages PRD §8 lets the
                           project publish as experimental pre-1.0 releases; publishes nothing
+  figures/                extracts the static SVGs in docs/figures/ from Archify-rendered
+                          diagrams; the JSON sources sit beside the SVGs
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
   backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model
