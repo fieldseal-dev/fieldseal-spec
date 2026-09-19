@@ -37,7 +37,7 @@ The diagram follows one model with one encrypted field (`ssn`) and one blind ind
 
 - **The order of the two phases is Django's, not the specification's.** On an INSERT, Django prepares one field completely before the next, in declaration order; on an UPDATE, every field's `pre_save` runs before any value is prepared. The diagram draws the INSERT order with the encrypted field declared first. The two results do not depend on each other, so the order does not change what is written.
 - **`warm()`.** Filling the cache — the KMS unwrapping the tenant DEK and index key — happens before the request and is not drawn ([§5.5](02-spec-v0.1.md#55-dek-caching-normative), [§8](02-spec-v0.1.md#8-key-provider-interface)).
-- **Reads and queries.** Decryption, and the equality query in which the blind index selects candidates that are then decrypted and re-verified, are separate flows. A blind index filters; it never answers ([§7.5](02-spec-v0.1.md#75-application-side-re-verification-normative)).
+- **Reads and queries.** Decryption is [the read path](22-read-path.md); the lookup in which the blind index selects candidates that are then decrypted and re-verified is [the equality query](23-query-path.md). A blind index filters; it never answers ([§7.5](02-spec-v0.1.md#75-application-side-re-verification-normative)).
 - **What the adapter refuses.** Writes that Django would compute in SQL — `update(ssn=F(...))` — never reach the core; the adapter raises instead ([`docs/12-adapter-django.md`](12-adapter-django.md)).
 
 ## 3. How the figure is made

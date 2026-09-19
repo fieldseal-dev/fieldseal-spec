@@ -15,8 +15,8 @@ stand on its own:
     long notes overlap everything at the default scale;
   * drops the background grid, the per-node <title>s and the viewer's data-*,
     tabindex and ARIA-button attributes;
-  * enlarges the 7/9/11px text a step, widening each label's backing mask to
-    match, because the figure is read at column width rather than full screen;
+  * enlarges the small text a step (FONT_STEP), widening each label's backing
+    mask to match, because the figure is read at column width rather than full screen;
   * moves the legend clear of the last time segment and crops the empty bands
     the viewer reserved above the participants and below for its navigation dock;
   * inlines the classic preset's light and dark colours as CSS variables, dark
@@ -29,7 +29,7 @@ Standard library only. Usage:
 """
 import argparse, re, sys
 
-FONT_STEP = {"7": "8.5", "9": "10.5", "11": "12"}
+FONT_STEP = {"7": "8.5", "7.5": "8.5", "8": "9", "9": "10.5", "11": "12"}
 LEGEND_SHIFT = 16
 MARGIN = 18
 
@@ -42,6 +42,7 @@ LIGHT = {
     "security-fill": "rgba(251, 113, 133, 0.15)", "security-stroke": "#e11d48",
     "lane-fill": "rgba(248, 250, 252, 0.65)", "lane-stroke": "#cbd5e1",
     "text": "#0f172a", "text-muted": "#64748b", "text-dim": "#94a3b8",
+    "external-fill": "rgba(148, 163, 184, 0.18)", "external-stroke": "#64748b",
     "arrow": "#94a3b8", "arrow-emphasis": "#059669",
 }
 DARK = {
@@ -51,6 +52,7 @@ DARK = {
     "security-fill": "rgba(136, 19, 55, 0.4)", "security-stroke": "#fb7185",
     "lane-fill": "rgba(15, 23, 42, 0.22)", "lane-stroke": "#334155",
     "text": "#ffffff", "text-muted": "#94a3b8", "text-dim": "#64748b",
+    "external-fill": "rgba(30, 41, 59, 0.5)", "external-stroke": "#94a3b8",
     "arrow": "#64748b", "arrow-emphasis": "#34d399",
 }
 
@@ -60,6 +62,8 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .c-backend { fill: var(--backend-fill); stroke: var(--backend-stroke); }
 .c-database { fill: var(--database-fill); stroke: var(--database-stroke); }
 .c-security { fill: var(--security-fill); stroke: var(--security-stroke); }
+.c-external { fill: var(--external-fill); stroke: var(--external-stroke); }
+.c-security-group { fill: transparent; stroke: var(--security-stroke); stroke-dasharray: 4,4; }
 .c-lane { fill: var(--lane-fill); stroke: var(--lane-stroke); stroke-dasharray: 6,6; }
 .c-mask { fill: var(--mask); stroke: none; }
 .t-primary { fill: var(--text); }
@@ -78,6 +82,7 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .s-backend { color: var(--backend-stroke); }
 .s-database { color: var(--database-stroke); }
 .s-security { color: var(--security-stroke); }
+.s-external { color: var(--external-stroke); }
 .semantic-sigil { fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; opacity: 0.76; }
 .semantic-sigil .sigil-fill { fill: currentColor; stroke: none; }
 """
@@ -115,15 +120,17 @@ def enlarge_labels(svg: str) -> str:
 
     svg = re.sub(r'(<rect [^>]*class="c-mask"/>)(\s*)(<text [^>]*text-anchor="middle"[^>]*>)',
                  label, svg)
-    return re.sub(r'font-size="(7|9|11)"',
-                  lambda m: f'font-size="{FONT_STEP[m.group(1)]}"', svg)
+    return re.sub(r'font-size="([\d.]+)"',
+                  lambda m: f'font-size="{FONT_STEP.get(m.group(1), m.group(1))}"', svg)
 
 
 def content_extent(svg: str) -> tuple:
     """Top of the highest rect and the lowest drawn point (text baselines, rect
-    bottoms). Runs before the background rect is added."""
+    bottoms). Runs before the background rect is added. Only rects with a
+    class count: the unclassed ones are node-icon strokes drawn in the icon's
+    own translated coordinates, where y=5 says nothing about the page."""
     rects = [(float(y), float(h)) for y, h in
-             re.findall(r'<rect [^>]*? y="([\d.]+)"[^>]*? height="([\d.]+)"', svg)]
+             re.findall(r'<rect [^>]*? y="([\d.]+)"[^>]*? height="([\d.]+)"[^>]*class=', svg)]
     texts = [float(y) for y in re.findall(r'<text [^>]*? y="([\d.]+)"', svg)]
     top = min(y for y, _ in rects)
     bottom = max([y + h for y, h in rects] + [y + 6 for y in texts])
@@ -177,6 +184,14 @@ def main() -> int:
         svg = convert(f.read(), a.desc)
     if "<script" in svg:
         print("error: script survived extraction", file=sys.stderr)
+        return 1
+    # A class with no rule here renders black in an <img>, silently. Archify
+    # kinds not yet used by a figure (frontend, cloud, messagebus) land here
+    # first; add their colours from Archify's classic preset when they do.
+    used = {c for attr in re.findall(r'class="([^"]+)"', svg) for c in attr.split()}
+    defined = set(re.findall(r"\.([a-zA-Z][\w-]*)", RULES))
+    if used - defined:
+        print(f"error: no style for {sorted(used - defined)}", file=sys.stderr)
         return 1
     with open(a.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(svg)
