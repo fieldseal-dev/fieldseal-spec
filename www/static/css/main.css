@@ -12,11 +12,10 @@
   --banner-fg: #6b4a00;
   --banner-rule: #f0d091;
   --code-bg: #f4f5f7;
-  /* Two widths, deliberately different. --measure caps running text, where a
-     line past ~80 characters gets hard to track back from. --wrap caps the
-     page, and is set wide so that tables, code and figures -- which are not
-     running text -- can use the whole content column instead of scrolling
-     inside a text-width one. */
+  /* --wrap caps the page, and is set wide so that tables, code and figures
+     can use the whole content column instead of scrolling inside a
+     text-width one. --measure caps running text on pages that have no side
+     columns to bound it. */
   --measure: 44rem;
   --wrap: 96rem;
 }
@@ -39,13 +38,20 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* Every width on the page is in rem, so scaling the root size scales the
+   whole layout. 16px up to ~1800px of viewport, growing to 20px by ~3000px:
+   on a 2560px or ultrawide screen the page is larger rather than a narrow
+   strip with empty margins, and line lengths in characters stay the same. */
+html {
+  -webkit-text-size-adjust: 100%;
+  font-size: clamp(1rem, .625rem + .3333vw, 1.25rem);
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  font: 1rem/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
         "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -112,8 +118,11 @@ a:hover { text-decoration-thickness: 2px; }
 
 /* ---------- prose ---------- */
 .prose { min-width: 0; padding: 2rem 0 4rem; }
-/* Running text keeps the measure; tables, code blocks and figures do not. */
-.prose > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, dl, blockquote, details):not(.cards) {
+/* On a document page the nav and TOC columns already bound the line length,
+   so text fills the content column. Pages without side columns (home, the
+   documents list) would run edge to edge; their running text keeps the
+   measure. */
+:not(.doc-layout) > .prose > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, dl, blockquote, details):not(.cards) {
   max-width: var(--measure);
 }
 .prose h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 1rem; }
@@ -130,7 +139,7 @@ a:hover { text-decoration-thickness: 2px; }
 /* Figures from docs/figures/ are drawn on a 1080-unit canvas and shrink past
    legibility inside the text measure, so they take the full content column. */
 .prose img[src^="/figures/"] {
-  display: block; width: 100%; max-width: 1080px; margin: 1.5rem 0 .5rem;
+  display: block; width: 100%; max-width: 67.5rem; margin: 1.5rem 0 .5rem;
 }
 
 code, pre, kbd, samp {
