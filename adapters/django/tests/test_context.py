@@ -51,6 +51,55 @@ def test_another_tenant_cannot_read_the_row():
         TenantDoc.objects.get(pk=d.pk)
 
 
+def _stored_index(pk: int) -> bytes:
+    """The sibling column as the database holds it, not the adapter's view."""
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute(f'SELECT "handle_bidx" FROM "{TenantDoc._meta.db_table}" '
+                    "WHERE id = %s", [pk])
+        (value,) = cur.fetchone()
+    return bytes(value)
+
+
+def test_a_tenant_bound_index_is_scoped_to_its_tenant():
+    """The index half of the binding (spec §5.2, §7.2).
+
+    The tenant enters the index context as it enters the envelope's, so the
+    same value written in two tenants must store two index values. If it did
+    not -- a tenantless index context on a tenant-bound column -- the index
+    would link rows across tenants, which the envelope's binding exists to
+    prevent, and nothing would fail.
+    """
+    with tenant_scope(b"tenant-a"):
+        a = TenantDoc.objects.create(body="a", handle="ada@example.com")
+    with tenant_scope(b"tenant-b"):
+        b = TenantDoc.objects.create(body="b", handle="ada@example.com")
+    assert _stored_index(a.pk) != _stored_index(b.pk)
+
+
+def test_a_lookup_finds_only_its_own_tenants_row():
+    with tenant_scope(b"tenant-a"):
+        a = TenantDoc.objects.create(body="a", handle="ada@example.com")
+    with tenant_scope(b"tenant-b"):
+        TenantDoc.objects.create(body="b", handle="bob@example.com")
+        assert list(TenantDoc.objects.filter(handle="ada@example.com")) == []
+    with tenant_scope(b"tenant-a"):
+        # nfc-casefold-v1 folds the operand as it folded the stored value.
+        found = TenantDoc.objects.get(handle="ADA@example.com")
+        assert found.pk == a.pk and found.handle == "ada@example.com"
+
+
+def test_a_lookup_without_a_tenant_refuses():
+    """Fail-closed on the query path too: a tenantless lookup would derive an
+    index no tenant-bound row carries and return nothing, which reads as "no
+    such row" rather than as the misconfiguration it is."""
+    with tenant_scope(b"tenant-a"):
+        TenantDoc.objects.create(body="a", handle="ada@example.com")
+    with pytest.raises(FieldsealConfigurationError, match="tenant_bound"):
+        list(TenantDoc.objects.filter(handle="ada@example.com"))
+
+
 def test_the_scope_is_restored_on_exit():
     from fieldseal_django import get_tenant
 

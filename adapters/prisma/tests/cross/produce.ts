@@ -357,11 +357,9 @@ async function main(): Promise<number> {
     field: string,
     id: string,
     value: string | null,
-    // Threaded rather than hardcoded, mirroring `record` above. Every index
-    // case is tenantless today because no fixture model declares an index on
-    // a `tenant_bound` column -- a gap named in `producer.limitations` rather
-    // than hidden behind a literal `null` that would silently disagree with
-    // what the adapter stored the day one exists (#103 review).
+    // Threaded rather than hardcoded, mirroring `record` above: a literal
+    // `null` would silently disagree with what the adapter stored on a
+    // tenant-bound column (#103 review). `TenantDoc.handle` is that column.
     tenant: string | null = null,
   ): Promise<void> {
     const m = fieldsealFieldMap.models.find((x) => x.model === model)!;
@@ -435,6 +433,22 @@ async function main(): Promise<number> {
   const bucketed = await prisma["person"]!.create({ data: { legalName: "Ada\u0378 Lovelace" } });
   await indexCase("bucket-marker", "Person", "Person", "legalName", bucketed["id"] as string, null);
 
+  // A tenant-bound index: the tenant reaches the index context through the
+  // same AsyncLocalStorage as the envelope's (spec §5.2, §7.2), so a consumer
+  // that derived it tenantless would miss -- silently, as every index miss is.
+  const tdoc = await tenantScope(TENANT, async () =>
+    prisma["tenantDoc"]!.create({ data: { body: "b", handle: "ada@example.com" } }),
+  );
+  await indexCase(
+    "tenant-bound",
+    "TenantDoc",
+    "TenantDoc",
+    "handle",
+    tdoc["id"] as string,
+    "ada@example.com",
+    TENANT,
+  );
+
   await base.$disconnect();
 
   const pkg = JSON.parse(readFileSync(join(ADAPTER, "package.json"), "utf-8")) as {
@@ -449,20 +463,15 @@ async function main(): Promise<number> {
       produced_at: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
       // docs/08 §4.7: an adapter producer declares the context shapes it
       // cannot produce, so the gap is visible in the artifact rather than
-      // absent from it. This one closes itself the day L3-row ships.
+      // absent from it. The first closes itself the day L3-row ships. (A
+      // third, "tenant-bound index", closed when TenantDoc.handle gave the
+      // fixture one.)
       limitations: [
         {
           shape: "row_id-present",
           reason:
             "L3-row binding is not in v0: the extension runs before the query, " +
             "so a database-generated id does not exist yet (docs/13 §8)",
-        },
-        {
-          shape: "tenant-bound index",
-          reason:
-            "no model in this fixture declares an index on a tenant_bound " +
-            "column, so the §5.2 sibling-key scope is exercised on the index " +
-            "path only by the core producers (raised in the #103 review)",
         },
         {
           shape: "normalizer:identity, normalizer:digits-only-v1",
