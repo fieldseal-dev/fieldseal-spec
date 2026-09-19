@@ -177,6 +177,48 @@ def test_the_fold_pair_lands_on_one_index_value(produced):
     assert lower["index"] == upper["index"]
 
 
+def test_the_tenant_bound_index_case_carries_its_tenant(produced):
+    """Spec §5.2 on the index path, from an adapter (#103 review).
+
+    The derivation check above reads `tenant_id` from the case, so it would
+    pass a case that carried none. This pins that the case exists, names its
+    tenant, and that the tenant changed the value: derived tenantless, the
+    same declaration and value give a different index -- the silent miss a
+    consumer that dropped the tenant would get.
+    """
+    from fieldseal import FieldContext, Fieldseal, IndexDeclaration
+    from fieldseal.errors import FieldsealWarning
+    from fieldseal.keyprovider import StaticKeyProvider
+
+    case = next(c for c in produced["index_cases"]
+                if c["id"].endswith("/tenant-bound"))
+    c, d = case["context"], case["declaration"]
+    assert H(c["tenant_id"]) == b"tenant-0001"
+
+    key = json.loads(
+        (REPO / "vectors" / "keys" / "test-keys.json").read_text("utf-8")
+    )["keys"][case["key_ref"]]
+    decl = IndexDeclaration(
+        table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
+        index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
+        truncate_bits=d["truncate_bits"],
+        projected_population=d["projected_population"],
+        on_unindexable=d["on_unindexable"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FieldsealWarning)
+        client = Fieldseal(
+            key_provider=StaticKeyProvider(
+                H(key["key_id"]), H(key["tenant_dek"]),
+                H(key["tenant_index_key"])),
+            allowed_suites={int(key["suite_id"], 16)},
+            write_suite=int(key["suite_id"], 16),
+            indexes=[decl], arm_provisional_suites=True)
+    tenantless = FieldContext(
+        table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
+        purpose=c["purpose"], tenant_id=None, row_id=None)
+    assert client.blind_index(case["value_text"], tenantless).hex() != case["index"]
+
+
 def test_it_declares_the_context_shapes_it_cannot_produce(produced):
     """docs/08 §4.7: an adapter producer's coverage axis is the decisions it
     owns, and the shapes it structurally cannot reach are declared rather than
@@ -184,6 +226,10 @@ def test_it_declares_the_context_shapes_it_cannot_produce(produced):
     day L3-row ships, not a silence."""
     shapes = [x["shape"] for x in produced["producer"].get("limitations", [])]
     assert "row_id-present" in shapes
+    # Declared until TenantDoc.handle gave the fixture a tenant-bound index
+    # (#103 review). A limitation that outlived its gap would under-claim
+    # coverage the artifact actually has.
+    assert "tenant-bound index" not in shapes
 
 
 def test_it_covers_the_decisions_no_core_test_reaches(produced):

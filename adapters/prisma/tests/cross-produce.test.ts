@@ -275,10 +275,58 @@ describe("cross-language producer (docs/14 §3)", () => {
     // than left absent. `row_id`-present closes itself the day L3-row ships.
     const shapes = (doc.producer.limitations ?? []).map((l) => l.shape);
     expect(shapes).toContain("row_id-present");
-    // Named in the #103 review: no fixture model declares an index on a
-    // tenant-bound column, so the §5.2 sibling-key scope is only cross-checked
-    // on the index path by the core producers. Declared, not hidden.
-    expect(shapes).toContain("tenant-bound index");
+    // Named in the #103 review and declared here until TenantDoc.handle gave
+    // the fixture a tenant-bound index. A limitation that outlived its gap
+    // would under-claim coverage the artifact actually has.
+    expect(shapes).not.toContain("tenant-bound index");
+  });
+
+  it("carries its tenant on the tenant-bound index case, and the tenant changes the value", () => {
+    // Spec §5.2 on the index path, from an adapter (#103 review). The
+    // derivation check above reads `tenant_id` from the case, so it would pass
+    // a case that carried none. Derived tenantless, the same declaration and
+    // value give a different index -- the silent miss a consumer that dropped
+    // the tenant would get.
+    const c = doc.index_cases.find((x) => x.id.endsWith("/tenant-bound"))!;
+    expect(c, "no tenant-bound index case").toBeDefined();
+    expect(Buffer.from(H(c.context.tenant_id!)).toString("utf8")).toBe("tenant-0001");
+    const k = keys()[c.key_ref]!;
+    const suiteId = parseInt(k.suite_id.slice(2), 16);
+    const d = c.declaration;
+    const client = new Fieldseal(
+      {
+        keyProvider: new StaticKeyProvider({
+          dek: H(k.tenant_dek),
+          indexKey: H(k.tenant_index_key),
+          keyId: H(k.key_id),
+        }),
+        allowedSuites: [suiteId],
+        writeSuite: suiteId,
+        indexes: [
+          {
+            tableUuid: H(c.context.table_uuid),
+            columnUuid: H(c.context.column_uuid),
+            indexId: d.index_id,
+            idf: d.idf as "hmac-sha512",
+            normalize: d.normalize as "nfc-casefold-v1",
+            truncateBits: d.truncate_bits,
+            projectedPopulation: d.projected_population,
+            onUnindexable: d.on_unindexable as "refuse" | "bucket",
+          },
+        ],
+        onWarning: () => {},
+      },
+      { armProvisionalSuites: true },
+    );
+    const tenantless: FieldContext = {
+      tableUuid: H(c.context.table_uuid),
+      columnUuid: H(c.context.column_uuid),
+      tenantId: null,
+      rowId: null,
+      purpose: c.context.purpose,
+    };
+    const got = Buffer.from(client.blindIndex(c.value_text!, tenantless)).toString("hex");
+    expect(got).not.toBe(c.index);
   });
 
   it("covers the decisions no core test reaches", () => {
