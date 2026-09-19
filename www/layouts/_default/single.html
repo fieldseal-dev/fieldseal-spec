@@ -1,5 +1,34 @@
 {{ define "main" }}
 <div class="wrap doc-layout">
+  {{/* Source order is article, document nav, table of contents: on a phone the
+       reader gets the text first instead of 30 nav links and the whole TOC.
+       The grid in main.css puts the columns back where a wide screen wants
+       them. */}}
+  <article class="prose">
+    <h1>{{ .Title }}</h1>
+    {{ with .TableOfContents }}
+      {{/* Below the width that fits a right-hand rail, the TOC folds into the
+           top of the article instead. It is the same markup twice; CSS shows
+           exactly one of them, so a screen reader never meets both. */}}
+      <details class="toc toc-inline">
+        <summary>On this page</summary>
+        {{ . }}
+      </details>
+    {{ end }}
+    {{ .Content }}
+    <hr>
+    <p class="muted source-link">
+      {{ with .Params.sourceFile }}
+        {{ with site.Params.repo }}
+          <a href="{{ . }}/blob/main/{{ $.Params.sourceFile }}">View source: <code>{{ $.Params.sourceFile }}</code></a>
+        {{ else }}
+          Source: <code>{{ . }}</code>
+        {{ end }}
+      {{ end }}
+      {{ with .Lastmod }} &middot; last changed {{ .Format "2 January 2006" }}{{ end }}
+    </p>
+  </article>
+
   <aside class="sidebar" aria-label="Documents">
     <nav>
       <p class="sidebar-title">Documents</p>
@@ -22,28 +51,13 @@
         {{ end }}
       </ul>
     </nav>
-    {{ with .TableOfContents }}
-      <nav class="toc" aria-label="On this page">
-        <p class="sidebar-title">On this page</p>
-        {{ . }}
-      </nav>
-    {{ end }}
   </aside>
 
-  <article class="prose">
-    <h1>{{ .Title }}</h1>
-    {{ .Content }}
-    <hr>
-    <p class="muted source-link">
-      {{ with .Params.sourceFile }}
-        {{ with site.Params.repo }}
-          <a href="{{ . }}/blob/main/{{ $.Params.sourceFile }}">View source: <code>{{ $.Params.sourceFile }}</code></a>
-        {{ else }}
-          Source: <code>{{ . }}</code>
-        {{ end }}
-      {{ end }}
-      {{ with .Lastmod }} &middot; last changed {{ .Format "2 January 2006" }}{{ end }}
-    </p>
-  </article>
+  {{ with .TableOfContents }}
+    <nav class="toc toc-rail" aria-label="On this page">
+      <p class="sidebar-title">On this page</p>
+      {{ . }}
+    </nav>
+  {{ end }}
 </div>
 {{ end }}

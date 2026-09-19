@@ -63,6 +63,11 @@ numbered in reading order rather than importance.
 # text may contain one level of nested brackets, which several tables do.
 LINK = re.compile(r'(\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+"[^"]*")?\))')
 FENCE = re.compile(r"^\s*(```|~~~)")
+# `a`/`b`/`c` -- code spans joined by bare slashes, which the documents use for
+# lists of fields and methods. A browser sees no break opportunity anywhere in
+# the run, so a ten-item list is one unbreakable word that forces a table
+# column 800px wide. <wbr> after each slash lets the line wrap there.
+SLASHED_CODE = re.compile(r"`/`")
 
 
 def adr_order(stem: str) -> tuple:
@@ -83,11 +88,12 @@ def title_of(text: str) -> tuple:
 
 
 def nav_title(title: str) -> str:
-    """A sidebar-length name for an ADR or gap draft.
+    """A sidebar-length name for a document, ADR or gap draft.
 
     Their H1s are full sentences -- "G2 - §7.3: The Argon2id index-derivation
     invocation is incompletely specified" -- which is right on the page and far
-    too long in a nav column. Take the identifier off the front: everything
+    too long in a nav column; so is "The Write Path — one encrypted field, from
+    save() to the database". Take the identifier off the front: everything
     before the first em dash, widened to the first colon when that leaves only
     a bare "G2".
     """
@@ -118,6 +124,7 @@ def build_plan():
             "url": f"/docs/{slug}/",
             "slug": slug,
             "weight": int(prefix) + 1 if prefix.isdigit() else 999,
+            "shorten": True,
         })
 
     for name, base in SUBSECTIONS.items():
@@ -160,7 +167,10 @@ def build_plan():
 
 
 def rewrite_links(text: str, src: pathlib.Path, urls: dict, errors: list) -> str:
-    """Translate relative link targets into site URLs, skipping code fences."""
+    """Translate relative link targets into site URLs, skipping code fences.
+
+    Also marks break points in slash-joined code spans (see SLASHED_CODE).
+    """
     out, in_fence, fence_marker = [], False, ""
 
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -200,7 +210,7 @@ def rewrite_links(text: str, src: pathlib.Path, urls: dict, errors: list) -> str
                           f"not exist: {target}")
             return m.group(0)
 
-        out.append(LINK.sub(repl, line))
+        out.append(SLASHED_CODE.sub("`/<wbr>`", LINK.sub(repl, line)))
 
     return "\n".join(out)
 
