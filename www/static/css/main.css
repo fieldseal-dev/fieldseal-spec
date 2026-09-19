@@ -116,6 +116,18 @@ a:hover { text-decoration-thickness: 2px; }
 }
 .prose hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
 .prose img { max-width: 100%; height: auto; }
+/* Figures from docs/figures/ are drawn on a 1080-unit canvas and shrink past
+   legibility inside the measure. On a wide screen, let them run out of the
+   column into the right-hand margin: the first term is the column's width when
+   the page is narrower than .wrap, the second the space left of the viewport's
+   right edge once it is wider (both keep a gutter and a scrollbar's width). */
+.prose img[src^="/figures/"] { display: block; margin: 1.5rem 0 .5rem; }
+@media (min-width: 60rem) {
+  .prose img[src^="/figures/"] {
+    width: min(1080px, calc(100vw - 22.5rem), calc(50vw + 11rem));
+    max-width: none;
+  }
+}
 
 code, pre, kbd, samp {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,

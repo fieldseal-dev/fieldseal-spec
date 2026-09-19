@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Fieldseal Write Path (Django)",
+    "viewBox": [
+      1080,
+      580
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "encrypt",
+        "label": "Encrypt the value",
+        "focus": [
+          "adapter",
+          "core",
+          "provider"
+        ],
+        "note": "Fresh msg_seed + nonce, a single-use record key, and the §3.1 envelope with key commitment."
+      },
+      {
+        "id": "index",
+        "label": "Blind index",
+        "focus": [
+          "adapter",
+          "core",
+          "provider"
+        ],
+        "note": "Index key, never the DEK: a truncated keyed hash of the sibling plaintext (§7.2–7.4)."
+      },
+      {
+        "id": "store",
+        "label": "Store",
+        "focus": [
+          "app",
+          "adapter",
+          "db"
+        ],
+        "note": "Envelope and index go out together in one INSERT/UPDATE, in binary columns (§3.3, §7.11)."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "backend",
+      "label": "Django app",
+      "sublabel": "model.save()"
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "fieldseal_django",
+      "sublabel": "EncryptedField"
+    },
+    {
+      "id": "core",
+      "type": "security",
+      "label": "fieldseal core",
+      "sublabel": "Fieldseal client"
+    },
+    {
+      "id": "provider",
+      "type": "security",
+      "label": "KeyProvider",
+      "sublabel": "Envelope + §5.5 cache"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "Database",
+      "sublabel": "binary columns"
+    }
+  ],
+  "segments": [
+    {
+      "from": 174,
+      "to": 304,
+      "label": "Encrypt (get_db_prep_value)"
+    },
+    {
+      "from": 330,
+      "to": 432,
+      "label": "Index (pre_save)"
+    },
+    {
+      "from": 458,
+      "to": 504,
+      "label": "Store"
+    }
+  ],
+  "messages": [
+    {
+      "id": "save",
+      "from": "app",
+      "to": "adapter",
+      "y": 184,
+      "label": "save(ssn=\"…\")",
+      "variant": "emphasis"
+    },
+    {
+      "id": "encrypt-call",
+      "from": "adapter",
+      "to": "core",
+      "y": 212,
+      "label": "encrypt(bytes §3.6, ctx §6.1)",
+      "variant": "emphasis",
+      "note": "Boundary refusals first (§9): mode, provisional suite §4.8, length bound §3.5. Then msg_seed (32 B) and nonce are drawn fresh from the CSPRNG on every write, UPDATEs included (§3.1, §4.4)."
+    },
+    {
+      "id": "dek-get",
+      "from": "core",
+      "to": "provider",
+      "y": 240,
+      "label": "encryption_key(ctx) §8",
+      "variant": "security"
+    },
+    {
+      "id": "dek-ret",
+      "from": "provider",
+      "to": "core",
+      "y": 268,
+      "label": "DEK + key_id, from cache §5.5",
+      "variant": "return",
+      "note": "A cache miss is KEY_UNAVAILABLE in both §8.1 modes; the value path never blocks on the network."
+    },
+    {
+      "id": "envelope",
+      "from": "core",
+      "to": "adapter",
+      "y": 296,
+      "label": "envelope §3.1 (+111 B)",
+      "variant": "return",
+      "note": "record_key = HKDF(DEK, key_id‖msg_seed, canonical_context) §5.3; AEAD with AAD(header, ctx) §6.3; commitment = HKDF(record_key, \"fieldseal-commit-v1\") §4.6."
+    },
+    {
+      "id": "index-call",
+      "from": "adapter",
+      "to": "core",
+      "y": 340,
+      "label": "blind_index(value, ctx) §7.2",
+      "variant": "default"
+    },
+    {
+      "id": "ikey-get",
+      "from": "core",
+      "to": "provider",
+      "y": 368,
+      "label": "encryption_key(index ctx) §8",
+      "variant": "security"
+    },
+    {
+      "id": "ikey-ret",
+      "from": "provider",
+      "to": "core",
+      "y": 396,
+      "label": "index key, not the DEK §5.2",
+      "variant": "return"
+    },
+    {
+      "id": "index-ret",
+      "from": "core",
+      "to": "adapter",
+      "y": 424,
+      "label": "truncated index §7.3–7.4",
+      "variant": "return"
+    },
+    {
+      "id": "write",
+      "from": "adapter",
+      "to": "db",
+      "y": 468,
+      "label": "INSERT/UPDATE envelope + index §3.3 §7.11",
+      "variant": "emphasis"
+    },
+    {
+      "id": "done",
+      "from": "adapter",
+      "to": "app",
+      "y": 496,
+      "label": "saved",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "adapter",
+      "from": 184,
+      "to": 502,
+      "type": "backend"
+    },
+    {
+      "participant": "core",
+      "from": 212,
+      "to": 302,
+      "type": "security"
+    },
+    {
+      "participant": "provider",
+      "from": 236,
+      "to": 274,
+      "type": "security"
+    },
+    {
+      "participant": "core",
+      "from": 340,
+      "to": 430,
+      "type": "security"
+    },
+    {
+      "participant": "provider",
+      "from": 364,
+      "to": 402,
+      "type": "security"
+    },
+    {
+      "participant": "db",
+      "from": 464,
+      "to": 482,
+      "type": "database"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Fresh on every write",
+      "items": [
+        "Fresh msg_seed and nonce on every write, UPDATEs too (§4.4)",
+        "Single-use record key, never stored (§5.3)",
+        "Context bound in KDF info and AAD (§6.3)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Two keys, never crossed",
+      "items": [
+        "The DEK encrypts; a sibling index key indexes (§5.2)",
+        "KMS is reached only by warm(); a cache miss fails closed (§8.1)",
+        "Every envelope carries a key commitment (§4.6)"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "What the database sees",
+      "items": [
+        "Only the envelope and a truncated index (§3.3, §7.11)",
+        "The index filters queries, never answers them (§7.5)",
+        "Suite 0xFF01 is provisional; nothing is frozen (§4.8)"
+      ]
+    }
+  ]
+}
