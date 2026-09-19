@@ -1,0 +1,81 @@
+{{/* The page layout for everything under /docs/: single documents and the
+     section pages (/docs/, /docs/adr/, /docs/issues/) alike, so a section page
+     reads like any other document. A section page lists its pages as cards
+     after its own text. */}}
+{{/* Hugo renders an empty <nav id="TableOfContents"> for a page with no
+     headings, so test for an entry rather than for the string. */}}
+{{ $toc := "" }}
+{{ if in .TableOfContents "<li>" }}{{ $toc = .TableOfContents }}{{ end }}
+<div class="wrap doc-layout">
+  {{/* Source order is article, document nav, table of contents: on a phone the
+       reader gets the text first instead of 30 nav links and the whole TOC.
+       The grid in main.css puts the columns back where a wide screen wants
+       them. */}}
+  <article class="prose">
+    <h1>{{ .Title }}</h1>
+    {{ with $toc }}
+      {{/* Below the width that fits a right-hand rail, the TOC folds into the
+           top of the article instead. It is the same markup twice; CSS shows
+           exactly one of them, so a screen reader never meets both. */}}
+      <details class="toc toc-inline">
+        <summary>On this page</summary>
+        {{ . }}
+      </details>
+    {{ end }}
+    {{ .Content }}
+    {{ if .IsSection }}
+      <ul class="cards">
+        {{ range .Pages.ByWeight }}
+          <li>
+            <a href="{{ .RelPermalink }}">
+              <strong>{{ .Title }}</strong>
+              <span class="muted">{{ .Summary | plainify | truncate 160 }}</span>
+            </a>
+          </li>
+        {{ end }}
+      </ul>
+    {{ end }}
+    <hr>
+    <p class="muted source-link">
+      {{ with .Params.sourceFile }}
+        {{ with site.Params.repo }}
+          <a href="{{ . }}/blob/main/{{ $.Params.sourceFile }}">View source: <code>{{ $.Params.sourceFile }}</code></a>
+        {{ else }}
+          Source: <code>{{ . }}</code>
+        {{ end }}
+      {{ end }}
+      {{ with .Lastmod }} &middot; last changed {{ .Format "2 January 2006" }}{{ end }}
+    </p>
+  </article>
+
+  <aside class="sidebar" aria-label="Documents">
+    <nav>
+      <p class="sidebar-title">Documents</p>
+      {{/* .Pages on the docs section gives the numbered documents plus the
+           adr/ and issues/ section pages -- not their contents, which would
+           put 22 more entries on every page. A sub-section expands only while
+           the reader is inside it. */}}
+      <ul>
+        {{ range (site.GetPage "/docs").Pages.ByWeight }}
+          <li>
+            <a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a>
+            {{ if and .IsSection (eq . $.CurrentSection) }}
+              <ul class="sidebar-sub">
+                {{ range .Pages.ByWeight }}
+                  <li><a href="{{ .RelPermalink }}"{{ if eq . $ }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a></li>
+                {{ end }}
+              </ul>
+            {{ end }}
+          </li>
+        {{ end }}
+      </ul>
+    </nav>
+  </aside>
+
+  {{ with $toc }}
+    <nav class="toc toc-rail" aria-label="On this page">
+      <p class="sidebar-title">On this page</p>
+      {{ . }}
+    </nav>
+  {{ end }}
+</div>

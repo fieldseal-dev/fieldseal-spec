@@ -12,7 +12,12 @@
   --banner-fg: #6b4a00;
   --banner-rule: #f0d091;
   --code-bg: #f4f5f7;
-  --measure: 74ch;
+  /* --wrap caps the page, and is set wide so that tables, code and figures
+     can use the whole content column instead of scrolling inside a
+     text-width one. --measure caps running text on pages that have no side
+     columns to bound it. */
+  --measure: 44rem;
+  --wrap: 96rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -33,17 +38,29 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* Every width on the page is in rem, so scaling the root size scales the
+   whole layout. 16px up to ~1800px of viewport, growing to 20px by ~3000px:
+   on a 2560px or ultrawide screen the page is larger rather than a narrow
+   strip with empty margins, and line lengths in characters stay the same. */
+html {
+  -webkit-text-size-adjust: 100%;
+  font-size: clamp(1rem, .625rem + .3333vw, 1.25rem);
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  font: 1rem/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
         "Helvetica Neue", Arial, sans-serif;
 }
 
-.wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.25rem; }
+.wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 1rem; }
+@media (min-width: 40rem) { .wrap { padding: 0 2rem; } }
+/* Pages with no side columns (home, 404): one centered column about as wide
+   as a document page's content column, with the text filling it. In the
+   full-width wrap the text would sit in the left third of the screen. */
+.wrap-narrow { max-width: 64rem; --measure: none; }
 
 a { color: var(--accent); text-underline-offset: 2px; }
 a:hover { text-decoration-thickness: 2px; }
@@ -104,7 +121,14 @@ a:hover { text-decoration-thickness: 2px; }
 .button-quiet { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--rule); }
 
 /* ---------- prose ---------- */
-.prose { max-width: var(--measure); padding: 2rem 0 4rem; }
+.prose { min-width: 0; padding: 2rem 0 4rem; }
+/* On a document page the nav and TOC columns already bound the line length,
+   so text fills the content column. Pages without side columns (home, the
+   documents list) would run edge to edge; their running text keeps the
+   measure. */
+:not(.doc-layout) > .prose > :is(h1, h2, h3, h4, h5, h6, p, ul, ol, dl, blockquote, details):not(.cards) {
+  max-width: var(--measure);
+}
 .prose h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 1rem; }
 .prose h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; letter-spacing: -0.01em; }
 .prose h3 { font-size: 1.12rem; margin: 2rem 0 .5rem; }
@@ -117,16 +141,9 @@ a:hover { text-decoration-thickness: 2px; }
 .prose hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
 .prose img { max-width: 100%; height: auto; }
 /* Figures from docs/figures/ are drawn on a 1080-unit canvas and shrink past
-   legibility inside the measure. On a wide screen, let them run out of the
-   column into the right-hand margin: the first term is the column's width when
-   the page is narrower than .wrap, the second the space left of the viewport's
-   right edge once it is wider (both keep a gutter and a scrollbar's width). */
-.prose img[src^="/figures/"] { display: block; margin: 1.5rem 0 .5rem; }
-@media (min-width: 60rem) {
-  .prose img[src^="/figures/"] {
-    width: min(1080px, calc(100vw - 22.5rem), calc(50vw + 11rem));
-    max-width: none;
-  }
+   legibility inside the text measure, so they take the full content column. */
+.prose img[src^="/figures/"] {
+  display: block; width: 100%; max-width: 67.5rem; margin: 1.5rem 0 .5rem;
 }
 
 code, pre, kbd, samp {
@@ -144,52 +161,80 @@ pre {
 }
 pre code { background: none; border: 0; padding: 0; }
 
-/* Tables in a spec get wide. Let them scroll rather than break the layout. */
-.prose table {
-  border-collapse: collapse; width: 100%; margin: 1.5rem 0;
-  display: block; overflow-x: auto; font-size: .93rem;
-}
+/* Tables in a spec get wide. The table stays a real table and fills the
+   column; only one wider than the column scrolls, inside the .table-wrap box
+   the render hook (layouts/_default/_markup/render-table.html) puts round it. */
+.table-wrap { overflow-x: auto; margin: 1.5rem 0; }
+.table-wrap:focus-visible { outline-offset: 0; }
+.prose table { border-collapse: collapse; width: 100%; font-size: .93rem; }
 .prose th, .prose td {
   border: 1px solid var(--rule); padding: .5rem .7rem; text-align: left;
   vertical-align: top;
 }
 .prose th { background: var(--bg-soft); font-weight: 600; }
 
-/* ---------- doc layout ---------- */
-.doc-layout { display: block; }
+/* ---------- doc layout ----------
+   The markup is article, document nav, TOC -- phone order. Three widths:
+     narrow   one column: article (with a folded TOC), then the nav below it
+     medium   nav | article, TOC still folded into the article
+     wide     nav | article | TOC rail                                       */
+.doc-layout { display: grid; grid-template-columns: minmax(0, 1fr); }
+.toc-rail { display: none; }
+.sidebar { border-top: 1px solid var(--rule); }
 
 @media (min-width: 60rem) {
   .doc-layout {
-    display: grid;
-    grid-template-columns: 16rem minmax(0, 1fr);
-    gap: 3rem;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    grid-template-areas: "nav main";
+    column-gap: 2.5rem;
     align-items: start;
   }
-  .sidebar { position: sticky; top: 1.5rem; max-height: calc(100vh - 3rem); overflow-y: auto; }
+  .doc-layout > .prose { grid-area: main; }
+  .sidebar { grid-area: nav; border-top: 0; }
+  .sidebar, .toc-rail {
+    position: sticky; top: 0; max-height: 100vh; overflow-y: auto;
+    padding-bottom: 2rem;
+  }
 }
 
-.sidebar { padding: 2rem 0 1rem; font-size: .92rem; }
+@media (min-width: 96rem) {
+  .doc-layout {
+    grid-template-columns: 14rem minmax(0, 1fr) 13rem;
+    grid-template-areas: "nav main toc";
+  }
+  .toc-rail { display: block; grid-area: toc; padding-top: 2rem; font-size: .88rem; }
+  .toc-inline { display: none; }
+}
+
+.sidebar { padding-top: 2rem; font-size: .92rem; }
 .sidebar-title {
   font-size: .74rem; text-transform: uppercase; letter-spacing: .09em;
   color: var(--fg-muted); margin: 0 0 .6rem; font-weight: 650;
 }
-.sidebar nav + nav { margin-top: 2rem; }
-.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar ul, .toc ul { list-style: none; margin: 0; padding: 0; }
 .sidebar li { margin: 0 0 .45rem; }
-.sidebar a { color: var(--fg-muted); text-decoration: none; display: block; }
-.sidebar a:hover { color: var(--fg); text-decoration: underline; }
+.sidebar a, .toc a { color: var(--fg-muted); text-decoration: none; display: block; }
+.sidebar a:hover, .toc a:hover { color: var(--fg); text-decoration: underline; }
 .sidebar a[aria-current] { color: var(--fg); font-weight: 600; }
 .sidebar-sub {
   margin: .45rem 0 .8rem; padding-left: .9rem;
   border-left: 1px solid var(--rule);
 }
 .sidebar-sub li { margin-bottom: .35rem; }
-.toc ul { padding-left: 0; }
 .toc ul ul { padding-left: .9rem; margin-top: .35rem; }
 .toc li { margin-bottom: .35rem; line-height: 1.4; }
+.toc-inline {
+  margin: 0 0 2rem; padding: .6rem 1rem; font-size: .92rem;
+  border: 1px solid var(--rule); border-radius: 6px; background: var(--bg-soft);
+}
+.toc-inline summary { cursor: pointer; font-weight: 600; }
+.toc-inline[open] summary { margin-bottom: .6rem; }
 
 /* ---------- cards ---------- */
-.cards { list-style: none; margin: 1.5rem 0 0; padding: 0; display: grid; gap: .75rem; }
+.cards {
+  list-style: none; margin: 1.5rem 0 0; padding: 0; display: grid; gap: .75rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+}
 .cards a {
   display: block; padding: .95rem 1.1rem; border: 1px solid var(--rule);
   border-radius: 8px; text-decoration: none; color: var(--fg);
@@ -197,7 +242,7 @@ pre code { background: none; border: 0; padding: 0; }
 }
 .cards a:hover { border-color: var(--accent); }
 .cards strong { display: block; margin-bottom: .2rem; }
-.doc-cards { padding-bottom: 4rem; max-width: var(--measure); }
+.doc-cards { padding-bottom: 4rem; }
 
 .muted { color: var(--fg-muted); font-size: .92rem; }
 .source-link code { font-size: .85em; }

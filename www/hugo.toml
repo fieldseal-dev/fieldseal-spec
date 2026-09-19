@@ -40,7 +40,10 @@ disableKinds = ["taxonomy", "term", "rss"]
     weight = 10
   [[menus.main]]
     name = "Specification"
-    pageRef = "/docs/spec-v0.1"
+    # pageRef is the content path, not the URL: the page is served at
+    # /docs/spec-v0.1/ but its file is content/docs/02-spec-v0.1.md. A pageRef
+    # that matches no page renders as href="" with no build error.
+    pageRef = "/docs/02-spec-v0.1"
     weight = 20
   [[menus.main]]
     name = "GitHub"
