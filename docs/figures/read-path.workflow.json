@@ -1,0 +1,305 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Fieldseal Read Path",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "adapter"
+        },
+        "security": {
+          "label": "Fieldseal check"
+        },
+        "database": {
+          "label": "stored bytes"
+        },
+        "external": {
+          "label": "§9 error"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "gates",
+        "label": "Before any key",
+        "focus": [
+          "row",
+          "recognize",
+          "authorize",
+          "e-recognize",
+          "e-authorize"
+        ],
+        "note": "Recognition and the allow-list decide from the header bytes alone, before a key is asked for (§3.4, §4.3)."
+      },
+      {
+        "id": "keys",
+        "label": "Keys and commitment",
+        "focus": [
+          "authorize",
+          "keys",
+          "commit",
+          "e-keys",
+          "e-commit"
+        ],
+        "note": "Every cached, currently valid key is a candidate; the commitment is checked before the AEAD is opened (§4.6)."
+      },
+      {
+        "id": "open",
+        "label": "Open and return",
+        "focus": [
+          "commit",
+          "open",
+          "value",
+          "e-open"
+        ],
+        "note": "Only a committed key opens the ciphertext; the adapter turns the bytes back into a value (§3.6)."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "adapter",
+      "label": "fieldseal_django"
+    },
+    {
+      "id": "core",
+      "label": "fieldseal core"
+    },
+    {
+      "id": "errors",
+      "label": "Errors (§9)",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "row",
+    "recognize",
+    "authorize",
+    "keys",
+    "commit",
+    "open",
+    "value"
+  ],
+  "nodes": [
+    {
+      "id": "row",
+      "lane": "adapter",
+      "col": 0,
+      "type": "database",
+      "label": "from_db_value",
+      "sublabel": "envelope bytes",
+      "width": 132
+    },
+    {
+      "id": "recognize",
+      "lane": "core",
+      "col": 1,
+      "type": "security",
+      "label": "Recognize",
+      "sublabel": "§3.4 header",
+      "width": 132
+    },
+    {
+      "id": "authorize",
+      "lane": "core",
+      "col": 2,
+      "type": "security",
+      "label": "Authorize",
+      "sublabel": "§4.3 allow-list",
+      "width": 132
+    },
+    {
+      "id": "keys",
+      "lane": "core",
+      "col": 3,
+      "type": "security",
+      "label": "decryption_keys",
+      "sublabel": "§8 KeyProvider",
+      "width": 132
+    },
+    {
+      "id": "commit",
+      "lane": "core",
+      "col": 4,
+      "type": "security",
+      "label": "Commitment",
+      "sublabel": "§4.6 per key",
+      "width": 132
+    },
+    {
+      "id": "open",
+      "lane": "core",
+      "col": 5,
+      "type": "security",
+      "label": "AEAD open",
+      "sublabel": "§6.3 AAD",
+      "width": 132
+    },
+    {
+      "id": "value",
+      "lane": "adapter",
+      "col": 5,
+      "type": "backend",
+      "label": "Value",
+      "sublabel": "§3.6 codec",
+      "width": 132
+    },
+    {
+      "id": "e-recognize",
+      "lane": "errors",
+      "col": 1,
+      "type": "external",
+      "label": "NOT_CIPHERTEXT",
+      "sublabel": "strict mode",
+      "width": 132
+    },
+    {
+      "id": "e-authorize",
+      "lane": "errors",
+      "col": 2,
+      "type": "external",
+      "label": "SUITE_NOT_ALLOWED",
+      "sublabel": "or LENGTH_EXCEEDED",
+      "width": 132
+    },
+    {
+      "id": "e-keys",
+      "lane": "errors",
+      "col": 3,
+      "type": "external",
+      "label": "KEY_UNAVAILABLE",
+      "sublabel": "none cached",
+      "width": 132
+    },
+    {
+      "id": "e-commit",
+      "lane": "errors",
+      "col": 4,
+      "type": "external",
+      "label": "COMMITMENT_INVALID",
+      "sublabel": "no key commits",
+      "width": 132
+    },
+    {
+      "id": "e-open",
+      "lane": "errors",
+      "col": 5,
+      "type": "external",
+      "label": "TAG_INVALID",
+      "sublabel": "tampered bytes",
+      "width": 132
+    }
+  ],
+  "edges": [
+    {
+      "id": "decrypt",
+      "from": "row",
+      "to": "recognize",
+      "variant": "emphasis",
+      "role": "main",
+      "label": "decrypt"
+    },
+    {
+      "id": "recognized",
+      "from": "recognize",
+      "to": "authorize",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "authorized",
+      "from": "authorize",
+      "to": "keys",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "candidates",
+      "from": "keys",
+      "to": "commit",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "committed",
+      "from": "commit",
+      "to": "open",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "plaintext",
+      "from": "open",
+      "to": "value",
+      "variant": "emphasis",
+      "role": "main",
+      "label": "bytes"
+    },
+    {
+      "id": "x-recognize",
+      "from": "recognize",
+      "to": "e-recognize",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "x-authorize",
+      "from": "authorize",
+      "to": "e-authorize",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "x-keys",
+      "from": "keys",
+      "to": "e-keys",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "x-commit",
+      "from": "commit",
+      "to": "e-commit",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "x-open",
+      "from": "open",
+      "to": "e-open",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Checked before any key",
+      "items": [
+        "Not an envelope: strict raises, permissive returns it as-is (§10.3)",
+        "fmt_ver 0x02 raises in every mode (§3.4)",
+        "Allow-list decides authorization, never recognition (§4.3)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Commitment before AEAD",
+      "items": [
+        "Each cached key version is a candidate (§5.6)",
+        "Only a key whose commitment matches may open (§4.6)",
+        "A wrong context fails here too, like a wrong key (§6.3)"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Never degrades",
+      "items": [
+        "Every failure is a distinct §9 error, never a null",
+        "No KMS call: a key not in the cache is KEY_UNAVAILABLE",
+        "Error messages carry no plaintext or key material (§9)"
+      ]
+    }
+  ]
+}

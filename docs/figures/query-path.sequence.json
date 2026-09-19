@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Fieldseal Equality Query (Django)",
+    "viewBox": [
+      1080,
+      552
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "rewrite",
+        "label": "Index the query",
+        "focus": [
+          "app",
+          "adapter",
+          "core",
+          "provider"
+        ],
+        "note": "The lookup is compiled onto the index column: the query value is indexed with the index key (§7.2)."
+      },
+      {
+        "id": "fetch",
+        "label": "Fetch candidates",
+        "focus": [
+          "adapter",
+          "db"
+        ],
+        "note": "The database matches index values only; a truncated index returns a bucket, not an answer (§7.4)."
+      },
+      {
+        "id": "verify",
+        "label": "Re-verify",
+        "focus": [
+          "app",
+          "adapter",
+          "core"
+        ],
+        "note": "Each candidate is decrypted and compared under the index's normalizer; mismatches are dropped (§7.5)."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "backend",
+      "label": "Django app",
+      "sublabel": "Patient.objects"
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "fieldseal_django",
+      "sublabel": "FieldsealQuerySet"
+    },
+    {
+      "id": "core",
+      "type": "security",
+      "label": "fieldseal core",
+      "sublabel": "Fieldseal client"
+    },
+    {
+      "id": "provider",
+      "type": "security",
+      "label": "KeyProvider",
+      "sublabel": "Envelope + §5.5 cache"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "Database",
+      "sublabel": "index + envelope"
+    }
+  ],
+  "segments": [
+    {
+      "from": 174,
+      "to": 304,
+      "label": "Index the query (EncryptedExact)"
+    },
+    {
+      "from": 330,
+      "to": 376,
+      "label": "Fetch candidates"
+    },
+    {
+      "from": 402,
+      "to": 476,
+      "label": "Re-verify (_fetch_all)"
+    }
+  ],
+  "messages": [
+    {
+      "id": "filter",
+      "from": "app",
+      "to": "adapter",
+      "y": 184,
+      "label": "filter(ssn=\"…\")",
+      "variant": "emphasis"
+    },
+    {
+      "id": "index-call",
+      "from": "adapter",
+      "to": "core",
+      "y": 212,
+      "label": "blind_index(value, ctx) §7.2",
+      "variant": "default",
+      "note": "EncryptedExact compiles the lookup onto the index column; the query value is indexed exactly as a write would index it."
+    },
+    {
+      "id": "ikey-get",
+      "from": "core",
+      "to": "provider",
+      "y": 240,
+      "label": "encryption_key(index ctx) §8",
+      "variant": "security"
+    },
+    {
+      "id": "ikey-ret",
+      "from": "provider",
+      "to": "core",
+      "y": 268,
+      "label": "index key, not the DEK §5.2",
+      "variant": "return"
+    },
+    {
+      "id": "index-ret",
+      "from": "core",
+      "to": "adapter",
+      "y": 296,
+      "label": "index value §7.3–7.4",
+      "variant": "return",
+      "note": "Argon2id for enumerable domains: roughly 10–100 ms per query term (§7.3)."
+    },
+    {
+      "id": "select",
+      "from": "adapter",
+      "to": "db",
+      "y": 340,
+      "label": "SELECT … WHERE idx = %s §7.1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "rows",
+      "from": "db",
+      "to": "adapter",
+      "y": 368,
+      "label": "candidates: one bucket §7.4",
+      "variant": "return",
+      "note": "Truncation makes collisions certain, so the rows are a superset of the answer."
+    },
+    {
+      "id": "verify",
+      "from": "adapter",
+      "to": "core",
+      "y": 412,
+      "label": "decrypt + normalize each row",
+      "variant": "emphasis",
+      "note": "Every candidate goes through the read path, then the index's own normalizer (§7.5)."
+    },
+    {
+      "id": "verified",
+      "from": "core",
+      "to": "adapter",
+      "y": 440,
+      "label": "normalized plaintexts",
+      "variant": "return"
+    },
+    {
+      "id": "answer",
+      "from": "adapter",
+      "to": "app",
+      "y": 468,
+      "label": "only rows that match §7.5",
+      "variant": "return",
+      "note": "Rows whose normalized plaintext differs from the query are dropped before Django sees them."
+    }
+  ],
+  "activations": [
+    {
+      "participant": "adapter",
+      "from": 184,
+      "to": 474,
+      "type": "backend"
+    },
+    {
+      "participant": "core",
+      "from": 212,
+      "to": 302,
+      "type": "security"
+    },
+    {
+      "participant": "provider",
+      "from": 236,
+      "to": 274,
+      "type": "security"
+    },
+    {
+      "participant": "db",
+      "from": 336,
+      "to": 374,
+      "type": "database"
+    },
+    {
+      "participant": "core",
+      "from": 412,
+      "to": 446,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "The index only narrows",
+      "items": [
+        "Truncation makes collisions certain (§7.4)",
+        "Every candidate is decrypted and re-verified (§7.5)",
+        "count() and get() verify too; .candidates() opts out"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "What a query costs",
+      "items": [
+        "Argon2id: ~10–100 ms per query term (§7.3)",
+        "Rows fetched: a small multiple of the true matches (§7.4)",
+        "The read path's key rules apply to every candidate"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "What is refused",
+      "items": [
+        "exclude(), negated Q and XOR over the field (§10.2)",
+        "ORDER BY, DISTINCT or aggregates over envelopes",
+        "contains, iexact, ranges: no index can answer (§7.10)"
+      ]
+    }
+  ]
+}
