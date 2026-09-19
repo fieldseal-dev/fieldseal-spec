@@ -67,6 +67,17 @@ becomes a one-way door into a single language ecosystem.
    zero-downtime migration, key-rotation runbook, KMS-outage degradation modes,
    and published benchmarks.
 
+![Two implementations in different languages, each an application and ORM adapter over a Fieldseal core, share one database row. Core A seals the encrypted column and writes the blind index; core B opens the same envelope and queries the same index. Both cores unwrap tenant keys from the KMS in warm(), and both must pass the same pinned test vectors.](/figures/spec-overview.svg)
+
+**How the pieces fit.** Two implementations in different languages share one
+database row: what core A seals, core B opens with the same key, and a blind
+index written by one is queried by the other. Adapters route values to the core
+and hold no cryptography. Both cores unwrap tenant keys from the KMS in
+`warm()`, never on the value path, and both must pass the same pinned test
+vectors. Each part has its own diagram: the [write path](/docs/write-path/),
+the [read path](/docs/read-path/), the [equality query](/docs/query-path/) and
+the [key hierarchy](/docs/key-lifecycle/).
+
 ## What this is not
 
 - **Not protection against a compromised application process.** The keys are in
