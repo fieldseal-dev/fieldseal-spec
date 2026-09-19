@@ -6,6 +6,8 @@ The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RE
 
 > **Reviewer note.** Every normative statement below carries its justification inline. Where the underlying literature is contested, or where a design choice was made against a plausible alternative, this is stated rather than hidden. Two markers appear in the text and mean different things. **[OPEN]** marks a question this specification has not answered; all of them are listed in §13. **[PROVISIONAL]** marks a question it has answered *provisionally under Gate 0a* (PRD §8) so that implementation could begin — the answer is written normatively, is what the vectors and cores are built against, and is expected to be the thing your review changes. Each provisional marker names its tracker issue and the question in [`16-reviewer-brief.md`](16-reviewer-brief.md) that would close it. Nothing marked provisional is settled, and §4.8 keeps data written under one identifiable after the fact.
 
+> **Diagrams (informative).** Four companion pages draw what this specification requires, step by step, with each step linked back to the section that requires it: [the write path](21-write-path.md) (§3, §4, §5.3, §6, §7.2), [the read path](22-read-path.md) (§3.4, §4.3, §4.6, §9, §10.3), [the equality query](23-query-path.md) (§7), and [the key hierarchy and the life of a key version](24-key-lifecycle.md) (§5, §8.2). They are reading aids, not part of the specification: where a page and this text disagree, this text is right.
+
 ---
 
 ## 1. Scope
