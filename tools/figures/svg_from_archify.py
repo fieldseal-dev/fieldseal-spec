@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Turn an Archify sequence-diagram HTML page into a standalone, script-free SVG
+Turn an Archify-rendered HTML page into a standalone, script-free SVG
 for docs/figures/.
 
 Archify (https://github.com/tt-a1i/archify, MIT) renders a diagram as an HTML
@@ -43,6 +43,9 @@ LIGHT = {
     "lane-fill": "rgba(248, 250, 252, 0.65)", "lane-stroke": "#cbd5e1",
     "text": "#0f172a", "text-muted": "#64748b", "text-dim": "#94a3b8",
     "external-fill": "rgba(148, 163, 184, 0.18)", "external-stroke": "#64748b",
+    "frontend-fill": "rgba(34, 211, 238, 0.15)", "frontend-stroke": "#0891b2",
+    "cloud-fill": "rgba(251, 191, 36, 0.18)", "cloud-stroke": "#d97706",
+    "messagebus-fill": "rgba(251, 146, 60, 0.15)", "messagebus-stroke": "#ea580c",
     "arrow": "#94a3b8", "arrow-emphasis": "#059669",
 }
 DARK = {
@@ -53,6 +56,9 @@ DARK = {
     "lane-fill": "rgba(15, 23, 42, 0.22)", "lane-stroke": "#334155",
     "text": "#ffffff", "text-muted": "#94a3b8", "text-dim": "#64748b",
     "external-fill": "rgba(30, 41, 59, 0.5)", "external-stroke": "#94a3b8",
+    "frontend-fill": "rgba(8, 51, 68, 0.4)", "frontend-stroke": "#22d3ee",
+    "cloud-fill": "rgba(120, 53, 15, 0.3)", "cloud-stroke": "#fbbf24",
+    "messagebus-fill": "rgba(251, 146, 60, 0.3)", "messagebus-stroke": "#fb923c",
     "arrow": "#64748b", "arrow-emphasis": "#34d399",
 }
 
@@ -62,7 +68,11 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .c-backend { fill: var(--backend-fill); stroke: var(--backend-stroke); }
 .c-database { fill: var(--database-fill); stroke: var(--database-stroke); }
 .c-security { fill: var(--security-fill); stroke: var(--security-stroke); }
+.c-frontend { fill: var(--frontend-fill); stroke: var(--frontend-stroke); }
+.c-cloud { fill: var(--cloud-fill); stroke: var(--cloud-stroke); }
+.c-messagebus { fill: var(--messagebus-fill); stroke: var(--messagebus-stroke); }
 .c-external { fill: var(--external-fill); stroke: var(--external-stroke); }
+.c-region { fill: rgba(251, 191, 36, 0.05); stroke: var(--cloud-stroke); stroke-dasharray: 8,4; }
 .c-security-group { fill: transparent; stroke: var(--security-stroke); stroke-dasharray: 4,4; }
 .c-lane { fill: var(--lane-fill); stroke: var(--lane-stroke); stroke-dasharray: 6,6; }
 .c-mask { fill: var(--mask); stroke: none; }
@@ -72,8 +82,12 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .t-backend { fill: var(--backend-stroke); }
 .t-security { fill: var(--security-stroke); }
 .t-database { fill: var(--database-stroke); }
+.t-frontend { fill: var(--frontend-stroke); }
+.t-cloud { fill: var(--cloud-stroke); }
+.t-messagebus { fill: var(--messagebus-stroke); }
 .a-default { stroke: var(--arrow); fill: none; }
 .a-emphasis { stroke: var(--arrow-emphasis); fill: none; }
+.a-dashed { stroke: var(--database-stroke); fill: none; stroke-dasharray: 4,4; }
 .a-security { stroke: var(--security-stroke); fill: none; stroke-dasharray: 5,5; }
 .m-default { fill: var(--arrow); }
 .m-emphasis { fill: var(--arrow-emphasis); }
@@ -83,6 +97,9 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .s-database { color: var(--database-stroke); }
 .s-security { color: var(--security-stroke); }
 .s-external { color: var(--external-stroke); }
+.s-frontend { color: var(--frontend-stroke); }
+.s-cloud { color: var(--cloud-stroke); }
+.s-messagebus { color: var(--messagebus-stroke); }
 .semantic-sigil { fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; opacity: 0.76; }
 .semantic-sigil .sigil-fill { fill: currentColor; stroke: none; }
 """
@@ -125,14 +142,15 @@ def enlarge_labels(svg: str) -> str:
 
 
 def content_extent(svg: str) -> tuple:
-    """Top of the highest rect and the lowest drawn point (text baselines, rect
-    bottoms). Runs before the background rect is added. Only rects with a
+    """Top of the highest rect or text (lane titles sit above the first rect)
+    and the lowest drawn point (text baselines, rect bottoms). Runs before the background rect is added. Only rects with a
     class count: the unclassed ones are node-icon strokes drawn in the icon's
     own translated coordinates, where y=5 says nothing about the page."""
     rects = [(float(y), float(h)) for y, h in
              re.findall(r'<rect [^>]*? y="([\d.]+)"[^>]*? height="([\d.]+)"[^>]*class=', svg)]
     texts = [float(y) for y in re.findall(r'<text [^>]*? y="([\d.]+)"', svg)]
-    top = min(y for y, _ in rects)
+    # A baseline sits below its glyphs; 12 units covers the tallest text used.
+    top = min([y for y, _ in rects] + [y - 12 for y in texts])
     bottom = max([y + h for y, h in rects] + [y + 6 for y in texts])
     return top, bottom
 
@@ -153,15 +171,14 @@ def convert(page: str, desc: str) -> str:
     svg = re.sub(r'\srole="button"', "", svg)
 
     svg = enlarge_labels(svg)
-    svg, n = re.subn(r'(<g)(>\s*<text [^>]*>Legend</text>)',
-                     rf'\1 transform="translate(0 {LEGEND_SHIFT})"\2', svg, count=1)
-    if n != 1:
-        raise SystemExit("error: legend group not found")
+    # Not every figure has a legend (architecture diagrams often do not).
+    svg, shifted = re.subn(r'(<g)(>\s*<text [^>]*>Legend</text>)',
+                           rf'\1 transform="translate(0 {LEGEND_SHIFT})"\2', svg, count=1)
 
     width = float(re.search(r'viewBox="0 0 ([\d.]+) [\d.]+"', svg).group(1))
     top, bottom = content_extent(svg)
     top = max(0, round(top) - MARGIN)
-    height = round(bottom + LEGEND_SHIFT + MARGIN) - top
+    height = round(bottom + LEGEND_SHIFT * shifted + MARGIN) - top
     svg = re.sub(r'<svg viewBox="[^"]+"',
                  f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:g}" '
                  f'height="{height}" viewBox="0 {top} {width:g} {height}"', svg, count=1)
@@ -185,9 +202,9 @@ def main() -> int:
     if "<script" in svg:
         print("error: script survived extraction", file=sys.stderr)
         return 1
-    # A class with no rule here renders black in an <img>, silently. Archify
-    # kinds not yet used by a figure (frontend, cloud, messagebus) land here
-    # first; add their colours from Archify's classic preset when they do.
+    # A class with no rule here renders black in an <img>, silently. Every
+    # Archify component kind is covered; a new renderer class lands here
+    # first -- add it from Archify's classic preset.
     used = {c for attr in re.findall(r'class="([^"]+)"', svg) for c in attr.split()}
     defined = set(re.findall(r"\.([a-zA-Z][\w-]*)", RULES))
     if used - defined:

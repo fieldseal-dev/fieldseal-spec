@@ -16,6 +16,8 @@ docstring.
 | `write-path.svg` | `write-path.sequence.json` | [`docs/21-write-path.md`](../../docs/21-write-path.md) |
 | `read-path.svg` | `read-path.workflow.json` | [`docs/22-read-path.md`](../../docs/22-read-path.md) |
 | `query-path.svg` | `query-path.sequence.json` | [`docs/23-query-path.md`](../../docs/23-query-path.md) |
+| `key-hierarchy.svg` | `key-hierarchy.architecture.json` | [`docs/24-key-lifecycle.md`](../../docs/24-key-lifecycle.md) |
+| `key-lifecycle.svg` | `key-lifecycle.lifecycle.json` | [`docs/24-key-lifecycle.md`](../../docs/24-key-lifecycle.md) |
 
 ## Regenerating a figure
 
@@ -39,6 +41,8 @@ The `--desc` text becomes the SVG's `<desc>`, which screen readers announce:
 - `write-path`: Sequence diagram of one encrypted-field write through the Django adapter: encrypt under a single-use record key, derive the blind index under the separate index key, and store both in one INSERT or UPDATE.
 - `read-path`: Workflow of one encrypted-field read: recognize the envelope, check the decrypt allow-list, take candidate keys from the cache, verify the key commitment, open the AEAD; each gate has its own error.
 - `query-path`: Sequence diagram of an equality query through the Django adapter: index the query value, fetch the candidate rows that share its blind index, decrypt and re-verify each, and return only true matches.
+- `key-hierarchy`: Key hierarchy: a root KEK in the KMS wraps two sibling tenant keys, the DEK and the index key; the DEK derives a single-use record key per write that seals the envelope, and the index key derives a blind-index key per index that produces the truncated blind index.
+- `key-lifecycle`: Lifecycle of one key version: created, active for write, decrypt-only once a newer version is active, re-encrypted away by a sweep, unreferenced, scheduled for destruction with a cancellable delay window, destroyed; destroying a version that envelopes still name loses those rows.
 
 `deliver` must exit 0: it validates the layout (label collisions, crossings,
 legibility) before it writes the page. Never edit an SVG by hand — the next

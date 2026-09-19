@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Key Version Lifecycle",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "rotation",
+        "label": "Rotation",
+        "focus": [
+          "created",
+          "active",
+          "decrypt"
+        ],
+        "note": "A new version becomes active for write; the old one stays decryptable (§5.6)."
+      },
+      {
+        "id": "sweep",
+        "label": "Re-encryption",
+        "focus": [
+          "decrypt",
+          "sweep",
+          "retired"
+        ],
+        "note": "Only a full sweep moves every envelope off a version, which is what lets it be destroyed (§5.8)."
+      },
+      {
+        "id": "destroy",
+        "label": "Destruction",
+        "focus": [
+          "retired",
+          "scheduled",
+          "destroyed",
+          "lost"
+        ],
+        "note": "Destruction is unrecoverable: it needs a delay window and a confirmation step (§8.2)."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Version states"
+    },
+    {
+      "id": "waiting",
+      "label": "Destruction window"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "created",
+      "type": "start",
+      "label": "New version",
+      "sublabel": "wrapped by KEK",
+      "lane": "main",
+      "col": 0,
+      "tag": "directory",
+      "step": "01"
+    },
+    {
+      "id": "active",
+      "type": "active",
+      "label": "Active for write",
+      "sublabel": "exactly one §5.6",
+      "lane": "main",
+      "col": 1,
+      "tag": "in core",
+      "step": "02"
+    },
+    {
+      "id": "decrypt",
+      "type": "waiting",
+      "label": "Decrypt-only",
+      "sublabel": "still a candidate",
+      "lane": "main",
+      "col": 2,
+      "tag": "in core",
+      "step": "03"
+    },
+    {
+      "id": "sweep",
+      "type": "active",
+      "label": "Re-encrypting",
+      "sublabel": "rotate() sweep §5.8",
+      "lane": "main",
+      "col": 3,
+      "tag": "tool not built",
+      "step": "04"
+    },
+    {
+      "id": "retired",
+      "type": "success",
+      "label": "Unreferenced",
+      "sublabel": "no envelope names it",
+      "lane": "main",
+      "col": 4,
+      "tag": "verify first",
+      "step": "05"
+    },
+    {
+      "id": "scheduled",
+      "type": "waiting",
+      "label": "Scheduled",
+      "sublabel": "delay window §8.2",
+      "lane": "waiting",
+      "col": 2,
+      "tag": "cancellable"
+    },
+    {
+      "id": "lost",
+      "type": "failure",
+      "label": "Rows lost",
+      "sublabel": "envelopes remain",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "unrecoverable"
+    },
+    {
+      "id": "destroyed",
+      "type": "neutral",
+      "label": "Destroyed",
+      "sublabel": "key material gone",
+      "lane": "terminal",
+      "col": 2,
+      "tag": "final"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "created",
+      "to": "active",
+      "label": "activate",
+      "variant": "emphasis",
+      "labelDy": -25
+    },
+    {
+      "from": "active",
+      "to": "decrypt",
+      "label": "newer active",
+      "variant": "emphasis",
+      "labelDy": -25
+    },
+    {
+      "from": "decrypt",
+      "to": "sweep",
+      "label": "sweep starts",
+      "variant": "emphasis",
+      "labelDy": -25
+    },
+    {
+      "from": "sweep",
+      "to": "retired",
+      "label": "none left",
+      "variant": "emphasis",
+      "labelDy": -25
+    },
+    {
+      "from": "retired",
+      "to": "scheduled",
+      "label": "confirm",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "scheduled",
+      "to": "retired",
+      "label": "cancel",
+      "variant": "dashed",
+      "route": "right-channel",
+      "fromSide": "right",
+      "toSide": "right"
+    },
+    {
+      "from": "scheduled",
+      "to": "destroyed",
+      "label": "window ends",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "decrypt",
+      "to": "lost",
+      "label": "destroyed early",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Rotation is not re-encryption",
+      "items": [
+        "Re-wrapping under a new KEK leaves data keys as they were (§5.8)",
+        "Only a full sweep reaches Unreferenced; on-read never does",
+        "Index keys rotate separately, with an index rebuild (§7.8)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "What exists today",
+      "items": [
+        "Versions and the active one: the key directory (core)",
+        "rotate(): in core; the sweep tool is not built yet",
+        "No destruction API; §8.2 constrains any that is added"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Why destruction waits",
+      "items": [
+        "A destroyed key makes its envelopes unreadable (§8.2)",
+        "A delay window and a confirmation step are mandatory",
+        "Cancel within the window returns to Unreferenced"
+      ]
+    }
+  ]
+}

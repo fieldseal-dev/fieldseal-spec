@@ -2,14 +2,18 @@
         <title id="archify-diagram-title">Fieldseal Equality Query (Django)</title>
         <desc id="archify-diagram-description">Sequence diagram of an equality query through the Django adapter: index the query value, fetch the candidate rows that share its blind index, decrypt and re-verify each, and return only true matches.</desc>
         <style>
-svg { --bg: #ffffff; --mask: #ffffff; --backend-fill: rgba(52, 211, 153, 0.18); --backend-stroke: #059669; --database-fill: rgba(167, 139, 250, 0.2); --database-stroke: #7c3aed; --security-fill: rgba(251, 113, 133, 0.15); --security-stroke: #e11d48; --lane-fill: rgba(248, 250, 252, 0.65); --lane-stroke: #cbd5e1; --text: #0f172a; --text-muted: #64748b; --text-dim: #94a3b8; --external-fill: rgba(148, 163, 184, 0.18); --external-stroke: #64748b; --arrow: #94a3b8; --arrow-emphasis: #059669; }
-@media (prefers-color-scheme: dark) { svg { --bg: #0f1216; --mask: #0f1216; --backend-fill: rgba(6, 78, 59, 0.4); --backend-stroke: #34d399; --database-fill: rgba(76, 29, 149, 0.4); --database-stroke: #a78bfa; --security-fill: rgba(136, 19, 55, 0.4); --security-stroke: #fb7185; --lane-fill: rgba(15, 23, 42, 0.22); --lane-stroke: #334155; --text: #ffffff; --text-muted: #94a3b8; --text-dim: #64748b; --external-fill: rgba(30, 41, 59, 0.5); --external-stroke: #94a3b8; --arrow: #64748b; --arrow-emphasis: #34d399; } }
+svg { --bg: #ffffff; --mask: #ffffff; --backend-fill: rgba(52, 211, 153, 0.18); --backend-stroke: #059669; --database-fill: rgba(167, 139, 250, 0.2); --database-stroke: #7c3aed; --security-fill: rgba(251, 113, 133, 0.15); --security-stroke: #e11d48; --lane-fill: rgba(248, 250, 252, 0.65); --lane-stroke: #cbd5e1; --text: #0f172a; --text-muted: #64748b; --text-dim: #94a3b8; --external-fill: rgba(148, 163, 184, 0.18); --external-stroke: #64748b; --frontend-fill: rgba(34, 211, 238, 0.15); --frontend-stroke: #0891b2; --cloud-fill: rgba(251, 191, 36, 0.18); --cloud-stroke: #d97706; --messagebus-fill: rgba(251, 146, 60, 0.15); --messagebus-stroke: #ea580c; --arrow: #94a3b8; --arrow-emphasis: #059669; }
+@media (prefers-color-scheme: dark) { svg { --bg: #0f1216; --mask: #0f1216; --backend-fill: rgba(6, 78, 59, 0.4); --backend-stroke: #34d399; --database-fill: rgba(76, 29, 149, 0.4); --database-stroke: #a78bfa; --security-fill: rgba(136, 19, 55, 0.4); --security-stroke: #fb7185; --lane-fill: rgba(15, 23, 42, 0.22); --lane-stroke: #334155; --text: #ffffff; --text-muted: #94a3b8; --text-dim: #64748b; --external-fill: rgba(30, 41, 59, 0.5); --external-stroke: #94a3b8; --frontend-fill: rgba(8, 51, 68, 0.4); --frontend-stroke: #22d3ee; --cloud-fill: rgba(120, 53, 15, 0.3); --cloud-stroke: #fbbf24; --messagebus-fill: rgba(251, 146, 60, 0.3); --messagebus-stroke: #fb923c; --arrow: #64748b; --arrow-emphasis: #34d399; } }
 svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
 .bg { fill: var(--bg); }
 .c-backend { fill: var(--backend-fill); stroke: var(--backend-stroke); }
 .c-database { fill: var(--database-fill); stroke: var(--database-stroke); }
 .c-security { fill: var(--security-fill); stroke: var(--security-stroke); }
+.c-frontend { fill: var(--frontend-fill); stroke: var(--frontend-stroke); }
+.c-cloud { fill: var(--cloud-fill); stroke: var(--cloud-stroke); }
+.c-messagebus { fill: var(--messagebus-fill); stroke: var(--messagebus-stroke); }
 .c-external { fill: var(--external-fill); stroke: var(--external-stroke); }
+.c-region { fill: rgba(251, 191, 36, 0.05); stroke: var(--cloud-stroke); stroke-dasharray: 8,4; }
 .c-security-group { fill: transparent; stroke: var(--security-stroke); stroke-dasharray: 4,4; }
 .c-lane { fill: var(--lane-fill); stroke: var(--lane-stroke); stroke-dasharray: 6,6; }
 .c-mask { fill: var(--mask); stroke: none; }
@@ -19,8 +23,12 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .t-backend { fill: var(--backend-stroke); }
 .t-security { fill: var(--security-stroke); }
 .t-database { fill: var(--database-stroke); }
+.t-frontend { fill: var(--frontend-stroke); }
+.t-cloud { fill: var(--cloud-stroke); }
+.t-messagebus { fill: var(--messagebus-stroke); }
 .a-default { stroke: var(--arrow); fill: none; }
 .a-emphasis { stroke: var(--arrow-emphasis); fill: none; }
+.a-dashed { stroke: var(--database-stroke); fill: none; stroke-dasharray: 4,4; }
 .a-security { stroke: var(--security-stroke); fill: none; stroke-dasharray: 5,5; }
 .m-default { fill: var(--arrow); }
 .m-emphasis { fill: var(--arrow-emphasis); }
@@ -30,6 +38,9 @@ svg { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Li
 .s-database { color: var(--database-stroke); }
 .s-security { color: var(--security-stroke); }
 .s-external { color: var(--external-stroke); }
+.s-frontend { color: var(--frontend-stroke); }
+.s-cloud { color: var(--cloud-stroke); }
+.s-messagebus { color: var(--messagebus-stroke); }
 .semantic-sigil { fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; opacity: 0.76; }
 .semantic-sigil .sigil-fill { fill: currentColor; stroke: none; }
 </style>
