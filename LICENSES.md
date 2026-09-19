@@ -14,7 +14,7 @@ Fieldseal uses three licenses, chosen so that each part of the repository can be
 
 **`CC0-1.0`** — `vectors/`, including the JSON vector files, their schemas, and `MANIFEST.json`. `vectors/README.md` is documentation *about* the vectors and is `CC-BY-4.0` like the rest of the docs.
 
-**`Apache-2.0`** — `core/`, `adapters/`, `tools/`, `bench/`, `examples/`, `.github/`, and the site machinery in `www/` (templates, CSS, and `www/scripts/`). Note that `www/content/docs/` is generated from `docs/` at build time and is not committed; the generated copies carry the license of their source, `CC-BY-4.0`.
+**`Apache-2.0`** — `core/`, `adapters/`, `tools/`, `bench/`, `examples/`, `.github/`, and the site machinery in `www/` (templates, CSS, and `www/scripts/`). Note that `www/content/docs/` and `www/static/figures/` are generated from `docs/` at build time and are not committed; the generated copies carry the license of their source, `CC-BY-4.0`.
 
 Where a directory contains both, the more specific rule above wins over the general one.
 

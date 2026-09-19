@@ -40,14 +40,16 @@ filename:
 | `docs/adr/0002-suite-0x0001-aead.md` | `/docs/adr/0002-suite-0x0001-aead/` |
 | `docs/issues/README.md` | `/docs/issues/` — the section index |
 | `docs/issues/G02-argon2id-parameters.md` | `/docs/issues/g02-argon2id-parameters/` |
+| `docs/figures/write-path.svg` | `/figures/write-path.svg`, copied to `static/figures/` |
 
 The ADRs and gap drafts are published because the specification cites them as
 the source of its provisional decisions: §4.6 sends a reviewer to ADR-0002 and
 §7.3 to G2, and a reviewer reading the spec on the web should be able to follow
 those without leaving the site.
 
-`content/docs/` is git-ignored. If you find yourself editing a file in there,
-you are editing a build artifact -- change `docs/` instead.
+`content/docs/` and `static/figures/` are git-ignored. If you find yourself
+editing a file in there, you are editing a build artifact -- change `docs/`
+instead.
 
 This one-directional flow is the point: there is exactly one copy of the
 specification text, so the published site cannot drift from the repository.

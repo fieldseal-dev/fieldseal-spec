@@ -9,8 +9,13 @@ Three trees are published:
     docs/adr/*.md          ->  /docs/adr/<slug>/       (README.md -> /docs/adr/)
     docs/issues/*.md       ->  /docs/issues/<slug>/    (README.md -> /docs/issues/)
 
+and the figures they embed:
+
+    docs/figures/*.svg     ->  /figures/<name>.svg     (copied to www/static/figures/)
+
 The files in docs/ are the canonical source and are never modified. Everything
-under www/content/docs/ is generated and git-ignored -- do not hand-edit it.
+under www/content/docs/ and www/static/figures/ is generated and git-ignored --
+do not hand-edit it.
 
 Why the link rewrite exists. The sources are read in two places, and a link that
 is correct in one is wrong in the other. On GitHub, `16-reviewer-brief.md#q2`
@@ -32,6 +37,8 @@ WWW = HERE.parent
 REPO = WWW.parent
 SRC = REPO / "docs"
 DEST = WWW / "content" / "docs"
+FIGURES = SRC / "figures"
+FIGURES_DEST = WWW / "static" / "figures"
 
 REPO_URL = "https://github.com/fieldseal-dev/fieldseal-spec"
 BRANCH = "main"
@@ -145,6 +152,10 @@ def build_plan():
 
     for p in pages:
         urls[p["src"].relative_to(REPO).as_posix()] = p["url"]
+    # Figures are served from static/, not content/: a static file keeps one
+    # fixed URL, with no page-bundle rules deciding whether it is published.
+    for fig in sorted(FIGURES.glob("*.svg")):
+        urls[fig.relative_to(REPO).as_posix()] = f"/figures/{fig.name}"
     return pages, urls
 
 
@@ -205,6 +216,14 @@ def main() -> int:
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
     (DEST / "_index.md").write_text(SECTION_INDEX, encoding="utf-8")
+
+    if FIGURES_DEST.exists():
+        shutil.rmtree(FIGURES_DEST)
+    FIGURES_DEST.mkdir(parents=True)
+    for fig in sorted(FIGURES.glob("*.svg")):
+        shutil.copyfile(fig, FIGURES_DEST / fig.name)
+        print(f"  {fig.relative_to(REPO).as_posix()}  ->  "
+              f"{(FIGURES_DEST / fig.name).relative_to(WWW).as_posix()}  (/figures/{fig.name})")
 
     errors = []
     for page in pages:
