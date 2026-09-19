@@ -35,7 +35,7 @@ CORES = ("python", "typescript")
 
 
 def load_report(path: pathlib.Path) -> Any:
-    """The parsed report, or the exception that stopped it parsing.
+    """The parsed report (or manifest), or the exception that stopped it parsing.
 
     Reachable because the job runs on a red core: a harness that aborts leaves
     the shell redirect's 0-byte file behind.
@@ -46,11 +46,11 @@ def load_report(path: pathlib.Path) -> Any:
         return e
 
 
-def compare(reports: dict[str, Any], manifest: dict[str, Any]) -> tuple[list[str], list[str]]:
+def compare(reports: dict[str, Any], manifest: Any) -> tuple[list[str], list[str]]:
     """Return (failures, log lines) for the two reports against the manifest.
 
     `reports` maps a core name to its parsed report, or to the exception
-    `load_report` returned for it.
+    `load_report` returned for it; `manifest` may likewise be an exception.
     """
     fail: list[str] = []
     log: list[str] = []
@@ -138,17 +138,25 @@ def compare(reports: dict[str, Any], manifest: dict[str, Any]) -> tuple[list[str
         # itself. Presence per manifest file, not a count: results-per-vector
         # varies by family, that expansion is the per-core harness's business,
         # and a hard-coded total would fail every legitimate addition to the
-        # suite.
+        # suite. An unreadable manifest is a finding like an unreadable
+        # report, not a traceback that buries the findings above it.
+        try:
+            if isinstance(manifest, Exception):
+                raise manifest
+            paths = [f["path"] for f in manifest["files"]]
+        except Exception as e:  # noqa: BLE001
+            fail.append(f"manifest unreadable ({type(e).__name__}: {e})")
+            paths = []
         for name, ids_ in sync_ids.items():
-            absent = [f["path"] for f in manifest["files"]
-                      if not any(i.startswith(f["path"][:-len(".json")] + "/") for i in ids_)]
+            absent = [p for p in paths
+                      if not any(i.startswith(p[:-len(".json")] + "/") for i in ids_)]
             if absent:
                 fail.append(f"{name}: manifest files with no result at all: {absent}")
 
         if not fail:
             log.append(f"\nidentical: {len(py)} synchronous result ids and {len(oob_ids['python'])} "
                        f"out-of-band ids, empty symmetric difference; all "
-                       f"{len(manifest['files'])} manifest files reached by both cores")
+                       f"{len(paths)} manifest files reached by both cores")
 
     return fail, log
 
@@ -161,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     reports = {name: load_report(args.reports / f"conformance-{name}.json") for name in CORES}
-    manifest = json.loads(args.manifest.read_text("utf-8"))
+    manifest = load_report(args.manifest)
     fail, log = compare(reports, manifest)
     for line in log:
         print(line)

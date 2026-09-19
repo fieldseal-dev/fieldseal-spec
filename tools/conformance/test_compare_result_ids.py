@@ -185,6 +185,14 @@ def test_out_of_band_divergence() -> None:
     expect(r, "out-of-band ids differ between cores: ['oob/python-only']")
 
 
+def test_unreadable_manifest_is_a_finding() -> None:
+    r = pair()
+    drop(r["typescript"], "blind-index/")
+    expect(r, "manifest unreadable (FileNotFoundError", "2 id(s) only python ran",
+           manifest=FileNotFoundError("vectors/MANIFEST.json"))
+    expect(pair(), "manifest unreadable (KeyError", manifest={"entries": []})
+
+
 def test_manifest_prefix_needs_the_slash() -> None:
     # 'envelope/aes-gcm-siv/...' must not count as reaching 'envelope/aes-gcm.json'.
     manifest = {"files": MANIFEST["files"] + [{"path": "envelope/aes-gcm-siv.json"}]}
@@ -199,10 +207,11 @@ def test_manifest_prefix_needs_the_slash() -> None:
 # the entry point the workflow calls, against files on disk
 # --------------------------------------------------------------------------
 
-def _run(reports: dict[str, str | None]) -> int:
+def _run(reports: dict[str, str | None], manifest: str | None = json.dumps(MANIFEST)) -> int:
     with tempfile.TemporaryDirectory() as d:
         root = pathlib.Path(d)
-        (root / "MANIFEST.json").write_text(json.dumps(MANIFEST), "utf-8")
+        if manifest is not None:
+            (root / "MANIFEST.json").write_text(manifest, "utf-8")
         for name, text in reports.items():
             if text is not None:
                 (root / f"conformance-{name}.json").write_text(text, "utf-8")
@@ -220,6 +229,13 @@ def test_main_fails_on_a_zero_byte_report() -> None:
 
 def test_main_fails_on_a_missing_report() -> None:
     assert _run({"python": json.dumps(report()), "typescript": None}) == 1
+
+
+def test_main_fails_cleanly_on_a_missing_manifest() -> None:
+    # #161 review: this used to escape main() as a traceback, burying any
+    # report finding; alongside an unreadable report it was never read at all.
+    assert _run({n: json.dumps(report()) for n in c.CORES}, manifest=None) == 1
+    assert _run({"python": json.dumps(report()), "typescript": ""}, manifest=None) == 1
 
 
 if __name__ == "__main__":
