@@ -66,7 +66,11 @@ def main(argv) -> int:
         seen = set()
         for m in HREF.finditer(body):
             href = html.unescape(group(m)).strip()
-            if not href or href.startswith(SKIP_SCHEMES):
+            if not href:
+                # What Hugo renders for a menu pageRef that matches no page.
+                failures.append((page_url, href, "empty href"))
+                continue
+            if href.startswith(SKIP_SCHEMES):
                 continue
             parsed = urllib.parse.urlparse(href)
             if parsed.scheme and parsed.scheme not in ("http", "https"):
