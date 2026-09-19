@@ -306,6 +306,20 @@ def produce() -> dict:
     index_cases.append(_index_case("bucket-marker", Person, "legal_name",
                                    bucketed.pk, None, None))
 
+    # A tenant-bound index: the tenant reaches the index context through the
+    # same contextvar as the envelope's (spec §5.2, §7.2), so a consumer that
+    # derived it tenantless would miss -- silently, as every index miss is.
+    # The same value as `email-exact`, so the tenant is not the only thing
+    # that differs (the column does too), but it is the one under test.
+    # Inside the scope, like the envelope case above: `_index_case` reads the
+    # column's own context, and a tenant-bound column refuses to build one
+    # without a tenant.
+    with tenant_scope("tenant-0001"):
+        doc = TenantDoc.objects.create(body="b", handle="ada@example.com")
+        index_cases.append(_index_case("tenant-bound", TenantDoc, "handle",
+                                       doc.pk, "ada@example.com",
+                                       b"tenant-0001"))
+
     import fieldseal_django
 
     return {
@@ -317,17 +331,13 @@ def produce() -> dict:
             # docs/08 §4.7: an adapter producer declares the context shapes
             # and normalizers it cannot produce, so the gap is visible in the
             # artifact rather than absent from it. The first closes itself the
-            # day L3-row ships.
+            # day L3-row ships. (A third, "tenant-bound index", closed when
+            # TenantDoc.handle gave the fixture one.)
             "limitations": [
                 {"shape": "row_id-present",
                  "reason": "L3-row binding is not in v0: Django cannot see the "
                            "primary key at INSERT with identity keys "
                            "(docs/12 §4)"},
-                {"shape": "tenant-bound index",
-                 "reason": "no model in this fixture declares a BlindIndex on "
-                           "a tenant_bound column, so the §5.2 sibling-key "
-                           "scope is exercised on the index path only by the "
-                           "core producers (raised in the #103 review)"},
                 {"shape": "normalizer:identity, normalizer:digits-only-v1",
                  "reason": "every indexed column in this fixture declares "
                            "nfc-casefold-v1; the other two are covered by the "

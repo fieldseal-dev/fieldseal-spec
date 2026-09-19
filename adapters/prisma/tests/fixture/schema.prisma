@@ -1,7 +1,8 @@
 // Test fixture schema.
 //
 // Covers, deliberately: an indexed encrypted column, an unindexed one, every
-// non-text logical value type, a tenant-bound column, a bucketed column, a
+// non-text logical value type, a tenant-bound column (and a tenant-bound
+// indexed one), a bucketed column, a
 // plaintext column on a model that also has encrypted ones, both directions of
 // a relation so nested writes and `include` nesting are exercised, and a model
 // with no declarations at all (Referral) so the walk *through* an undeclared
@@ -84,9 +85,21 @@ model Visit {
 
 /// @fieldseal(table_uuid: "018f3c2e-0000-7000-8000-0000000000cc")
 model TenantDoc {
-  id   String @id @default(uuid())
+  id         String @id @default(uuid())
   /// @fieldseal(encrypted, tenant_bound, column_uuid: "018f3c2e-0000-7000-8000-000000000005")
-  body Bytes
+  body       Bytes
+  /// Indexed *and* tenant-bound: the index path's half of the binding. The
+  /// tenant enters the index context as it enters the envelope's, so one value
+  /// in two tenants is two index values (spec §5.2, §7.2). Nullable so the rows
+  /// the other tenant tests write need not carry one.
+  /// @fieldseal(encrypted, tenant_bound, column_uuid: "018f3c2e-0000-7000-8000-00000000000c")
+  handle     Bytes?
+  /// @fieldseal(index: "handle", index_id: "exact", idf: "hmac-sha512",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
+  handleBidx Bytes?
+
+  @@index([handleBidx])
 }
 
 /// @fieldseal(table_uuid: "018f3c2e-0000-7000-8000-0000000000dd")

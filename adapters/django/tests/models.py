@@ -69,6 +69,7 @@ class Patient(models.Model):
 
 TABLE_DOC = "018f3c2e-0000-7000-8000-000000000010"
 COL_BODY = "018f3c2e-0000-7000-8000-000000000011"
+COL_HANDLE = "018f3c2e-0000-7000-8000-000000000012"
 
 
 class TenantDoc(models.Model):
@@ -80,6 +81,25 @@ class TenantDoc(models.Model):
     """
 
     body = Encrypted(models.TextField(), column_uuid=COL_BODY)
+
+    # Indexed *and* tenant-bound: the index path's half of the binding. The
+    # tenant enters the index context exactly as it enters the envelope's, so
+    # one value in two tenants is two index values and a lookup is scoped to
+    # the tenant it runs under (spec §5.2, §7.2). Nullable so the rows the
+    # other tenant tests write need not carry one.
+    handle = Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=COL_HANDLE,
+        null=True,
+        index=BlindIndex(
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    handle_bidx = Encrypted.index_column("handle")
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_DOC, tenant_bound=True)
 

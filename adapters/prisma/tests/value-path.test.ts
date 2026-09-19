@@ -509,6 +509,49 @@ describe("tenant binding (spec §10, L3)", () => {
       );
     });
   });
+
+  // The index half of the binding (spec §5.2, §7.2). The tenant enters the
+  // index context as it enters the envelope's; if it did not, the index would
+  // link one value's rows across tenants and nothing would fail.
+  it("stores a different index value for the same value in another tenant", async () => {
+    const write = (tenant: string) =>
+      tenantScope(tenant, async () => {
+        const row = await lp["tenantDoc"]!["create"]!({ data: { body: "b", handle: "ada@example.com" } });
+        return row.id as string;
+      });
+    const a = await write("tenant-0001");
+    const b = await write("tenant-0002");
+    const ia = Buffer.from((await rawColumn(base, "TenantDoc", "handleBidx", a)) as Uint8Array);
+    const ib = Buffer.from((await rawColumn(base, "TenantDoc", "handleBidx", b)) as Uint8Array);
+    expect(ia.equals(ib)).toBe(false);
+  });
+
+  it("finds a row by a tenant-bound index only under its own tenant", async () => {
+    const id = await tenantScope("tenant-0001", async () => {
+      const row = await lp["tenantDoc"]!["create"]!({ data: { body: "b", handle: "ada@example.com" } });
+      return row.id as string;
+    });
+    await tenantScope("tenant-0002", async () => {
+      await lp["tenantDoc"]!["create"]!({ data: { body: "b", handle: "bob@example.com" } });
+      const found = await lp["tenantDoc"]!["findMany"]!({ where: { handle: "ada@example.com" } });
+      expect(found).toHaveLength(0);
+    });
+    await tenantScope("tenant-0001", async () => {
+      // nfc-casefold-v1 folds the operand as it folded the stored value.
+      const found = await lp["tenantDoc"]!["findMany"]!({ where: { handle: "ADA@example.com" } });
+      expect(found).toHaveLength(1);
+      expect(found[0]!["id"]).toBe(id);
+      expect(found[0]!["handle"]).toBe("ada@example.com");
+    });
+  });
+
+  it("refuses a tenant-bound lookup when no tenant is resolvable", async () => {
+    // A tenantless operand would derive an index no row carries and return
+    // nothing, which reads as "no such row" rather than a misconfiguration.
+    await expect(
+      lp["tenantDoc"]!["findMany"]!({ where: { handle: "ada@example.com" } }),
+    ).rejects.toThrow(/tenant_bound and no tenant is resolvable/);
+  });
 });
 
 describe("tamper", () => {
