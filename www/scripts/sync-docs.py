@@ -88,14 +88,12 @@ def title_of(text: str) -> tuple:
 
 
 def nav_title(title: str) -> str:
-    """A sidebar-length name for a document, ADR or gap draft.
+    """A sidebar-length name for a numbered document.
 
-    Their H1s are full sentences -- "G2 - §7.3: The Argon2id index-derivation
-    invocation is incompletely specified" -- which is right on the page and far
-    too long in a nav column; so is "The Write Path — one encrypted field, from
-    save() to the database". Take the identifier off the front: everything
-    before the first em dash, widened to the first colon when that leaves only
-    a bare "G2".
+    Some H1s carry a subtitle -- "The Write Path — one encrypted field, from
+    save() to the database" -- which is right on the page and far too long in a
+    nav column. Keep what comes before the first em dash (or colon). ADRs and
+    gap drafts are named from their file names instead; see stem_nav.
     """
     dash = title.find("—")
     colon = title.find(":")
@@ -105,6 +103,39 @@ def nav_title(title: str) -> str:
     elif dash <= 0 and 0 < colon:
         head = title[:colon].strip()
     return head or title
+
+
+# Words in a file name whose capitalization the name has lost.
+STEM_WORDS = {
+    "aead": "AEAD", "argon2id": "Argon2id", "count": "COUNT", "id": "ID",
+    "kdf": "KDF", "prisma": "Prisma", "unicode": "Unicode", "xchacha": "XChaCha",
+}
+
+
+def stem_nav(stem: str) -> str:
+    """A sidebar name for an ADR or gap draft, from its file name.
+
+    Their H1s lead with an identifier and section references -- "G2 — §7.3:
+    The Argon2id index-derivation invocation is incompletely specified" -- and
+    the part that says what the page is about is a full sentence, far too long
+    for a nav column. The file names are the short topic the author chose:
+    G02-argon2id-parameters.md becomes "G2 — Argon2id parameters".
+    """
+    head, _, rest = stem.partition("-")
+    if head.upper().startswith("G") and head[1:].isdigit():
+        ident = f"G{int(head[1:])}"
+    elif head.isdigit():
+        ident = f"ADR-{head}"
+        if rest.startswith("appendix-"):
+            letter, _, rest = rest[len("appendix-"):].partition("-")
+            ident += f" Appendix {letter.upper()}"
+        elif rest == "template":
+            return "ADR template"
+    else:
+        return stem
+    words = [STEM_WORDS.get(w, w) for w in rest.split("-")]
+    topic = " ".join(words)
+    return f"{ident} — {topic[:1].upper()}{topic[1:]}" if topic else ident
 
 
 def build_plan():
@@ -154,7 +185,7 @@ def build_plan():
                 "url": f"/docs/{name}/{slug}/",
                 "slug": slug,
                 "weight": base + i,
-                "shorten": True,
+                "nav": stem_nav(src.stem),
             })
 
     for p in pages:
@@ -248,7 +279,9 @@ def main() -> int:
             return s.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))
 
         front = ["---", f'title: "{yaml(title)}"', f"weight: {page['weight']}"]
-        if page.get("shorten"):
+        if page.get("nav"):
+            front.append(f'linkTitle: "{yaml(page["nav"])}"')
+        elif page.get("shorten"):
             front.append(f'linkTitle: "{yaml(nav_title(title))}"')
         if page["slug"]:
             front.append(f'slug: "{page["slug"]}"')
