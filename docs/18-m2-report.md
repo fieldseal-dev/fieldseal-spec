@@ -80,7 +80,7 @@ Nothing above changed a byte of the envelope. The three that could split two cor
 | vitest | 4.1.11. `fast-check` 4.9.0 for the property passes. | None. |
 | eslint + prettier / biome | **Not configured.** | Omission, stated. |
 
-Node buffer maxima (`docs/09` §4 **[VERIFY]**): `buffer.constants.MAX_LENGTH` is 2⁵³−1 on Node 24 x64, so the spec §3.5 bound (2³¹−1) binds before the platform does; a 2³¹-byte `Uint8Array` allocates lazily (1 ms, no RSS growth) and the bound was verified directly rather than recorded as unverifiable.
+Node buffer maxima (`docs/09` §4's per-binding obligation; a **[VERIFY]** flag when this was measured, reworded 2026-09-20 per issue [#167](https://github.com/fieldseal-dev/fieldseal-spec/issues/167) — `docs/11` §5 now cites this measurement rather than copying it): `buffer.constants.MAX_LENGTH` is 2⁵³−1 on Node 24 x64, so the spec §3.5 bound (2³¹−1) binds before the platform does; a 2³¹-byte `Uint8Array` allocates lazily (1 ms, no RSS growth) and the bound was verified directly rather than recorded as unverifiable.
 
 ## 5. Conformance claim
 
