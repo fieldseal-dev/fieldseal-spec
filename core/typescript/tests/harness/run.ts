@@ -36,7 +36,12 @@ export interface Result {
 
 export interface OutOfBand {
   id: string;
-  status: "pass" | "fail" | "not-verified";
+  // docs/14 §4 (G26): `not-run` is the only non-verdict. This union carried
+  // `not-verified` until suite 0.8.0, a status docs/14 never defined.
+  status: "pass" | "fail" | "not-run";
+  // How the entry was established (docs/14 §4). This harness verifies every
+  // entry directly, so it only ever writes "direct".
+  basis: "direct" | "seam" | "representability";
   method: string;
   reason?: string;
 }
@@ -470,9 +475,9 @@ const ASYNC_OPS: IndexOps = {
 };
 
 /**
- * On the async pass the refusal half below is the only place in the whole
- * second pass where a companion is required to produce a §9 *error*:
- * `errors/`'s two blind_index vectors are both positive controls. `await`
+ * On the async pass the refusal half below, with `runRefuse` (suite 0.8.0),
+ * is where a companion is required to produce an *error*: `errors/`'s two
+ * blind_index vectors are both positive controls. `await`
  * inside the `try` is what makes the rejection land in `errCode` rather than
  * escaping as an unhandled rejection.
  */
@@ -499,6 +504,24 @@ async function runUnindexable(v: Record<string, unknown>, ops: IndexOps): Promis
       return { bucketed, refused };
     },
   );
+}
+
+/**
+ * Suite 0.8.0 (G26): a bytes preimage the index path must refuse. The operand
+ * is passed as bytes, never decoded here, so it reaches docs/09 §7.1 clause 5's
+ * strict decode in the core; a decode with replacement would index it and the
+ * vector would fail on "NONE".
+ */
+async function runRefuse(v: Record<string, unknown>, ops: IndexOps): Promise<Result> {
+  const inp = v.inputs as Record<string, unknown>;
+  const want = (v.expected as Record<string, unknown>).refuse as string;
+  let got = "NONE";
+  try {
+    await ops.blindIndex(unindexableClient(inp, "refuse"), hex(inp.preimage as string), indexCtx(inp));
+  } catch (e) {
+    got = errCode(e);
+  }
+  return verdict(v.id as string, got === want ? [] : [`on_unindexable="refuse" gave ${got}, want ${want}`]);
 }
 
 interface MarkerSides {
@@ -725,6 +748,7 @@ function pipelineVerdict(pid: string, out: Uint8Array, v: Record<string, unknown
 async function runBlindIndex(v: Record<string, unknown>, ops: IndexOps): Promise<Result[]> {
   const id = v.id as string;
   if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [await runUnindexable(v, ops)];
+  if (v.assertion === "refuse") return [await runRefuse(v, ops)];
   if (v.assertion !== undefined) return [ops.pass === "async" ? await runAssertionAsync(v) : runAssertion(v)];
   const i = blindIndexInputs(v);
   const results: Result[] = [];
@@ -853,8 +877,8 @@ function runErrors(v: Record<string, unknown>): Result {
  * Both `blind_index` error vectors are positive controls -- they expect an
  * index value, not an error -- so this swap on its own proves no error-code
  * parity. That obligation is carried by the `unindexable-bucket` vectors'
- * refusal half, the `#async` out-of-band entry, and
- * `tests/async-companions.test.ts`.
+ * refusal half, the `refuse` vectors (suite 0.8.0), the `#async` out-of-band
+ * entry, and `tests/async-companions.test.ts`.
  */
 /**
  * Whether the async pass routes this vector through a spec §11.1 companion or
@@ -969,7 +993,7 @@ function judgeIndexBoundary(id: string, method: string, high: Refusal, low: Refu
     status = "fail";
     reason = "both surrogates produced the same message; the refusal does not distinguish them";
   }
-  return [{ id, status, method, ...(reason ? { reason } : {}) }];
+  return [{ id, status, basis: "direct", method, ...(reason ? { reason } : {}) }];
 }
 
 /**
@@ -1002,6 +1026,9 @@ async function runIndexBoundary(ops: IndexOps): Promise<OutOfBand[]> {
   );
 }
 
+const LB_ENCRYPT = "unit test: a 2^31-byte plaintext is refused with LENGTH_EXCEEDED before key acquisition";
+const LB_DECRYPT = "unit test: an envelope whose implied plaintext length is 2^31 bytes is refused with LENGTH_EXCEEDED before allocation";
+
 function runLengthBound(): OutOfBand[] {
   const out: OutOfBand[] = [];
   const fs = client(new Uint8Array(32), new Uint8Array(16));
@@ -1018,9 +1045,9 @@ function runLengthBound(): OutOfBand[] {
       if (errCode(e) === "LENGTH_EXCEEDED") status = "pass";
       else reason = `encrypt raised ${errCode(e)} instead of LENGTH_EXCEEDED`;
     }
-    out.push({ id: "spec/3.5/length-bound", status, method: "unit test: a 2^31-byte plaintext is refused with LENGTH_EXCEEDED before key acquisition", ...(reason ? { reason } : {}) });
+    out.push({ id: "spec/3.5/length-bound", status, basis: "direct", method: LB_ENCRYPT, ...(reason ? { reason } : {}) });
   } catch (e) {
-    out.push({ id: "spec/3.5/length-bound", status: "not-verified", method: "unit test: a 2^31-byte plaintext", reason: `could not allocate the input on this runtime: ${errCode(e)}` });
+    out.push({ id: "spec/3.5/length-bound", status: "not-run", basis: "direct", method: LB_ENCRYPT, reason: `could not allocate the input on this runtime: ${errCode(e)}` });
   }
   // decrypt side: an envelope implying a 2^31-byte plaintext.
   try {
@@ -1039,9 +1066,9 @@ function runLengthBound(): OutOfBand[] {
       if (errCode(e) === "LENGTH_EXCEEDED") status = "pass";
       else reason = `decrypt raised ${errCode(e)} instead of LENGTH_EXCEEDED`;
     }
-    out.push({ id: "spec/3.5/length-bound#decrypt", status, method: "unit test: an envelope whose implied plaintext length is 2^31 bytes is refused with LENGTH_EXCEEDED before allocation", ...(reason ? { reason } : {}) });
+    out.push({ id: "spec/3.5/length-bound#decrypt", status, basis: "direct", method: LB_DECRYPT, ...(reason ? { reason } : {}) });
   } catch (e) {
-    out.push({ id: "spec/3.5/length-bound#decrypt", status: "not-verified", method: "unit test: a 2^31+overhead-byte envelope", reason: `could not allocate the input on this runtime: ${errCode(e)}` });
+    out.push({ id: "spec/3.5/length-bound#decrypt", status: "not-run", basis: "direct", method: LB_DECRYPT, reason: `could not allocate the input on this runtime: ${errCode(e)}` });
   }
   return out;
 }
@@ -1092,7 +1119,7 @@ async function runPass(suite: LoadedSuite, ops: IndexOps): Promise<Result[]> {
           results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
       }
       // Every `#async` result says which of the two it is. Without this the
-      // report offers 178 `#async` ids and no way to see that only 65 of them
+      // report offers 182 `#async` ids and no way to see that only 69 of them
       // went through a companion at all, which reads as far more coverage
       // than the second pass actually buys (#111 review).
       if (pass === "async") {
@@ -1218,8 +1245,10 @@ export const HARNESS_NOTES: string[] = [
   "docs/08 §5 item 2 (JSON-Schema validation) could not be performed: vectors/schema/ is empty in the checkout this harness ran against. The harness performs its own structural validation of every vector object before running it.",
   "Envelope vectors are reported twice: '<id>' is the encrypt direction (envelope, canonical_context, aad, envelope_bytes) and '<id>#decrypt' is the decrypt direction.",
   "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key and context the vector carries (suite 0.2.0).",
+  "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex preimage to Fieldseal.blindIndex() as bytes under on_unindexable=\"refuse\" and match the raised code against expected.refuse; the bytes are never decoded by the harness.",
+  "Every out_of_band entry carries basis \"direct\" (docs/14 §4): this harness allocates the length-bound operands and holds the lone-surrogate operand in a string, so it uses neither the seam route nor the representability route.",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
-  "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",
+  "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the blind-index/ refuse vectors, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",
   "blind-index/argon2id.json is pinned as of suite 0.6.0-provisional (docs/07 §7) and is iterated like any other family; Argon2id contributes to this report's summary. Each vector derives at the cost it declares in idf_params, not at this core's default (docs/08 §4.4), and the declared salt is asserted on its own. A vector this core cannot derive at (a missing or non-§7.3 idf_params) is a recorded failure, not an abort.",
 ];

@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.7.0-provisional",
+  "vector_suite_version": "0.8.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -699,6 +699,76 @@
         "index": "f974",
         "equals_marker": true,
         "on_unindexable_refuse": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "id": "blind-index/argon2id/invalid-utf8-high-surrogate-b15",
+      "description": "bytes input carrying the generalized-UTF-8 encoding of a high surrogate (ED A0 80) is refused with INVALID_ARGUMENT under on_unindexable=refuse, never decoded with replacement",
+      "spec_ref": "§7.1; docs/09 §7.1 clause 5; docs/14 §4",
+      "assertion": "refuse",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "ssn-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:ssn-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "on_unindexable": "refuse",
+        "preimage": "61eda08062",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "refuse": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "id": "blind-index/argon2id/invalid-utf8-low-surrogate-b15",
+      "description": "bytes input carrying the generalized-UTF-8 encoding of a low surrogate (ED B0 80) is refused with INVALID_ARGUMENT under on_unindexable=refuse, never decoded with replacement",
+      "spec_ref": "§7.1; docs/09 §7.1 clause 5; docs/14 §4",
+      "assertion": "refuse",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "idf": "argon2id",
+        "idf_params": {
+          "version": 19,
+          "time_cost": 3,
+          "memory_kib": 32768,
+          "parallelism": 1,
+          "output_len": 64,
+          "salt": "b6cb6a3b952b2a2a6d27b4e3e11cf4f7"
+        },
+        "index_key": "2a85bd94c53499a05e326f588ba638079bb51ecd7b58804cb97037a0ff0654ab",
+        "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "index_id": "ssn-eq",
+        "context": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "tenant_id": "74656e616e742d30303031",
+          "row_id": null,
+          "purpose": "index:ssn-eq"
+        },
+        "normalize": "nfc-casefold-v1",
+        "on_unindexable": "refuse",
+        "preimage": "61edb08062",
+        "truncate_bits": 15
+      },
+      "expected": {
+        "refuse": "INVALID_ARGUMENT"
       }
     },
     {

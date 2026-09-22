@@ -112,11 +112,11 @@ internal/              namespace-placeholder packages (npm, PyPI), not a product
 Gate 0a (see below) opened on 2026-08-22. What exists under those directories today:
 
 - **Two cores** — `core/python` and `core/typescript`, each passing the pinned vector suite
-  **178/178** with identical result ids, the second written without reading the first.
-  The TypeScript core additionally runs all 178 a second time through its spec §11.1
-  asynchronous companions (356 results) and asserts identical bytes and error codes.
+  **182/182** with identical result ids, the second written without reading the first.
+  The TypeScript core additionally runs all 182 a second time through its spec §11.1
+  asynchronous companions (364 results) and asserts identical bytes and error codes.
 - **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
-  suite `0.7.0-provisional` — 146 vectors for the cores, nothing held out, plus 124
+  suite `0.8.0-provisional` — 150 vectors for the cores, nothing held out, plus 124
   `codec/` vectors that bind the adapters (spec §3.6).
 - **Two ORM adapters** — `adapters/django` and `adapters/prisma`, each with a 200+-test suite,
   each running against SQLite and PostgreSQL in CI. Both are also cross-language

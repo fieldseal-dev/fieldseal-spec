@@ -33,7 +33,7 @@ distinct values into one index before this core is entered.
 the two Argon2id derivations: byte-identical output, the same §9 error for the
 same condition (as a rejection), and the synchronous forms are **not**
 implemented by blocking on them. The conformance report runs the entire vector
-suite a second time through them (`async_companions: true`, 178 `#async`
+suite a second time through them (`async_companions: true`, 182 `#async`
 results).
 
 ## Error precedence
