@@ -62,19 +62,13 @@ class Patient(models.Model):
     #: one to look different from.
     mrn = models.TextField()
 
-    #: The committed migration serializes only the *non-default* arguments of
-    #: this `BlindIndex` -- `projected_population` only -- because
+    #: `idf="argon2id"` is the adapter default, stated so the IDF is readable
+    #: here and matches `schema.prisma`, which spells it out too. It is spec
+    #: §7.3's Required IDF for an enumerable column such as email; the same
+    #: table puts HMAC out of scope for exactly this column.
+    #: The committed migration carries only `projected_population`, because
     #: `BlindIndex.deconstruct()` emits only what differs from the adapter's
-    #: defaults, deliberately, so a later default change shows up as a diff
-    #: rather than being baked in. The consequence is worth knowing: a reader
-    #: of `0001_initial.py` alone sees a thinner declaration than
-    #: `check_declarations.py` compares, and the two agree only while
-    #: `index_id`, `idf`, `normalize` and `truncate_bits` still equal the
-    #: adapter defaults. `idf` is one of those defaults: it is Argon2id
-    #: (spec §7.3's Required IDF for an enumerable column such as email),
-    #: so the demo neither states an `idf` here nor declares HMAC — an
-    #: email column is exactly what the §7.3 table puts HMAC out of scope
-    #: for. This note lives here rather than in the migration because
+    #: defaults. This note lives here rather than in the migration because
     #: `makemigrations` rewrites that file and would drop it.
     email = Encrypted(
         models.EmailField(),
@@ -82,6 +76,7 @@ class Patient(models.Model):
         db_column="email",
         index=BlindIndex(
             index_id="exact",
+            idf="argon2id",
             normalize="nfc-casefold-v1",
             truncate_bits=15,
             projected_population=100_000,
