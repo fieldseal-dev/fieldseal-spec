@@ -75,6 +75,8 @@ class ConfigurationError(FieldsealError):
 
 class InvalidArgument(FieldsealError):
     """Implementation-local (docs/09 §9): an operand refused at the API
-    boundary. Not a §9 code; never the outcome of a vector."""
+    boundary. Not a §9 code, so never an `errors/` vector's outcome; the
+    `blind-index/` family asserts it for the docs/09 §7.1 normalizer
+    refusals (`unindexable-bucket`, and `refuse` since suite 0.8.0)."""
 
     code = "INVALID_ARGUMENT"

@@ -253,6 +253,50 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "expected": {"index": marker.hex(), "equals_marker": True,
                      "on_unindexable_refuse": "INVALID_ARGUMENT"},
     })
+
+    # docs/09 §7.1 clause 5: bytes input is decoded as strict UTF-8, and a
+    # decoding failure is INVALID_ARGUMENT. The two operands are the
+    # generalized-UTF-8 encodings of U+D800 and U+DC00 -- the form a lone
+    # surrogate takes in a language whose strings are bytes (Go) -- so these
+    # pin, on every core's bytes path, the refusal the docs/14 §4 lone-surrogate
+    # entry needs before a core without a surrogate-capable string type may
+    # record it by representability (G26, #176). A vector pins the code only;
+    # whether the two refusals are distinguishable stays a harness assertion.
+    surrogate_bytes = {"high": bytes.fromhex("eda080"), "low": bytes.fromhex("edb080")}
+    for which, seq in surrogate_bytes.items():
+        preimage = b"a" + seq + b"b"
+        try:
+            preimage.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:  # pragma: no cover - a guard on this file, not on a core
+            raise AssertionError(f"{preimage!r} decodes as UTF-8")
+        out.append({
+            "id": f"blind-index/{idf_name}/invalid-utf8-{which}-surrogate-b15",
+            "description": f"bytes input carrying the generalized-UTF-8 encoding "
+                           f"of a {which} surrogate ({seq.hex(' ').upper()}) is "
+                           "refused with INVALID_ARGUMENT under "
+                           "on_unindexable=refuse, never decoded with replacement",
+            "spec_ref": "§7.1; docs/09 §7.1 clause 5; docs/14 §4",
+            "assertion": "refuse",
+            "suite_id": suite_str(SUITE),
+            "inputs": {
+                "idf": idf_name,
+                "idf_params": declared_cost(idf_name, salt_hex),
+                "index_key": ik.hex(),
+                "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+                "index_id": index_id,
+                "context": ctx_json(ctx.for_index(index_id)),
+                "normalize": NORMALIZER,
+                "on_unindexable": "refuse",
+                # Hex, like reserved_preimage: not valid UTF-8, so no JSON
+                # string could carry it.
+                "preimage": preimage.hex(),
+                "truncate_bits": 15,
+            },
+            "expected": {"refuse": "INVALID_ARGUMENT"},
+        })
+    assert surrogate_bytes["high"] != surrogate_bytes["low"]
     if idf_name == "argon2id":
         out.extend(_raised_cost_vectors(index_id, ctx, ik, salt_hex))
     return out
