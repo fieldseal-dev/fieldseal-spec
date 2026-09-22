@@ -45,6 +45,12 @@ env:
   # shipped 2026-09-04 -- and both first appeared in that release, so adding
   # the asynchronous half did not move this floor (core/typescript/README.md).
   NODE_VERSION: "24"
+  # Every producer in the cross job, in one place (docs/14 §3; WS-L,
+  # docs/26 §1 item 4). `cross-consume` builds each consumer's argument list
+  # from it and checks it against the files `cross-produce` actually uploaded.
+  # A matrix cannot read `env`, so `cross-produce`'s `impl` list is the one
+  # other copy, and that check is what keeps the two from drifting.
+  CROSS_PRODUCERS: "python typescript django prisma"
 
 jobs:
   typescript-core:
@@ -162,10 +168,12 @@ jobs:
       - name: Guards on the comparison
         run: python tools/conformance/test_compare_result_ids.py
 
-      # A property of the two reports plus the manifest, so it installs
-      # neither core. The comparison and its rationale live in the script.
+      # A property of the reports plus the manifest, so it installs no core.
+      # The comparison and its rationale live in the script. The cores are
+      # named here rather than defaulted: adding one is a `needs` entry, a
+      # named download above and a name in this list (WS-L, docs/26 §1).
       - name: Compare the synchronous result-id sets
-        run: python tools/conformance/compare_result_ids.py
+        run: python tools/conformance/compare_result_ids.py --cores python,typescript
 
   django-adapter:
     name: Django adapter (L1+L2) on SQLite and Postgres
@@ -704,6 +712,12 @@ jobs:
   # production path (runtime CSPRNG, no injection); every implementation
   # (self-pairs included, to split "producer broke" from "pair broke")
   # decrypts every producer's artifact and compares plaintext byte-exact.
+  #
+  # Adding a core to it (WS-L, docs/26 §1 item 4): an `impl` entry below and
+  # its produce steps; its name in CROSS_PRODUCERS (top of this file); and a
+  # `consumer` entry in `cross-consume` with its consume steps. The consumers
+  # read the producer list from CROSS_PRODUCERS, so the existing ones need no
+  # edit. An adapter joins as a producer only.
   cross-produce:
     name: "cross: ${{ matrix.impl }} produces"
     runs-on: ubuntu-24.04
@@ -826,6 +840,28 @@ jobs:
           pattern: cross-*
           merge-multiple: true
 
+      # The producer list is CROSS_PRODUCERS; the producers that ran are the
+      # files the pattern above pulled in. Both directions fail: a listed
+      # producer with no file (dropped from the matrix, or a green leg that
+      # uploaded nothing -- upload-artifact only warns on a missing file by
+      # default) and a file nobody listed (a matrix entry added without the
+      # list), either of which would otherwise leave a consumer silently
+      # decrypting fewer producers than the job's name claims. A producer
+      # leg that is red never reaches this step: the bare `needs` skips the
+      # consumers, and cross-produce is red already.
+      - name: Every listed producer uploaded, and nothing else
+        run: |
+          status=0
+          for p in $CROSS_PRODUCERS; do
+            [ -f "cross-$p.json" ] || { echo "::error::listed producer '$p' uploaded no cross-$p.json"; status=1; }
+          done
+          for f in cross-*.json; do
+            [ -e "$f" ] || continue
+            p="${f#cross-}"; p="${p%.json}"
+            case " $CROSS_PRODUCERS " in *" $p "*) ;; *) echo "::error::$f was uploaded but '$p' is not in CROSS_PRODUCERS"; status=1 ;; esac
+          done
+          exit $status
+
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         if: matrix.consumer == 'python'
         with:
@@ -835,7 +871,9 @@ jobs:
         run: python -m pip install --disable-pip-version-check -c core/python/constraints-ci.txt -e "./core/python[argon2]"
       - name: Consume every producer (python)
         if: matrix.consumer == 'python'
-        run: python core/python/tests/cross_consume.py cross-python.json cross-typescript.json cross-django.json cross-prisma.json --verdict verdict-python.json
+        run: |
+          files=$(for p in $CROSS_PRODUCERS; do printf 'cross-%s.json ' "$p"; done)
+          python core/python/tests/cross_consume.py $files --verdict verdict-python.json
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: matrix.consumer == 'typescript'
@@ -850,7 +888,9 @@ jobs:
       - name: Consume every producer (typescript)
         if: matrix.consumer == 'typescript'
         working-directory: core/typescript
-        run: npm run --silent cross:consume -- ../../cross-python.json ../../cross-typescript.json ../../cross-django.json ../../cross-prisma.json --verdict ../../verdict-typescript.json
+        run: |
+          files=$(for p in $CROSS_PRODUCERS; do printf '../../cross-%s.json ' "$p"; done)
+          npm run --silent cross:consume -- $files --verdict ../../verdict-typescript.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
