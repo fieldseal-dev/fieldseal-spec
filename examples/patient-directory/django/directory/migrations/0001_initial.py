@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('mrn', models.TextField()),
-                ('email', fieldseal_django.fields.Encrypted(models.EmailField(max_length=254), column_uuid='018f5a10-0000-7000-8000-000000000002', db_column='email', index=fieldseal_django.declarations.BlindIndex(idf='hmac-sha512', projected_population=100000), verbose_name='email')),
+                ('email', fieldseal_django.fields.Encrypted(models.EmailField(max_length=254), column_uuid='018f5a10-0000-7000-8000-000000000002', db_column='email', index=fieldseal_django.declarations.BlindIndex(projected_population=100000), verbose_name='email')),
                 ('email_bidx', fieldseal_django.fields.EncryptedIndex('email', db_column='emailBidx', null=True)),
                 ('note', fieldseal_django.fields.Encrypted(models.TextField(), column_uuid='018f5a10-0000-7000-8000-000000000003', db_column='note', null=True, verbose_name='note')),
             ],
