@@ -5,7 +5,7 @@
  *
  *     /// @fieldseal(table_uuid: "018f3c2e-...")            <- on the model
  *     /// @fieldseal(encrypted, column_uuid: "018f3c2e-...")
- *     /// @fieldseal(index: "email", index_id: "exact", idf: "hmac-sha512",
+ *     /// @fieldseal(index: "email", index_id: "exact", idf: "argon2id",
  *     ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
  *     ///            projected_population: 100000)
  *

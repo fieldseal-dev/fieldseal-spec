@@ -13,7 +13,7 @@
       plaintext    'ada@example.com' does not appear in the column
 
     "Patient"."emailBidx" now holds:
-      blind index  2 bytes = aba0  (15 bits, spec §7.4)
+      blind index  2 bytes = b950  (15 bits, spec §7.4)
 
 --- Act 2 * Prisma reads the row Django wrote -----------------------------
     the central claim: one row, two languages, one key
@@ -56,7 +56,7 @@
       plaintext    "Grace@Example.COM" does not appear in the column
 
     "Patient"."emailBidx" now holds:
-      blind index  2 bytes = 4bea  (15 bits, spec §7.4)
+      blind index  2 bytes = ecee  (15 bits, spec §7.4)
 
 --- Act 4 * Django reads and searches a row Prisma wrote ------------------
     the central claim in the other direction, both halves
@@ -103,9 +103,9 @@
     Two rows, one plaintext, written by two languages:
 
       Django   envelope 130 bytes, header 01ff010123456789abcdef0123456789abcdef
-               index    3498
+               index    7bac
       Prisma   envelope 130 bytes, header 01ff010123456789abcdef0123456789abcdef
-               index    3498
+               index    7bac
 
       headers  identical -- same format, same suite, same key
       bodies   different -- a fresh nonce and msg_seed per write
@@ -181,10 +181,10 @@
 
       mrn          email                    emailBidx  note
       -----------  -----------------------  ---------  ----------
-      MRN-0001     <126 bytes of envelope>   aba0       <125 bytes>
-      MRN-0002     <128 bytes of envelope>   4bea       <122 bytes>
-      MRN-0005-DJ  <130 bytes of envelope>   3498       NULL
-      MRN-0005-PR  <130 bytes of envelope>   3498       NULL
+      MRN-0001     <126 bytes of envelope>   b950       <125 bytes>
+      MRN-0002     <128 bytes of envelope>   ecee       <122 bytes>
+      MRN-0005-DJ  <130 bytes of envelope>   7bac       NULL
+      MRN-0005-PR  <130 bytes of envelope>   7bac       NULL
 
       The mrn is readable because it is not encrypted. Nothing
       else is, and no key is reachable from this connection.
