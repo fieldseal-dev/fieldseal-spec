@@ -428,6 +428,34 @@ def _run_blind_index_vector(v: dict, results: list[dict]) -> None:
                 f"bucketed {bucketed.hex()} want {v['expected']['index']}; "
                 f"refuse gave {refused}")
         return
+    if v.get("assertion") == "refuse":
+        # Suite 0.8.0 (G26): a bytes preimage the index path must refuse --
+        # docs/09 §7.1 clause 5's strict decode. The hex is passed as bytes
+        # and never decoded here, so a core that decoded with replacement
+        # would index it and record "NONE".
+        i = v["inputs"]
+        ctx = _ctx_from(i["context"], sid)
+        caller = FieldContext(
+            table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            purpose=f"index:{i['index_id']}", tenant_id=ctx.tenant_id)
+        refuse_fs = _client(bytes(16), b"\x22" * 32, H(i["tenant_index_key"]),
+                            (_index_decl(i, ctx, "refuse"),))
+        try:
+            refuse_fs.blind_index(H(i["preimage"]), caller)
+            got = "NONE"
+        except FieldsealError as exc:
+            got = exc.code
+        want = v["expected"]["refuse"]
+        _record(results, v["id"], got == want,
+                f'on_unindexable="refuse" gave {got}, want {want}')
+        return
+    if "assertion" in v:
+        # Fail closed, as the TypeScript loader does: an unrecognised shape
+        # falling through to the primitive path would fail on a KeyError
+        # with a reason that names the wrong cause.
+        _record(results, v["id"], False,
+                f"unknown assertion {v['assertion']!r}")
+        return
     # Primitive level: the vector's normalized plaintext is the normative
     # input (docs/08 §4.4); the preimage checks the shipped normalizer. A
     # primitive vector carries idf/idf_params at the top level, an assertion
@@ -613,15 +641,19 @@ def run_out_of_band() -> list[dict]:
     def attempt(vid: str, method: str, fn) -> None:
         try:
             fn()
-            out.append({"id": vid, "status": "fail", "method": method,
+            out.append({"id": vid, "status": "fail", "basis": "direct",
+                        "method": method,
                         "reason": "no error raised"})
         except LengthExceeded:
-            out.append({"id": vid, "status": "pass", "method": method})
+            out.append({"id": vid, "status": "pass", "basis": "direct",
+                        "method": method})
         except MemoryError as exc:
-            out.append({"id": vid, "status": "not-run", "method": method,
+            out.append({"id": vid, "status": "not-run", "basis": "direct",
+                        "method": method,
                         "reason": f"runtime could not allocate: {exc!r}"})
         except Exception as exc:  # noqa: BLE001
-            out.append({"id": vid, "status": "fail", "method": method,
+            out.append({"id": vid, "status": "fail", "basis": "direct",
+                        "method": method,
                         "reason": f"wrong error: {exc!r}"})
 
     attempt("spec/3.5/length-bound",
@@ -656,7 +688,10 @@ def run_out_of_band() -> list[dict]:
     # not help either, since Go string literals may not hold a surrogate value
     # and Rust's `String` is UTF-8 by invariant, so two of the five target
     # languages cannot carry the operand at all. A core in either records
-    # `not-run` here rather than `pass`.
+    # this entry with basis "representability", and `pass` only under docs/08
+    # §5 item 9's conditions, which rest on the blind-index/ `refuse` vectors
+    # carrying the operand's bytes form (suite 0.8.0, G26); `not-run` until
+    # then. Python's `str` holds the operand, so this entry is "direct".
     idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32, (IndexDeclaration(
         table_uuid=bytes(16), column_uuid=bytes(16), index_id="exact",
         idf="hmac-sha512", normalize="nfc-casefold-v1", truncate_bits=15,
@@ -680,18 +715,21 @@ def run_out_of_band() -> list[dict]:
     high_code, high_msg = refuse("a\ud800b")
     low_code, low_msg = refuse("a\udc00b")
     if high_code != "INVALID_ARGUMENT" or low_code != "INVALID_ARGUMENT":
-        out.append({"id": oob_id, "status": "fail", "method": oob_method,
+        out.append({"id": oob_id, "status": "fail", "basis": "direct",
+                    "method": oob_method,
                     "reason": f"expected INVALID_ARGUMENT for both, got "
                               f"{high_code} and {low_code}"})
     elif high_msg == low_msg:
         # Same outcome is not enough: an identical diagnosis leaves the two
         # values indistinguishable to the caller, which is the property the
         # refusal exists to deny them.
-        out.append({"id": oob_id, "status": "fail", "method": oob_method,
+        out.append({"id": oob_id, "status": "fail", "basis": "direct",
+                    "method": oob_method,
                     "reason": "both surrogates produced the same message; "
                               "the refusal does not distinguish them"})
     else:
-        out.append({"id": oob_id, "status": "pass", "method": oob_method})
+        out.append({"id": oob_id, "status": "pass", "basis": "direct",
+                    "method": oob_method})
     return out
 
 
@@ -795,6 +833,16 @@ def run() -> dict:
             "Assertion vectors (assertion: distinct|equal) carry their inputs "
             "since suite 0.2.0; both sides are reproduced and the relation "
             "checked.",
+            "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex "
+            "preimage to Fieldseal.blind_index() as bytes under "
+            "on_unindexable='refuse' and match the raised FieldsealError's "
+            "code against expected.refuse; the bytes are never decoded by the "
+            "harness. An assertion kind this harness does not know is a "
+            "recorded failure.",
+            "Every out_of_band entry carries basis 'direct' (docs/14 §4): the "
+            "length-bound operands are allocated or mapped and the "
+            "lone-surrogate operand is held in a str, so this harness uses "
+            "neither the seam route nor the representability route.",
             "errors/ vectors run each operation against a client built from "
             "the vector's config; a raised FieldsealError is matched by code, "
             "a non-Fieldseal exception is a failure. The blind_index cases "

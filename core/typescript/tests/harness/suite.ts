@@ -139,7 +139,9 @@ function validateShape(path: string, doc: VectorFile): void {
       // Suite 0.3.0 adds the two docs/09 §7.2 shapes. Kept fail-closed: an
       // unrecognised assertion is an error, never a skip, or a core could
       // silently ignore a whole class of requirement and still report green.
-      const ASSERTIONS = ["distinct", "equal", "unindexable-marker", "unindexable-bucket"];
+      // Suite 0.8.0 adds "refuse" (G26): a bytes preimage the index path
+      // must refuse, with the code it must refuse with and no index.
+      const ASSERTIONS = ["distinct", "equal", "unindexable-marker", "unindexable-bucket", "refuse"];
       if (typeof v.assertion !== "string" || !ASSERTIONS.includes(v.assertion)) {
         throw new SuiteIntegrityError(`${path} ${id}: unknown assertion ${String(v.assertion)}`);
       }
@@ -147,6 +149,11 @@ function validateShape(path: string, doc: VectorFile): void {
       req(path, id, v, "inputs", isObj, "an object");
       if (v.assertion === "distinct" || v.assertion === "equal") {
         req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
+      } else if (v.assertion === "refuse") {
+        const inp = v.inputs as Record<string, unknown>;
+        req(path, id, inp, "preimage", isHex, "hex");
+        req(path, id, inp, "on_unindexable", (x) => x === "refuse", '"refuse"');
+        req(path, id, ex, "refuse", (x) => typeof x === "string", "a string");
       } else {
         req(path, id, ex, "index", isHex, "hex");
       }

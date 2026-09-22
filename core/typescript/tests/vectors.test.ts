@@ -27,6 +27,14 @@ describe("out-of-band assertions (docs/08 §5 item 8)", () => {
       expect(o.status).toBe("pass");
     });
   }
+  it("uses only docs/14 §4's statuses and bases (G26)", () => {
+    // `not-verified` was this harness's own status until suite 0.8.0 and
+    // docs/14 never defined it; `basis` says how each entry was established.
+    for (const o of report.out_of_band) {
+      expect(["pass", "fail", "not-run"], o.id).toContain(o.status);
+      expect(["direct", "seam", "representability"], o.id).toContain(o.basis);
+    }
+  });
 });
 
 describe("report invariants (docs/14 §4)", () => {
@@ -60,6 +68,20 @@ describe("report invariants (docs/14 §4)", () => {
     expect(argon2.some((r) => r.id.endsWith("/raised-cost-t4-b15#pipeline"))).toBe(true);
     expect(argon2.some((r) => r.id.endsWith("/unindexable-marker-t4-b15"))).toBe(true);
     expect(report.held_out).toEqual([]);
+  });
+  it("runs the invalid-UTF-8 refusal vectors in both IDF families (G26)", () => {
+    // docs/09 §7.1 clause 5 on the bytes path, and the premise docs/14 §4's
+    // representability route rests on. Each id, and its #async twin, passing.
+    for (const idf of ["hmac-sha512", "argon2id"]) {
+      for (const which of ["high", "low"]) {
+        for (const suffix of ["", "#async"]) {
+          const id = `blind-index/${idf}/invalid-utf8-${which}-surrogate-b15${suffix}`;
+          const r = report.results.find((x) => x.id === id);
+          expect(r, id).toBeDefined();
+          expect(r?.status, id).toBe("pass");
+        }
+      }
+    }
   });
   it("carries no harness note that contradicts the results", () => {
     // The #108 review found this report describing blind-index/argon2id.json
@@ -163,10 +185,11 @@ describe("report invariants (docs/14 §4)", () => {
   });
 
   it("verifies the lone-surrogate refusal on both paths out of band", () => {
-    // Every blind_index error vector in the suite is a positive control, so
-    // the companion's *error* parity has no vector to rest on: this entry and
-    // tests/async-companions.test.ts are what hold spec §11.1's "the same §9
-    // error for the same condition".
+    // Every errors/ blind_index vector is a positive control. Until suite
+    // 0.8.0 that left the companion's *error* parity with no vector at all;
+    // the blind-index/ refuse vectors now carry one condition of it (invalid
+    // UTF-8), and this entry and tests/async-companions.test.ts hold the rest
+    // of spec §11.1's "the same §9 error for the same condition".
     const ids = report.out_of_band.map((o) => o.id);
     expect(ids).toContain("docs/09/7.1/lone-surrogate-refusal");
     expect(ids).toContain("docs/09/7.1/lone-surrogate-refusal#async");

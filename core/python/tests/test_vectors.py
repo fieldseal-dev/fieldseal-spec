@@ -57,6 +57,24 @@ def test_argon2id_family_is_pinned_and_run():
     assert not REPORT["held_out"]
 
 
+def test_runs_the_invalid_utf8_refusal_vectors_in_both_idf_families():
+    """Suite 0.8.0 (G26): docs/09 §7.1 clause 5 on the bytes path, the
+    premise docs/14 §4's representability route rests on."""
+    ids = {r["id"] for r in REPORT["results"] if r["status"] == "pass"}
+    for idf in ("hmac-sha512", "argon2id"):
+        for which in ("high", "low"):
+            vid = f"blind-index/{idf}/invalid-utf8-{which}-surrogate-b15"
+            assert vid in ids, vid
+
+
+def test_out_of_band_uses_only_docs14_statuses_and_bases():
+    """docs/14 §4 (G26): `not-run` is the only non-verdict status, and every
+    entry says how it was established."""
+    for o in REPORT["out_of_band"]:
+        assert o["status"] in ("pass", "fail", "not-run"), o
+        assert o.get("basis") in ("direct", "seam", "representability"), o
+
+
 def test_harness_notes_do_not_contradict_the_results():
     """The #108 review found the TypeScript report describing
     `blind-index/argon2id.json` as held out and not iterated while listing
