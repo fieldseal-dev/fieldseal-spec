@@ -66,15 +66,10 @@ class Patient(models.Model):
     #: here and matches `schema.prisma`, which spells it out too. It is spec
     #: §7.3's Required IDF for an enumerable column such as email; the same
     #: table puts HMAC out of scope for exactly this column.
-    #: The committed migration serializes only the *non-default* arguments of
-    #: this `BlindIndex` -- `projected_population` only -- because
+    #: The committed migration carries only `projected_population`, because
     #: `BlindIndex.deconstruct()` emits only what differs from the adapter's
-    #: defaults, deliberately, so a later default change shows up as a diff
-    #: rather than being baked in. A reader of `0001_initial.py` alone thus
-    #: sees a thinner declaration than `check_declarations.py` compares,
-    #: which reads the resolved values. This note lives here rather than in
-    #: the migration because `makemigrations` rewrites that file and would
-    #: drop it.
+    #: defaults. This note lives here rather than in the migration because
+    #: `makemigrations` rewrites that file and would drop it.
     email = Encrypted(
         models.EmailField(),
         column_uuid=COL_EMAIL,
