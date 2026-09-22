@@ -2,6 +2,8 @@
 
 **Date:** 2026-08-08 · **Method:** independent re-verification of the 20 highest-risk factual claims against primary sources (eCFR, Federal Register, NIST CSRC, PCI SSC, IEEE/ACM proceedings, vendor advisories, project source code). Claims were selected on the basis of "most damaging if wrong."
 
+**Scope note (2026-09-22).** This document is a dated snapshot of one verification pass, not a running log. Resolutions of the library-fact **[VERIFY]** flags in `docs/10`–`docs/13` are logged as dated entries in [`docs/07-implementation-plan.md`](07-implementation-plan.md) §7, the project's append-only decision log; the decision is recorded there under 2026-09-22.
+
 ## Corrections applied
 
 | # | Claim as originally written | Correct statement | Applied to |
@@ -36,7 +38,7 @@
 
 ## Still unverified — carried forward
 
-Tracked in `03-compliance-mapping.md` §8. Highest priority to close before anything is published:
+Tracked in `03-compliance-mapping.md` §8. Highest priority to close before the Phase 3 track circulates them (standing rule below):
 
 1. Number of US states with an explicit encryption safe harbor (assert the pattern, not a number).
 2. Texas Bus. & Com. Code § 521.053's encrypted-data-plus-key clause (secondary source only).
@@ -61,4 +63,6 @@ Minor: Django lookup-path note softened (`get_prep_value` runs earlier via `Look
 
 ## Standing rule
 
-Re-run this verification before any public release of any document in this repository. Regulatory citations, NIST publication statuses, and vendor advisories all move; several of the items above changed within the last twelve months.
+Re-run this verification before the Phase 3 dissemination track (PRD §8; [`docs/05-dissemination.md`](05-dissemination.md) §5 onward) circulates any document that carries the claims above — `docs/00`, `docs/03`, and the repository README's citations. Regulatory citations, NIST publication statuses, and vendor advisories all move; several of the items above changed within the twelve months before this pass.
+
+**Amended 2026-09-22.** Until this date the rule read "before any public release of any document in this repository." That trigger was passed without a re-run: the repository is public, the site is live, and the first experimental package release (v0.1.2) was published on 2026-09-18. The package READMEs carry none of the citations this log covers, and the repository README's two (Grubbs et al., AWS-2025-032) were verified in the pass above, so the trigger is re-scoped to the track that actually circulates these claims. Recorded in `docs/07` §7 under 2026-09-22.
