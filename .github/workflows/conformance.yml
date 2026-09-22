@@ -842,10 +842,13 @@ jobs:
 
       # The producer list is CROSS_PRODUCERS; the producers that ran are the
       # files the pattern above pulled in. Both directions fail: a listed
-      # producer with no file (its leg died, or was dropped from the matrix)
-      # and a file nobody listed (a matrix entry added without the list),
-      # either of which would otherwise leave a consumer silently decrypting
-      # fewer producers than the job's name claims.
+      # producer with no file (dropped from the matrix, or a green leg that
+      # uploaded nothing -- upload-artifact only warns on a missing file by
+      # default) and a file nobody listed (a matrix entry added without the
+      # list), either of which would otherwise leave a consumer silently
+      # decrypting fewer producers than the job's name claims. A producer
+      # leg that is red never reaches this step: the bare `needs` skips the
+      # consumers, and cross-produce is red already.
       - name: Every listed producer uploaded, and nothing else
         run: |
           status=0
