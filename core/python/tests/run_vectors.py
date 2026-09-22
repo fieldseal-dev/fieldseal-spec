@@ -688,7 +688,10 @@ def run_out_of_band() -> list[dict]:
     # not help either, since Go string literals may not hold a surrogate value
     # and Rust's `String` is UTF-8 by invariant, so two of the five target
     # languages cannot carry the operand at all. A core in either records
-    # `not-run` here rather than `pass`.
+    # this entry with basis "representability", and `pass` only under docs/08
+    # §5 item 9's conditions, which rest on the blind-index/ `refuse` vectors
+    # carrying the operand's bytes form (suite 0.8.0, G26); `not-run` until
+    # then. Python's `str` holds the operand, so this entry is "direct".
     idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32, (IndexDeclaration(
         table_uuid=bytes(16), column_uuid=bytes(16), index_id="exact",
         idf="hmac-sha512", normalize="nfc-casefold-v1", truncate_bits=15,
@@ -830,6 +833,16 @@ def run() -> dict:
             "Assertion vectors (assertion: distinct|equal) carry their inputs "
             "since suite 0.2.0; both sides are reproduced and the relation "
             "checked.",
+            "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex "
+            "preimage to Fieldseal.blind_index() as bytes under "
+            "on_unindexable='refuse' and match the raised FieldsealError's "
+            "code against expected.refuse; the bytes are never decoded by the "
+            "harness. An assertion kind this harness does not know is a "
+            "recorded failure.",
+            "Every out_of_band entry carries basis 'direct' (docs/14 §4): the "
+            "length-bound operands are allocated or mapped and the "
+            "lone-surrogate operand is held in a str, so this harness uses "
+            "neither the seam route nor the representability route.",
             "errors/ vectors run each operation against a client built from "
             "the vector's config; a raised FieldsealError is matched by code, "
             "a non-Fieldseal exception is a failure. The blind_index cases "

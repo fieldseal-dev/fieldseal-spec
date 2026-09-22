@@ -928,7 +928,11 @@ async function runErrorsAsync(v: Record<string, unknown>): Promise<Result> {
  * would not fix it either: Go string literals may not hold a surrogate value
  * and rune conversion substitutes U+FFFD, and Rust's `String` is UTF-8 by
  * invariant — so two of the five target languages cannot carry the operand at
- * all, and a core in either would report `not-run` rather than `pass`.
+ * all. A core in either records this entry with `basis: "representability"`,
+ * and `pass` only under docs/08 §5 item 9's conditions, which rest on the
+ * `blind-index/` `refuse` vectors carrying the operand's bytes form (suite
+ * 0.8.0, G26); `not-run` until then. This harness holds the operand in a
+ * string, so its entries are `basis: "direct"`.
  *
  * That is exactly what `out_of_band` is for (docs/14 §4, the G10 precedent):
  * a normative requirement verified by a test the report would otherwise never
