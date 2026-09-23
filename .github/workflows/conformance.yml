@@ -128,7 +128,7 @@ jobs:
   # it is not in `cross-core-result-ids` or the cross job: those joins are
   # S6 and S7 (docs/27 §1).
   java-core:
-    name: Java core (S1: scaffold; walks the suite, runs no vector)
+    name: "Java core (S1: scaffold; walks the suite, runs no vector)"
     runs-on: ubuntu-24.04
     defaults:
       run:
