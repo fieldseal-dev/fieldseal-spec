@@ -22,6 +22,10 @@ ci-repack/
 
 # Java / .NET / Go
 target/
+# Gradle (core/java)
+.gradle/
+core/java/**/build/
+core/java/build/
 bin/
 obj/
 
@@ -37,6 +41,9 @@ obj/
 
 # Internal scratch docs (not persisted to repo)
 internal/
+# ...but not the Java core's `internal` packages (docs/27 §3), which the
+# pattern above would otherwise match at any depth.
+!core/java/*/src/**/internal/
 
 # Conformance reports (docs/14 §4) written in-tree by local harness runs
 conformance-*.json
