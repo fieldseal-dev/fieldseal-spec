@@ -21,4 +21,7 @@
 *.pdf  binary
 *.zip  binary
 *.jar  binary
+
+# The Gradle wrapper's Windows script: cmd.exe expects CRLF.
+*.bat  text eol=crlf
 *.der  binary

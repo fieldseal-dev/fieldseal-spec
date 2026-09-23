@@ -1,6 +1,6 @@
 # Java Core Technical Specification
 
-**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; no code exists yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
+**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stage S1 (scaffold and CI, §8) is built, and no cryptographic code exists yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
 
 **Where it came from.** This document is the JVM core design drafted and reviewed on 2026-09-19, made into a repository document when Phase 2 opened (`docs/26` §1 item 3). On the way in, it lost what was true only on the day it was drafted:
 - its premise that `docs/09` §4's buffer-maxima flag waited on this core ([#167](https://github.com/fieldseal-dev/fieldseal-spec/issues/167) and #168 turned that flag into a per-binding obligation, which §6 here discharges);
@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | A README placeholder today |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
