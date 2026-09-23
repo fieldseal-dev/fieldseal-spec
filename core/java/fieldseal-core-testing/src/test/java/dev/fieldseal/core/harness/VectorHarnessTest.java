@@ -3,6 +3,7 @@ package dev.fieldseal.core.harness;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -27,12 +28,10 @@ class VectorHarnessTest {
         VectorHarness.Walk walk = VectorHarness.walk(vectors);
 
         assertEquals(List.of(), walk.problems());
-        String manifestVersion = JSON.readTree(vectors.resolve("MANIFEST.json").toFile())
-                .path("vector_suite_version").asText();
-        assertEquals(manifestVersion, walk.suiteVersion());
-        assertEquals(JSON.readTree(vectors.resolve("MANIFEST.json").toFile()).path("files").size(),
-                walk.files().size());
-        assertTrue(walk.files().stream().allMatch(f -> f.vectors() > 0));
+        JsonNode manifest = JSON.readTree(vectors.resolve("MANIFEST.json").toFile());
+        assertEquals(manifest.path("vector_suite_version").asText(), walk.suiteVersion());
+        assertEquals(manifest.path("files").size(), walk.files().size());
+        assertTrue(walk.files().stream().allMatch(f -> f.walked() && f.vectors() > 0));
     }
 
     // The guards, each against a synthetic one-file suite that walks clean until one input is
@@ -55,6 +54,43 @@ class VectorHarnessTest {
         b[b.length - 2] ^= 0x01;
         Files.write(s.file(), b);
         assertProblem(dir, "kdf/demo.json: sha256");
+        assertEquals(List.of(false),
+                VectorHarness.walk(dir).files().stream().map(VectorHarness.FileWalk::walked).toList());
+    }
+
+    @Test
+    void aVectorWithoutDescriptionOrSpecRefIsAProblem(@TempDir Path dir) throws IOException {
+        Suite s = new Suite(dir);
+        s.bareVector = true;
+        s.write();
+        assertProblem(dir, "vector 'kdf/demo/second' has no description");
+        assertProblem(dir, "vector 'kdf/demo/second' has no spec_ref");
+    }
+
+    @Test
+    void aMalformedRetiredEntryIsAProblem(@TempDir Path dir) throws IOException {
+        Suite s = new Suite(dir);
+        s.retired = List.of("kdf/elsewhere/old");
+        s.write();
+        assertProblem(dir, "retired id 'kdf/elsewhere/old' is not kdf/demo/<slug>");
+        assertProblem(dir, "retired id 'kdf/elsewhere/old' has no reason");
+    }
+
+    @Test
+    void aReusedRetiredIdIsAProblem(@TempDir Path dir) throws IOException {
+        Suite s = new Suite(dir);
+        s.retired = List.of("kdf/demo/first");
+        s.retiredReason = "superseded";
+        s.write();
+        assertProblem(dir, "id 'kdf/demo/first' is retired and may not be reused");
+    }
+
+    @Test
+    void aManifestEntryWithoutBytesIsAProblem(@TempDir Path dir) throws IOException {
+        Suite s = new Suite(dir);
+        s.omitBytes = true;
+        s.write();
+        assertProblem(dir, "kdf/demo.json: the manifest entry has no integer bytes field");
     }
 
     @Test
@@ -128,6 +164,10 @@ class VectorHarnessTest {
         String status = "pinned";
         String heldOut;
         List<String> ids = List.of("kdf/demo/first", "kdf/demo/second");
+        boolean bareVector; // the last vector loses description and spec_ref
+        List<String> retired = List.of();
+        String retiredReason; // null: the retired entries carry no reason
+        boolean omitBytes;
 
         Suite(Path dir) {
             this.dir = dir;
@@ -144,17 +184,30 @@ class VectorHarnessTest {
                     .put("group", "kdf")
                     .put("status", status);
             ArrayNode vs = doc.putArray("vectors");
-            ids.forEach(id -> vs.addObject().put("id", id));
-            doc.putArray("retired");
+            for (int i = 0; i < ids.size(); i++) {
+                ObjectNode v = vs.addObject().put("id", ids.get(i));
+                if (!(bareVector && i == ids.size() - 1)) {
+                    v.put("description", "a vector").put("spec_ref", "§5.3");
+                }
+            }
+            ArrayNode ret = doc.putArray("retired");
+            for (String id : retired) {
+                ObjectNode r = ret.addObject().put("id", id);
+                if (retiredReason != null) {
+                    r.put("reason", retiredReason);
+                }
+            }
             byte[] bytes = JSON.writeValueAsString(doc).getBytes(StandardCharsets.UTF_8);
             Files.createDirectories(file().getParent());
             Files.write(file(), bytes);
 
             ObjectNode manifest = JSON.createObjectNode().put("vector_suite_version", "9.9.9-test");
-            manifest.putArray("files").addObject()
+            ObjectNode listed = manifest.putArray("files").addObject()
                     .put("path", "kdf/demo.json")
-                    .put("sha256", HexFormat.of().formatHex(sha256(bytes)))
-                    .put("bytes", bytes.length);
+                    .put("sha256", HexFormat.of().formatHex(sha256(bytes)));
+            if (!omitBytes) {
+                listed.put("bytes", bytes.length);
+            }
             ArrayNode held = manifest.putArray("held_out");
             if (heldOut != null) {
                 held.addObject().put("path", heldOut);

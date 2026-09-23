@@ -10,9 +10,9 @@
 - One `package-info.java` per `docs/09` §1 module, stating its responsibility and what it may depend on. The only types are those the exported packages need to exist: `ReadMode`, the `FieldsealError` base and an empty `KeyProvider` SPI.
 - Tests:
   - `ModuleDescriptorTest` pins the compiled module's exports and requires.
-  - `DependencyRulesTest` holds the main classes to `docs/09` §1's dependency rule (ArchUnit). It also injects one violation per rule from the test sources and asserts that each rule reports it, so a rule that stops biting fails the build.
+  - `DependencyRulesTest` holds the main classes to `docs/09` §1's dependency rule (ArchUnit). It imports the module's whole classes directory, so a class in any package, including a sibling such as `dev.fieldseal.corex`, falls under the layout rule. It also injects one violation per rule from the test sources and asserts that each rule reports it, so a rule that stops biting fails the build.
   - `VectorHarnessTest` walks the pinned suite, and breaks a synthetic suite one input at a time to exercise each guard.
-- The harness (`VectorHarness`, in the testing module's test sources) reads `vectors/MANIFEST.json` and iterates `files` only, never `held_out`. For each file it checks the byte length and SHA-256, the `docs/08` §4 wrapper, and every id's grammar and uniqueness. **It executes no vector.**
+- The harness (`VectorHarness`, in the testing module's test sources) reads `vectors/MANIFEST.json` and iterates `files` only, never `held_out`. For each file it checks the byte length and SHA-256, and the `docs/08` §4 wrapper. It checks that every vector has a unique, well-formed id, a `description` and a `spec_ref`, and that every `retired` entry has a well-formed id and a reason. **It executes no vector.**
 
 ## Building
 

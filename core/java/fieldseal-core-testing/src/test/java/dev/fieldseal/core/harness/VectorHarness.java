@@ -27,7 +27,9 @@ import java.util.regex.Pattern;
  *       docs/17 §4);
  *   <li>checks each listed file's byte length and SHA-256 before parsing it;
  *   <li>checks the common wrapper of docs/08 §4 (schema, group, suite version, {@code pinned}
- *       status) and every vector id's grammar and uniqueness.
+ *       status); that every vector carries a unique, well-formed {@code id} and a non-empty
+ *       {@code description} and {@code spec_ref}; and that every {@code retired} entry carries a
+ *       well-formed {@code id} and a {@code reason}.
  * </ul>
  *
  * <p>What it does not do yet: run a vector, or emit the docs/14 §4 report (S6). docs/08 §5
@@ -42,8 +44,15 @@ public final class VectorHarness {
     private static final ObjectMapper JSON =
             new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
 
-    /** One listed file, as walked. */
-    public record FileWalk(String path, int vectors) {}
+    /**
+     * One listed file. {@code walked} is false when a problem stopped the walk before its
+     * vectors were counted; {@code vectors} is then 0 and means nothing.
+     */
+    public record FileWalk(String path, int vectors, boolean walked) {
+        static FileWalk failed(String path) {
+            return new FileWalk(path, 0, false);
+        }
+    }
 
     /** The whole walk. It is clean when {@code problems} is empty. */
     public record Walk(
@@ -97,23 +106,27 @@ public final class VectorHarness {
         Path file = root.resolve(path).normalize();
         if (parts.length != 2 || !parts[1].endsWith(".json") || !file.startsWith(root)) {
             problems.add(path + ": not a <family>/<stem>.json path under vectors/");
-            return new FileWalk(path, 0);
+            return FileWalk.failed(path);
         }
         if (!Files.isRegularFile(file)) {
             problems.add(path + ": listed in the manifest but missing");
-            return new FileWalk(path, 0);
+            return FileWalk.failed(path);
         }
 
         // Integrity before parsing: a file that fails its hash is not read (docs/08 §5 item 1).
         byte[] bytes = Files.readAllBytes(file);
-        if (bytes.length != entry.path("bytes").asLong(-1)) {
+        if (!entry.path("bytes").canConvertToLong()) {
+            problems.add(path + ": the manifest entry has no integer bytes field");
+            return FileWalk.failed(path);
+        }
+        if (bytes.length != entry.path("bytes").asLong()) {
             problems.add(path + ": " + bytes.length + " bytes, manifest says " + entry.path("bytes"));
-            return new FileWalk(path, 0);
+            return FileWalk.failed(path);
         }
         String sha256 = HexFormat.of().formatHex(sha256(bytes));
         if (!sha256.equals(entry.path("sha256").asText())) {
             problems.add(path + ": sha256 " + sha256 + ", manifest says " + entry.path("sha256"));
-            return new FileWalk(path, 0);
+            return FileWalk.failed(path);
         }
 
         String family = parts[0];
@@ -124,17 +137,31 @@ public final class VectorHarness {
         expect(problems, path, "vector_suite_version", doc, suiteVersion);
         expect(problems, path, "status", doc, "pinned");
 
+        String prefix = family + "/" + stem + "/";
         Set<String> retired = new HashSet<>();
-        doc.path("retired").forEach(r -> retired.add(r.path("id").asText()));
+        for (JsonNode r : doc.path("retired")) {
+            String id = r.path("id").asText("");
+            if (!wellFormed(id, prefix)) {
+                problems.add(path + ": retired id '" + id + "' is not " + prefix + "<slug>");
+            }
+            if (r.path("reason").asText("").isBlank()) {
+                problems.add(path + ": retired id '" + id + "' has no reason");
+            }
+            retired.add(id);
+        }
         JsonNode vectors = doc.path("vectors");
         if (!vectors.isArray() || vectors.isEmpty()) {
             problems.add(path + ": no vectors");
-            return new FileWalk(path, 0);
+            return FileWalk.failed(path);
         }
-        String prefix = family + "/" + stem + "/";
         for (JsonNode v : vectors) {
             String id = v.path("id").asText("");
-            if (!id.startsWith(prefix) || !SLUG.matcher(id.substring(prefix.length())).matches()) {
+            for (String field : new String[] {"description", "spec_ref"}) {
+                if (!v.path(field).isTextual() || v.path(field).asText().isBlank()) {
+                    problems.add(path + ": vector '" + id + "' has no " + field);
+                }
+            }
+            if (!wellFormed(id, prefix)) {
                 problems.add(path + ": id '" + id + "' is not " + prefix + "<slug>");
             } else if (!ids.add(id)) {
                 problems.add(path + ": id '" + id + "' is not unique in the suite");
@@ -142,7 +169,11 @@ public final class VectorHarness {
                 problems.add(path + ": id '" + id + "' is retired and may not be reused");
             }
         }
-        return new FileWalk(path, vectors.size());
+        return new FileWalk(path, vectors.size(), true);
+    }
+
+    private static boolean wellFormed(String id, String prefix) {
+        return id.startsWith(prefix) && SLUG.matcher(id.substring(prefix.length())).matches();
     }
 
     private static void expect(
@@ -168,10 +199,11 @@ public final class VectorHarness {
             System.exit(2);
         }
         Walk walk = walk(Path.of(args[0]));
-        System.out.printf("vector suite %s: %d files, %d vectors walked, 0 executed (stage S1)%n",
+        System.out.printf("vector suite %s: %d files, %d vectors walked%n",
                 walk.suiteVersion(), walk.files().size(), walk.vectors());
         for (FileWalk f : walk.files()) {
-            System.out.printf("  %-30s %3d%n", f.path(), f.vectors());
+            System.out.printf("  %-30s %s%n", f.path(),
+                    f.walked() ? String.format("%3d", f.vectors()) : "not walked (see PROBLEM)");
         }
         System.out.println("held_out: " + (walk.heldOut().isEmpty() ? "none" : walk.heldOut()));
         walk.problems().forEach(p -> System.err.println("PROBLEM " + p));

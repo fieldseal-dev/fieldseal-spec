@@ -24,7 +24,11 @@ import java.util.Set;
  * does not declare, so no class here can name it.
  *
  * <p>One rule is added: every class lives in a known module's package. Without it, a class in a
- * new package would sit outside every rule above and pass them all.
+ * new package would sit outside every rule above and pass them all. Its subject is every class
+ * imported, not the classes under {@link #ROOT}: ArchUnit's {@code "dev.fieldseal.core.."}
+ * does not match a sibling such as {@code dev.fieldseal.corex}, and a class there, or in any
+ * other package, would otherwise escape it. That holds only because the test imports the
+ * module's whole classes directory rather than a package (DependencyRulesTest).
  */
 final class DependencyRules {
 
@@ -59,7 +63,7 @@ final class DependencyRules {
         Map<String, ArchRule> rules = new LinkedHashMap<>();
 
         rules.put("layout",
-                classes().that().resideInAPackage(ROOT + "..")
+                classes()
                         .should().resideInAnyPackage(modules.values().toArray(String[]::new))
                         .because("docs/27 §3: a class outside the known modules escapes every"
                                 + " dependency rule"));
