@@ -162,11 +162,13 @@ jobs:
   # docs/27 §6.4: the platform-maximum probe, in a job of its own because it
   # allocates arrays of nearly 2 GiB (-Xmx6g; this public repository's Linux
   # runners have 16 GB). Informational: no job needs it and nothing gates on
-  # its figure. It prints the largest byte[] the runner's JVM allocates and
-  # which limit stopped the one above it.
+  # its figure, so a failure here (a runner with less memory, say) is
+  # reported but does not mark the run red. It prints the largest byte[] the
+  # runner's JVM allocates and which limit stopped the one above it.
   java-memory-probe:
     name: "Java core: largest byte[] on this JVM (informational, docs/27 §6.4)"
     runs-on: ubuntu-24.04
+    continue-on-error: true
     defaults:
       run:
         working-directory: core/java

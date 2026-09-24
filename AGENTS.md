@@ -51,8 +51,8 @@ vectors/                  machine-readable test vectors — six core families em
                           waits for a first release (see vectors/README.md)
 core/
   python/  typescript/    reference implementations — both built, both pass the pinned suite
-  java/                   the Phase 2 Java core (docs/27), at stage S1: Gradle scaffold,
-                          module skeleton, CI job and S2 capability audit; no
+  java/                   the Phase 2 Java core (docs/27), at stage S2: Gradle scaffold,
+                          module skeleton, CI jobs and the capability audit; no
                           cryptographic code in the core yet
   dotnet/  go/            README placeholders (Phase 2)
 adapters/

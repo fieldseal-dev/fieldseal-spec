@@ -64,6 +64,14 @@ public final class VectorHarness {
 
     private VectorHarness() {}
 
+    /**
+     * Parses one vector file with the walk's own reader (duplicate keys refused), so that
+     * whatever else reads the suite parses it the way the walk did.
+     */
+    public static JsonNode read(Path file) throws IOException {
+        return JSON.readTree(file.toFile());
+    }
+
     public static Walk walk(Path vectorsDir) throws IOException {
         Path root = vectorsDir.toAbsolutePath().normalize();
         JsonNode manifest = JSON.readTree(root.resolve("MANIFEST.json").toFile());

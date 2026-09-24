@@ -77,44 +77,57 @@ class CapabilitiesTest {
     @Nested
     class Gcm {
 
-        /** An envelope vector's parts, and the envelope built from them with ct‖tag at 63. */
-        private record Built(byte[] key, byte[] nonce, byte[] aad, byte[] plaintext, byte[] envelope,
-                byte[] expected) {}
+        /**
+         * An envelope vector's fields. The decrypt and tag-failure tests read only these, so
+         * that they stand on their own: a regression on the encrypt side does not hide them.
+         */
+        private record Parts(byte[] key, byte[] nonce, byte[] aad, byte[] plaintext,
+                byte[] expected) {
+            int ctAndTag() {
+                return expected.length - CT_OFFSET - COMMIT_LEN;
+            }
+        }
 
-        private Built build(JsonNode v) throws GeneralSecurityException {
+        private static Parts parts(JsonNode v) {
             JsonNode exp = v.path("expected");
-            byte[] key = hex(v.path("intermediates").path("record_key"));
-            byte[] nonce = hex(v.path("nonce"));
-            byte[] aad = hex(exp.path("aad"));
-            byte[] plaintext = hex(v.path("plaintext"));
             byte[] expected = hex(exp.path("envelope"));
             assertEquals(exp.path("envelope_bytes").asInt(), expected.length);
+            return new Parts(hex(v.path("intermediates").path("record_key")), hex(v.path("nonce")),
+                    hex(exp.path("aad")), hex(v.path("plaintext")), expected);
+        }
 
+        private static Parts parts(String slug) {
+            return parts(vectors("envelope/ff01.json").stream()
+                    .filter(v -> slug(v).equals(slug)).findFirst().orElseThrow());
+        }
+
+        /** The envelope built from the vector's fields, with ct‖tag written at 63. */
+        private byte[] build(JsonNode v, Parts p) throws GeneralSecurityException {
             // The header from the vector's fields, never copied from the expected envelope.
-            byte[] env = new byte[expected.length];
+            byte[] env = new byte[p.expected().length];
             env[0] = 0x01;
             int suite = Integer.decode(v.path("suite_id").asText());
             env[1] = (byte) (suite >>> 8);
             env[2] = (byte) suite;
             System.arraycopy(hex(v.path("key_id")), 0, env, 3, 16);
             System.arraycopy(hex(v.path("msg_seed")), 0, env, 19, 32);
-            System.arraycopy(nonce, 0, env, HEADER_LEN, NONCE_LEN);
+            System.arraycopy(p.nonce(), 0, env, HEADER_LEN, NONCE_LEN);
 
             // One doFinal writes ct‖tag straight into the pre-sized envelope (docs/27 §5.1).
-            int written = gcm(Cipher.ENCRYPT_MODE, key, nonce, aad)
-                    .doFinal(plaintext, 0, plaintext.length, env, CT_OFFSET);
-            assertEquals(plaintext.length + TAG_LEN, written);
-            byte[] commitment = HkdfOverMac.derive(key, new byte[0], COMMIT_INFO, COMMIT_LEN);
+            int written = gcm(Cipher.ENCRYPT_MODE, p.key(), p.nonce(), p.aad())
+                    .doFinal(p.plaintext(), 0, p.plaintext().length, env, CT_OFFSET);
+            assertEquals(p.plaintext().length + TAG_LEN, written);
+            byte[] commitment = HkdfOverMac.derive(p.key(), new byte[0], COMMIT_INFO, COMMIT_LEN);
             System.arraycopy(commitment, 0, env, CT_OFFSET + written, COMMIT_LEN);
-            return new Built(key, nonce, aad, plaintext, env, expected);
+            return env;
         }
 
         @TestFactory
         Stream<DynamicTest> encryptWritesTheEnvelopeAtOffset63() {
             return vectors("envelope/ff01.json").stream().map(v -> DynamicTest.dynamicTest(slug(v),
                     () -> {
-                        Built b = build(v);
-                        assertEquals(hex(b.expected()), hex(b.envelope()));
+                        Parts p = parts(v);
+                        assertEquals(hex(p.expected()), hex(build(v, p)));
                     }));
         }
 
@@ -122,23 +135,20 @@ class CapabilitiesTest {
         Stream<DynamicTest> decryptReadsCtAndTagInPlaceFromOffset63() {
             return vectors("envelope/ff01.json").stream().map(v -> DynamicTest.dynamicTest(slug(v),
                     () -> {
-                        Built b = build(v);
-                        byte[] env = b.expected();
-                        int ctAndTag = env.length - CT_OFFSET - COMMIT_LEN;
-                        byte[] out = new byte[ctAndTag - TAG_LEN];
-                        int n = gcm(Cipher.DECRYPT_MODE, b.key(), b.nonce(), b.aad())
-                                .doFinal(env, CT_OFFSET, ctAndTag, out, 0);
-                        assertEquals(b.plaintext().length, n);
-                        assertArrayEquals(b.plaintext(), out);
+                        Parts p = parts(v);
+                        byte[] out = new byte[p.ctAndTag() - TAG_LEN];
+                        int n = gcm(Cipher.DECRYPT_MODE, p.key(), p.nonce(), p.aad())
+                                .doFinal(p.expected(), CT_OFFSET, p.ctAndTag(), out, 0);
+                        assertEquals(p.plaintext().length, n);
+                        assertArrayEquals(p.plaintext(), out);
                     }));
         }
 
         /** docs/27 §4 maps exactly this class to TAG_INVALID. */
         @Test
-        void aTagFailureIsExactlyAeadBadTagException() throws GeneralSecurityException {
-            Built b = build(vectors("envelope/ff01.json").stream()
-                    .filter(v -> slug(v).equals("basic-roundtrip")).findFirst().orElseThrow());
-            int ctAndTag = b.expected().length - CT_OFFSET - COMMIT_LEN;
+        void aTagFailureIsExactlyAeadBadTagException() {
+            Parts b = parts("basic-roundtrip");
+            int ctAndTag = b.ctAndTag();
 
             byte[] tagFlipped = b.expected().clone();
             tagFlipped[CT_OFFSET + ctAndTag - 1] ^= 0x01;
@@ -160,15 +170,16 @@ class CapabilitiesTest {
 
         /**
          * GcmAllocation finds that a one-shot decrypt does not buffer the operand, so what does
-         * the caller's output array hold after a tag failure? Not plaintext: SunJCE zero-fills
-         * the output range. Not "untouched" either, so the core must not treat the output
-         * array's prior contents as preserved.
+         * the caller's output array hold after a tag failure? The one property the core relies
+         * on (docs/27 §5.1) is that it is not the plaintext; that is what this asserts. What the
+         * range does hold is the provider's business (SunJCE on Temurin 21 zero-fills it, and
+         * does not leave it as it was), so it is printed, not pinned: the core discards the
+         * array and assumes nothing about its contents.
          */
         @Test
-        void aTagFailureZeroFillsTheOutput() throws GeneralSecurityException {
-            Built b = build(vectors("envelope/ff01.json").stream()
-                    .filter(v -> slug(v).equals("one-kib")).findFirst().orElseThrow());
-            int ctAndTag = b.expected().length - CT_OFFSET - COMMIT_LEN;
+        void aTagFailureLeavesNoPlaintextInTheOutput() {
+            Parts b = parts("one-kib");
+            int ctAndTag = b.ctAndTag();
             byte[] tagFlipped = b.expected().clone();
             tagFlipped[CT_OFFSET + ctAndTag - 1] ^= 0x01;
             byte[] out = new byte[ctAndTag - TAG_LEN];
@@ -176,7 +187,12 @@ class CapabilitiesTest {
             assertThrows(AEADBadTagException.class,
                     () -> gcm(Cipher.DECRYPT_MODE, b.key(), b.nonce(), b.aad())
                             .doFinal(tagFlipped, CT_OFFSET, ctAndTag, out, 0));
-            assertArrayEquals(new byte[out.length], out);
+            assertFalse(java.util.Arrays.equals(b.plaintext(), out), "plaintext released");
+            String fill = java.util.Arrays.equals(new byte[out.length], out) ? "zero-filled"
+                    : java.util.stream.IntStream.range(0, out.length).allMatch(i -> out[i] == 0x5A)
+                            ? "left as it was" : "neither zero-filled nor left as it was";
+            System.out.printf("After a tag failure the output range is %s on %s %s%n", fill,
+                    System.getProperty("java.vendor"), System.getProperty("java.runtime.version"));
         }
 
         /** docs/27 §5.1: "SunJCE refuses a repeated key and IV on an encrypting instance". */
@@ -471,9 +487,13 @@ class CapabilitiesTest {
             assertArrayEquals(new byte[16], builder.build().getSalt());
             assertEquals(expected, hex(generate(params, password)));
 
-            // getSalt() hands out a copy; Parameters.clear() erases the parameters' own.
+            // getSalt() hands out a copy: flipping a bit of it leaves the parameters' own salt
+            // as the vector pinned it, and the derivation unchanged.
             params.getSalt()[0] ^= 0x01;
-            assertNotEquals(0, params.getSalt()[0] | params.getSalt()[1] | params.getSalt()[2]);
+            assertArrayEquals(hex(p.path("salt")), params.getSalt());
+            assertEquals(expected, hex(generate(params, password)));
+
+            // Parameters.clear() erases the parameters' own copy.
             params.clear();
             assertArrayEquals(new byte[16], params.getSalt());
             assertNotEquals(expected, hex(generate(params, password)));

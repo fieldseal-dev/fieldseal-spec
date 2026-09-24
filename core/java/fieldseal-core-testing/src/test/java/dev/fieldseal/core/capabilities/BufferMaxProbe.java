@@ -9,6 +9,11 @@ import org.junit.jupiter.api.Test;
  * by bisection to the exact byte, and the failure just above it. Informational. The core's
  * length bound rests on the type ({@code byte[].length} is an {@code int}), not on this figure,
  * and nothing gates on it. Run with {@code ./gradlew memoryProbe}, never by {@code build}.
+ *
+ * <p>The bisection assumes that what fails at one length fails at every greater length. That
+ * holds for the VM's array limit, which is what the job's heap is sized to reach; a heap-bound
+ * failure depends on what the collector has reclaimed, so where the report names the heap the
+ * figure is one observation, not a ceiling.
  */
 @Tag("memory")
 class BufferMaxProbe {
@@ -35,26 +40,31 @@ class BufferMaxProbe {
     @Test
     void largestByteArray() {
         String floor = tryAllocate(GIB);
+        String atMax = floor == null ? tryAllocate(Integer.MAX_VALUE) : null;
         String report;
         if (floor != null) {
             report = "ceiling not observed: 1 GiB already fails (" + floor + ")";
-        } else if (tryAllocate(Integer.MAX_VALUE) == null) {
+        } else if (atMax == null) {
             report = "largest byte[] = Integer.MAX_VALUE = 2^31-1";
         } else {
             int lo = GIB; // succeeds
             int hi = Integer.MAX_VALUE; // fails
+            String above = atMax; // the failure observed at hi, kept as hi comes down
             while (hi - lo > 1) {
                 int mid = lo + (hi - lo) / 2;
-                if (tryAllocate(mid) == null) {
+                String failure = tryAllocate(mid);
+                if (failure == null) {
                     lo = mid;
                 } else {
                     hi = mid;
+                    above = failure;
                 }
             }
-            String above = tryAllocate(lo + 1);
+            // hi == lo + 1 here, and `above` is the message from that very allocation; it is
+            // not probed again, because a heap-bound failure need not repeat.
             long k = (1L << 31) - lo;
             report = String.format("largest byte[] = %d = 2^31-%d; at %d: \"%s\" (%s)", lo, k,
-                    lo + 1, above,
+                    hi, above,
                     above.contains("VM limit") ? "the VM's array limit" : "the heap, not the VM");
         }
         System.out.printf("BufferMaxProbe: %s%n  JVM %s %s (%s), GC %s, max heap %d MiB, flags %s%n",

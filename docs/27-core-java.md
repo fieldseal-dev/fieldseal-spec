@@ -173,7 +173,7 @@ Decisions:
 - **Confirmed at S2** by the `envelope/` family: with the vector's record key, nonce and AAD, the encrypt call above rebuilds all nine envelopes byte for byte, and the decrypt call reads each back in place. A flipped tag bit, ciphertext bit or AAD bit each raises exactly `AEADBadTagException`, not a subclass or sibling. The repeated key-and-IV refusal is confirmed too (`InvalidAlgorithmParameterException`).
 - **Found at S2, and binding on the core:**
   - **Decrypt is one `doFinal`, never `update()`.** Through `update()`, SunJCE buffers the ciphertext and allocates about 3× the operand; one `doFinal` allocates no operand-sized buffer (§6.3).
-  - **After a tag failure the output range is zero-filled,** not left as it was and never holding plaintext. The core discards that array anyway; it must not assume its earlier contents survive.
+  - **After a tag failure the output range holds no plaintext,** and is not left as it was either: SunJCE on Temurin 21 zero-fills it. The core discards that array anyway; it must not assume its earlier contents survive. The audit asserts only the absence of plaintext, which is the property the core relies on, and prints the observed fill, since what the provider writes there is its own business and may change under a JDK.
 
 ### 5.2 HKDF-SHA-512 at the JDK 21 floor
 - **The construction:** RFC 5869 extract-then-expand over `Mac.getInstance("HmacSHA512")`, with the PRK erased after expand.

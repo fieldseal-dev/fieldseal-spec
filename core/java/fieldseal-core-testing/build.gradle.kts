@@ -25,6 +25,11 @@ tasks.register<JavaExec>("vectors") {
 // out of `build` and runs on its own: `./gradlew memoryProbe`. Informational, never a gate.
 tasks.test {
     useJUnitPlatform { excludeTags("memory") }
+    // GcmAllocation (docs/27 §6.3) holds about 400 MiB live at its peak: 192 MiB of caller
+    // arrays over a 64 MiB operand plus the update() path's 3x internal buffering. Gradle's
+    // default 512 MiB worker heap leaves that no headroom, and an OutOfMemoryError there would
+    // fail this gating job for a reason the audit does not claim.
+    maxHeapSize = "1g"
 }
 
 tasks.register<Test>("memoryProbe") {
