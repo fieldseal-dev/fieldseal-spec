@@ -52,7 +52,8 @@ vectors/                  machine-readable test vectors — six core families em
 core/
   python/  typescript/    reference implementations — both built, both pass the pinned suite
   java/                   the Phase 2 Java core (docs/27), at stage S1: Gradle scaffold,
-                          module skeleton and CI job; no cryptographic code yet
+                          module skeleton, CI job and S2 capability audit; no
+                          cryptographic code in the core yet
   dotnet/  go/            README placeholders (Phase 2)
 adapters/
   django/  prisma/       built and gated in CI (L1+L2, and L4 for Prisma);
@@ -264,7 +265,7 @@ The test-vector suite is the single source of truth for interoperability. If a v
 
 **TypeScript core** (`core/typescript`, Node ≥ 24.7): `npm ci`, `npm test` (vitest: vector harness + gates + totality + primitives + providers), `npm run vectors` (emits the `docs/14` §4 conformance report), `npm run build`, `npm run typecheck`. Zero runtime dependencies.
 
-**Java core** (`core/java`, JDK ≥ 21, stage S1 of `docs/27` §8): `./gradlew build` (compiles with `-Xlint:all -Werror`; runs the module-descriptor pin, the `docs/09` §1 dependency rules with one injected violation per rule, and the harness guards), `./gradlew -q vectors` (walks the pinned suite: hashes, wrappers, ids; runs no vector yet). The Gradle wrapper pins 9.7.1 by checksum.
+**Java core** (`core/java`, JDK ≥ 21, stage S2 of `docs/27` §8): `./gradlew build` (compiles with `-Xlint:all -Werror`; runs the module-descriptor pin, the `docs/09` §1 dependency rules with one injected violation per rule, the harness guards, and `CapabilitiesTest`, the S2 audit of the JDK and BouncyCastle against the vectors), `./gradlew -q vectors` (walks the pinned suite: hashes, wrappers, ids; runs no vector yet), `./gradlew memoryProbe` (informational: the largest `byte[]` the JVM allocates; about 6 GiB of heap). The Gradle wrapper pins 9.7.1 by checksum.
 
 **Django adapter** (`adapters/django`): install the core from this checkout, not an index — `pip install -e "./core/python[argon2]"` then `pip install -e "./adapters/django[dev]"`; `python -m pytest tests -q` from `adapters/django`, with `FIELDSEAL_TEST_DB=sqlite|postgres`. CI runs both backends (`docs/12` §8), plus `ruff check src tests` and `mypy --strict src/fieldseal_django`.
 

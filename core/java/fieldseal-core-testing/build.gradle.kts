@@ -6,6 +6,8 @@ dependencies {
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.jackson.databind)
+    // The S2 capability audit (docs/27 §8) checks BouncyCastle's Argon2id against the vectors.
+    testImplementation(libs.bcprov)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -17,4 +19,23 @@ tasks.register<JavaExec>("vectors") {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "dev.fieldseal.core.harness.VectorHarness"
     args(rootDir.resolve("../../vectors").canonicalPath)
+}
+
+// The platform-maximum probe (docs/27 §6.4) allocates arrays of nearly 2 GiB, so it is kept
+// out of `build` and runs on its own: `./gradlew memoryProbe`. Informational, never a gate.
+tasks.test {
+    useJUnitPlatform { excludeTags("memory") }
+}
+
+tasks.register<Test>("memoryProbe") {
+    group = "verification"
+    description = "Bisects for the largest byte[] this JVM allocates (docs/27 §6.4)."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("memory") }
+    // Heap well above 2 GiB, so that the VM's array limit, not the heap, is what stops the
+    // bisection. GitHub's public-repository Linux runners have 16 GB (docs/27 §6.4).
+    maxHeapSize = "6g"
+    testLogging { showStandardStreams = true }
+    outputs.upToDateWhen { false }
 }
