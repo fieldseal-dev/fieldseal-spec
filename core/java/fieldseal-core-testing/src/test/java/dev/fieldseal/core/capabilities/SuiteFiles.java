@@ -23,8 +23,8 @@ public final class SuiteFiles {
 
     private static final HexFormat HEX = HexFormat.of();
 
-    /** The walk's problems, or null until it has run. */
-    private static List<String> walked;
+    /** The walk, or null until it has run. */
+    private static VectorHarness.Walk walk;
     private static final Map<String, List<JsonNode>> PARSED = new HashMap<>();
 
     private SuiteFiles() {}
@@ -34,16 +34,22 @@ public final class SuiteFiles {
     }
 
     private static synchronized Path root() {
-        if (walked == null) {
+        if (walk == null) {
             try {
-                walked = VectorHarness.walk(vectorsDir()).problems();
+                walk = VectorHarness.walk(vectorsDir());
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         }
-        assertEquals(List.of(), walked,
+        assertEquals(List.of(), walk.problems(),
                 "the pinned suite does not walk clean; no capability is checked against it");
         return vectorsDir();
+    }
+
+    /** Every file {@code MANIFEST.files} lists, in manifest order, as the walk saw it. */
+    public static synchronized List<VectorHarness.FileWalk> files() {
+        root();
+        return walk.files();
     }
 
     /** Every vector in {@code path} (relative to vectors/), in file order. */

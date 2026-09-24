@@ -121,9 +121,12 @@ public final class EnvelopeCodec {
      *
      * <p>{@code plaintextLen} is within spec §3.5's bound by the time this runs (the API boundary
      * checks it). An envelope for a plaintext near the bound is longer than any Java array
-     * (docs/27 §6.1); that is the platform failing below the bound, which spec §3.5 makes
-     * conformant, so it is reported as the platform's {@link OutOfMemoryError} and not as
-     * {@code LENGTH_EXCEEDED}.
+     * (docs/27 §6.1): the platform fails below the bound, which spec §3.5 makes conformant, so
+     * the outcome is an {@link OutOfMemoryError} and not {@code LENGTH_EXCEEDED}. For a total
+     * the VM can attempt, the error is the VM's own. For a total no {@code int} holds, the codec
+     * raises one itself, with a message that says so, rather than let the cast wrap; the heap is
+     * not involved. It is an {@link Error} on purpose: a converter's {@code catch (Exception)}
+     * must not turn an unencryptable value into a silent one.
      */
     public static byte[] newEnvelope(Suite suite, byte[] keyId, byte[] msgSeed, byte[] nonce,
             long plaintextLen) {
@@ -134,7 +137,8 @@ public final class EnvelopeCodec {
         long total = BufferLimits.fixedOverhead(suite) + plaintextLen;
         if (total > Integer.MAX_VALUE) {
             throw new OutOfMemoryError("an envelope of " + total
-                    + " bytes is longer than any Java array (docs/27 §6.1)");
+                    + " bytes is longer than any Java array; raised by the codec, not by the heap"
+                    + " (docs/27 §6.1)");
         }
         byte[] env = new byte[(int) total];
         env[0] = FMT_VER;

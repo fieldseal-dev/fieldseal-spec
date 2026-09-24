@@ -84,14 +84,28 @@ class CodecProperties {
 
     /**
      * {@code isCiphertext} is total and agrees with spec §3.4's first row, restated here from
-     * the spec rather than from the codec.
+     * the spec rather than from the codec: the per-suite minimum is the spec's figure, not the
+     * registry's, so a wrong registry row moves only one side.
      */
     @Property
     void isCiphertextIsTotalAndMatchesSpecRowOne(@ForAll("anyInput") byte[] input) {
-        boolean expected = input.length >= 3 && input[0] == 1
-                && Registry.lookup(((input[1] & 0xFF) << 8) | (input[2] & 0xFF))
-                        .map(s -> input.length >= BufferLimits.fixedOverhead(s)).orElse(false);
+        int min = input.length >= 3 && input[0] == 1
+                ? specMinimum(((input[1] & 0xFF) << 8) | (input[2] & 0xFF))
+                : -1;
+        boolean expected = min > 0 && input.length >= min;
         assertEquals(expected, EnvelopeCodec.isCiphertext(input));
+    }
+
+    /**
+     * spec §3.4 row one, per suite: the 51-byte header (§3.2) plus the suite's nonce, tag and
+     * commitment (§4.2). -1 for an unregistered suite.
+     */
+    private static int specMinimum(int suiteId) {
+        return switch (suiteId) {
+            case 0xFF01 -> 111; // 51 + 12 + 16 + 32
+            case 0xFF02 -> 123; // 51 + 24 + 16 + 32
+            default -> -1;
+        };
     }
 
     /**
@@ -130,10 +144,7 @@ class CodecProperties {
     void lengthEdges() {
         for (Suite s : Registry.all()) {
             long overhead = BufferLimits.fixedOverhead(s);
-            byte[] header = new byte[BufferLimits.HEADER_LEN + s.nonceLen()];
-            header[0] = 1;
-            header[1] = (byte) (s.id() >>> 8);
-            header[2] = (byte) s.id();
+            byte[] header = SyntheticOperand.header(s);
             long[] lengths = {0, 1, overhead - 1, overhead, overhead + 1, overhead + TWO_31 - 1,
                 overhead + TWO_31, overhead + (1L << 32), Long.MAX_VALUE};
             for (long len : lengths) {

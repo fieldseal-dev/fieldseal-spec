@@ -127,8 +127,9 @@ jobs:
   # harness's integrity walk, the capability audit (CapabilitiesTest), and the
   # envelope codec with its wiring and property tests; CodecVectorsTest runs
   # envelope/ and the recognition half of errors/ against the codec. The
-  # harness runs no vector through the public API and emits no report yet, so it is not in `cross-core-result-ids` or the cross job:
-  # those joins are S6 and S7 (docs/27 §1).
+  # harness runs no vector through the public API and emits no report yet,
+  # so it is not in `cross-core-result-ids` or the cross job: those joins
+  # are S6 and S7 (docs/27 §1).
   java-core:
     name: "Java core (S3: codec; no public-API vector run yet)"
     runs-on: ubuntu-24.04
@@ -152,7 +153,8 @@ jobs:
 
       # Compiles with -Xlint:all -Werror, then runs the module-descriptor pin,
       # the dependency rules with one injected violation per rule, the
-      # harness's guards against synthetic suites, and CapabilitiesTest.
+      # harness's guards against synthetic suites, CapabilitiesTest, the
+      # codec's unit, wiring and property tests, and CodecVectorsTest.
       - name: Build and test
         run: ./gradlew build --console=plain
 

@@ -12,6 +12,11 @@ public final class KeyUnavailableError extends FieldsealError {
         super(message);
     }
 
+    /** @param cause the key provider's own exception, kept as the cause (docs/27 §4) */
+    public KeyUnavailableError(String message, Throwable cause) {
+        super(message, cause);
+    }
+
     @Override
     public String code() {
         return "KEY_UNAVAILABLE";

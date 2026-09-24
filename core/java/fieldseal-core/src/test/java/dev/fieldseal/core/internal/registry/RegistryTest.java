@@ -56,5 +56,7 @@ class RegistryTest {
         assertTrue(a.permits(0xFF01));
         assertFalse(a.permits(0xFF02));
         assertThrows(UnsupportedOperationException.class, () -> a.suites().add(0xFF02));
+        assertEquals(List.of(0xFF01, 0xFF02),
+                List.copyOf(AllowList.of(Set.of(0xFF02, 0xFF01)).suites()));
     }
 }

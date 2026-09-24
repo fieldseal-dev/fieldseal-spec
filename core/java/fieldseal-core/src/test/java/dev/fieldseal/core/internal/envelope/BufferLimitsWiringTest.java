@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 /**
  * docs/27 §6.2's wiring test, the codec half (S3). Synthetic operands no {@code byte[]} can
  * represent go through the same entry points the public operations will call, and the spec §3.5
- * refusal must come before any read of the operand's content.
+ * refusal must come before any read of the operand's content past the three recognition bytes.
  *
  * <p>The other half, zero key-provider calls, needs the client and a provider, which arrive at
  * S4: that stage drives these operands through {@code encrypt}, {@code decrypt} and

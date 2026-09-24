@@ -1,6 +1,7 @@
 package dev.fieldseal.core.internal.registry;
 
 import dev.fieldseal.core.errors.ConfigurationError;
+import java.util.Collections;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -38,14 +39,14 @@ public final class AllowList {
             }
             copy.add(id);
         }
-        return new AllowList(Set.copyOf(copy));
+        return new AllowList(Collections.unmodifiableSet(copy));
     }
 
     public boolean permits(int suiteId) {
         return suites.contains(suiteId);
     }
 
-    /** An unmodifiable view, for configuration reflection (docs/09 §2). */
+    /** An unmodifiable view in ascending id order, for configuration reflection (docs/09 §2). */
     public Set<Integer> suites() {
         return suites;
     }

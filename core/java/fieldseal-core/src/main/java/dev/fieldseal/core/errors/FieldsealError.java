@@ -26,6 +26,11 @@ public abstract sealed class FieldsealError extends RuntimeException
         super(message);
     }
 
+    /** For a code that wraps another failure, such as a key provider's own exception. */
+    protected FieldsealError(String message, Throwable cause) {
+        super(message, cause);
+    }
+
     /** The exact code string, such as {@code "TAG_INVALID"}. */
     public abstract String code();
 }

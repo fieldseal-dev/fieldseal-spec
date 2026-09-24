@@ -1,5 +1,6 @@
 package dev.fieldseal.core.harness;
 
+import static dev.fieldseal.core.capabilities.SuiteFiles.files;
 import static dev.fieldseal.core.capabilities.SuiteFiles.hex;
 import static dev.fieldseal.core.capabilities.SuiteFiles.slug;
 import static dev.fieldseal.core.capabilities.SuiteFiles.vectors;
@@ -18,6 +19,8 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -33,7 +36,8 @@ import org.junit.jupiter.api.TestFactory;
  * decrypt vector whose outcome lies after recognition, this test still asserts the part S3 owns:
  * the input is recognized as an envelope, within spec §3.5's bound. {@link #PARTITION} pins how
  * many vectors fall on each side, so a suite change that moves one fails here rather than
- * shrinking what is checked.
+ * shrinking what is checked. Both families are enumerated from {@code MANIFEST.files}, so a file
+ * added to either fails here until it is pinned, instead of never being opened.
  *
  * <p>The read-mode mapping below is spec §3.4 and §10.3's tables, restated. In the core it
  * belongs to the client (S4), the only module that knows the mode; the S6 harness then runs every
@@ -41,13 +45,26 @@ import org.junit.jupiter.api.TestFactory;
  */
 class CodecVectorsTest {
 
-    /** Per file: {vectors run to their expected outcome at S3, vectors whose outcome is S4's}. */
+    /** Per errors/ file: {vectors run to their expected outcome at S3, vectors deferred to S4}. */
     private static final Map<String, int[]> PARTITION = new LinkedHashMap<>();
 
     static {
         PARTITION.put("errors/format.json", new int[] {40, 1});
         PARTITION.put("errors/crypto.json", new int[] {0, 12});
         PARTITION.put("errors/policy.json", new int[] {4, 12});
+    }
+
+    /** Per envelope/ file: its vector count; every one runs. */
+    private static final Map<String, Integer> ENVELOPE = Map.of("envelope/ff01.json", 9);
+
+    /** The {@code MANIFEST.files} entries under {@code family/}: exactly those {@code pinned}. */
+    private static List<VectorHarness.FileWalk> family(String family, Set<String> pinned) {
+        List<VectorHarness.FileWalk> listed = files().stream()
+                .filter(f -> f.path().startsWith(family + "/")).toList();
+        assertEquals(pinned, listed.stream().map(VectorHarness.FileWalk::path)
+                .collect(Collectors.toSet()),
+                family + "/ in MANIFEST.files is not the set of files this test pins");
+        return listed;
     }
 
     /** One vector's S3 verdict: run to its expected outcome, or deferred to S4 and why. */
@@ -61,7 +78,12 @@ class CodecVectorsTest {
 
     @TestFactory
     Stream<DynamicTest> envelopeFamilyParsesAndReserializes() {
-        return vectors("envelope/ff01.json").stream().map(v -> DynamicTest.dynamicTest(slug(v),
+        return family("envelope", ENVELOPE.keySet()).stream().flatMap(file -> {
+            List<JsonNode> vs = vectors(file.path());
+            assertEquals(ENVELOPE.get(file.path()).intValue(), vs.size(),
+                    file.path() + ": vector count moved");
+            return vs.stream();
+        }).map(v -> DynamicTest.dynamicTest(slug(v),
                 () -> {
                     byte[] env = hex(v.path("expected").path("envelope"));
                     assertEquals(v.path("expected").path("envelope_bytes").asInt(), env.length);
@@ -87,7 +109,8 @@ class CodecVectorsTest {
         List<String> failures = new ArrayList<>();
         Map<String, int[]> seen = new LinkedHashMap<>();
         List<String> deferred = new ArrayList<>();
-        for (String file : PARTITION.keySet()) {
+        for (VectorHarness.FileWalk walked : family("errors", PARTITION.keySet())) {
+            String file = walked.path();
             int[] counts = new int[2];
             for (JsonNode v : vectors(file)) {
                 try {

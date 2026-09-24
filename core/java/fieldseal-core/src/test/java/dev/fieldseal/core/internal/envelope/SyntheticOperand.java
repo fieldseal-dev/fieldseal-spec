@@ -1,5 +1,7 @@
 package dev.fieldseal.core.internal.envelope;
 
+import dev.fieldseal.core.internal.registry.Registry;
+import dev.fieldseal.core.internal.registry.Suite;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,16 +43,21 @@ final class SyntheticOperand implements Operand {
         return new SyntheticOperand(length, served, true);
     }
 
-    /** The first 51 + 12 bytes of a well-formed {@code 0xFF01} envelope. */
-    static byte[] ff01Header() {
-        byte[] h = new byte[BufferLimits.HEADER_LEN + 12];
+    /** The header and nonce of a well-formed envelope under {@code suite}: 51 + nonce bytes. */
+    static byte[] header(Suite suite) {
+        byte[] h = new byte[BufferLimits.HEADER_LEN + suite.nonceLen()];
         h[0] = 0x01;
-        h[1] = (byte) 0xFF;
-        h[2] = 0x01;
+        h[1] = (byte) (suite.id() >>> 8);
+        h[2] = (byte) suite.id();
         for (int i = 3; i < h.length; i++) {
             h[i] = (byte) i;
         }
         return h;
+    }
+
+    /** {@link #header} for {@code 0xFF01}: the first 51 + 12 bytes. */
+    static byte[] ff01Header() {
+        return header(Registry.FF01);
     }
 
     /** The highest offset any access touched, or -1 if none did. */
