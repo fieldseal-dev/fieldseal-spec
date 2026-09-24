@@ -4,6 +4,8 @@ dependencies {
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.archunit)
+    // The codec fuzzing pass (docs/09 §4; docs/27 §7). jqwik is a JUnit Platform engine.
+    testImplementation(libs.jqwik)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

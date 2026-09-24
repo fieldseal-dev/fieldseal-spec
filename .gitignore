@@ -26,6 +26,8 @@ target/
 .gradle/
 core/java/**/build/
 core/java/build/
+# jqwik's per-run database of failing samples (docs/27 §7 property tests)
+core/java/**/.jqwik-database
 bin/
 obj/
 
