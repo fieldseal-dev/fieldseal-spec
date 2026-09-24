@@ -73,7 +73,14 @@ class CodecProperties {
                 new byte[0], new byte[] {1}, new byte[] {2}, new byte[] {1, (byte) 0xFF, 1},
                 new byte[] {1, (byte) 0xFF, 2}, new byte[] {1, 0, 1}, new byte[] {2, (byte) 0xFF, 1});
         Arbitrary<byte[]> tail = Arbitraries.bytes().array(byte[].class).ofMaxSize(200);
+        // Each suite's minimum, one under and one over: random lengths almost never land on
+        // it, and it is the one place a wrong minimum shows.
+        Arbitrary<byte[]> atTheMinimum = Combinators.combine(
+                Arbitraries.of(new byte[] {1, (byte) 0xFF, 1}, new byte[] {1, (byte) 0xFF, 2}),
+                Arbitraries.of(110, 111, 112, 122, 123, 124))
+                .as((p, len) -> Arrays.copyOf(p, len));
         return Arbitraries.oneOf(
+                atTheMinimum,
                 Arbitraries.bytes().array(byte[].class).ofMaxSize(300),
                 Combinators.combine(prefix, tail).as((p, t) -> {
                     byte[] out = Arrays.copyOf(p, p.length + t.length);
@@ -97,7 +104,7 @@ class CodecProperties {
     }
 
     /**
-     * spec §3.4 row one, per suite: the 51-byte header (§3.2) plus the suite's nonce, tag and
+     * spec §3.4 row one, per suite: the 51-byte header (§3.1) plus the suite's nonce, tag and
      * commitment (§4.2). -1 for an unregistered suite.
      */
     private static int specMinimum(int suiteId) {
