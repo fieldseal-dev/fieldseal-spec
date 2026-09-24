@@ -214,7 +214,7 @@ This section discharges the per-binding obligation in `docs/09` §4: each core's
 |---|---|---|
 | Java language (`int` array length) | 2³¹−1 = 2,147,483,647 | JLS §10: array length is `int`. A length computed past `Integer.MAX_VALUE` wraps to a negative number, and `new byte[negative]` throws `NegativeArraySizeException` |
 | JDK soft limit `SOFT_MAX_ARRAY_LENGTH` (internal) | `Integer.MAX_VALUE - 8` = 2,147,483,639 = 2³¹−9 | `jdk.internal.util.ArraysSupport`; used by the JDK's growth policies, not a VM limit |
-| HotSpot allocatable `byte[]` | **2³¹−3 = 2,147,483,645** on Temurin 21.0.12 (HotSpot, G1, Windows x64, `-Xmx6g`); one byte more fails with "Requested array size exceeds VM limit", the VM's limit, not the heap's | Measured by §6.4 on 2026-09-24, not cited. CI's Linux figure is printed by the `java-memory-probe` job; S8 records it here |
+| HotSpot allocatable `byte[]` | **2³¹−3 = 2,147,483,645** on Temurin 21.0.12 (HotSpot, G1, `-Xmx6g`), the same on Windows x64 and on CI's `ubuntu-24.04` runner; one byte more fails with "Requested array size exceeds VM limit", the VM's limit, not the heap's | Measured by §6.4 on 2026-09-24, not cited: locally, and in the `java-memory-probe` job on PR #186 |
 | 32-bit JVM | far lower, bound by address space | spec §3.5 names the case. Documented only, never run in CI |
 
 **The platform binds first, by construction.** No Java array has a length of 2³¹ or more, so a 2³¹-byte plaintext cannot be an operand, and an over-bound envelope (at least 2³¹+111 bytes) cannot be received either. This holds on every JVM, whatever heap or flags it runs with. Spec §3.5 already says it: "the JVM cannot reliably allocate a `byte[]` of exactly `Integer.MAX_VALUE`".
