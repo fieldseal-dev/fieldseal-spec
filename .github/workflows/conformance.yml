@@ -122,15 +122,15 @@ jobs:
           name: conformance-python
           path: conformance-python.json
 
-  # The Java core (WS-I, docs/27), at stage S2 (docs/27 §8): the Gradle
+  # The Java core (WS-I, docs/27), at stage S3 (docs/27 §8): the Gradle
   # scaffold, the module descriptor, docs/09 §1's dependency rule, the
-  # harness's integrity walk, and the capability audit (CapabilitiesTest: the
-  # JDK's GCM and HMAC and BouncyCastle's Argon2id against kdf/, commitment/,
-  # envelope/ and blind-index/). The harness runs no vector and emits no
-  # report yet, so it is not in `cross-core-result-ids` or the cross job:
+  # harness's integrity walk, the capability audit (CapabilitiesTest), and the
+  # envelope codec with its wiring and property tests; CodecVectorsTest runs
+  # envelope/ and the recognition half of errors/ against the codec. The
+  # harness runs no vector through the public API and emits no report yet, so it is not in `cross-core-result-ids` or the cross job:
   # those joins are S6 and S7 (docs/27 §1).
   java-core:
-    name: "Java core (S2: capability audit; the harness runs no vector)"
+    name: "Java core (S3: codec; no public-API vector run yet)"
     runs-on: ubuntu-24.04
     defaults:
       run:

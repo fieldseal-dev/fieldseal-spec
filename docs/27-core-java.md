@@ -1,6 +1,6 @@
 # Java Core Technical Specification
 
-**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stages S1 (scaffold and CI) and S2 (capability audit) of §8 are built, and the core itself holds no cryptographic code yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
+**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stages S1 (scaffold and CI), S2 (capability audit) and S3 (envelope codec, registry, errors) of §8 are built, and the core itself holds no cryptographic code yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
 
 **Where it came from.** This document is the JVM core design drafted and reviewed on 2026-09-19, made into a repository document when Phase 2 opened (`docs/26` §1 item 3). On the way in, it lost what was true only on the day it was drafted:
 - its premise that `docs/09` §4's buffer-maxima flag waited on this core ([#167](https://github.com/fieldseal-dev/fieldseal-spec/issues/167) and #168 turned that flag into a per-binding obligation, which §6 here discharges);
@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -157,7 +157,7 @@ Decisions:
 - **`blindIndex` accepts `String` and `byte[]`** (`docs/09` §7.1, "where the refusal has to live"). The `byte[]` form decodes with a `CharsetDecoder` set to `CodingErrorAction.REPORT`, and a decoding failure is `INVALID_ARGUMENT`, which the `blind-index/` `refuse` vectors pin (suite `0.8.0-provisional`). `new String(bytes, UTF_8)` replaces malformed input silently and MUST NOT appear in a value path; CI greps for it.
 - **`firstUnassigned` offsets count code points, not UTF-16 units** (`docs/09` §12). This is the JVM-specific way to get it wrong, and it has an astral-plane test.
 - **The five operations are synchronous and I/O-free** (spec §11.1). This binding ships **no async companions**: Hibernate cannot await in the value path, and a companion would still pay Argon2id's CPU cost on some thread. This is the binding's G9 decision (`docs/09` §11), and the report says `async_companions: false`.
-- **Errors:** `FieldsealError` subclasses whose `.code()` returns the exact §9 string, plus the local configuration code (`docs/09` §9) and `INVALID_ARGUMENT` (`docs/09` §7.1). Mappings:
+- **Errors:** `FieldsealError` subclasses whose `.code()` returns the exact §9 string (the base class is `sealed` over exactly these, since S3), plus the local configuration code (`docs/09` §9) and `INVALID_ARGUMENT` (`docs/09` §7.1). Mappings:
   - `AEADBadTagException` → `TAG_INVALID`, and only after the commitment has verified (`docs/09` §3.2 step 6);
   - provider exceptions → `KEY_UNAVAILABLE`;
   - malformed UTF-8 → `INVALID_ARGUMENT`.
@@ -220,6 +220,8 @@ This section discharges the per-binding obligation in `docs/09` §4: each core's
 **The platform binds first, by construction.** No Java array has a length of 2³¹ or more, so a 2³¹-byte plaintext cannot be an operand, and an over-bound envelope (at least 2³¹+111 bytes) cannot be received either. This holds on every JVM, whatever heap or flags it runs with. Spec §3.5 already says it: "the JVM cannot reliably allocate a `byte[]` of exactly `Integer.MAX_VALUE`".
 
 **An asymmetry, recorded in `harness_notes`:** Python and Node can produce a valid envelope larger than any JVM array. The largest is 2³¹+110 bytes, for a 2³¹−1 plaintext, and a JVM cannot receive it at all. The spec's ceiling-not-a-guarantee clause covers the case.
+
+**The same limit on encrypt.** An envelope is its plaintext plus 111 bytes, so on HotSpot 21 the largest plaintext this core can encrypt is (2³¹−3) − 111 = 2,147,483,534 bytes, 113 short of the bound. A plaintext between that and 2³¹−1 passes the `LENGTH_EXCEEDED` guard and then fails to allocate its envelope. The codec reports that as the platform's `OutOfMemoryError`, not as `LENGTH_EXCEEDED`: the plaintext is within the bound, and spec §3.5 makes a platform failure below the bound conformant (built at S3).
 
 ### 6.2 The seam, and why an `int`-typed guard would be wrong
 
@@ -333,6 +335,13 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - The `Operand` seam and its wiring test (§6.2).
 - Codec fuzzing.
 - *Exit:* `envelope/` and `errors/` green through the harness, and the wiring test passes and bites.
+- *Built 2026-09-24, with the exit read as far as a codec reaches it.* There is no client or key provider before S4, so:
+  - **`envelope/`:** all nine envelopes parse to their vectors' fields and re-serialize byte for byte (`CodecVectorsTest`).
+  - **`errors/`:** the recognition half runs to its expected outcome. That is 40 of 41 `format` vectors and 4 of 16 `policy` vectors: every `is_ciphertext` case, and every decrypt or rotate outcome that recognition and the read mode decide. Every other decrypt vector is asserted to be recognized and within the bound, and its outcome waits for S4. A pinned count per file keeps the split from moving silently. The read-mode mapping the test applies is spec §3.4 and §10.3's tables; in the core it belongs to the client.
+  - **The wiring test** (`BufferLimitsWiringTest`) is the codec half: the guard refuses synthetic operands of 2³¹, 2³² and near-`Long.MAX_VALUE` lengths before any content is read, and passes exactly the bound. The zero-provider-calls half needs a provider, and S4 adds it by driving the same operands through `encrypt`, `decrypt` and `rotate`.
+  - **The decrypt front** (`EnvelopeCodec.frontOfDecrypt`) fixes the order recognition, then the guard, then the parse, so the guard reads the length only and runs before any field is copied.
+  - **Codec fuzzing:** jqwik 1.10.1 properties for `parse ∘ serialize`, `isCiphertext` against spec §3.4's first row, totality of the decrypt front, and the §7 length edges.
+  - **Bite checks:** each of these turns the build red: moving the guard after the parse, the suite minimum off by one, the reserved-version floor off by one, `0xFF02` unregistered, and the encrypt bound off by one.
 
 **S4 — Crypto pipeline.**
 - KDF, AEAD, commitment, context and AAD.
