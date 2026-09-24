@@ -187,7 +187,12 @@ class CapabilitiesTest {
             assertThrows(AEADBadTagException.class,
                     () -> gcm(Cipher.DECRYPT_MODE, b.key(), b.nonce(), b.aad())
                             .doFinal(tagFlipped, CT_OFFSET, ctAndTag, out, 0));
-            assertFalse(java.util.Arrays.equals(b.plaintext(), out), "plaintext released");
+            // Block by block, so a release of part of the plaintext fails too, not only all of
+            // it. No 16-byte block of this vector's plaintext is all zeros, so a zero fill passes.
+            for (int i = 0; i + TAG_LEN <= out.length; i += TAG_LEN) {
+                assertFalse(java.util.Arrays.equals(out, i, i + TAG_LEN, b.plaintext(), i,
+                        i + TAG_LEN), "plaintext released in the block at " + i);
+            }
             String fill = java.util.Arrays.equals(new byte[out.length], out) ? "zero-filled"
                     : java.util.stream.IntStream.range(0, out.length).allMatch(i -> out[i] == 0x5A)
                             ? "left as it was" : "neither zero-filled nor left as it was";
