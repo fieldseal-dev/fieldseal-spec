@@ -1,6 +1,6 @@
 # Java Core Technical Specification
 
-**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stage S1 (scaffold and CI, §8) is built, and no cryptographic code exists yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
+**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stages S1 (scaffold and CI) and S2 (capability audit) of §8 are built, and the core itself holds no cryptographic code yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
 
 **Where it came from.** This document is the JVM core design drafted and reviewed on 2026-09-19, made into a repository document when Phase 2 opened (`docs/26` §1 item 3). On the way in, it lost what was true only on the day it was drafted:
 - its premise that `docs/09` §4's buffer-maxima flag waited on this core ([#167](https://github.com/fieldseal-dev/fieldseal-spec/issues/167) and #168 turned that flag into a per-binding obligation, which §6 here discharges);
@@ -9,7 +9,7 @@
 
 Its review record is kept as §0, because the corrections listed there are the evidence the design was checked.
 
-**Library-fact caveat:** as in `docs/10` and `docs/11`, a claim about a platform or library API that has not been run on this core's toolchain is marked **[VERIFY]**. Each is resolved at the capability-audit stage (S2, §8), as *confirmed* or *corrected*, with a dated `docs/07` §7 entry (`docs/07` §4).
+**Library-fact caveat:** as in `docs/10` and `docs/11`, a claim about a platform or library API that has not been run on this core's toolchain is marked **[VERIFY]**. Each is resolved at the capability-audit stage (S2, §8), as *confirmed* or *corrected*, with a dated `docs/07` §7 entry (`docs/07` §4). **S2 resolved all of them on 2026-09-24** (`docs/07` §7, that date). Where it corrected a claim, the text below now states what was measured, and names the correction.
 
 **Reading path for the implementer (normative for this workstream):**
 - `docs/02-spec-v0.1.md` (the authority);
@@ -42,7 +42,7 @@ A second agent reviewed the first draft of the design against the repository and
 | `HKDFParameterSpec.ExtractExpand`, `deriveData(..., 32)` | `HKDFParameterSpec.ofExtract().addIKM(..).addSalt(..).thenExpand(info, 32)` yields `HKDFParameterSpec.ExtractThenExpand`, and `KDF.deriveData(spec)` takes only the spec | `javax/crypto/spec/HKDFParameterSpec.java`, `javax/crypto/KDF.java`, fetched 2026-09-19. Moot at the JDK 21 floor (§1), which does not use this API |
 | On JDK 21, HKDF "must fall back to BouncyCastle" | RFC 5869 over `javax.crypto.Mac` (`HmacSHA512`) is about 20 lines, is available on every JDK, and the `kdf/` family checks it. A JDK 21 floor costs no dependency | RFC 5869 §2 |
 | Argon2id salt: "32-byte salt handling" in one place, "16 bytes" in another | **16 bytes**, derived by HKDF-SHA-512 with `info = "fieldseal-argon2-salt-v1"` | spec §7.3, the Argon2id invocation block |
-| bcprov is "the mainstream FIPS-listed pure-Java crypto provider" | `bcprov-jdk18on` is **not** FIPS-validated; the validated module is the separate `bc-fips` artifact. The claim is removed | BC distribution naming. **[VERIFY at S2 whether `bc-fips` carries Argon2 at all]**, which matters only if CL-9 FIPS conversations ever reach this core |
+| bcprov is "the mainstream FIPS-listed pure-Java crypto provider" | `bcprov-jdk18on` is **not** FIPS-validated; the validated module is the separate `bc-fips` artifact. The claim is removed | BC distribution naming. **Resolved at S2: `bc-fips` carries no Argon2.** Its current release, 2.1.3, has no class whose name contains "argon" (0 of 7,004 jar entries; it ships scrypt). A FIPS-validated BouncyCastle build therefore offers no Argon2id path, which matters only if CL-9 FIPS conversations ever reach this core |
 | CSPRNG "seeded via the strongest available source" | `SecureRandom.getInstanceStrong()` can block on Linux. Use `new SecureRandom()`, the platform default, which does not block. The JVM does not `fork()` a running VM, so `docs/09` §10's prefork guidance does not apply | JDK `SecureRandom` documentation |
 | Node's `MAX_LENGTH` "≈ 2⁵³" on "Node ≥ 22"; a 32-bit Node figure | `docs/18` measured `buffer.constants.MAX_LENGTH` = 2⁵³−1 **on Node 24 x64**, and the TypeScript core targets Node ≥ 24.7. The 32-bit figure had no source and is dropped | `docs/18` §4 |
 
@@ -52,7 +52,7 @@ A second agent reviewed the first draft of the design against the repository and
 2. **The draft's "reachability audit by reflection" is replaced** (§6.2). Reflection can list methods but cannot see the order of statements inside one. The replacement is a behavioural test through an internal operand seam: a synthetic 2³¹-long operand whose content accessors throw, and a spy provider that must record zero calls. `docs/09` §4 has named this seam as architecture since G26.
 3. **The platform-maximum probe is informational, not a gate** (§6.4). The unrepresentability argument rests on the **type** (`byte[].length` is `int`, so no operand reaches 2³¹), not on any measurement. The probe earns its place by naming the real ceiling in this document.
 4. **An out-of-band entry the draft had missed is added:** `docs/09/7.1/lone-surrogate-refusal`. `java.lang.String` is UTF-16 and **can** hold an unpaired surrogate, so this core runs the entry and passes it directly (§6.5).
-5. **Memory claims include JCA's own buffering** (§6.3). SunJCE's GCM decryption holds back plaintext until the tag verifies, so it buffers about the size of the operand internally. The draft's "the only allocations on the decrypt path are…" was not true of the platform cipher.
+5. **Memory claims include JCA's own buffering** (§6.3). SunJCE's GCM decryption holds back plaintext until the tag verifies, so it buffers about the size of the operand internally. The draft's "the only allocations on the decrypt path are…" was not true of the platform cipher. *(S2 corrected this review item in turn: the buffering happens only when ciphertext arrives through `update()`. A single `doFinal`, the call §5.1 prescribes, allocates no operand-sized buffer; §6.3 has the figures.)*
 6. **`max-uses` is a `long`.** Spec §5.5 allows max-uses up to 2³², which does not fit in an `int`: the same int/long hazard as the buffer bound, in a place the draft did not look (§4, §7).
 7. **The module layout uses JPMS properly** (§3). A module exports packages, not classes, so the draft's flat class list could hide nothing. `testing` becomes a separate Gradle subproject and artifact, which is how "never exported from the main module" (`docs/09` §1) reads on the JVM.
 
@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -88,7 +88,7 @@ No change to the comparison or to the existing consumers is needed.
 |---|---|---|
 | AES-256-GCM, HMAC-SHA-512, constant-time compare, CSPRNG | the JDK (SunJCE, `SecureRandom`) | No third-party crypto for suite `0xFF01` apart from Argon2id |
 | HKDF-SHA-512 | written in the core over `Mac.getInstance("HmacSHA512")` | RFC 5869; about 20 lines; checked by `kdf/` (§5.2) |
-| Argon2id (spec §7.3) | `org.bouncycastle:bcprov-jdk18on`, **for Argon2id only** | SunJCE has no Argon2. BouncyCastle is pure JVM, while `argon2-jvm` goes through JNA to native code. **[VERIFY at S2:]** the class names (`org.bouncycastle.crypto.generators.Argon2BytesGenerator`, `org.bouncycastle.crypto.params.Argon2Parameters.Builder`); that `withVersion(ARGON2_VERSION_13)`, `withParallelism(1)` and a 16-byte salt reproduce `blind-index/argon2id.json` at every cost point it pins; and whether the builder **copies** the salt |
+| Argon2id (spec §7.3) | `org.bouncycastle:bcprov-jdk18on` 1.86, **for Argon2id only** | SunJCE has no Argon2. BouncyCastle is pure JVM, while `argon2-jvm` goes through JNA to native code. **Confirmed at S2:** the class names (`org.bouncycastle.crypto.generators.Argon2BytesGenerator`, `org.bouncycastle.crypto.params.Argon2Parameters.Builder`), and that `withVersion(ARGON2_VERSION_13)`, `withParallelism(1)` and a 16-byte salt reproduce all 12 `raw` values in `blind-index/argon2id.json`, at both cost points it pins (t = 3 and t = 4, m = 32768). **The salt, answered:** the builder copies it (`withSalt`), `build()` copies it again, and `getSalt()` returns a copy. `Builder.clear()` and `Argon2Parameters.clear()` erase the two copies they hold, and the core is to call both (S5). A third copy, taken through `getSalt()` inside every `generateBytes` call, is never erased; that is read from the 1.86 bytecode, since no test can observe it, and §5.4 counts it. The builder also caps `m` at 2²⁴ KiB (16 GiB) through the system property `org.bouncycastle.argon2.max_memory_exp`, far above any cost spec §7.3 contemplates |
 | Tests only | JUnit 5, jqwik (property and fuzz testing), Jackson (vector JSON), ArchUnit | None of these ships in the published artifact |
 
 ## 3. Module layout
@@ -170,11 +170,14 @@ Decisions:
 - **Encrypt:** `doFinal(plaintext, 0, n, envelope, 63)` writes ct‖tag straight into the pre-sized output envelope at offset 51 + 12. That is one allocation: the envelope itself.
 - **Decrypt:** `doFinal(envelope, 63, ctLen + 16, out, 0)` consumes ct‖tag in place. Spec §3.1 makes the two fields contiguous, so no split and no copy are needed.
 - **A new `Cipher` for every call.** Instances are not thread-safe, and SunJCE refuses a repeated key and IV on an encrypting instance anyway.
-- **[VERIFY at S2, by a round-trip test and the `envelope/` family:]** the offsets above, and the exception type on tag failure (`AEADBadTagException`).
+- **Confirmed at S2** by the `envelope/` family: with the vector's record key, nonce and AAD, the encrypt call above rebuilds all nine envelopes byte for byte, and the decrypt call reads each back in place. A flipped tag bit, ciphertext bit or AAD bit each raises exactly `AEADBadTagException`, not a subclass or sibling. The repeated key-and-IV refusal is confirmed too (`InvalidAlgorithmParameterException`).
+- **Found at S2, and binding on the core:**
+  - **Decrypt is one `doFinal`, never `update()`.** Through `update()`, SunJCE buffers the ciphertext and allocates about 3× the operand; one `doFinal` allocates no operand-sized buffer (§6.3).
+  - **After a tag failure the output range holds no plaintext,** and is not left as it was either: SunJCE on Temurin 21 zero-fills it. The core discards that array anyway; it must not assume its earlier contents survive. The audit asserts only the absence of plaintext, which is the property the core relies on, and prints the observed fill, since what the provider writes there is its own business and may change under a JDK.
 
 ### 5.2 HKDF-SHA-512 at the JDK 21 floor
 - **The construction:** RFC 5869 extract-then-expand over `Mac.getInstance("HmacSHA512")`, with the PRK erased after expand.
-- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **[VERIFY at S2 against the `kdf/` family, which is the only thing that settles it.]**
+- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they wait for `canonical_context` at S4.
 - **G14.** The length of the canonical `info` is bounded by spec §6.1's unsettled G14 question. `Mac` does not cap `info`. This document records what the core accepts at S8, so that G14's resolution can be checked against it.
 
 ### 5.3 The rest of the crypto
@@ -190,7 +193,8 @@ Decisions:
 - **The core never zeroizes provider-owned material** (`docs/09` §8.1, G17). It validates what a provider returns (key length, `key_id` length) and maps exceptions to `KEY_UNAVAILABLE`. A test with a provider that keeps and inspects its own buffer proves the core never writes to it.
 - **What the core cannot promise:**
   - `SecretKeySpec` copies the key it is given;
-  - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach.
+  - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach;
+  - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2).
 - `pinned_decisions.key-material-ownership` lists the steps performed, the provider carve-out, and a clause saying none of this is guaranteed (spec §5.5).
 - **No `mlock` and no swap protection:** a documented deviation, worded as `docs/10` and `docs/11` word theirs.
 
@@ -210,7 +214,7 @@ This section discharges the per-binding obligation in `docs/09` §4: each core's
 |---|---|---|
 | Java language (`int` array length) | 2³¹−1 = 2,147,483,647 | JLS §10: array length is `int`. A length computed past `Integer.MAX_VALUE` wraps to a negative number, and `new byte[negative]` throws `NegativeArraySizeException` |
 | JDK soft limit `SOFT_MAX_ARRAY_LENGTH` (internal) | `Integer.MAX_VALUE - 8` = 2,147,483,639 = 2³¹−9 | `jdk.internal.util.ArraysSupport`; used by the JDK's growth policies, not a VM limit |
-| HotSpot allocatable `byte[]` | a few bytes under 2³¹−1, depending on VM, flags and header size | **Measured by §6.4, not cited.** Filled in at S8 |
+| HotSpot allocatable `byte[]` | **2³¹−3 = 2,147,483,645** on Temurin 21.0.12 (HotSpot, G1, `-Xmx6g`), the same on Windows x64 and on CI's `ubuntu-24.04` runner; one byte more fails with "Requested array size exceeds VM limit", the VM's limit, not the heap's | Measured by §6.4 on 2026-09-24, not cited: locally, and in the `java-memory-probe` job on PR #186 |
 | 32-bit JVM | far lower, bound by address space | spec §3.5 names the case. Documented only, never run in CI |
 
 **The platform binds first, by construction.** No Java array has a length of 2³¹ or more, so a 2³¹-byte plaintext cannot be an operand, and an over-bound envelope (at least 2³¹+111 bytes) cannot be received either. This holds on every JVM, whatever heap or flags it runs with. Spec §3.5 already says it: "the JVM cannot reliably allocate a `byte[]` of exactly `Integer.MAX_VALUE`".
@@ -252,11 +256,19 @@ Three rules, each with a test:
 ### 6.3 No-copy recognition, and what the platform copies anyway
 - **Recognition** is index arithmetic on the caller's array: 1 B version, 2 B suite, 16 B `key_id`, 32 B `msg_seed`. The operand is never copied with `Arrays.copyOfRange`. `key_id` and `msg_seed` are copied, because the KDF and the provider need arrays, and they are small and fixed-size.
 - **What the core allocates.** On decrypt: the header object, the small fixed fields, and the output plaintext, which comes after the guard. On encrypt: `msg_seed`, the nonce and the output envelope.
-- **What the platform allocates.** SunJCE's GCM decryption buffers the ciphertext internally until the tag verifies; it must, since it cannot release plaintext that has not been authenticated. So peak memory on decrypt is about 2× the operand plus the output. **[VERIFY at S2 on the pinned JDK by measuring allocation with `ThreadMXBean.getThreadAllocatedBytes`.]** S8 records the measured figure here; this document does not promise zero-copy crypto.
-- **Large but conformant operands.** A positive round trip near the ceiling is not a conformance requirement; only the refusal is. At about 2×, decrypting a 1 GiB envelope needs roughly 3 GiB of heap, and spec §3.5 makes an out-of-memory failure there conformant. The core adds no heap pre-checks.
+- **What the platform allocates.** This said SunJCE's GCM decryption buffers the ciphertext until the tag verifies, putting peak decrypt memory at about 2× the operand plus the output. **Corrected at S2**, measured with `getCurrentThreadAllocatedBytes` on Temurin 21.0.12 over a 64 MiB operand, after a warm-up (`CapabilitiesTest`):
+
+  | Call | Allocated beyond the caller's arrays |
+  |---|---|
+  | encrypt, one `doFinal` into a pre-sized output | 22,280 B |
+  | decrypt, one `doFinal` over ct‖tag into a separate output | 22,320 B |
+  | decrypt, the same bytes through `update()` then `doFinal` | 201,349,032 B (3.0×) |
+
+  The claim was true of the `update()` path only. Given the whole of ct‖tag in one call, SunJCE does not buffer, and it releases no plaintext on a failed tag (§5.1). The core decrypts in one `doFinal` (§5.1), so its decrypt peak is the envelope plus the plaintext it returns. The test first checks that its counter registers a 64 MiB array, then fails if either one-shot figure reaches 1 MiB, so a JDK that starts buffering is noticed. This document still does not promise zero-copy crypto: the figures are one JDK's.
+- **Large but conformant operands.** A positive round trip near the ceiling is not a conformance requirement; only the refusal is. At the measured figures, decrypting a 1 GiB envelope needs about 2 GiB of heap, the envelope and its plaintext, and spec §3.5 makes an out-of-memory failure there conformant. The core adds no heap pre-checks.
 
 ### 6.4 The platform-maximum probe (informational)
-`BufferMaxProbe` is a JUnit test tagged `@Tag("memory")`, run in a separate CI job with `-Xmx` large enough for a ~2 GiB array. **[VERIFY runner memory: GitHub-hosted Linux runners differ between public and private repositories.]**
+`BufferMaxProbe` is a JUnit test tagged `@Tag("memory")`, run by `./gradlew memoryProbe` (never by `build`) in the `java-memory-probe` CI job with `-Xmx6g`. **Runner memory, resolved at S2:** GitHub's runner reference gives standard Linux runners 16 GB for public repositories and 8 GB for private ones (fetched 2026-09-24), and this repository is public.
 1. Bisect for the largest `new byte[n]` that succeeds, between 1 GiB and `Integer.MAX_VALUE`, to the exact byte.
 2. Record which failure appears just above it: "Requested array size exceeds VM limit" (the VM ceiling) or "Java heap space" (the heap). Only the first names the platform ceiling.
 3. Record the JVM version, vendor, GC and flags.
@@ -312,6 +324,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - BouncyCastle's Argon2id against `blind-index/argon2id.json`, and its salt-copy behaviour.
 - The decrypt allocation multiplier (§6.3), and the probe (§6.4).
 - *Exit:* `CapabilitiesTest` green. Every [VERIFY] is confirmed or corrected here, with a `docs/07` §7 entry, and deviations are noted (`docs/17` §5 item 5).
+- *Built 2026-09-24.* `CapabilitiesTest` (in the testing module's test sources) and `BufferMaxProbe`; the results are in the sections above and in `docs/07` §7. The strict decoder is checked against the four `refuse` preimages and an RFC 3629 table of malformed and boundary inputs.
 
 **S3 — Envelope codec, registry, errors, `BufferLimits`.**
 - Recognition, serialization and `isCiphertext`.
@@ -378,7 +391,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 | The JDK 21 floor still excludes part of the Hibernate audience | A recorded decision (§0.3). A JDK 17 floor would change nothing in the crypto either, since the HKDF is written over `Mac` |
 | The empty-salt trap (§5.2) mismatches `kdf/` | Caught at S2 by the KAT; the fix is the RFC 5869 substitution, which the spec already states |
 | BouncyCastle's Argon2 differs from the vectors, or copies and keeps its salt | Caught by the S2 KAT; the salt behaviour is documented, not claimed |
-| SunJCE's GCM buffering makes large decrypts memory-heavy | Measured at S2 and stated in §6.3; spec §3.5 makes an out-of-memory failure conformant |
+| SunJCE's GCM buffering makes large decrypts memory-heavy | Measured at S2 (§6.3): it buffers through `update()` only, so the core decrypts in one `doFinal`. Spec §3.5 makes an out-of-memory failure conformant |
 | `tools/ucd-gen` has no Java emitter | S5 work, shared with WS-J; CI's `--check` stays the single gate |
 | One implementer writes the JVM and .NET cores | `docs/17`'s rule: say so in both reports. The claim is weakened, not invalidated. The cores are sequenced, never interleaved (`docs/26` §2.2) |
 | This document leaks reference-core facts to the implementer | Facts are cited to documents, not code, and the isolation statement names this document (header) |
