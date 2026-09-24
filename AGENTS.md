@@ -51,7 +51,9 @@ vectors/                  machine-readable test vectors — six core families em
                           waits for a first release (see vectors/README.md)
 core/
   python/  typescript/    reference implementations — both built, both pass the pinned suite
-  java/  dotnet/  go/      README placeholders (Phase 1+)
+  java/                   the Phase 2 Java core (docs/27), at stage S1: Gradle scaffold,
+                          module skeleton and CI job; no cryptographic code yet
+  dotnet/  go/            README placeholders (Phase 2)
 adapters/
   django/  prisma/       built and gated in CI (L1+L2, and L4 for Prisma);
                           zero cryptographic code, asserted by a CI grep
@@ -261,6 +263,8 @@ The test-vector suite is the single source of truth for interoperability. If a v
 **Python core** (`core/python`): `pip install -e "./core/python[argon2,dev]"`, `pytest core/python/tests -q`, report via `python core/python/tests/run_vectors.py` (see `.github/workflows/conformance.yml`).
 
 **TypeScript core** (`core/typescript`, Node ≥ 24.7): `npm ci`, `npm test` (vitest: vector harness + gates + totality + primitives + providers), `npm run vectors` (emits the `docs/14` §4 conformance report), `npm run build`, `npm run typecheck`. Zero runtime dependencies.
+
+**Java core** (`core/java`, JDK ≥ 21, stage S1 of `docs/27` §8): `./gradlew build` (compiles with `-Xlint:all -Werror`; runs the module-descriptor pin, the `docs/09` §1 dependency rules with one injected violation per rule, and the harness guards), `./gradlew -q vectors` (walks the pinned suite: hashes, wrappers, ids; runs no vector yet). The Gradle wrapper pins 9.7.1 by checksum.
 
 **Django adapter** (`adapters/django`): install the core from this checkout, not an index — `pip install -e "./core/python[argon2]"` then `pip install -e "./adapters/django[dev]"`; `python -m pytest tests -q` from `adapters/django`, with `FIELDSEAL_TEST_DB=sqlite|postgres`. CI runs both backends (`docs/12` §8), plus `ruff check src tests` and `mypy --strict src/fieldseal_django`.
 

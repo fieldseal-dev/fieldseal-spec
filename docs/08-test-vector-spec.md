@@ -103,10 +103,13 @@ Every file shares a common wrapper:
   "vector_suite_version": "0.1.0",
   "group": "<family>",
   "spec_version": "0.1-draft",
+  "status": "pinned",
   "vectors": [ ... ],
   "retired": [ { "id": "...", "reason": "...", "spec_issue": "..." } ]
 }
 ```
+
+`status` is `"pinned"` in every file the manifest lists, under `files` or `adapter_files` (§4.8). The one other value used so far is `"held-out"`, which `blind-index/argon2id.json` carried while it was listed under `held_out` (`docs/17` §4).
 
 Every vector object carries:
 
