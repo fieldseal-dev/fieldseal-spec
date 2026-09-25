@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy. Stage S4a since 2026-09-25: the crypto primitives (`context`, `kdf`, `aead`, `commitment`) |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -177,7 +177,7 @@ Decisions:
 
 ### 5.2 HKDF-SHA-512 at the JDK 21 floor
 - **The construction:** RFC 5869 extract-then-expand over `Mac.getInstance("HmacSHA512")`, with the PRK erased after expand.
-- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they wait for `canonical_context` at S4.
+- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they waited for `canonical_context`, and run since S4a (`KdfVectorsTest`).
 - **G14.** The length of the canonical `info` is bounded by spec §6.1's unsettled G14 question. `Mac` does not cap `info`. This document records what the core accepts at S8, so that G14's resolution can be checked against it.
 
 ### 5.3 The rest of the crypto
@@ -349,6 +349,13 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - `DekCache`: max-age, max-uses as a `long`, capacity LRU, single-flight, erase on eviction.
 - Config validation and the reflection accessors.
 - *Exit:* `kdf/`, `context/` and `commitment/` green; the `key-material-ownership` and `api-boundary-order` tests green.
+- *S4a built 2026-09-25: the primitives, in their own PR.* The providers, the `DekCache`, config and the client are S4b's, with the two exit tests.
+  - **`context`:** `canonical_context` and the AAD (spec §6.2), and the spec §6.1 purpose grammar. `encodeForIndexKey` drops `row_id`, as spec §7.2 requires. Lengths are summed as `long`; a total past any Java array is an `OutOfMemoryError`, as in the codec (§6.1).
+  - **`kdf`:** HKDF-SHA-512 over `Mac` (§5.2), with the PRK and every expand block erased; `record_key` (spec §5.3) and `index_key` (spec §7.2).
+  - **`aead`:** `0xFF01` in place (§5.1). A tag failure is returned as an outcome, not thrown, so that the client maps it to `TAG_INVALID` only after the commitment has verified.
+  - **`commitment`:** spec §4.6 over an injected KDF. `docs/09` §1 forbids `commitment` → `kdf`, and the maintainer chose injection over amending `docs/09` (`docs/07` §7, 2026-09-25); `blindindex` does the same at S5.
+  - **Vectors:** `kdf/`, `context/` and `commitment/` green, with per-file counts pinned from `MANIFEST.files`; `envelope/` green in both directions composed from the primitives (`EnvelopeCryptoVectorsTest`). Every value passed on the first run: the mismatch list is empty.
+  - **Bite checks:** nine mutations each turn their tests red, among them an unsubstituted empty HKDF salt, a dropped length prefix, an absent `tenant_id` encoded as empty, `row_id` kept in the index-key `info`, and decryption through `update()`, which `open`'s allocation test catches at about 4× a 16 MiB operand.
 
 **S5 — Blind indexes and normalizers.**
 - A Java emitter for `tools/ucd-gen`, so that CI's `--check` covers the Java tables. Decide it jointly with WS-J; one shared, hashed resource is the alternative.

@@ -3,7 +3,7 @@
 Field-level encryption for JVM applications, with a format that other languages can read.
 
 > **Under construction: this core cannot encrypt or decrypt anything yet.**
-> The envelope codec, the suite registry and the error types are built; the encryption pipeline, key providers and blind indexes are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S4–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
+> The envelope codec, the suite registry, the error types and the cryptographic primitives underneath them are built and checked against the test vectors. The client that exposes them, the key providers and blind indexes are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S4–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
 
 This library encrypts individual database values, one field at a time, into a self-describing **envelope**: bytes in, bytes out. Every envelope is bound to the table and column it belongs to, and to the tenant and row when you supply them, so a value copied to the wrong place fails to decrypt instead of decrypting silently.
 
@@ -11,7 +11,7 @@ It implements the [Fieldseal specification](../../docs/02-spec-v0.1.md). Envelop
 
 ## Features
 
-The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). None of it is built yet: the codec holds the registry row for the first item, and the suite itself lands with the rest in stages S4–S6.
+The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). None of it is usable yet. The suite, the key derivation, the key commitment and the context encoding exist inside the core and pass the test vectors; the client that exposes them lands at stage S4, blind indexes at S5.
 
 - **One cipher suite, no knobs.** Suite `0xFF01` is AES-256-GCM with HKDF-SHA-512 and an explicit key commitment. There is no algorithm parameter to get wrong.
 - **A fresh key for every write.** Each encryption draws a new 32-byte seed and derives a key from it that is used once and never again, updates included (spec §5.3).
