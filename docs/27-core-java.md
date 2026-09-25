@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy. Stage S4a since 2026-09-25: the crypto primitives (`context`, `kdf`, `aead`, `commitment`). Stage S4b since 2026-09-25: the key providers, the `DekCache` and the client |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -98,9 +98,9 @@ Package root `dev.fieldseal.core`. The packages mirror `docs/09` §1's modules, 
 ```
 core/java/
   fieldseal-core/            module dev.fieldseal.core
-    dev/fieldseal/core/                  api: Fieldseal, FieldContext, IndexDeclaration, CachePolicy, ReadMode   (exported)
+    dev/fieldseal/core/                  api: Fieldseal, FieldContext, KeyProviders, IndexDeclaration, CachePolicy, ReadMode   (exported)
     dev/fieldseal/core/errors/           FieldsealError + one subclass per §9 code                              (exported)
-    dev/fieldseal/core/keyprovider/      KeyProvider SPI, Static/Derived/Envelope providers, Wrapper            (exported: callers implement the SPI)
+    dev/fieldseal/core/keyprovider/      KeyProvider SPI, KeyRequest, EnvelopeHeader, KeyMaterial, Wrapper, WrappedKeyStore   (exported: callers implement the SPI)
     dev/fieldseal/core/internal/envelope/     header, parse, serialize, isCiphertext, BufferLimits, Operand (the §6.2 seam)
     dev/fieldseal/core/internal/registry/     frozen suite table + allow-list
     dev/fieldseal/core/internal/context/      canonical_context, AAD
@@ -109,13 +109,14 @@ core/java/
     dev/fieldseal/core/internal/commitment/   §4.6 compute/verify (provisional, G1)
     dev/fieldseal/core/internal/blindindex/   IDFs, truncation, normalizers, UCD tables
     dev/fieldseal/core/internal/cache/        DekCache
-    dev/fieldseal/core/internal/config/       validation, resolved config
+    dev/fieldseal/core/internal/config/       (empty since S4b: the builder validates, in api)
   fieldseal-core-testing/    module dev.fieldseal.core.testing: encrypt_with_materials, armed by FIELDSEAL_TEST_MODE=1 (docs/08 §6)
 ```
 
 - `module-info.java` exports the three public packages, plus one qualified export (`exports … to dev.fieldseal.core.testing`) for the test seam, and nothing else.
 - `docs/09` §1's dependency rule is enforced by an ArchUnit test in CI, not by prose: `internal/*` may depend only on `registry` and `errors`, and `keyprovider` and `cache` only on `errors`.
 - The construction lives behind the `commitment` and `aead` module boundaries, so a Gate 0b change to G1 or ADR-0002 touches one module (`docs/26` §6).
+- **The three shipped providers are built in the api package, not in `keyprovider`** (decided 2026-09-25, `docs/07` §7). The derived provider needs `kdf` and the envelope provider needs `cache`, and `keyprovider` may reach `errors` only, so `keyprovider` holds the SPI and `KeyProviders` in the api package assembles the three. `docs/09` §1 and the ArchUnit rules are unchanged. The builder's validation lives in the api package for the same reason, which leaves `internal/config/` empty.
 
 ## 4. Public API shape
 
@@ -123,33 +124,35 @@ Bytes in, bytes out:
 
 ```java
 Fieldseal fs = Fieldseal.builder()
-    .keyProvider(provider)                    // required
+    .keyProvider(KeyProviders.envelope(wrapper, store))   // required; or staticKeys / derived / your own
     .allowedSuites(Set.of(0xFF01))            // required, non-empty
     .writeSuite(0xFF01)                       // required, member of allowedSuites
     .readMode(ReadMode.STRICT)                // STRICT | PERMISSIVE | READONLY
     .armProvisionalSuites(false)              // spec §4.8; also env FIELDSEAL_ARM_PROVISIONAL_SUITES=1
-    .cachePolicy(CachePolicy.builder()
-        .maxAge(Duration.ofMinutes(10))
-        .maxUses(1L << 20)                    // long: spec §5.5 allows up to 2^32, which is past int
-        .capacity(10_000).build())
-    .indexes(List.of(new IndexDeclaration(...)))
+    .cachePolicy(new CachePolicy(             // required with the envelope provider, refused otherwise
+        Duration.ofMinutes(10),               // max age
+        1L << 20,                             // max uses: long, since spec §5.5 allows up to 2^32
+        10_000))                              // capacity
+    .onWarning(log::warn)                     // default: System.Logger at WARNING
+    .indexes(List.of(new IndexDeclaration(...)))   // S5
     .build();                                 // validates everything; immutable afterwards
 
+FieldContext ctx = FieldContext.of(tableUuid, columnUuid).withTenant(tenantId);   // .withRow(rowId)
 byte[]  ct  = fs.encrypt(plaintext, ctx);
 byte[]  pt  = fs.decrypt(envelope, ctx);
-byte[]  ix  = fs.blindIndex(value, ctx);      // String (preferred) or byte[] (strict UTF-8)
-byte[]  mk  = fs.unindexableMarker(ctx);
+byte[]  ix  = fs.blindIndex(value, ctx);      // S5: String (preferred) or byte[] (strict UTF-8)
+byte[]  mk  = fs.unindexableMarker(ctx);      // S5
 boolean ok  = fs.isCiphertext(bytes);
 byte[]  ct2 = fs.rotate(envelope, ctx);       // ciphertext to ciphertext in every mode (spec §11.1)
 CompletableFuture<Void> w = fs.warm(List.of(ctx));   // docs/09 §3.6: async where the language has it
 
 // docs/09 §2 configuration reflection: validated, resolved, not mutable
 fs.readMode(); fs.writeSuite(); fs.allowedSuites(); fs.provisionalArmed();
-Map<String, ValidatedIndex> fs.indexes();     // keyed by indexRegistryKey(...)
+Map<String, ValidatedIndex> fs.indexes();     // S5, keyed by indexRegistryKey(...)
 // + public validateIndexDeclaration, indexRegistryKey, firstUnassigned -> Unassigned, UNICODE_VERSION (docs/09 §12, G18/G22)
 ```
 
-The cache values above are placeholders. The defaults are set at S4, and TTL is described as a security parameter (spec §5.5).
+The cache values above are examples, not defaults: `CachePolicy` has none, and every limit is required (decided 2026-09-25, `docs/07` §7). Its documentation and the README describe the limits as security parameters, not performance tuning (spec §5.5).
 
 Decisions:
 
@@ -161,7 +164,15 @@ Decisions:
   - `AEADBadTagException` → `TAG_INVALID`, and only after the commitment has verified (`docs/09` §3.2 step 6);
   - provider exceptions → `KEY_UNAVAILABLE`;
   - malformed UTF-8 → `INVALID_ARGUMENT`.
-- **`api-boundary-order` is this core's own pinned decision** (`docs/14` §4). It is declared in the report and tested. `docs/09` §3.1 notes that the order of steps 1 and 1b cannot be observed through vectors.
+- **What an internal module throws** (since S4a): a `FieldsealError` only for a caller's input it is the first to see (`ContextFields` refuses a wrongly sized UUID with `INVALID_ARGUMENT`), and otherwise `IllegalArgumentException` or `IllegalStateException`, which mean a bug in the core. The AEAD checks its offsets before calling the JDK, so a bad one there is an `IllegalArgumentException` rather than a JDK array or buffer exception; the codec relies on recognition having bounded every offset first (§6.3). The client does not map these two to a §9 code: a core bug must not read as a verdict on the ciphertext.
+- **`api-boundary-order` is this core's own pinned decision** (`docs/14` §4). It is declared in the report and tested. `docs/09` §3.1 notes that the order of steps 1 and 1b cannot be observed through vectors. As built (S4b, `ApiBoundaryOrderTest`): on `encrypt`, `MODE_VIOLATION` → `SUITE_PROVISIONAL` → the operand (null: `INVALID_ARGUMENT`; then `LENGTH_EXCEEDED`) → the context (`INVALID_ARGUMENT`) → key acquisition. On `rotate`, the same first two, then the operand as `decrypt` reads it, except that a non-envelope is `NOT_CIPHERTEXT` in every mode.
+- **`decrypt-order`**, as built: the operand (null) → recognition (`UNKNOWN_FORMAT_VERSION`; a non-envelope is `NOT_CIPHERTEXT` in `strict`, returned as-is otherwise) → `LENGTH_EXCEEDED` → `SUITE_NOT_ALLOWED` → the context → `KEY_UNAVAILABLE` → per candidate, the commitment and then the tag (`TAG_INVALID`) → `COMMITMENT_INVALID`. `AAD_MISMATCH` is never raised (`aad-mismatch`): under spec §6.3 a wrong context and a wrong key are indistinguishable.
+- **`unimplemented-registered-suite`** (decided 2026-09-25): naming `0xFF02` in `allowedSuites` or as `writeSuite` is a `ConfigurationError` that names G7. A `0xFF02` envelope is still recognized (`isCiphertext` is true), and decrypting one is `SUITE_NOT_ALLOWED`.
+- **`FieldContext` has no `suite_id` and no `purpose`.** The core fills both (`docs/09` §12): `suite_id` from `writeSuite` on a write and from the envelope's header on a read (`docs/09` §3.2 step 4); the purpose is `"encrypt"` for values and an index's own at S5, never a string a caller passed.
+- **`decryptionKeys` receives the call's context as well as the header** (decided 2026-09-25). Spec §8 passes the header alone, and a derived provider cannot find a tenant in an opaque `key_id`. `EnvelopeHeader` carries `suite_id`, `key_id` and a `KeyRequest` for the call.
+- **What the core checks in what a provider returns:** a non-empty key and a 16-byte `key_id`, and a non-empty candidate list of non-empty keys. Anything else, and any exception, is `KEY_UNAVAILABLE`, with the provider's exception as its cause. The DEK's length is not checked: the spec does not fix it.
+- **Warnings** go through `onWarning`, by default `System.Logger` at `WARNING` (no logging framework, `docs/09` §11): at construction, for a permissive or readonly client and for the static provider outside `FIELDSEAL_TEST_MODE=1`. The metrics hook of `docs/09` §2 is not built yet.
+- **The envelope provider fails closed.** `warm` is the only place it calls the key store or the KMS. A key that was never warmed, or has aged out or used up its budget, is `KEY_UNAVAILABLE` until the next `warm`; there is no background refresh. Each `warm` of a slot re-unwraps every version the store lists (restarting its age and use budget, so a schedule shorter than max-age never lapses), evicts the versions the store no longer lists, and then makes the first listed version active. The slot changes only once its whole list has loaded, so a failed warm never changes which key writes go out under (#190 review).
 
 ## 5. Security-relevant implementation notes
 
@@ -177,11 +188,11 @@ Decisions:
 
 ### 5.2 HKDF-SHA-512 at the JDK 21 floor
 - **The construction:** RFC 5869 extract-then-expand over `Mac.getInstance("HmacSHA512")`, with the PRK erased after expand.
-- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they wait for `canonical_context` at S4.
+- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they waited for `canonical_context`, and run since S4a (`KdfVectorsTest`).
 - **G14.** The length of the canonical `info` is bounded by spec §6.1's unsettled G14 question. `Mac` does not cap `info`. This document records what the core accepts at S8, so that G14's resolution can be checked against it.
 
 ### 5.3 The rest of the crypto
-- **Constant-time compare:** `MessageDigest.isEqual`. Tags and commitments have equal lengths by construction; check the lengths first anyway, with a comment explaining why.
+- **Constant-time compare:** `MessageDigest.isEqual`. Tags and commitments have equal lengths by construction; check the lengths first anyway, with a comment explaining why. A mismatch is the core's bug, so it throws before any derivation rather than answering "no match", which would surface as `COMMITMENT_INVALID` and blame the ciphertext (since S4a).
 - **Argon2id (spec §7.3):**
   - version 0x13, p = 1, output 64 bytes;
   - `t` and `m` from the declaration, defaulting to the §7.3 minima;
@@ -189,12 +200,13 @@ Decisions:
   - the salt is the 16-byte HKDF-derived value, erased after the call.
 
 ### 5.4 Zeroization and the memory model (this binding's G17 half)
-- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the untruncated IDF output, the Argon2id salt, and the HKDF PRK.
+- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the untruncated IDF output, the Argon2id salt, the HKDF PRK and expand blocks, the commitment recomputed on decrypt, and the AEAD output on every exit that does not return it.
 - **The core never zeroizes provider-owned material** (`docs/09` §8.1, G17). It validates what a provider returns (key length, `key_id` length) and maps exceptions to `KEY_UNAVAILABLE`. A test with a provider that keeps and inspects its own buffer proves the core never writes to it.
 - **What the core cannot promise:**
   - `SecretKeySpec` copies the key it is given;
   - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach;
-  - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2).
+  - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2);
+  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b; narrowing it is part of [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)).
 - `pinned_decisions.key-material-ownership` lists the steps performed, the provider carve-out, and a clause saying none of this is guaranteed (spec §5.5).
 - **No `mlock` and no swap protection:** a documented deviation, worded as `docs/10` and `docs/11` word theirs.
 
@@ -202,7 +214,7 @@ Decisions:
 - The client is immutable after construction and the `DekCache` is thread-safe, so all five operations are re-entrant (`docs/09` §10).
 - **CSPRNG:** one `new SecureRandom()` per client (it is thread-safe), never `getInstanceStrong()`.
 - **Fork-safety** does not apply: a JVM is not `fork()`ed while it is running.
-- **`warm`:** single-flight refresh through `ConcurrentHashMap.computeIfAbsent` with a future value, so N concurrent misses cause one unwrap per key (`docs/09` §8.3).
+- **`warm`:** single-flight refresh, so N concurrent misses cause one unwrap per key (`docs/09` §8.3). Built at S4b as `ConcurrentHashMap.putIfAbsent` of a future that concurrent loads join, with the unwrap outside the cache's lock; a failed load leaves nothing behind.
 
 ## 6. Buffer limits and the report contract
 
@@ -238,6 +250,7 @@ This section discharges the per-binding obligation in `docs/09` §4: each core's
   - **Encrypt case:** a synthetic `Operand` reporting `length() = 2^31` that throws on every content access, driven through the internal pipeline with a spy `KeyProvider`. It asserts `LENGTH_EXCEEDED`, zero provider calls and zero content accesses.
   - **Decrypt case:** a synthetic operand whose implied plaintext length (received length minus the suite's fixed overhead) is at least 2³¹. It serves a valid `0xFF01` header from a small backing array and throws on any other offset. Same assertions, except that recognition reads bytes 0–2 first: the test asserts no access past offset 2.
   - **Bite check:** move the guard one statement later and confirm the test fails, before merging.
+  - **Built:** the codec half at S3 (`BufferLimitsWiringTest`), the provider half at S4b (`SeamWiringTest`), through the package-private pipeline each public `encrypt`, `decrypt` and `rotate` enters.
 
 `BufferLimits` (in `internal/envelope`):
 
@@ -349,6 +362,20 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - `DekCache`: max-age, max-uses as a `long`, capacity LRU, single-flight, erase on eviction.
 - Config validation and the reflection accessors.
 - *Exit:* `kdf/`, `context/` and `commitment/` green; the `key-material-ownership` and `api-boundary-order` tests green.
+- *S4a built 2026-09-25: the primitives, in their own PR.* The providers, the `DekCache`, config and the client are S4b's, with the two exit tests.
+  - **`context`:** `canonical_context` and the AAD (spec §6.2), and the spec §6.1 purpose grammar. `encodeForIndexKey` drops `row_id`, as spec §7.2 requires. Lengths are summed as `long`; a total past any Java array is an `OutOfMemoryError`, as in the codec (§6.1).
+  - **`kdf`:** HKDF-SHA-512 over `Mac` (§5.2), with the PRK and every expand block erased; `record_key` (spec §5.3) and `index_key` (spec §7.2).
+  - **`aead`:** `0xFF01` in place (§5.1). A tag failure is returned as an outcome, not thrown, so that the client maps it to `TAG_INVALID` only after the commitment has verified.
+  - **`commitment`:** spec §4.6 over an injected KDF. `docs/09` §1 forbids `commitment` → `kdf`, and the maintainer chose injection over amending `docs/09` (`docs/07` §7, 2026-09-25); `blindindex` does the same at S5.
+  - **Vectors:** `kdf/`, `context/` and `commitment/` green, with per-file counts pinned from `MANIFEST.files`; `envelope/` green in both directions composed from the primitives (`EnvelopeCryptoVectorsTest`). Every value passed on the first run: the mismatch list is empty.
+  - **Still deferred, to S4b:** the `errors/` outcomes S3 deferred (all 12 of `crypto.json`, 12 of `policy.json`, 1 of `format.json`). The primitives can now produce `TAG_INVALID` and `COMMITMENT_INVALID`, but which code a vector expects depends on the read mode, the allow-list and the key lookup, which are the client's; `CodecVectorsTest`'s pinned counts are unchanged until S4b runs them through it.
+  - **Bite checks:** twelve mutations each turn their tests red, among them an unsubstituted empty HKDF salt, a dropped length prefix, an absent `tenant_id` encoded as empty, `row_id` kept in the index-key `info` (caught by `CanonicalContextTest` only: the pinned `row-id-dropped` vector carries no `row_id`), decryption through `update()`, which `open`'s allocation test catches at about 4× a 16 MiB operand, the commitment length check removed, and the AEAD's range check removed. Re-run at S4b with a working launcher and a green baseline (`docs/07` §7, 2026-09-25, S4b entry).
+- *S4b built 2026-09-25: the providers, the `DekCache`, config and the client.*
+  - **`keyprovider`:** the SPI (`KeyProvider`, `KeyRequest`, `EnvelopeHeader`, `KeyMaterial`, `Wrapper`, `WrappedKeyStore`). **api:** `Fieldseal` with its builder, `FieldContext`, `CachePolicy`, and `KeyProviders` with the static, derived and envelope providers (§3, §4). **`cache`:** `DekCache`, with max-age, max-uses as a `long`, capacity LRU, erasure on eviction and single-flight loads.
+  - **Exit tests:** `KeyMaterialOwnershipTest` (provider arrays byte-identical after every operation and failure path; every derived `record_key` zeroed) and `ApiBoundaryOrderTest` (each pair's precedence observed, and whether the provider was reached). `SeamWiringTest` is the wiring test's provider half (§6.2). `PublicSurfaceTest` pins the client's public methods, so a nonce or seed parameter cannot appear unnoticed (§7).
+  - **Vectors through the client** (`ClientVectorsTest`): every `errors/` vector but the two `blind_index` ones (S5), that is 41, 12 and 14 of `format`, `crypto` and `policy`, and `envelope/` decrypted. `CodecVectorsTest` keeps its restatement until S6.
+  - **Bite checks:** `core/java/scripts/bite_checks.py` holds every S4a, S4b and review mutation. It runs each target test green first as a control, counts a mutation as biting only when Gradle reports failing tests, and restores every file. On the final S4b head, 37 mutations bite and the one below changes nothing, as stated.
+  - **Not testable yet:** that `decrypt` takes the context's `suite_id` from the header and not from `writeSuite` (`docs/09` §3.2 step 4). With `0xFF01` the only suite this core can be configured with, the two are always equal; the mutation was run and changes no outcome. It becomes testable when a second suite is built.
 
 **S5 — Blind indexes and normalizers.**
 - A Java emitter for `tools/ucd-gen`, so that CI's `--check` covers the Java tables. Decide it jointly with WS-J; one shared, hashed resource is the alternative.
