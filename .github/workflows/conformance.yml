@@ -122,18 +122,17 @@ jobs:
           name: conformance-python
           path: conformance-python.json
 
-  # The Java core (WS-I, docs/27), at stage S4a (docs/27 §8): the Gradle
+  # The Java core (WS-I, docs/27), at stage S4 (docs/27 §8): the Gradle
   # scaffold, the module descriptor, docs/09 §1's dependency rule, the
   # harness's integrity walk, the capability audit (CapabilitiesTest), the
-  # envelope codec with its wiring and property tests, and the crypto
-  # primitives. CodecVectorsTest runs envelope/ and the recognition half of
-  # errors/ against the codec; kdf/, context/, commitment/ and envelope/ (both
-  # directions) run against the primitives. There is no public client yet, so
-  # the harness runs no vector through the public API and emits no report,
+  # envelope codec, the crypto primitives, the key providers and the client.
+  # kdf/, context/ and commitment/ run against the primitives; errors/ (all
+  # but its two blind_index vectors, which are S5's) and envelope/ run through
+  # the public client. The harness emits no conformance report yet,
   # so it is not in `cross-core-result-ids` or the cross job: those joins
   # are S6 and S7 (docs/27 §1).
   java-core:
-    name: "Java core (S4a: codec and primitives; no public-API vector run yet)"
+    name: "Java core (S4: client; no conformance report yet)"
     runs-on: ubuntu-24.04
     defaults:
       run:

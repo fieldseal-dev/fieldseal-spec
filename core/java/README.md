@@ -2,8 +2,8 @@
 
 Field-level encryption for JVM applications, with a format that other languages can read.
 
-> **Under construction: this core cannot encrypt or decrypt anything yet.**
-> The envelope codec, the suite registry, the error types and the cryptographic primitives underneath them are built and checked against the test vectors. The client that exposes them, the key providers and blind indexes are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S4–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
+> **Under construction: not released, and no blind indexes yet.**
+> The client encrypts, decrypts and rotates values with the three key providers, and passes the shared test vectors for those operations. Blind indexes, the conformance report and the cross-implementation checks are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S5–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
 
 This library encrypts individual database values, one field at a time, into a self-describing **envelope**: bytes in, bytes out. Every envelope is bound to the table and column it belongs to, and to the tenant and row when you supply them, so a value copied to the wrong place fails to decrypt instead of decrypting silently.
 
@@ -11,7 +11,7 @@ It implements the [Fieldseal specification](../../docs/02-spec-v0.1.md). Envelop
 
 ## Features
 
-The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). None of it is usable yet. The suite, the key derivation, the key commitment and the context encoding exist inside the core and pass the test vectors; the client that exposes them lands at stage S4b, blind indexes at S5.
+The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). Everything here but blind indexes works now; blind indexes arrive at stage S5.
 
 - **One cipher suite, no knobs.** Suite `0xFF01` is AES-256-GCM with HKDF-SHA-512 and an explicit key commitment. There is no algorithm parameter to get wrong.
 - **A fresh key for every write.** Each encryption draws a new 32-byte seed and derives a key from it that is used once and never again, updates included (spec §5.3).
@@ -38,7 +38,7 @@ The Gradle wrapper downloads Gradle 9.7.1 and checks its checksum.
 
 ## Quickstart
 
-**Planned API: this does not compile yet.** It is the shape [`docs/27`](../../docs/27-core-java.md) §4 commits to, shown so you can judge it before it lands.
+This runs today, except `blindIndex`, which arrives at stage S5 ([`docs/27`](../../docs/27-core-java.md) §4).
 
 ```java
 Fieldseal fs = Fieldseal.builder()
@@ -68,7 +68,7 @@ To look a value up, compute its index, query the index column, then decrypt the 
 
 ### Contexts
 
-A context names where a value lives: a table UUID, a column UUID, an optional tenant id, an optional row id, and a purpose. The same context must be supplied to decrypt as to encrypt. A mismatch is refused, not silently tolerated.
+A context (`FieldContext`) names where a value lives: a table UUID, a column UUID, an optional tenant id and an optional row id. The core adds the suite and the purpose itself. The same context must be supplied to decrypt as to encrypt. A mismatch is refused, not silently tolerated.
 
 ### Operations
 
@@ -83,7 +83,15 @@ A context names where a value lives: a table UUID, a column UUID, an optional te
 
 ### Keys
 
-A `KeyProvider` supplies keys. Three are planned: a static provider for tests, a derived provider, and an envelope provider that unwraps keys from a KMS and caches them. You can implement the interface yourself.
+A `KeyProvider` supplies keys, and `KeyProviders` has the three the specification requires:
+
+- `staticKeys(dek, indexKey, keyId)`: for tests and development only. A client built with it warns unless `FIELDSEAL_TEST_MODE=1`.
+- `derived(rootSecret)`: per-tenant keys derived from one root secret, with no I/O.
+- `envelope(wrapper, store)`: the production path. Your `Wrapper` unwraps keys from your KMS, and only inside `warm()`; encryption and decryption read an in-memory cache and never wait on the KMS.
+
+The envelope provider needs a `CachePolicy`: a maximum age, a maximum number of encryptions per key, and a capacity. None of them has a default. **They are security parameters, not performance tuning:** every cached key is plaintext key material in your process's memory for as long as it stays there. Use the smallest values your cost and latency allow. When a key is not in the cache, encryption and decryption fail closed with `KEY_UNAVAILABLE`, so call `warm()` ahead of the traffic that needs it.
+
+You can implement `KeyProvider` yourself.
 
 ### Arming
 
@@ -101,10 +109,11 @@ Every failure is a subclass of `FieldsealError`, which is unchecked and sealed. 
 
 The specification requires every implementation to state these.
 
-- **Not usable yet.** See the box at the top.
+- **Not released, and no blind indexes yet.** See the box at the top.
 - **No protection against a compromised application process.** The keys are in that process.
 - **Storage overhead is real.** Every envelope is 111 bytes plus the plaintext: an 11-byte SSN becomes 122 bytes.
-- **Your key service becomes a hard dependency of every read.** A KMS outage fails every query on an encrypted field.
+- **Your key service becomes a hard dependency of every read.** A KMS outage fails every query on an encrypted field once the cached keys age out. The envelope provider's degradation mode is fail-closed: what the cache cannot serve is `KEY_UNAVAILABLE`.
+- **Cached keys are exposed in memory.** The DEK cache holds plaintext keys, which memory dumps, core files and swap can capture. The core zeroes a key when it evicts it, but cannot lock memory against swapping.
 - **Argon2id blind indexes cost roughly 10–100 ms per lookup term.** That is a product constraint, not tuning.
 - **Database query logs are sensitive.** Index values and envelopes that reach them are in scope for your threat model.
 - **The JVM's array limit.** A Java `byte[]` holds at most 2³¹−3 bytes on HotSpot, so the largest plaintext this core can encrypt is 2,147,483,534 bytes, a little under the specification's 2³¹−1 bound. Values that large indicate a design problem anyway.
@@ -120,12 +129,13 @@ The specification requires every implementation to state these.
 
 ## Contributing to this core
 
-It is built in stages (`docs/27` §8). S1–S3 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, and the envelope codec, registry and error types. Next is S4, the crypto pipeline.
+It is built in stages (`docs/27` §8). S1–S4 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, and the crypto pipeline, key providers and client. Next is S5, blind indexes.
 
 ```
 ./gradlew build          # compile (-Xlint:all -Werror) and run every test
 ./gradlew -q vectors     # verify the pinned test-vector suite's hashes and structure
 ./gradlew memoryProbe    # informational: the largest byte[] this JVM allocates (~6 GiB heap)
+python scripts/bite_checks.py   # each recorded mutation must turn its tests red (JAVA_HOME set)
 ```
 
 CI runs these in the `java-core` and `java-memory-probe` jobs of `.github/workflows/conformance.yml`. This core is built without reading the other cores' source: the reading path is at the top of `docs/27`.
