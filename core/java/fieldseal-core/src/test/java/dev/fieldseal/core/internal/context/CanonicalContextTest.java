@@ -74,6 +74,10 @@ class CanonicalContextTest {
         assertEquals(8 + 1 + 8 + 16 + 8 + 32 + 1, aad.length);
         assertEquals("000000000000000101" + "0000000000000010", HEX.formatHex(aad, 0, 17));
         assertEquals((byte) 0xCC, aad[aad.length - 1]);
+        for (int bad : new int[] {-1, 0x100}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> CanonicalContext.aad(bad, new byte[16], new byte[32], cc), "fmt_ver " + bad);
+        }
     }
 
     @Test
@@ -129,5 +133,13 @@ class CanonicalContextTest {
                 && Arrays.equals(a.tenantId(), b.tenantId()) && Arrays.equals(a.rowId(), b.rowId())
                 && a.purpose().equals(b.purpose());
         assertEquals(same, Arrays.equals(CanonicalContext.encode(a), CanonicalContext.encode(b)));
+        // Independent draws are almost never equal, so the equal half is exercised directly.
+        assertArrayEquals(CanonicalContext.encode(a), CanonicalContext.encode(copy(a)));
+    }
+
+    private static ContextFields copy(ContextFields c) {
+        return new ContextFields(c.suiteId(), c.tableUuid().clone(), c.columnUuid().clone(),
+                c.tenantId() == null ? null : c.tenantId().clone(),
+                c.rowId() == null ? null : c.rowId().clone(), new String(c.purpose()));
     }
 }

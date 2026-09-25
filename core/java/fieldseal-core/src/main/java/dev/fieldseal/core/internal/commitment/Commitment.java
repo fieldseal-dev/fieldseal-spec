@@ -44,18 +44,23 @@ public final class Commitment {
     /**
      * Recomputes the commitment from {@code recordKey} and compares it with the envelope's field
      * in constant time (spec §4.6; docs/09 §3.2 step 6). The recomputed value is erased.
+     *
+     * @throws IllegalStateException if {@code envelopeCommitment} is not the suite's length
      */
     public static boolean verify(Suite suite, byte[] recordKey, byte[] envelopeCommitment,
             Kdf kdf) {
+        // The codec copies exactly commitLen bytes, so a wrong length is the core's bug, not a
+        // forged envelope. It is checked first (docs/27 §5.3), before any derivation, and thrown
+        // rather than answered: "no match" would surface as COMMITMENT_INVALID, a spec §9 code
+        // that blames the ciphertext for an internal fault. The lengths are public, so the check
+        // leaks nothing.
+        if (envelopeCommitment.length != suite.commitLen()) {
+            throw new IllegalStateException("commitment precondition: " + suite.hexId()
+                    + " commitments are " + suite.commitLen() + " bytes, got "
+                    + envelopeCommitment.length);
+        }
         byte[] expected = compute(suite, recordKey, kdf);
         try {
-            // The codec copies exactly commitLen bytes, so the lengths match by construction. They
-            // are checked first anyway (docs/27 §5.3): the lengths are public, so the check leaks
-            // nothing, and a caller that ever passes a wrong-sized array gets "no match" from a
-            // line that says so, not from whatever isEqual does with unequal lengths.
-            if (envelopeCommitment.length != expected.length) {
-                return false;
-            }
             return MessageDigest.isEqual(expected, envelopeCommitment);
         } finally {
             Arrays.fill(expected, (byte) 0);

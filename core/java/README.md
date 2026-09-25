@@ -11,7 +11,7 @@ It implements the [Fieldseal specification](../../docs/02-spec-v0.1.md). Envelop
 
 ## Features
 
-The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). None of it is usable yet. The suite, the key derivation, the key commitment and the context encoding exist inside the core and pass the test vectors; the client that exposes them lands at stage S4, blind indexes at S5.
+The design this core is built against ([`docs/27`](../../docs/27-core-java.md)). None of it is usable yet. The suite, the key derivation, the key commitment and the context encoding exist inside the core and pass the test vectors; the client that exposes them lands at stage S4b, blind indexes at S5.
 
 - **One cipher suite, no knobs.** Suite `0xFF01` is AES-256-GCM with HKDF-SHA-512 and an explicit key commitment. There is no algorithm parameter to get wrong.
 - **A fresh key for every write.** Each encryption draws a new 32-byte seed and derives a key from it that is used once and never again, updates included (spec §5.3).

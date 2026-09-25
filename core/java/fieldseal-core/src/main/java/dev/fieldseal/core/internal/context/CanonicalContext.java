@@ -80,6 +80,11 @@ public final class CanonicalContext {
 
     /** spec §6.2's {@code AAD(header, ctx)}, over an already encoded {@code canonical_context}. */
     public static byte[] aad(int fmtVer, byte[] keyId, byte[] msgSeed, byte[] canonicalContext) {
+        if (fmtVer < 0 || fmtVer > 0xFF) {
+            // fmt_ver is one byte (spec §3.1); narrowing it silently would change the AAD.
+            throw new IllegalArgumentException("AAD precondition: fmt_ver " + fmtVer
+                    + " is not a byte");
+        }
         byte[] ver = {(byte) fmtVer};
         long total = field(ver) + field(keyId) + field(msgSeed) + canonicalContext.length;
         Writer w = new Writer(total, "AAD");
@@ -99,8 +104,12 @@ public final class CanonicalContext {
         private final byte[] out;
         private int at;
 
+        /**
+         * The codec's threshold (EnvelopeCodec.newEnvelope): a total no {@code int} holds is
+         * refused here; below that, whether the VM can allocate it is the VM's answer.
+         */
         Writer(long total, String what) {
-            if (total > Integer.MAX_VALUE - 8) {
+            if (total > Integer.MAX_VALUE) {
                 throw new OutOfMemoryError("a " + what + " of " + total
                         + " bytes is longer than any Java array (spec §6.1, G14; docs/27 §6.1)");
             }

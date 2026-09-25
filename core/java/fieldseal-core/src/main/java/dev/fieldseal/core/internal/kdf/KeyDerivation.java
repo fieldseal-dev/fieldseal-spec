@@ -43,7 +43,9 @@ public final class KeyDerivation {
      * supplies that {@code info}; {@code context.CanonicalContext.encodeForIndexKey} builds it.
      */
     public static byte[] indexKey(byte[] tenantIndexKey, byte[] canonicalContextWithoutRow) {
-        return Hkdf.derive(tenantIndexKey, INDEX_SALT, canonicalContextWithoutRow, INDEX_KEY_LEN);
+        // A copy, as Commitment passes its label: the constant is never handed out.
+        return Hkdf.derive(tenantIndexKey, INDEX_SALT.clone(), canonicalContextWithoutRow,
+                INDEX_KEY_LEN);
     }
 
     /** The spec §7.2 salt, for the harness to assert; a copy. */

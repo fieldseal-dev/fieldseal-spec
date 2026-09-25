@@ -73,6 +73,21 @@ class Ff01AeadTest {
                 () -> AEAD.open(KEY, NONCE, AAD, env, OFFSET, 15));
     }
 
+    /** A range outside the envelope is the core's IllegalArgumentException, not a JDK exception. */
+    @Test
+    void outOfRangeOffsetsAreTheCoresBug() {
+        byte[] env = sealed(new byte[1]);
+        for (int off : new int[] {-1, env.length - 16, env.length, Integer.MAX_VALUE}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> AEAD.open(KEY, NONCE, AAD, env, off, 17), "open at " + off);
+        }
+        byte[] small = new byte[OFFSET + 16];
+        assertThrows(IllegalArgumentException.class,
+                () -> AEAD.sealInto(KEY, NONCE, AAD, new byte[1], small, OFFSET), "seal overflow");
+        assertThrows(IllegalArgumentException.class,
+                () -> AEAD.sealInto(KEY, NONCE, AAD, new byte[0], small, -1), "seal at -1");
+    }
+
     /**
      * docs/27 §5.1: decrypt is one {@code doFinal}, never {@code update()}, which buffers about
      * 3× the operand (§6.3, measured at S2). {@code open} allocates its output; beyond that, it

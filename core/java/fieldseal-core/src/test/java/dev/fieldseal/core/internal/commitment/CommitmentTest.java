@@ -3,6 +3,7 @@ package dev.fieldseal.core.internal.commitment;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.fieldseal.core.internal.registry.Registry;
@@ -57,15 +58,19 @@ class CommitmentTest {
         assertFalse(Commitment.verify(Registry.FF01, new byte[] {8}, good, kdf));
     }
 
+    /**
+     * A wrong-sized commitment can only come from a bug in the core, so it is thrown before any
+     * derivation rather than answered as "no match", which would read as COMMITMENT_INVALID.
+     */
     @Test
-    void aWrongLengthIsNoMatch() {
-        RecordingKdf kdf = new RecordingKdf();
-        byte[] good = Commitment.compute(Registry.FF01, new byte[] {9}, kdf);
-        assertFalse(Commitment.verify(Registry.FF01, new byte[] {9},
-                java.util.Arrays.copyOf(good, 31), kdf));
-        assertFalse(Commitment.verify(Registry.FF01, new byte[] {9},
-                java.util.Arrays.copyOf(good, 33), kdf));
-        assertFalse(Commitment.verify(Registry.FF01, new byte[] {9}, new byte[0], kdf));
+    void aWrongLengthIsTheCoresBugAndStopsBeforeTheKdf() {
+        for (int n : new int[] {0, 31, 33}) {
+            RecordingKdf kdf = new RecordingKdf();
+            assertThrows(IllegalStateException.class,
+                    () -> Commitment.verify(Registry.FF01, new byte[] {9}, new byte[n], kdf),
+                    "length " + n);
+            assertEquals(0, kdf.calls.size(), "the KDF ran before the length check");
+        }
     }
 
     /** A caller that mutates the label it was given must not change the next commitment. */

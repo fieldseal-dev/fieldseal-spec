@@ -36,6 +36,7 @@ final class Ff01Aead implements Aead {
     public void sealInto(byte[] key, byte[] nonce, byte[] aad, byte[] plaintext, byte[] envelope,
             int ctOffset) {
         requireSizes(key, nonce);
+        requireRange(envelope, ctOffset, (long) plaintext.length + Registry.FF01.tagLen());
         try {
             Cipher c = cipher(Cipher.ENCRYPT_MODE, key, nonce);
             c.updateAAD(aad);
@@ -55,7 +56,9 @@ final class Ff01Aead implements Aead {
         if (ctAndTagLen < Registry.FF01.tagLen()) {
             throw new IllegalArgumentException("ct‖tag is shorter than the tag");
         }
+        requireRange(envelope, ctOffset, ctAndTagLen);
         byte[] out = new byte[ctAndTagLen - Registry.FF01.tagLen()];
+        boolean released = false;
         try {
             Cipher c = cipher(Cipher.DECRYPT_MODE, key, nonce);
             c.updateAAD(aad);
@@ -63,13 +66,17 @@ final class Ff01Aead implements Aead {
             if (written != out.length) {
                 throw new IllegalStateException("GCM released " + written + " bytes");
             }
+            released = true;
             return new Opened.Plaintext(out);
         } catch (AEADBadTagException e) {
-            Arrays.fill(out, (byte) 0);
             return new Opened.TagFailed();
         } catch (GeneralSecurityException e) {
-            Arrays.fill(out, (byte) 0);
             throw new IllegalStateException("AES-256-GCM decryption failed on valid input", e);
+        } finally {
+            // Every exit but the deliberate return erases the output (docs/27 §5.1, §5.4).
+            if (!released) {
+                Arrays.fill(out, (byte) 0);
+            }
         }
     }
 
@@ -78,6 +85,18 @@ final class Ff01Aead implements Aead {
         Cipher c = Cipher.getInstance(TRANSFORMATION);
         c.init(mode, new SecretKeySpec(key, "AES"), new GCMParameterSpec(TAG_BITS, nonce));
         return c;
+    }
+
+    /**
+     * {@code [offset, offset + len)} lies inside {@code envelope}. Checked here so that a bad
+     * offset is the core's {@link IllegalArgumentException}, never a JDK array exception or a
+     * {@code ShortBufferException} reported as a cipher failure (docs/27 §4).
+     */
+    private static void requireRange(byte[] envelope, int offset, long len) {
+        if (offset < 0 || offset + len > envelope.length) {
+            throw new IllegalArgumentException("ct‖tag range [" + offset + ", " + (offset + len)
+                    + ") is outside the " + envelope.length + "-byte envelope");
+        }
     }
 
     /** Violations are bugs in the core: the KDF and the codec fix both lengths. */
