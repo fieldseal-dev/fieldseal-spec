@@ -1,204 +1,230 @@
 [![Conformance](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/conformance.yml/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/conformance.yml)
 [![Build and deploy fieldseal.dev](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/pages.yml/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/pages.yml)
-[![Dependency Graph](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/fieldseal-dev/fieldseal-spec/actions/workflows/dependabot/update-graph)
+[![PyPI: fieldseal](https://img.shields.io/pypi/v/fieldseal?label=pypi%20fieldseal)](https://pypi.org/project/fieldseal/)
+[![PyPI: fieldseal-django](https://img.shields.io/pypi/v/fieldseal-django?label=pypi%20fieldseal-django)](https://pypi.org/project/fieldseal-django/)
+[![npm: @fieldseal/core](https://img.shields.io/npm/v/%40fieldseal%2Fcore?label=npm%20%40fieldseal%2Fcore)](https://www.npmjs.com/package/@fieldseal/core)
+[![npm: @fieldseal/prisma](https://img.shields.io/npm/v/%40fieldseal%2Fprisma?label=npm%20%40fieldseal%2Fprisma)](https://www.npmjs.com/package/@fieldseal/prisma)
 
 # Fieldseal
 
-**A portable specification and reference implementations for transparent field-level encryption-at-rest at the data-access layer.**
+**A portable format for field-level encryption at rest, with reference implementations that prove it in CI.**
 
-**Read it on the web: [fieldseal.dev](https://fieldseal.dev)** — the specification and every design document below, rendered and cross-linked.
+A value encrypted by one implementation in one language is decrypted by another implementation in another language under the same key. That is the whole claim. It is checked by a pinned test-vector suite that every core runs, and by an N×N job in which every core and every adapter decrypts what every other one wrote.
 
-> **Status: pre-alpha design work.** The specification is a working draft. **It has not been independently reviewed**, and every cipher suite in the registry is provisional for that reason (spec §4.2, §4.8) — implementations refuse to encrypt under a provisional suite unless an operator explicitly acknowledges it. Nothing here is ready for production use.
->
-> **Naming and namespaces — status checked 2026-08-10.** The earlier working name `OpenFLE` was dropped for one-letter confusability with [OpenFHE](https://openfhe.org/).
->
-> | Namespace | Status |
-> |---|---|
-> | GitHub org `fieldseal-dev` | **Ours.** Canonical home; holds this repository |
-> | `fieldseal.dev` | **Ours.** Registered and live — this repository's `www/` published to GitHub Pages, HTTPS enforced |
-> | npm `fieldseal` | **Claimed** — 0.0.0 placeholder |
-> | npm `@fieldseal/*` scope | **Released** — `@fieldseal/core` and `@fieldseal/prisma` 0.1.2 (experimental, PRD §8), published by trusted publishing with provenance |
-> | PyPI `fieldseal` | **Released** — 0.1.2 (experimental, PRD §8), trusted publishing; 0.1.0 and 0.1.1 are the same code from two release runs whose npm half failed |
-> | PyPI `fieldseal-django` | **Released** — as `fieldseal` |
-> | PyPI `field-seal` | **Protected, not claimable** (checked 2026-09-18). PEP 503 does not fold it into `fieldseal`, but PyPI's upload check goes further: it strips `.`, `_` and `-`, maps `l`/`i` to `1` and `o` to `0`, and refuses any name that then matches an existing project (Warehouse `ultranormalize_name`). The upload was refused with "too similar to an existing project", so `fieldseal` itself blocks `field-seal`, `field_seal` and look-alikes such as `fie1dseal` |
-> | Maven Central `dev.fieldseal` | **Unclaimed.** The groupId needs the domain, which is now held, so this is claimable whenever Phase 1 needs it |
-> | crates.io · NuGet | **Unclaimed and free** |
-> | `fieldseal.org` | **Available** — no DNS delegation as of this check |
-> | `fieldseal.io` | **Gone.** Registered by someone else since the previous check and parked (serves HTTP 410). It was listed as available here on 2026-08-08; it is not |
-> | `fieldseal.com` | **Held by someone else.** `.dev` is the canonical home; nothing here implies `.com` |
-> | GitHub org `fieldseal` (bare) | **Unobtainable.** Squatted but empty, and GitHub does not reclaim names for inactivity — a registered trademark is the only route, which is not worth pursuing for the org name alone |
->
-> Trademark clearance is **not yet run**. The only adjacency found in casual search is "Field Seal" farm toolboxes — a different class with no software presence — which is not a substitute for a search of Class 9 and Class 42 in [TMSearch](https://tmsearch.uspto.gov) (the USPTO retired TESS; earlier drafts of this file named it). Results will be recorded in `NAMING.md` with the search date and classes.
+> **Experimental release: not independently reviewed, not for production data.**
+> The cryptographic design has not been reviewed by anyone outside the project. Every cipher suite in the registry is provisional (spec §4.2, §4.8), and every implementation refuses to encrypt until the operator explicitly arms provisional use. The stored format may change before 1.0, and data written now may have to be re-encrypted. The packages below are published for evaluation and feedback under the terms in [`docs/01-prd.md` §8](docs/01-prd.md).
 
----
+Rendered docs: **[fieldseal.dev](https://fieldseal.dev)**. Specification: [`docs/02-spec-v0.1.md`](docs/02-spec-v0.1.md).
 
-## The problem
+## Packages
 
-A mid-size company holding regulated consumer data has three options today, and all three are bad.
+All four are at the same version and release together from one tag (`tools/release/`). Each core is a complete implementation of the format; each adapter contains no cryptographic code and delegates everything to its core.
 
-**Storage-layer encryption (TDE, encrypted volumes)** defends exactly one thing: physical loss of a disk. It provides transparent decryption to anything that can authenticate to the database. PCI DSS v4.0.1 Req. 3.5.1.2 says so explicitly, and has been enforceable since 31 March 2025: *"disk-level encryption is not appropriate to protect stored PAN on computers, laptops, servers, storage arrays, or any other system that provides transparent decryption upon user authentication."*
+| Package | Registry | What it is |
+|---|---|---|
+| [`fieldseal`](https://pypi.org/project/fieldseal/) | PyPI | Python core: envelope, key hierarchy, blind indexes, key providers. Python ≥ 3.10. |
+| [`fieldseal-django`](https://pypi.org/project/fieldseal-django/) | PyPI | Django adapter: `Encrypted(...)` model fields, `BlindIndex`, query rewriting and refusals. Python ≥ 3.12, Django ≥ 5.2. |
+| [`@fieldseal/core`](https://www.npmjs.com/package/@fieldseal/core) | npm | TypeScript core, zero runtime dependencies, `node:crypto` only. Node ≥ 24.7, server-side. |
+| [`@fieldseal/prisma`](https://www.npmjs.com/package/@fieldseal/prisma) | npm | Prisma Client extension plus a generator that reads `/// @fieldseal(...)` schema comments. Prisma ≥ 7.10, < 8. |
 
-**Building application-layer encryption yourself** took 37signals roughly two years of a senior engineer's time for one framework in one language — with an abandoned first prototype, an RCE via `Marshal` serialization caught by luck, and a deterministic-encryption flaw found by audit days before launch.
+```sh
+pip install "fieldseal[argon2]"        # Python core
+pip install fieldseal-django           # Django adapter (pulls in the core)
+npm install @fieldseal/core            # TypeScript core
+npm install @fieldseal/prisma @fieldseal/core @prisma/client@7.10   # Prisma adapter
+```
 
-**Buying a data-privacy vault** starts around $12k–$23k/year plus per-tenant fees, and requires either moving your PII into a vendor's vault or routing traffic through a proxy that discards your ORM's semantics.
+Each package README carries an install, a quickstart and the limitations: [`core/python/`](core/python/README.md), [`core/typescript/`](core/typescript/README.md), [`adapters/django/`](adapters/django/README.md), [`adapters/prisma/`](adapters/prisma/README.md).
 
-And underneath all three sits a problem nobody has addressed: **there is no portable format.** Data encrypted by Rails cannot be read by a Python job. Every implementation invents its own ciphertext layout, so application-layer encryption becomes a one-way door into a single language ecosystem.
+A Java core is in progress under `core/java` (stage S4 of [`docs/27-core-java.md`](docs/27-core-java.md): codec, registry, crypto pipeline, key providers and client built; blind indexes next). Nothing is published for it yet.
 
-## What this is
+## Sixty seconds of the API
 
-Three artifacts:
+The two cores expose the same operations with the same semantics; only the spelling differs.
 
-1. **A specification** — a self-describing ciphertext envelope for a single database cell, a frozen cipher-suite registry, a key hierarchy, a blind-index construction with a declared leakage budget, and a key-provider interface. With machine-readable test vectors.
-2. **Reference implementations** — a core library per language (Python, TypeScript, Java, .NET, Go) that all pass the same vectors, plus thin per-ORM adapters. Core knows nothing about SQL; adapters know nothing about cryptography.
-3. **An operational playbook** — threat model, data-classification gate, zero-downtime migration, key-rotation runbook, KMS-outage degradation modes, and published benchmarks.
+```python
+from fieldseal import Fieldseal, FieldContext, IndexDeclaration
+from fieldseal.keyprovider import StaticKeyProvider
 
-## What this is not
+fs = Fieldseal(
+    key_provider=StaticKeyProvider(key_id=..., tenant_dek=..., tenant_index_key=...),
+    allowed_suites={0xFF01}, write_suite=0xFF01,
+    indexes=[IndexDeclaration(table_uuid=USERS, column_uuid=EMAIL,
+                              idf="argon2id", normalize="nfc-casefold-v1",
+                              truncate_bits=15, projected_population=100_000)],
+    arm_provisional_suites=True,          # refuses to write without this
+)
+ctx = FieldContext(table_uuid=USERS, column_uuid=EMAIL)
 
-- **Not protection against a compromised application process.** The keys are in that process.
-- **Not range queries, sorting, `LIKE`, or full-text search over ciphertext.** Order-preserving and order-revealing encryption are explicitly forbidden by the spec; the attack literature is unambiguous (Grubbs et al., S&P 2017: 90–99% recovery rates on real data).
-- **Not a replacement for storage-layer encryption.** Keep TDE underneath.
-- **Not a hosted service, proxy, or vault.**
-- **Not a GDPR Article 17 erasure guarantee.** No regulator has endorsed key destruction as standalone erasure.
+env = fs.encrypt(b"ada@example.com", ctx)          # 111 bytes of overhead + the value
+fs.decrypt(env, ctx)                               # b'ada@example.com'
+fs.is_ciphertext(env)                              # True, without decrypting
+fs.blind_index("Ada@Example.com", ctx.for_index("exact"))   # 2 bytes, equal for "ada@example.com"
+fs.rotate(env, ctx)                                # re-encrypted under the active key version
+```
 
-## Documents
+```ts
+import { Fieldseal, DerivedKeyProvider } from "@fieldseal/core";
 
-| Document | What it is |
+const fs = new Fieldseal(
+  { keyProvider: new DerivedKeyProvider({ rootSecret }),
+    allowedSuites: [0xff01], writeSuite: 0xff01,
+    indexes: [{ tableUuid: USERS, columnUuid: EMAIL, idf: "argon2id",
+                normalize: "nfc-casefold-v1", truncateBits: 15, projectedPopulation: 100_000 }] },
+  { armProvisionalSuites: true },
+);
+const ctx = { tableUuid: USERS, columnUuid: EMAIL, purpose: "encrypt" };
+
+const env = fs.encrypt(plaintext, ctx);
+fs.decrypt(env, ctx);
+await fs.blindIndexAsync("Ada@Example.com", { ...ctx, purpose: "index:exact" });
+```
+
+The adapters hide all of this behind the ORM: a Django `Encrypted(models.EmailField(), column_uuid=..., index=BlindIndex(...))` field, or a Prisma `/// @fieldseal(encrypted, column_uuid: "...")` comment. `filter(email=...)` and `findMany({ where: { email } })` keep working through the blind index, and every candidate row is decrypted and re-compared before it is returned.
+
+## The format
+
+One database cell holds one self-describing envelope (spec §3.1):
+
+```
+| fmt_ver | suite_id | key_id | msg_seed | nonce | ciphertext | tag  | commitment |
+|   1 B   |   2 B    |  16 B  |   32 B   | 12 B  |    var     | 16 B |    32 B    |
+```
+
+- **`suite_id` names a complete, frozen suite** (AEAD, nonce policy, KDF, index construction). There are no per-algorithm header fields and no caller-settable `alg`. Registry in spec §4; the only suite today is `0xFF01`, AES-256-GCM with HKDF-SHA-512, provisional.
+- **`msg_seed` is 32 fresh CSPRNG bytes on every write**, including UPDATEs. The record key is derived from the tenant DEK, `key_id`, `msg_seed` and the canonical context, so no derived key ever encrypts two values and the SP 800-38D invocation ceiling is unreachable by construction.
+- **`nonce` is fresh on every write** and never derived from row identity, never a counter, never persisted anywhere but the envelope.
+- **`commitment` is mandatory** for a non-committing AEAD. AES-GCM is not key-committing; this is the AWS-2025-032 class of partitioning-oracle attack.
+- **Context binding.** A canonical, length-prefixed encoding of table UUID, column UUID, purpose and, when used, tenant and row ID (spec §6.2) is both the KDF `info` and part of the AEAD's AAD. A ciphertext moved to another column, tenant or row fails to decrypt.
+- **Blind indexes** (spec §7) are keyed hashes under a separate index key, Argon2id or HMAC-SHA-512, truncated to a declared number of bits so the index is a filter and never an answer. Indexing is refused on low-cardinality or skewed columns without a recorded override.
+- **Logical types** (spec §3.6) each have exactly one plaintext rendering, so a Django `DecimalField` and a Prisma `Decimal` produce identical plaintext and identical blind indexes.
+
+The specification is written in RFC 2119 language with the justification for every decision inline, and it flags what is contested (§14) and what is still open (§13).
+
+## What is proven, and how
+
+| Claim | Where it is checked |
 |---|---|
-| [`docs/00-research-memo.md`](docs/00-research-memo.md) | Landscape, prior art, gap analysis. Reads adversarially — states where the case is weak. |
-| [`docs/01-prd.md`](docs/01-prd.md) | Problem, users, goals and non-goals, requirements, success metrics, phasing, risks. |
-| [`docs/02-spec-v0.1.md`](docs/02-spec-v0.1.md) | **The specification.** Normative, RFC 2119 language, with justification inline. |
-| [`docs/03-compliance-mapping.md`](docs/03-compliance-mapping.md) | Clause-level regulatory mapping. §1 states what these frameworks do *not* require. |
-| [`docs/04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) | Per-ORM interception points and hard limits, for whoever implements each adapter. |
-| [`docs/05-dissemination.md`](docs/05-dissemination.md) | Publication and standardization pathways. |
-| [`docs/06-verification-log.md`](docs/06-verification-log.md) | Independent re-verification of the 20 highest-risk factual claims, corrections applied, and what remains unverified. |
-| [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md) | Phase 1 engineering plan: workstreams, milestones, decision gates, and the spec gaps that block code. |
-| [`docs/08-test-vector-spec.md`](docs/08-test-vector-spec.md) | Test-vector suite engineering spec: file formats, schemas, harness contract, cross-implementation protocol. |
-| [`docs/09-core-architecture.md`](docs/09-core-architecture.md) | Language-agnostic core library architecture every implementation follows. |
-| [`docs/10-core-python.md`](docs/10-core-python.md) / [`docs/11-core-typescript.md`](docs/11-core-typescript.md) | Per-language bindings for the Phase 1 cores. |
-| [`docs/12-adapter-django.md`](docs/12-adapter-django.md) / [`docs/13-adapter-prisma.md`](docs/13-adapter-prisma.md) | Phase 1 adapter designs, including the normative throw lists and coverage matrices. |
-| [`docs/14-conformance-ci.md`](docs/14-conformance-ci.md) | How conformance is claimed and proven; the N×N cross-implementation CI job. |
-| [`docs/15-tooling.md`](docs/15-tooling.md) | Backfill/re-encryption tool and blind-index leakage estimator. |
-| [`docs/adr/`](docs/adr/) | Decision records for the Phase-1-blocking choices (spec §13.1, §13.2), including the AWS-format expressibility mapping (Appendix A to ADR-0001). |
-| [`docs/issues/`](docs/issues/) | The thirteen spec gaps (G1–G13) found during tech-spec authoring and review, posted as [issues #1–#13](https://github.com/fieldseal-dev/fieldseal-spec/issues). Eight are now resolved in the draft; the five that remain — G1, G2, G4, G5, G7 — are exactly the five that cannot close without cryptographic review. Each file carries the issue body and, where closed, the resolution. |
-| [`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The brief sent to prospective Phase 0 cryptographic reviewers: eight self-contained question cards, ground rules, outreach log. Answering one is a complete contribution. |
-| [`docs/17-m2-implementer-brief.md`](docs/17-m2-implementer-brief.md) | The handoff for building a second core in isolation: the independence rule as a protocol, not a sentence. |
-| [`docs/18-m2-report.md`](docs/18-m2-report.md) | What came back from that handoff: the TypeScript core's result against the pinned suite (42/42, nothing tuned), the isolation statement, and twenty recorded ambiguities — including that the commitment formula is not in the spec. |
-| [`docs/19-what-encrypted-search-costs.md`](docs/19-what-encrypted-search-costs.md) | **Written for non-specialists.** What searching an encrypted field actually costs, measured on two machines: the blocking version stops a Node server dead, and the bill lands on requests that touch no encrypted data at all. No cryptography background assumed. |
+| Both cores agree with the pinned vectors | `vectors/`: 150 vectors, 182 results per core, hashed in `MANIFEST.json`. `python-core` and `typescript-core` jobs; the TypeScript core also runs every vector through its async companions (364 results). |
+| Both cores produce identical result ids | `cross-core-result-ids` |
+| Each core decrypts what the other core and both adapters wrote | `cross-produce` / `cross-consume`: every producer encrypts a shared 16-case corpus through its production path; every consumer decrypts every producer, self-pairs included (`docs/14` §3). |
+| Adapters render logical types identically | `vectors/codec/`: 124 vectors, both directions, refusals included; run by both adapters against SQLite and PostgreSQL. |
+| Adapters contain no cryptography | A CI grep of each adapter's `src/` for crypto imports fails the build on a hit (spec §11.3). |
+| The vectors are reproducible | `vectors-reproducible` regenerates the suite from `tools/vector-gen` and diffs; `unicode-tables` regenerates the vendored UCD tables with `--check`. |
+| A Django app and a Prisma app share one table | `examples/patient-directory`: a scripted seven-act scenario over one Postgres table, gated in CI ([`docs/20`](docs/20-demo-patient-directory.md)). |
+| Releases meet the PRD §8 conditions | `release-readiness`: build, check and smoke-test all four packages on every run (`tools/release/`). |
 
-All of these are published at **[fieldseal.dev/docs](https://fieldseal.dev/docs/)** if you would rather read them in a browser. The site is built from `docs/` in this repository — there is exactly one copy of the specification text, so the published version cannot drift from the source.
-
-**Start with the research memo if you want to know whether this should exist. Start with the spec if you want to know whether it is correct. Start with [what encrypted search costs](docs/19-what-encrypted-search-costs.md) if you want to know what adopting it would do to your application** — that one is written to be read without the other two.
+The TypeScript core was built without reading the Python core or the generator, under the protocol in [`docs/17`](docs/17-m2-implementer-brief.md); the result and the twenty ambiguities it surfaced are in [`docs/18`](docs/18-m2-report.md). The Java core is built the same way.
 
 ## Repository layout
 
 ```
-spec/                  normative specification (the authoritative artifact)
-vectors/               machine-readable test vectors — every implementation runs these
+spec/                  normative specification (versioned releases move here)
+vectors/               the pinned vector suite; MANIFEST.json hashes every family
 core/
-  python/  typescript/  java/  dotnet/  go/
+  python/  typescript/ the two released cores
+  java/                the Phase 2 core, in progress (docs/27)
+  dotnet/  go/         placeholders
 adapters/
-  django/  sqlalchemy/  prisma/  hibernate/  efcore/  gorm/  typeorm/
+  django/  prisma/     the two released adapters
+  sqlalchemy/  hibernate/  efcore/  gorm/  typeorm/   placeholders
 tools/
-  leakage-estimator/   measures actual column distribution skew vs. the assumed model
-  backfill/            resumable migration tooling
-bench/                 published benchmarks and the migration cost model
-docs/                  design documents (above)
-examples/              end-to-end demonstration applications
-www/                   the fieldseal.dev site — Hugo, no theme, no JavaScript;
-                       docs/ is synced in at build time, never edited here
-internal/              namespace-placeholder packages (npm, PyPI), not a product
+  vector-gen/          emits the vector suite; imports neither core
+  ucd-gen/             regenerates the vendored Unicode 17.0.0 tables
+  release/             builds, checks and smoke-tests the four packages
+  figures/             extracts the static SVGs in docs/figures/
+  leakage-estimator/   backfill/        placeholders (docs/15)
+examples/
+  patient-directory/   Django + Prisma over one Postgres table (docs/20)
+bench/                 placeholder
+docs/                  design documents, below
+www/                   fieldseal.dev: Hugo, no theme, no JavaScript; docs/ is synced in
 ```
 
-Gate 0a (see below) opened on 2026-08-22. What exists under those directories today:
+## Building and testing
 
-- **Two cores** — `core/python` and `core/typescript`, each passing the pinned vector suite
-  **182/182** with identical result ids, the second written without reading the first.
-  The TypeScript core additionally runs all 182 a second time through its spec §11.1
-  asynchronous companions (364 results) and asserts identical bytes and error codes.
-- **The vectors themselves** and the generator that emits them (`tools/vector-gen`), at
-  suite `0.8.0-provisional` — 150 vectors for the cores, nothing held out, plus 124
-  `codec/` vectors that bind the adapters (spec §3.6).
-- **Two ORM adapters** — `adapters/django` and `adapters/prisma`, each with a 200+-test suite,
-  each running against SQLite and PostgreSQL in CI. Both are also cross-language
-  *producers*: a row written through either adapter is decrypted by both cores in the N×N
-  job, which is the central claim tested at the layer people actually deploy rather than
-  only between cores.
+| Component | Commands |
+|---|---|
+| Python core | `pip install -e "./core/python[argon2,dev]"`, `pytest core/python/tests -q`, `python core/python/tests/run_vectors.py` |
+| TypeScript core | `cd core/typescript && npm ci && npm test && npm run vectors && npm run build && npm run typecheck` |
+| Java core | `cd core/java && ./gradlew build`, `./gradlew -q vectors`, `python scripts/bite_checks.py` |
+| Django adapter | `pip install -e "./adapters/django[dev]"`, then `cd adapters/django && python -m pytest tests -q` with `FIELDSEAL_TEST_DB=sqlite\|postgres` |
+| Prisma adapter | build the core first, then `cd adapters/prisma && npm ci && npm run build && node tests/fixture/build.ts && npx prisma generate && npx prisma db push && npm test` |
+| Release artifacts | `python tools/release/build_dists.py --out dist-release`, `check_release_conditions.py dist-release`, `smoke.py dist-release` |
+| Site | `python www/scripts/sync-docs.py && hugo server --source www` |
 
-- **One demonstration application** — [`examples/patient-directory/`](examples/patient-directory/),
-  a Django frontend and a Prisma frontend over one shared Postgres table, with a scripted
-  seven-act scenario asserting that a row written by either stack reads, searches and matches
-  from the other. It is gated in CI like everything else. Design and reasoning:
-  [`docs/20-demo-patient-directory.md`](docs/20-demo-patient-directory.md).
+The full matrix, including the demo and the lint jobs, is [`.github/workflows/conformance.yml`](.github/workflows/conformance.yml). Publishing is [`release.yml`](.github/workflows/release.yml): a `v0.MINOR.PATCH` tag that matches all four package versions, trusted publishing with provenance on both registries, and a maintainer approval gate.
 
-The remaining cores, the other five adapters, the backfill and leakage tools and `bench/`
-hold only a README describing what lands there.
+## Conformance levels
 
-**None of it is frozen.** Every suite identifier is provisional (spec §4.8), Gate 0b is
-open, and the project does not invite production adoption — see the two gates below.
-Experimental pre-1.0 releases for evaluation and non-production use are permitted
-under the conditions in `docs/01-prd.md` §8. For the plan see
-[`docs/07-implementation-plan.md`](docs/07-implementation-plan.md), and for what the two
-cores' agreement does and does not establish see
-[`docs/18-m2-report.md`](docs/18-m2-report.md).
+Independently claimable (spec §10). The matrix of which ORM can reach which level is spec §10.1.
 
-## Design commitments
+| Level | Claim |
+|---|---|
+| L0 | Envelope format, suite registry, vectors |
+| L1 | Transparent value mapping at the ORM layer |
+| L2 | Indexed equality through blind indexes; L2(a) explicit index property, L2(b) transparent query rewriting |
+| L3 | Context binding to tenant; L3-row binds the row ID |
+| L4 | Async key acquisition in the value path |
 
-These are the decisions the specification will be judged on.
+The Django adapter is gated at L1 and L2 in CI; the Prisma adapter at L1, L2 and L4.
 
-**One suite, maybe two.** A `suite_id` names a complete frozen suite — AEAD, nonce policy, KDF, index construction — as one indivisible unit. No per-algorithm header fields, no caller-settable `alg`. This is the PASETO model, not the JOSE model; the JWT `alg` header produced `alg=none` stripping and RSA→HMAC confusion. Data at rest has no peer and therefore no negotiation.
+## Limitations
 
-**Fresh nonce on every write, always.** Including UPDATEs. Never derived from row identity, never a counter, never persisted. A database breaks every construction NIST SP 800-38D permits: UPDATEs re-encrypt different plaintext at the same identity, restored backups rewind counters, and autoscaled app tiers cannot guarantee unique device identifiers.
+Normative, from the spec, and reproduced in every package README:
 
-**Per-write derived keys.** Every envelope carries a random 32-byte derivation seed (the AWS Encryption SDK v2 message-ID pattern), so no derived key ever encrypts more than one value and the SP 800-38D 2³² invocation ceiling is structurally unreachable rather than managed procedurally. A spec that asks operators to count encryptions fails the first time someone restores a backup.
+- **No protection against a compromised application process.** The keys are in that process.
+- **Storage overhead is real.** Every value carries 111 bytes of envelope before base64. A 9-byte SSN becomes ~120 bytes binary; across a 20-column, 100M-row table that is ~220 GB before index bloat.
+- **The key service is a hard dependency in the read path.** A KMS outage affects every query that touches an encrypted field.
+- **Argon2id blind indexes cost 10–100 ms per query term.** That is a product constraint, not tuning. [`docs/19`](docs/19-what-encrypted-search-costs.md) measures it.
+- **Query logs are sensitive artifacts.** The ETH Zurich analysis of MongoDB Queryable Encryption recovered 40–100% of field values from logs alone.
+- **No range queries, ordering, `LIKE`, aggregates, unique constraints or foreign keys over ciphertext.** Order-preserving and order-revealing encryption are forbidden by the spec. The adapters raise on these rather than degrade.
+- **Retrofitting onto a populated table voids crypto-shredding claims for pre-existing backups** (NIST SP 800-88r2 §3.2.2).
 
-**Key commitment is mandatory.** AES-GCM is not key-committing, which enables partitioning-oracle attacks in any multi-key system. AWS shipped [security bulletin AWS-2025-032](https://aws.amazon.com/security/security-bulletins/AWS-2025-032/) for exactly this in December 2025 (CVE-2025-14759 through -14764, six language SDKs), remediating by introducing key commitment. Their advisory: *"There are no known workarounds."*
+## Documents
 
-**The synchronous API is a constraint, not a preference.** Django, SQLAlchemy, TypeORM, Hibernate, Rails, and Sequelize cannot await in the value path. SQLAlchemy raises `MissingGreenlet` if you try. An async-first core would be unimplementable in most target ORMs.
+Everything under `docs/` is published at [fieldseal.dev/docs](https://fieldseal.dev/docs/) from the same source.
 
-**AAD row-binding is optional and off by default.** Rails — the most mature implementation in existence — sets `cipher.auth_data = ""` because `ActiveModel::Type` has no access to the record. Mandating row binding would place the reference implementation of the pattern out of conformance. It is offered as conformance level L3.
+| Document | What it is |
+|---|---|
+| [`02-spec-v0.1.md`](docs/02-spec-v0.1.md) | **The specification.** Normative. |
+| [`08-test-vector-spec.md`](docs/08-test-vector-spec.md) | Vector file formats, schemas, harness contract, cross-implementation protocol. |
+| [`09-core-architecture.md`](docs/09-core-architecture.md) | The language-agnostic core architecture every implementation follows. |
+| [`10-core-python.md`](docs/10-core-python.md) · [`11-core-typescript.md`](docs/11-core-typescript.md) · [`27-core-java.md`](docs/27-core-java.md) | Per-language core bindings. |
+| [`12-adapter-django.md`](docs/12-adapter-django.md) · [`13-adapter-prisma.md`](docs/13-adapter-prisma.md) | Adapter designs: throw lists and coverage matrices. |
+| [`14-conformance-ci.md`](docs/14-conformance-ci.md) | How conformance is claimed and proven; the report format; the N×N job. |
+| [`21-write-path.md`](docs/21-write-path.md) · [`22-read-path.md`](docs/22-read-path.md) · [`23-query-path.md`](docs/23-query-path.md) · [`24-key-lifecycle.md`](docs/24-key-lifecycle.md) | Sequence diagrams of one encrypted field through save, read and equality query, and of the key hierarchy. |
+| [`04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) | Per-ORM interception points and hard limits. |
+| [`15-tooling.md`](docs/15-tooling.md) | Backfill tool and leakage estimator designs. |
+| [`00-research-memo.md`](docs/00-research-memo.md) · [`01-prd.md`](docs/01-prd.md) · [`03-compliance-mapping.md`](docs/03-compliance-mapping.md) | Prior art, requirements and phasing, and what regulations do and do not require. |
+| [`16-reviewer-brief.md`](docs/16-reviewer-brief.md) | The cryptographic-review brief: eight self-contained question cards. |
+| [`17-m2-implementer-brief.md`](docs/17-m2-implementer-brief.md) · [`18-m2-report.md`](docs/18-m2-report.md) | Building a second core in isolation, and what came back. |
+| [`19-what-encrypted-search-costs.md`](docs/19-what-encrypted-search-costs.md) | What blind-index search costs, measured. Written for non-specialists. |
+| [`07-implementation-plan.md`](docs/07-implementation-plan.md) · [`25-phase-1-retro.md`](docs/25-phase-1-retro.md) · [`26-phase-2-plan.md`](docs/26-phase-2-plan.md) | Phase 1 plan and decision log, its retrospective, and the Phase 2 plan. |
+| [`adr/`](docs/adr/) · [`issues/`](docs/issues/) | Decision records and the spec-gap issues. |
 
-**Blind indexes are filters, never answers.** Candidates are decrypted and re-verified in the application. Indexing is refused by default on low-cardinality domains, because Naveed–Kamara–Wright recovered mortality risk for 100% of patients in ≥99% of the 200 largest US hospitals from deterministic encryption alone.
+## Status
 
-**Adapters throw rather than degrade.** Where an ORM path would silently write plaintext (GORM's map-based `Updates`) or silently return zero rows (Prisma's `in:` and `contains:` over encrypted fields), the adapter must raise. Silent wrongness is worse than a missing feature.
+Phase 1 ("prove the format") is done: two cores, two adapters, one demo, all gated in CI. Phase 2 ("prove the breadth", [`docs/26`](docs/26-phase-2-plan.md)) is under way, Java core first, then Hibernate, SQLAlchemy, .NET, EF Core, Go and GORM.
 
-## Honest limitations
-
-Reproduced from the spec so nobody has to find them:
-
-- No protection against a compromised application process, or against an adversary observing queries and logs over time.
-- Database query logs, slow-query logs, and replication logs are **in scope as sensitive artifacts** — the ETH Zurich analysis of MongoDB Queryable Encryption recovered 40–100% of field values from logs alone, with the `opLog` attack requiring zero client queries.
-- **Storage overhead is real.** A 9-byte SSN becomes ~120 bytes binary or ~160 bytes base64 (envelope header, derivation seed, nonce, tag, and key commitment). Across a 20-column, 100M-row table that is ~220 GB before index bloat and WAL amplification.
-- **The key service becomes a hard dependency in the read path of every query.** AWS states it plainly of external key stores: *"The greater risk to availability and latency will, for most customers, exceed the perceived security benefits."*
-- **Argon2id blind indexes cost 10–100 ms per query term.** That is a product constraint, not a tuning detail.
-- **Retrofitting onto a populated table permanently voids crypto-shredding claims for pre-existing backups** — NIST SP 800-88r2 §3.2.2 requires that no sensitive data was previously stored in plaintext.
-- Encrypted foreign keys, unique constraints on randomized ciphertext, collation-sensitive comparison, and aggregate functions do not work.
+**Gate 0b is open.** The format freezes only after review by at least two people with cryptographic credentials. Until then no suite identifier is final, no stable vector suite is published, nothing reaches 1.0, and no production adoption is invited. The five review-gated spec gaps ([#1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1), [#2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2), [#4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), [#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5), [#7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7)) are provisionally adopted and marked `[PROVISIONAL]` in the spec.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Specification changes go through an issue before a PR, and every normative change needs a citation and test vectors.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Specification changes go through an issue first, and every normative change needs a citation and test vectors. Most wanted:
 
-**Cryptographic review is the gate on the format freeze.** The Phase 0 exit gate was split on 2026-08-22 (`docs/01-prd.md` §8) because reviewer recruitment had not succeeded and one gate was holding two different permissions. **Gate 0a** — every spec gap resolved or provisionally resolved and marked, the registry on provisional suite identifiers — permits implementation and was closed by the project. **Gate 0b** — at least two people with real cryptographic credentials — permits freezing, and until it closes no suite identifier is assigned, no stable vector suite is published, no conformance claim is made against a frozen format, nothing reaches 1.0, and no production adoption is invited. Since 2026-09-18 the project may publish experimental pre-1.0 releases for evaluation and non-production use, under the conditions in `docs/01-prd.md` §8: provisional suites only, the spec §4.8 arming gate intact, and the unreviewed status stated first. The five review-gated spec gaps ([#1](https://github.com/fieldseal-dev/fieldseal-spec/issues/1), [#2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2), [#4](https://github.com/fieldseal-dev/fieldseal-spec/issues/4), [#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5), [#7](https://github.com/fieldseal-dev/fieldseal-spec/issues/7)) are **provisionally adopted and still open** — the spec marks each `[PROVISIONAL]` and names the question that would close it.
+- **Cryptographic review.** [`docs/16`](docs/16-reviewer-brief.md) is built so that answering one question is a complete contribution; [Q4](docs/16-reviewer-brief.md#q4) takes about twenty minutes and needs no project context.
+- **ORM internals.** Several claims in [`docs/04`](docs/04-orm-adapter-notes.md) were reasoned from documentation, not source.
+- **Field experience.** If you have shipped field-level encryption and watched it break, that is what the design is missing.
 
-[`docs/16-reviewer-brief.md`](docs/16-reviewer-brief.md) is the brief, and it is built so that **answering one question is a complete contribution** — each of the eight is a self-contained card naming the few pages to read, the concrete proposal, and the kind of answer that settles it. The cheapest is [Q4](docs/16-reviewer-brief.md#q4) (~20 minutes, an encoding-injectivity question needing no project context); the highest-leverage is [Q7](docs/16-reviewer-brief.md#q7).
-
-Also valuable, and not requiring a cryptographer:
-
-- **ORM internals.** Several claims in [`docs/04-orm-adapter-notes.md`](docs/04-orm-adapter-notes.md) were reasoned from documentation rather than verified against source. Corrections from people who know Django, SQLAlchemy, Prisma, Hibernate, EF Core, GORM, or TypeORM internals are wanted.
-- **Compliance mapping.** [`docs/03-compliance-mapping.md`](docs/03-compliance-mapping.md) §8 lists what could not be verified.
-- **Anything you have built in-house.** If you have shipped field-level encryption and watched it break, that is the experience the design is missing.
-
-## Security
-
-See [`SECURITY.md`](SECURITY.md). Do not open public issues for suspected vulnerabilities in the specification or any implementation.
+Security issues: [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ## License
 
-Three licenses, mapped by path in [`LICENSES.md`](LICENSES.md):
+Mapped by path in [`LICENSES.md`](LICENSES.md); rationale in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 | What | License |
 |---|---|
-| Specification and documentation | [CC BY 4.0](LICENSE-SPEC) — quote it, profile it, fold it into another standard |
-| Test vectors | [CC0 1.0](LICENSE-VECTORS) — public domain, so running the conformance suite carries no obligations |
-| Code | [Apache 2.0](LICENSE) — permissive, with an explicit patent grant |
-
-The rationale is in [`GOVERNANCE.md`](GOVERNANCE.md).
+| Specification and documentation | [CC BY 4.0](LICENSE-SPEC) |
+| Test vectors | [CC0 1.0](LICENSE-VECTORS) |
+| Code | [Apache 2.0](LICENSE) |
