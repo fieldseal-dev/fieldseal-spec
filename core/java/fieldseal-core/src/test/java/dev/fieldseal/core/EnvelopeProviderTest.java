@@ -100,6 +100,68 @@ class EnvelopeProviderTest {
         fs.encrypt(PT, ctx());
     }
 
+    /** Review of #190: a version the store stops listing must stop decrypting. */
+    @Test
+    void aVersionTheStoreDropsStopsDecryptingAtTheNextWarm() {
+        Fieldseal fs = client(1000, Duration.ofMinutes(5));
+        fs.warm(List.of(ctx())).join();
+        byte[] old = builder(KeyProviders.staticKeys(store.v0, Fixtures.INDEX_KEY, store.v0Id))
+                .build().encrypt(PT, ctx());
+        assertArrayEquals(PT, fs.decrypt(old, ctx()));
+        store.deks = List.of(store.version(store.v1Id, store.v1));
+        fs.warm(List.of(ctx())).join();
+        // v0 is gone. The slot's remaining valid version is still a candidate (docs/09 §8.1: all
+        // currently-valid versions), so the refusal is its commitment failing, not an empty list.
+        assertThrows(dev.fieldseal.core.errors.CommitmentInvalidError.class,
+                () -> fs.decrypt(old, ctx()));
+        store.deks = List.of();
+        fs.warm(List.of(ctx())).join();
+        assertThrows(KeyUnavailableError.class, () -> fs.encrypt(PT, ctx()), "slot emptied");
+    }
+
+    /** Review of #190: a failed warm must not change which key writes go out under. */
+    @Test
+    void aFailedWarmKeepsTheActiveVersion() {
+        Fieldseal fs = client(1000, Duration.ofMinutes(5));
+        fs.warm(List.of(ctx())).join();
+        var v2 = store.version(store.v2Id, store.v2);
+        var v1 = store.version(store.v1Id, store.v1);
+        store.deks = List.of(v2, v1);
+        kms.failOnBlob = v1.blob();
+        assertThrows(CompletionException.class, () -> fs.warm(List.of(ctx())).join());
+        byte[] env = fs.encrypt(PT, ctx());
+        assertArrayEquals(store.v1Id, java.util.Arrays.copyOfRange(env, 3, 19),
+                "a failed warm switched writes to v2");
+        kms.failOnBlob = null;
+        fs.warm(List.of(ctx())).join();
+        assertArrayEquals(store.v2Id,
+                java.util.Arrays.copyOfRange(fs.encrypt(PT, ctx()), 3, 19));
+    }
+
+    /** Review of #190: a warm before expiry refreshes, so a schedule shorter than maxAge works. */
+    @Test
+    void aWarmBeforeExpiryRestartsTheAgeAndTheBudget() {
+        Fieldseal fs = client(2, Duration.ofSeconds(10));
+        fs.warm(List.of(ctx())).join();
+        fs.encrypt(PT, ctx());
+        now.addAndGet(Duration.ofSeconds(8).toNanos());
+        fs.warm(List.of(ctx())).join();
+        now.addAndGet(Duration.ofSeconds(8).toNanos());
+        fs.encrypt(PT, ctx());
+        fs.encrypt(PT, ctx());
+    }
+
+    /** Review of #190: warm reports every failure through its future and throws none. */
+    @Test
+    void warmNeverThrows() {
+        Fieldseal fs = client(1000, Duration.ofMinutes(5));
+        assertThrows(CompletionException.class, () -> fs.warm(null).join());
+        java.util.List<FieldContext> withNull = new java.util.ArrayList<>();
+        withNull.add(null);
+        assertThrows(CompletionException.class, () -> fs.warm(withNull).join());
+        fs.warm(List.of()).join();
+    }
+
     @Test
     void anUnboundEnvelopeProviderServesNothing() {
         var unbound = KeyProviders.envelope(kms, store);

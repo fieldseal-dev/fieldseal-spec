@@ -6,7 +6,7 @@ import static dev.fieldseal.core.capabilities.SuiteFiles.slug;
 import static dev.fieldseal.core.capabilities.SuiteFiles.vectors;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -58,12 +58,14 @@ class ClientVectorsTest {
 
     /**
      * The unarmed vectors need the process unarmed: the variable arms every client (spec §4.8),
-     * and the harness has no business reading around it.
+     * and the harness has no business reading around it. Only the byte-exact {@code 1} arms, so
+     * only that value stops the run.
      */
     @BeforeAll
     static void theEnvironmentDoesNotArm() {
-        assertNull(System.getenv(SuiteProvisionalError.ARMING_VARIABLE),
-                SuiteProvisionalError.ARMING_VARIABLE + " is set; the unarmed vectors cannot run");
+        assertNotEquals("1", System.getenv(SuiteProvisionalError.ARMING_VARIABLE),
+                SuiteProvisionalError.ARMING_VARIABLE + "=1 arms every client; the unarmed vectors"
+                        + " cannot run under it");
     }
 
     /** Answers with the vector's key only when asked for the vector's key_id. */

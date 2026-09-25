@@ -170,6 +170,12 @@ class FieldsealTest {
         }
         assertThrows(ConfigurationError.class, () -> Fieldseal.builder().keyProvider(p)
                 .allowedSuites(Set.of(0xFF01)).build(), "writeSuite has no default");
+        java.util.Set<Integer> withNull = new java.util.HashSet<>();
+        withNull.add(0xFF01);
+        withNull.add(null);
+        String m = assertThrows(ConfigurationError.class,
+                () -> builder(p).allowedSuites(withNull).build(), "a null id").getMessage();
+        assertTrue(m.contains("null"), m);
     }
 
     @Test

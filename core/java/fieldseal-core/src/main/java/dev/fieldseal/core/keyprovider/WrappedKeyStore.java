@@ -17,7 +17,8 @@ public interface WrappedKeyStore {
     List<WrappedKey> keys(KeyRequest request);
 
     /**
-     * One wrapped key version.
+     * One wrapped key version. A handle, like {@link KeyMaterial}: {@code equals} compares the
+     * arrays by identity, and the core never compares one.
      *
      * @param keyId the 16-byte {@code key_id} envelopes written under it carry
      * @param blob what {@link Wrapper#wrap} produced

@@ -7,6 +7,10 @@ import java.util.HexFormat;
  * to the provider that built this (docs/09 §8.1): the record holds them as given, and the core
  * reads them without writing to them or keeping them.
  *
+ * <p><b>A handle, not a value.</b> {@code equals} and {@code hashCode} are the record defaults,
+ * which compare the arrays by identity. That is deliberate: the core never compares key material,
+ * and a value comparison of a key would have to be written in constant time to be safe.
+ *
  * @param key the key material; never printed
  * @param keyId 16 bytes, opaque to the core (spec §3.1)
  */

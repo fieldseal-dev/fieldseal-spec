@@ -136,16 +136,26 @@ public final class Fieldseal {
 
     /**
      * Fetches key material for {@code contexts} ahead of the value path (docs/09 §3.6): the only
-     * place a key provider may do I/O. A failure completes the future exceptionally and leaves
-     * whatever was cached before.
+     * place a key provider may do I/O. Call it on a schedule shorter than the cache's max age: it
+     * refreshes keys that are still cached, restarting their age and use budget.
+     *
+     * <p>Every failure, including a null collection or a null context, completes the returned
+     * future exceptionally; none is thrown. What a failure leaves cached is the provider's
+     * contract (for the envelope provider: {@link KeyProviders#envelope}). An empty collection
+     * completes at once.
      */
     public CompletableFuture<Void> warm(Collection<FieldContext> contexts) {
-        List<KeyRequest> requests = new ArrayList<>();
-        for (FieldContext c : contexts) {
-            requests.add(request(requireContext(c), Purpose.ENCRYPT));
-        }
         try {
-            return provider.warm(requests);
+            if (contexts == null) {
+                throw new InvalidArgumentError("the contexts to warm are null");
+            }
+            List<KeyRequest> requests = new ArrayList<>();
+            for (FieldContext c : contexts) {
+                requests.add(request(requireContext(c), Purpose.ENCRYPT));
+            }
+            CompletableFuture<Void> f = provider.warm(requests);
+            return f != null ? f : CompletableFuture.failedFuture(
+                    new KeyUnavailableError("the key provider's warm returned no future"));
         } catch (RuntimeException e) {
             return CompletableFuture.failedFuture(e);
         }
@@ -412,7 +422,9 @@ public final class Fieldseal {
 
         /** Required and non-empty: there is no default (spec §4.3). */
         public Builder allowedSuites(Set<Integer> suites) {
-            this.allowedSuites = suites == null ? null : Set.copyOf(suites);
+            // Not Set.copyOf, which throws on a null element before AllowList can refuse it
+            // with the ConfigurationError that names it.
+            this.allowedSuites = suites == null ? null : new java.util.HashSet<>(suites);
             return this;
         }
 
@@ -502,9 +514,8 @@ public final class Fieldseal {
                             + " max-age, max-uses and capacity are security parameters with no"
                             + " default (spec §5.5)");
                 }
-                bound = new EnvelopeProvider(spec, new DekCache(new DekCache.Limits(
-                        cachePolicy.maxAge().toNanos(), cachePolicy.maxUses(),
-                        cachePolicy.capacity()), nanoClock));
+                bound = new EnvelopeProvider(spec, new DekCache(cachePolicy.toLimits(),
+                        nanoClock));
             } else if (cachePolicy != null) {
                 throw new ConfigurationError("cachePolicy applies to the envelope key provider"
                         + " only; this provider would ignore it");

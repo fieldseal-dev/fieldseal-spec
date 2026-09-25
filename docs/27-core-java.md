@@ -172,7 +172,7 @@ Decisions:
 - **`decryptionKeys` receives the call's context as well as the header** (decided 2026-09-25). Spec §8 passes the header alone, and a derived provider cannot find a tenant in an opaque `key_id`. `EnvelopeHeader` carries `suite_id`, `key_id` and a `KeyRequest` for the call.
 - **What the core checks in what a provider returns:** a non-empty key and a 16-byte `key_id`, and a non-empty candidate list of non-empty keys. Anything else, and any exception, is `KEY_UNAVAILABLE`, with the provider's exception as its cause. The DEK's length is not checked: the spec does not fix it.
 - **Warnings** go through `onWarning`, by default `System.Logger` at `WARNING` (no logging framework, `docs/09` §11): at construction, for a permissive or readonly client and for the static provider outside `FIELDSEAL_TEST_MODE=1`. The metrics hook of `docs/09` §2 is not built yet.
-- **The envelope provider fails closed.** `warm` is the only place it calls the key store or the KMS. A key that was never warmed, or has aged out or used up its budget, is `KEY_UNAVAILABLE` until the next `warm`; there is no background refresh.
+- **The envelope provider fails closed.** `warm` is the only place it calls the key store or the KMS. A key that was never warmed, or has aged out or used up its budget, is `KEY_UNAVAILABLE` until the next `warm`; there is no background refresh. Each `warm` of a slot re-unwraps every version the store lists (restarting its age and use budget, so a schedule shorter than max-age never lapses), evicts the versions the store no longer lists, and then makes the first listed version active. The slot changes only once its whole list has loaded, so a failed warm never changes which key writes go out under (#190 review).
 
 ## 5. Security-relevant implementation notes
 
@@ -205,7 +205,8 @@ Decisions:
 - **What the core cannot promise:**
   - `SecretKeySpec` copies the key it is given;
   - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach;
-  - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2).
+  - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2);
+  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b; narrowing it is part of [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)).
 - `pinned_decisions.key-material-ownership` lists the steps performed, the provider carve-out, and a clause saying none of this is guaranteed (spec §5.5).
 - **No `mlock` and no swap protection:** a documented deviation, worded as `docs/10` and `docs/11` word theirs.
 
@@ -373,6 +374,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
   - **`keyprovider`:** the SPI (`KeyProvider`, `KeyRequest`, `EnvelopeHeader`, `KeyMaterial`, `Wrapper`, `WrappedKeyStore`). **api:** `Fieldseal` with its builder, `FieldContext`, `CachePolicy`, and `KeyProviders` with the static, derived and envelope providers (§3, §4). **`cache`:** `DekCache`, with max-age, max-uses as a `long`, capacity LRU, erasure on eviction and single-flight loads.
   - **Exit tests:** `KeyMaterialOwnershipTest` (provider arrays byte-identical after every operation and failure path; every derived `record_key` zeroed) and `ApiBoundaryOrderTest` (each pair's precedence observed, and whether the provider was reached). `SeamWiringTest` is the wiring test's provider half (§6.2). `PublicSurfaceTest` pins the client's public methods, so a nonce or seed parameter cannot appear unnoticed (§7).
   - **Vectors through the client** (`ClientVectorsTest`): every `errors/` vector but the two `blind_index` ones (S5), that is 41, 12 and 14 of `format`, `crypto` and `policy`, and `envelope/` decrypted. `CodecVectorsTest` keeps its restatement until S6.
+  - **Bite checks:** `core/java/scripts/bite_checks.py` holds every S4a, S4b and review mutation. It runs each target test green first as a control, counts a mutation as biting only when Gradle reports failing tests, and restores every file. On the final S4b head, 37 mutations bite and the one below changes nothing, as stated.
   - **Not testable yet:** that `decrypt` takes the context's `suite_id` from the header and not from `writeSuite` (`docs/09` §3.2 step 4). With `0xFF01` the only suite this core can be configured with, the two are always equal; the mutation was run and changes no outcome. It becomes testable when a second suite is built.
 
 **S5 — Blind indexes and normalizers.**

@@ -15,6 +15,8 @@ final class Wrappers {
     static final class Identity implements Wrapper {
         final AtomicInteger unwraps = new AtomicInteger();
         volatile RuntimeException failWith;
+        /** When set, unwrapping exactly this blob fails. */
+        volatile byte[] failOnBlob;
 
         @Override
         public byte[] wrap(byte[] dek) {
@@ -31,22 +33,36 @@ final class Wrappers {
             if (failWith != null) {
                 throw failWith;
             }
+            if (failOnBlob != null && java.util.Arrays.equals(failOnBlob, blob)) {
+                throw new IllegalStateException("kms refused this blob");
+            }
             return wrap(blob);
         }
     }
 
-    /** One tenant-agnostic store: version 1 active, version 0 still valid; counts lookups. */
+    /**
+     * One tenant-agnostic store: by default version 1 active and version 0 still valid. The DEK
+     * list can be replaced between warms, and lookups are counted.
+     */
     static final class Store implements WrappedKeyStore {
         final AtomicInteger lookups = new AtomicInteger();
         final Identity kms;
+        final byte[] v2Id = Fixtures.bytes(16, 2);
         final byte[] v1Id = Fixtures.bytes(16, 1);
         final byte[] v0Id = Fixtures.bytes(16, 0);
+        final byte[] v2 = Fixtures.bytes(32, 0x32);
         final byte[] v1 = Fixtures.bytes(32, 0x31);
         final byte[] v0 = Fixtures.bytes(32, 0x30);
         final byte[] index = Fixtures.bytes(32, 0x49);
+        volatile List<WrappedKey> deks;
 
         Store(Identity kms) {
             this.kms = kms;
+            this.deks = List.of(version(v1Id, v1), version(v0Id, v0));
+        }
+
+        WrappedKey version(byte[] id, byte[] key) {
+            return new WrappedKey(id, kms.wrap(key));
         }
 
         @Override
@@ -55,7 +71,7 @@ final class Wrappers {
             if (request.isIndex()) {
                 return List.of(new WrappedKey(v1Id, kms.wrap(index)));
             }
-            return List.of(new WrappedKey(v1Id, kms.wrap(v1)), new WrappedKey(v0Id, kms.wrap(v0)));
+            return deks;
         }
     }
 }

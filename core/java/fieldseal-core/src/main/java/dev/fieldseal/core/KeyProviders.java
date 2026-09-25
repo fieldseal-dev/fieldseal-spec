@@ -62,6 +62,12 @@ public final class KeyProviders {
      * aged out or used up its budget, is {@code KEY_UNAVAILABLE} until the next {@code warm}.
      * That is the fail-closed degradation mode (spec §8.1).
      *
+     * <p>Each {@code warm} of a slot refreshes every version the store lists, evicts the versions it
+     * no longer lists, and makes the first listed version active for writes, in that order and only
+     * once the whole list has loaded. A failed warm never changes which key writes go out under,
+     * and a version dropped from the store stops decrypting at the next successful warm of its
+     * slot.
+     *
      * <p>The provider this returns is unbound. A client built with it, and with a {@link
      * CachePolicy}, binds it to a cache of its own; called directly, it serves nothing.
      */
@@ -158,8 +164,10 @@ public final class KeyProviders {
 
     /** Used only by the unbound envelope provider's refusal. */
     static KeyUnavailableError unbound() {
-        return new KeyUnavailableError("this envelope provider is not bound to a cache: pass it"
-                + " to Fieldseal.builder() with a cachePolicy");
+        return new KeyUnavailableError("this is the unbound envelope provider that"
+                + " KeyProviders.envelope returns: it serves no keys itself. A Fieldseal client built"
+                + " with it holds its own bound copy and cache; call that client's warm() and"
+                + " operations instead");
     }
 
     /** The unbound provider's {@code warm}: nothing to warm into. */

@@ -1,6 +1,7 @@
 package dev.fieldseal.core;
 
 import dev.fieldseal.core.errors.ConfigurationError;
+import dev.fieldseal.core.internal.cache.DekCache;
 import java.time.Duration;
 
 /**
@@ -23,8 +24,8 @@ import java.time.Duration;
  */
 public record CachePolicy(Duration maxAge, long maxUses, int capacity) {
 
-    /** The spec §5.5 ceiling on {@code maxUses}. */
-    public static final long MAX_USES_BOUND = 1L << 32;
+    /** The spec §5.5 ceiling on {@code maxUses}: the cache's own, so the two cannot drift. */
+    public static final long MAX_USES_BOUND = DekCache.Limits.MAX_USES_BOUND;
 
     /** @throws ConfigurationError if a limit is missing or outside spec §5.5 */
     public CachePolicy {
@@ -46,5 +47,10 @@ public record CachePolicy(Duration maxAge, long maxUses, int capacity) {
             throw new ConfigurationError("cachePolicy.capacity must be at least 1, got "
                     + capacity);
         }
+    }
+
+    /** The cache's limits. Checked here first, as a configuration error, and again there. */
+    DekCache.Limits toLimits() {
+        return new DekCache.Limits(maxAge.toNanos(), maxUses, capacity);
     }
 }

@@ -135,6 +135,7 @@ It is built in stages (`docs/27` §8). S1–S4 are done: the Gradle scaffold and
 ./gradlew build          # compile (-Xlint:all -Werror) and run every test
 ./gradlew -q vectors     # verify the pinned test-vector suite's hashes and structure
 ./gradlew memoryProbe    # informational: the largest byte[] this JVM allocates (~6 GiB heap)
+python scripts/bite_checks.py   # each recorded mutation must turn its tests red (JAVA_HOME set)
 ```
 
 CI runs these in the `java-core` and `java-memory-probe` jobs of `.github/workflows/conformance.yml`. This core is built without reading the other cores' source: the reading path is at the top of `docs/27`.

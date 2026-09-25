@@ -158,6 +158,63 @@ class DekCacheTest {
         assertTrue(c.takeForEncrypt(K1).isPresent());
     }
 
+    /** Review of #190: an Error in the unwrap must complete every joiner, not strand it. */
+    @Test
+    void anErrorInTheUnwrapCompletesEveryJoiner() throws Exception {
+        DekCache c = cache(1_000, 1_000, 10);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            var owner = CompletableFuture.supplyAsync(() -> c.load(K1, ID, () -> {
+                entered.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new StackOverflowError("simulated");
+            }), pool);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            CompletableFuture<Void> joined = c.load(K1, ID, () -> key(1));
+            release.countDown();
+            var e = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> joined.get(5, TimeUnit.SECONDS));
+            assertTrue(e.getCause() instanceof StackOverflowError, "" + e.getCause());
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> owner.get(5, TimeUnit.SECONDS).get(5, TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /** A load of a cached key replaces it: a new age, a new budget, the old array erased. */
+    @Test
+    void loadRefreshes() {
+        DekCache c = cache(100, 2, 10);
+        c.load(K1, ID, () -> key(1)).join();
+        byte[] first = c.heldArray(K1);
+        c.takeForEncrypt(K1);
+        now.set(90);
+        c.load(K1, ID, () -> key(2)).join();
+        assertArrayEquals(new byte[32], first, "the replaced key was not erased");
+        now.set(180);
+        assertArrayEquals(key(2), c.takeForEncrypt(K1).orElseThrow()[0]);
+        assertTrue(c.takeForEncrypt(K1).isPresent(), "the budget restarted");
+    }
+
+    @Test
+    void retainEvictsAndErasesUnlistedVersions() {
+        DekCache c = cache(1_000, 1_000, 10);
+        c.load(K1, ID, () -> key(1)).join();
+        c.load(K2, ID, () -> key(2)).join();
+        byte[] dropped = c.heldArray(K1);
+        c.retain(SLOT, java.util.Set.of("02"));
+        assertEquals(java.util.Set.of("02"), c.candidates(SLOT).keySet());
+        assertArrayEquals(new byte[32], dropped);
+        assertEquals(1, c.evictions(DekCache.Cause.RETIRED));
+    }
+
     @Property
     void limitsAcceptMaxUsesFromOneTo2To32(@ForAll @LongRange(min = 1, max = 1L << 32) long uses) {
         new DekCache.Limits(1, uses, 1);

@@ -37,8 +37,8 @@ public final class DekCache {
     /** What a cached key is for (docs/09 §8.3). */
     public enum Role { DEK, INDEX }
 
-    /** Why an entry left the cache. */
-    public enum Cause { AGE, USES, CAPACITY }
+    /** Why an entry left the cache. {@code RETIRED}: its store no longer lists it. */
+    public enum Cause { AGE, USES, CAPACITY, RETIRED }
 
     /** One tenant's key for one role, under one provider scope; versions share a slot. */
     public record Slot(String scope, String tenant, Role role) {}
@@ -92,19 +92,15 @@ public final class DekCache {
     }
 
     /**
-     * Caches the key {@code unwrap} produces, unless {@code key} is already cached and fresh. A
-     * concurrent load of the same key joins the one in flight rather than unwrapping again. The
-     * unwrapped array is copied; the copy is the cache's own.
+     * Unwraps {@code key} and caches it, replacing any entry it already has, so that a refresh
+     * ahead of expiry restarts the key's age and use budget (docs/09 §3.6). A concurrent load of
+     * the same key joins the one in flight rather than unwrapping again. The unwrapped array is
+     * copied; the copy is the cache's own.
      *
-     * @return a future that completes when the key is cached, or with the unwrap's failure
+     * @return a future that completes when the key is cached, or with whatever the unwrap threw,
+     *     {@code Error}s included: a joiner is never left waiting
      */
     public CompletableFuture<Void> load(Key key, byte[] keyId, Supplier<byte[]> unwrap) {
-        synchronized (entries) {
-            Entry e = entries.get(key);
-            if (e != null && fresh(key, e)) {
-                return CompletableFuture.completedFuture(null);
-            }
-        }
         CompletableFuture<Void> mine = new CompletableFuture<>();
         CompletableFuture<Void> running = inFlight.putIfAbsent(key, mine);
         if (running != null) {
@@ -117,8 +113,10 @@ public final class DekCache {
             }
             put(key, material.clone(), keyId.clone());
             mine.complete(null);
-        } catch (RuntimeException e) {
-            mine.completeExceptionally(e);
+        } catch (Throwable t) {
+            // Throwable, not RuntimeException: an Error, or a checked exception a Wrapper threw
+            // sneakily, must still complete the future every concurrent joiner is waiting on.
+            mine.completeExceptionally(t);
         } finally {
             inFlight.remove(key, mine);
         }
@@ -158,6 +156,21 @@ public final class DekCache {
             }
         }
         return out;
+    }
+
+    /**
+     * Evicts and erases every entry in {@code slot} whose version is not in {@code versions}: the
+     * versions its store no longer lists, which must stop decrypting (docs/09 §8.1, "all
+     * currently-valid versions").
+     */
+    public void retain(Slot slot, java.util.Set<String> versions) {
+        synchronized (entries) {
+            for (Key k : List.copyOf(entries.keySet())) {
+                if (k.slot().equals(slot) && !versions.contains(k.version())) {
+                    evict(k, Cause.RETIRED);
+                }
+            }
+        }
     }
 
     /** Evictions so far for {@code cause}, for the metrics docs/09 §8.3 asks for. */

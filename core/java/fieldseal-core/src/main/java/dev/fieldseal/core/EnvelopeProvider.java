@@ -94,32 +94,52 @@ final class EnvelopeProvider implements KeyProvider {
     }
 
     /**
-     * For each request, every valid version the store lists, unwrapped once however many callers
-     * ask at the same time. The first version listed becomes active-for-write for its slot once it
-     * is cached. A failure completes the future exceptionally and caches nothing.
+     * For each request, in order: every version the store lists is unwrapped (once, however many
+     * callers ask at the same time) and cached, replacing an entry it already had, which restarts
+     * that key's age and use budget. Only when the whole list has loaded does the slot change:
+     * versions the store no longer lists are evicted and erased, so a version dropped from the
+     * store stops decrypting, and the first version listed becomes active for writes. A slot the
+     * store lists nothing for is emptied.
+     *
+     * <p><b>On failure</b> the future completes exceptionally. Slots completed before the failure
+     * keep their new state. The failing slot keeps its active version and every version it had,
+     * so a failed warm never changes which key writes go out under; versions it did unwrap stay
+     * cached, as the store listed them as valid.
      */
     @Override
     public CompletableFuture<Void> warm(Collection<KeyRequest> requests) {
         List<KeyRequest> todo = List.copyOf(requests);
         return CompletableFuture.runAsync(() -> {
             for (KeyRequest r : todo) {
-                DekCache.Slot slot = slot(r);
-                List<WrappedKeyStore.WrappedKey> versions = store.keys(r);
-                for (int i = 0; i < versions.size(); i++) {
-                    WrappedKeyStore.WrappedKey w = versions.get(i);
-                    if (w == null || w.keyId() == null
-                            || w.keyId().length != KeyMaterial.KEY_ID_LEN || w.blob() == null) {
-                        throw new KeyUnavailableError("the key store returned a malformed"
-                                + " wrapped key for " + r);
-                    }
-                    String version = HEX.formatHex(w.keyId());
-                    cache.load(new DekCache.Key(slot, version), w.keyId(),
-                            () -> wrapper.unwrap(w.blob())).join();
-                    if (i == 0) {
-                        active.put(slot, version);
-                    }
-                }
+                warmSlot(r);
             }
         });
+    }
+
+    private void warmSlot(KeyRequest r) {
+        DekCache.Slot slot = slot(r);
+        List<WrappedKeyStore.WrappedKey> versions = store.keys(r);
+        if (versions == null) {
+            throw new KeyUnavailableError("the key store returned no list for " + r);
+        }
+        java.util.Set<String> listed = new java.util.LinkedHashSet<>();
+        for (WrappedKeyStore.WrappedKey w : versions) {
+            if (w == null || w.keyId() == null || w.keyId().length != KeyMaterial.KEY_ID_LEN
+                    || w.blob() == null) {
+                throw new KeyUnavailableError("the key store returned a malformed wrapped key"
+                        + " for " + r);
+            }
+            listed.add(HEX.formatHex(w.keyId()));
+        }
+        for (WrappedKeyStore.WrappedKey w : versions) {
+            cache.load(new DekCache.Key(slot, HEX.formatHex(w.keyId())), w.keyId(),
+                    () -> wrapper.unwrap(w.blob())).join();
+        }
+        cache.retain(slot, listed);
+        if (listed.isEmpty()) {
+            active.remove(slot);
+        } else {
+            active.put(slot, listed.iterator().next());
+        }
     }
 }
