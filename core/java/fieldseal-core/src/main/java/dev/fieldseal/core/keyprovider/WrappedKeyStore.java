@@ -13,6 +13,11 @@ public interface WrappedKeyStore {
      * Every currently valid version of the key {@code request} names, active-for-write first
      * (spec §5.6). The role follows the purpose: the tenant DEK for {@code "encrypt"}, the tenant
      * index key for {@code "index:<id>"} (spec §8). Empty when the tenant has none.
+     *
+     * <p><b>An empty list is an answer, not a failure.</b> The envelope provider treats it as
+     * "this tenant has no valid keys": it evicts every cached version for the slot and stops
+     * writing under it until a later warm lists one. A store that cannot reach its backend MUST
+     * throw instead, which fails the warm and leaves the slot as it was.
      */
     List<WrappedKey> keys(KeyRequest request);
 
