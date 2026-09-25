@@ -39,6 +39,10 @@ import org.junit.jupiter.api.TestFactory;
  * shrinking what is checked. Both families are enumerated from {@code MANIFEST.files}, so a file
  * added to either fails here until it is pinned, instead of never being opened.
  *
+ * <p><b>Since S4b</b>, {@code ClientVectorsTest} runs every one of these vectors, deferred ones
+ * included, through the public client. This test keeps its S3 partition as a record of what the
+ * codec alone decides.
+ *
  * <p>The read-mode mapping below is spec §3.4 and §10.3's tables, restated. In the core it
  * belongs to the client (S4), the only module that knows the mode; the S6 harness then runs every
  * vector through the public API, and this test's reason to exist ends.

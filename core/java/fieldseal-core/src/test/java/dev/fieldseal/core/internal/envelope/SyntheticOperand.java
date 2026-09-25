@@ -10,10 +10,10 @@ import java.util.List;
  * serves {@code served} at offset 0 and records every content access. A read outside what it
  * serves throws {@link Unserved}, unless it was built to fabricate bytes there.
  */
-final class SyntheticOperand implements Operand {
+public final class SyntheticOperand implements Operand {
 
     /** A content access the test did not permit. Not a FieldsealError, so it cannot pass as one. */
-    static final class Unserved extends RuntimeException {
+    public static final class Unserved extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
         Unserved(long from, long len) {
@@ -25,7 +25,7 @@ final class SyntheticOperand implements Operand {
     private final byte[] served;
     private final boolean fabricateBeyond;
     /** Every access, as {offset, length}. */
-    final List<long[]> reads = new ArrayList<>();
+    public final List<long[]> reads = new ArrayList<>();
 
     private SyntheticOperand(long length, byte[] served, boolean fabricateBeyond) {
         this.length = length;
@@ -34,17 +34,17 @@ final class SyntheticOperand implements Operand {
     }
 
     /** Serves {@code served} and refuses every other offset. */
-    static SyntheticOperand strict(long length, byte[] served) {
+    public static SyntheticOperand strict(long length, byte[] served) {
         return new SyntheticOperand(length, served, false);
     }
 
     /** Serves {@code served}, and a deterministic byte at every other offset below the length. */
-    static SyntheticOperand fabricating(long length, byte[] served) {
+    public static SyntheticOperand fabricating(long length, byte[] served) {
         return new SyntheticOperand(length, served, true);
     }
 
     /** The header and nonce of a well-formed envelope under {@code suite}: 51 + nonce bytes. */
-    static byte[] header(Suite suite) {
+    public static byte[] header(Suite suite) {
         byte[] h = new byte[BufferLimits.HEADER_LEN + suite.nonceLen()];
         h[0] = 0x01;
         h[1] = (byte) (suite.id() >>> 8);
@@ -56,12 +56,12 @@ final class SyntheticOperand implements Operand {
     }
 
     /** {@link #header} for {@code 0xFF01}: the first 51 + 12 bytes. */
-    static byte[] ff01Header() {
+    public static byte[] ff01Header() {
         return header(Registry.FF01);
     }
 
     /** The highest offset any access touched, or -1 if none did. */
-    long highestOffsetRead() {
+    public long highestOffsetRead() {
         return reads.stream().mapToLong(r -> r[0] + r[1] - 1).max().orElse(-1);
     }
 
