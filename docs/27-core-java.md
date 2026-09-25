@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy. Stage S4a since 2026-09-25: the crypto primitives (`context`, `kdf`, `aead`, `commitment`) |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -161,6 +161,7 @@ Decisions:
   - `AEADBadTagException` → `TAG_INVALID`, and only after the commitment has verified (`docs/09` §3.2 step 6);
   - provider exceptions → `KEY_UNAVAILABLE`;
   - malformed UTF-8 → `INVALID_ARGUMENT`.
+- **What an internal module throws** (since S4a): a `FieldsealError` only for a caller's input it is the first to see (`ContextFields` refuses a wrongly sized UUID with `INVALID_ARGUMENT`), and otherwise `IllegalArgumentException` or `IllegalStateException`, which mean a bug in the core. The AEAD checks its offsets before calling the JDK, so a bad one there is an `IllegalArgumentException` rather than a JDK array or buffer exception; the codec relies on recognition having bounded every offset first (§6.3). The client does not map these two to a §9 code: a core bug must not read as a verdict on the ciphertext.
 - **`api-boundary-order` is this core's own pinned decision** (`docs/14` §4). It is declared in the report and tested. `docs/09` §3.1 notes that the order of steps 1 and 1b cannot be observed through vectors.
 
 ## 5. Security-relevant implementation notes
@@ -177,11 +178,11 @@ Decisions:
 
 ### 5.2 HKDF-SHA-512 at the JDK 21 floor
 - **The construction:** RFC 5869 extract-then-expand over `Mac.getInstance("HmacSHA512")`, with the PRK erased after expand.
-- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they wait for `canonical_context` at S4.
+- **One JVM-specific trap.** Wherever the spec's HKDF salt is empty (the commitment in spec §4.6, and the Argon2id salt in §7.3; `record_key` in §5.3 is salted with `key_id ‖ msg_seed`), RFC 5869 §2.2 substitutes HashLen (64) zero bytes, and spec §4.6 says so in its own comment. `new SecretKeySpec(new byte[0], "HmacSHA512")` throws on an empty key, so the core passes 64 zero bytes explicitly. HMAC pads its key to the 128-byte block with zeros, so the two are the same key. **Confirmed at S2:** `SecretKeySpec` throws `IllegalArgumentException` on the empty key, and 64 zero bytes reproduce all three commitment values in `commitment/` and the Argon2id salt carried by each of the 23 vectors in `blind-index/argon2id.json`. Every all-zero key of 1 to 128 bytes gives the same HMAC, and 129 bytes does not, which is the padding argument itself. The `kdf/` value vectors (four record keys, five index keys) pass over the same `Mac` construction. Their two `distinct` vectors give a context object rather than `info`, so they waited for `canonical_context`, and run since S4a (`KdfVectorsTest`).
 - **G14.** The length of the canonical `info` is bounded by spec §6.1's unsettled G14 question. `Mac` does not cap `info`. This document records what the core accepts at S8, so that G14's resolution can be checked against it.
 
 ### 5.3 The rest of the crypto
-- **Constant-time compare:** `MessageDigest.isEqual`. Tags and commitments have equal lengths by construction; check the lengths first anyway, with a comment explaining why.
+- **Constant-time compare:** `MessageDigest.isEqual`. Tags and commitments have equal lengths by construction; check the lengths first anyway, with a comment explaining why. A mismatch is the core's bug, so it throws before any derivation rather than answering "no match", which would surface as `COMMITMENT_INVALID` and blame the ciphertext (since S4a).
 - **Argon2id (spec §7.3):**
   - version 0x13, p = 1, output 64 bytes;
   - `t` and `m` from the declaration, defaulting to the §7.3 minima;
@@ -189,7 +190,7 @@ Decisions:
   - the salt is the 16-byte HKDF-derived value, erased after the call.
 
 ### 5.4 Zeroization and the memory model (this binding's G17 half)
-- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the untruncated IDF output, the Argon2id salt, and the HKDF PRK.
+- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the untruncated IDF output, the Argon2id salt, the HKDF PRK and expand blocks, the commitment recomputed on decrypt, and the AEAD output on every exit that does not return it.
 - **The core never zeroizes provider-owned material** (`docs/09` §8.1, G17). It validates what a provider returns (key length, `key_id` length) and maps exceptions to `KEY_UNAVAILABLE`. A test with a provider that keeps and inspects its own buffer proves the core never writes to it.
 - **What the core cannot promise:**
   - `SecretKeySpec` copies the key it is given;
@@ -349,6 +350,14 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - `DekCache`: max-age, max-uses as a `long`, capacity LRU, single-flight, erase on eviction.
 - Config validation and the reflection accessors.
 - *Exit:* `kdf/`, `context/` and `commitment/` green; the `key-material-ownership` and `api-boundary-order` tests green.
+- *S4a built 2026-09-25: the primitives, in their own PR.* The providers, the `DekCache`, config and the client are S4b's, with the two exit tests.
+  - **`context`:** `canonical_context` and the AAD (spec §6.2), and the spec §6.1 purpose grammar. `encodeForIndexKey` drops `row_id`, as spec §7.2 requires. Lengths are summed as `long`; a total past any Java array is an `OutOfMemoryError`, as in the codec (§6.1).
+  - **`kdf`:** HKDF-SHA-512 over `Mac` (§5.2), with the PRK and every expand block erased; `record_key` (spec §5.3) and `index_key` (spec §7.2).
+  - **`aead`:** `0xFF01` in place (§5.1). A tag failure is returned as an outcome, not thrown, so that the client maps it to `TAG_INVALID` only after the commitment has verified.
+  - **`commitment`:** spec §4.6 over an injected KDF. `docs/09` §1 forbids `commitment` → `kdf`, and the maintainer chose injection over amending `docs/09` (`docs/07` §7, 2026-09-25); `blindindex` does the same at S5.
+  - **Vectors:** `kdf/`, `context/` and `commitment/` green, with per-file counts pinned from `MANIFEST.files`; `envelope/` green in both directions composed from the primitives (`EnvelopeCryptoVectorsTest`). Every value passed on the first run: the mismatch list is empty.
+  - **Still deferred, to S4b:** the `errors/` outcomes S3 deferred (all 12 of `crypto.json`, 12 of `policy.json`, 1 of `format.json`). The primitives can now produce `TAG_INVALID` and `COMMITMENT_INVALID`, but which code a vector expects depends on the read mode, the allow-list and the key lookup, which are the client's; `CodecVectorsTest`'s pinned counts are unchanged until S4b runs them through it.
+  - **Bite checks:** twelve mutations each turn their tests red, among them an unsubstituted empty HKDF salt, a dropped length prefix, an absent `tenant_id` encoded as empty, `row_id` kept in the index-key `info`, decryption through `update()`, which `open`'s allocation test catches at about 4× a 16 MiB operand, the commitment length check removed, and the AEAD's range check removed.
 
 **S5 — Blind indexes and normalizers.**
 - A Java emitter for `tools/ucd-gen`, so that CI's `--check` covers the Java tables. Decide it jointly with WS-J; one shared, hashed resource is the alternative.
