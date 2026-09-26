@@ -117,6 +117,25 @@ class DekCacheTest {
     }
 
     /**
+     * #192: a read walks its own slot's live keys and nothing else: not another slot's 64, and
+     * not a key its slot has evicted.
+     */
+    @Test
+    void aReadWalksOnlyItsOwnSlotsLiveKeys() {
+        DekCache c = cache(1_000, 1_000, 100);
+        c.load(K1, ID, () -> key(1)).join();
+        c.load(K2, ID, () -> key(2)).join();
+        for (int i = 0; i < 64; i++) {
+            c.load(new DekCache.Key(OTHER.slot(), "v" + i), ID, () -> key(9)).join();
+        }
+        c.candidates(SLOT);
+        assertEquals(2, c.lastWalked(), "a read walked other slots");
+        c.retain(SLOT, java.util.Set.of("02"));
+        c.candidates(SLOT);
+        assertEquals(1, c.lastWalked(), "an evicted key stayed in its slot's index");
+    }
+
+    /**
      * #192: a read is a use for recency, though not for the use budget. Before the slot index,
      * a key that only ever decrypted kept its place and was the first to go at capacity.
      */

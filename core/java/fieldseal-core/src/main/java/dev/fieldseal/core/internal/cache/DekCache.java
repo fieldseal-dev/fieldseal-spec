@@ -3,8 +3,8 @@ package dev.fieldseal.core.internal.cache;
 import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -91,6 +91,8 @@ public final class DekCache {
     private final LinkedHashMap<Key, Entry> entries = new LinkedHashMap<>(16, 0.75f, true);
     /** The keys of {@link #entries}, by slot, so a slot's work is its own size. Same lock. */
     private final Map<Slot, Set<Key>> bySlot = new HashMap<>();
+    /** How many keys the last {@link #candidates} examined. Same lock. For a test only. */
+    private int lastWalked;
 
     public DekCache(Limits limits, LongSupplier nanoClock) {
         this.limits = limits;
@@ -159,9 +161,11 @@ public final class DekCache {
     public Map<String, byte[]> candidates(Slot slot) {
         Map<String, byte[]> out = new LinkedHashMap<>();
         synchronized (entries) {
-            for (Key k : keysOf(slot)) {
+            List<Key> keys = keysOf(slot);
+            lastWalked = keys.size();
+            for (Key k : keys) {
                 Entry e = entries.get(k);
-                if (fresh(k, e)) {
+                if (e != null && fresh(k, e)) {
                     out.put(k.version(), e.key.clone());
                 }
             }
@@ -195,6 +199,13 @@ public final class DekCache {
         }
     }
 
+    /** How many keys the last {@link #candidates} examined. Package-private, for a test. */
+    int lastWalked() {
+        synchronized (entries) {
+            return lastWalked;
+        }
+    }
+
     /**
      * The cache's own array for {@code key}, not a copy, or null. Package-private: it exists so
      * that a test can hold the array across an eviction and see it zeroed.
@@ -215,7 +226,7 @@ public final class DekCache {
         return true;
     }
 
-    /** A copy of {@code slot}'s keys, first loaded first, to evict from. Caller holds the lock. */
+    /** A snapshot of {@code slot}'s keys, in no promised order. Caller holds the lock. */
     private List<Key> keysOf(Slot slot) {
         Set<Key> keys = bySlot.get(slot);
         return keys == null ? List.of() : List.copyOf(keys);
@@ -227,7 +238,7 @@ public final class DekCache {
             if (old != null) {
                 Arrays.fill(old.key, (byte) 0);
             } else {
-                bySlot.computeIfAbsent(key.slot(), s -> new LinkedHashSet<>()).add(key);
+                bySlot.computeIfAbsent(key.slot(), s -> new HashSet<>()).add(key);
             }
             while (entries.size() > limits.capacity()) {
                 evict(entries.keySet().iterator().next(), Cause.CAPACITY);
@@ -240,8 +251,7 @@ public final class DekCache {
         Entry e = entries.remove(key);
         if (e != null) {
             Set<Key> keys = bySlot.get(key.slot());
-            keys.remove(key);
-            if (keys.isEmpty()) {
+            if (keys != null && keys.remove(key) && keys.isEmpty()) {
                 bySlot.remove(key.slot());
             }
             Arrays.fill(e.key, (byte) 0);
