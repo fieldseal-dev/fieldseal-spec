@@ -13,7 +13,7 @@ README's warning applies to all of it.
 
 | | |
 |---|---|
-| Vector suite | **182/182** pinned results pass on suite `0.8.0-provisional` (150 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
+| Vector suite | **182/182** pinned results pass on suite `0.9.0-provisional` (150 vectors; `envelope/` counted in both directions, some `blind-index/` vectors also end to end — see `harness_notes` in the report); **no family held out**; both §3.5 out-of-band checks pass |
 | Gate, parity and totality tests | 131 pass (`tests/test_gates.py`, `tests/test_parity.py`) |
 | Suites | `0xFF01` (AES-256-GCM). `0xFF02` is registered and refused at construction — it needs an XChaCha backend, blocked on gap G7 |
 | Conformance report | `tests/run_vectors.py` writes the [`docs/14`](https://github.com/fieldseal-dev/fieldseal-spec/blob/main/docs/14-conformance-ci.md) §4 JSON to stdout, including `pinned_decisions` and `harness_notes`; the TypeScript core's report has the same shape and the same result ids, so the two diff cleanly |

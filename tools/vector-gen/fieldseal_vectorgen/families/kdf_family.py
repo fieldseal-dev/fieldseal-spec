@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .. import inputs as I
 from ..context import FieldContext, canonical_context
 from ..keys import INDEX_KEY_SALT, index_key, record_key
@@ -90,10 +92,13 @@ def generate_record_key() -> dict:
 def _index_vector(slug: str, description: str, ctx: FieldContext,
                   index_id: str, provisional_on: str | None = None) -> dict:
     """docs/08 §4.2: the index-key family mirrors record-key with `purpose`
-    of the form `index:<index-id>` and `row_id` forced null. The context is
-    carried exactly as the core derives under it (docs/18 D-06); `index_id`
-    is repeated at the top level for readability only."""
+    of the form `index:<index-id>` (docs/18 D-06); `index_id` is repeated at
+    the top level for readability only. The context is the caller's, with
+    `row_id` as the caller gave it: §7.2 drops `row_id` inside the derivation,
+    and `expected.info` is the context after that drop. Carrying the dropped
+    context instead left `row-id-dropped` with no `row_id` to drop (#191)."""
     ictx = ctx.for_index(index_id)
+    caller = replace(ctx, purpose=ictx.purpose)
     ik = index_key(I.TENANT_INDEX_KEY, ctx, index_id)
     vec = {
         "id": f"kdf/index-key/{slug}",
@@ -102,7 +107,7 @@ def _index_vector(slug: str, description: str, ctx: FieldContext,
         "suite_id": suite_str(SUITE),
         "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
         "index_id": index_id,
-        "context": ctx_json(ictx),
+        "context": ctx_json(caller),
         "expected": {
             "salt": INDEX_KEY_SALT.hex(),
             "info": canonical_context(ictx).hex(),
@@ -112,6 +117,21 @@ def _index_vector(slug: str, description: str, ctx: FieldContext,
     if provisional_on:
         vec["provisional_on"] = [provisional_on]
     return vec
+
+
+def _assert_same_as_inputs_differ(vectors: list[dict]) -> None:
+    """A `same_as` vector whose inputs equal its target's holds by
+    construction and tests nothing -- how `row-id-dropped` shipped with no
+    `row_id` from suite 0.2.0 to 0.8.0 (#191). Its inputs must differ."""
+    by_id = {v["id"]: v for v in vectors}
+    inputs = ("tenant_index_key", "index_id", "context")
+    for v in vectors:
+        target = v.get("same_as")
+        if target is None:
+            continue
+        mine = tuple(v[k] for k in inputs)
+        theirs = tuple(by_id[target][k] for k in inputs)
+        assert mine != theirs, f"{v['id']} has the same inputs as {target}"
 
 
 def generate_index_key() -> dict:
@@ -142,6 +162,7 @@ def generate_index_key() -> dict:
     assert (vectors[3]["expected"]["index_key"]
             == vectors[0]["expected"]["index_key"])
     vectors[3]["same_as"] = vectors[0]["id"]
+    _assert_same_as_inputs_differ(vectors)
 
     # §7.2: two indexes MUST NOT share a key. Inputs carried (docs/18 D-08).
     ctx = _ctx()

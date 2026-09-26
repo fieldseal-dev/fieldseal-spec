@@ -283,11 +283,14 @@ def run_kdf(doc: dict, results: list[dict]) -> None:
             _record(results, v["id"], got.hex() == v["expected"]["record_key"])
         else:
             # Suite 0.2.0: the context carries the index purpose itself
-            # (docs/18 D-06), so it is used exactly as given.
+            # (docs/18 D-06). It is the caller's context, so it may carry a
+            # row_id; expected.info is the §7.2 derivation context, after the
+            # drop (suite 0.9.0, #191).
             ctx = _ctx(v, sid)
             got = _index_key_from(H(v["tenant_index_key"]), ctx)
+            info = canonical_context(ctx.for_index(ctx.index_id))
             ok = (got.hex() == v["expected"]["index_key"]
-                  and canonical_context(ctx).hex() == v["expected"]["info"])
+                  and info.hex() == v["expected"]["info"])
             _record(results, v["id"], ok)
 
 

@@ -338,9 +338,11 @@ function runKdf(v: Record<string, unknown>): Result {
       if (!eq(rk, hex(ex.record_key!))) problems.push(mismatch("record_key", rk, hex(ex.record_key!)));
     } else {
       // kdf/index-key: since suite 0.2.0 the vector's context carries the
-      // index purpose itself (D-06 resolved); it is used exactly as given.
+      // index purpose itself (D-06 resolved). It is the caller's context, so
+      // it may carry a row_id; expected.info is the spec §7.2 derivation
+      // context, with row_id dropped (suite 0.9.0, #191).
       const resolved: ResolvedContext = { ...ctx, suiteId };
-      const cc = canonicalContext(resolved);
+      const cc = canonicalContext({ ...resolved, rowId: null });
       if (!eq(INDEX_KEY_SALT, hex(ex.salt!))) problems.push(mismatch("salt", INDEX_KEY_SALT, hex(ex.salt!)));
       if (!eq(cc, hex(ex.info!))) problems.push(mismatch("info", cc, hex(ex.info!)));
       const ik = deriveIndexKey(hex(v.tenant_index_key as string), resolved);
