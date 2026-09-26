@@ -158,8 +158,8 @@ MUTATIONS = [
      "            if (e.uses >= limits.maxUses()) {", "            if (e.uses > limits.maxUses()) {",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: eviction does not erase", I / "cache/DekCache.java",
-     "        if (e != null) {\n            Arrays.fill(e.key, (byte) 0);\n            evictions",
-     "        if (e != null) {\n            evictions",
+     "            Arrays.fill(e.key, (byte) 0);\n            evictions",
+     "            evictions",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: no single-flight", I / "cache/DekCache.java",
      "        CompletableFuture<Void> running = inFlight.putIfAbsent(key, mine);",
@@ -206,6 +206,40 @@ MUTATIONS = [
     ("review client: allowedSuites copied with Set.copyOf", M / "Fieldseal.java",
      "new java.util.HashSet<>(suites);", "Set.copyOf(suites);",
      [CORE + "*FieldsealTest"], "red"),
+
+    # ---- #192: the cache indexed by slot ---------------------------------------------------
+    ("192 cache: the pre-index read (every slot walked, no recency)", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n",
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n"
+     "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: every slot walked, recency kept (review of #198)", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n",
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
+     "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n"
+     "                Entry e = entries.get(k);\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: a read age-checks other slots", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n",
+     "            for (Key o : List.copyOf(entries.keySet())) {\n"
+     "                fresh(o, entries.get(o));\n            }\n"
+     "            lastWalked = 0;\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: eviction leaves the key in its slot's index", I / "cache/DekCache.java",
+     "            if (keys != null && keys.remove(key) && keys.isEmpty()) {",
+     "            if (false) {",
+     [CORE + "*DekCacheTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2

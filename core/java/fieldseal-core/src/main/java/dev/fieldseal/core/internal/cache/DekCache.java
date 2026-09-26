@@ -2,10 +2,13 @@ package dev.fieldseal.core.internal.cache;
 
 import java.util.Arrays;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -21,7 +24,11 @@ import java.util.function.Supplier;
  *       capacity with least-recently-used eviction. An entry past its age or out of uses is
  *       evicted when next touched; the last permitted use evicts it immediately.
  *   <li><b>Uses are encryptions.</b> {@link #takeForEncrypt} counts one; {@link #candidates},
- *       the read path, counts none (docs/09 §8.1).
+ *       the read path, counts none (docs/09 §8.1). Both mark a key recently used.
+ *   <li><b>One lock, held per slot's worth of work.</b> Entries are indexed by slot, so a read
+ *       or a {@link #retain} touches its own slot's versions and no other tenant's (#192). The
+ *       lock is still the whole cache's, so tenants still take turns for it; that falls short
+ *       of docs/09 §8.3's "lock-free or fine-grained-locked reads", and docs/27 §5.5 says so.
  *   <li><b>Single-flight.</b> Concurrent {@link #load}s of one key share one unwrap; a failed
  *       load caches nothing and leaves no marker behind, so it cannot poison the cache (docs/09
  *       §3.6). Unwraps run outside the lock, so the value path never waits on another key's
@@ -82,6 +89,10 @@ public final class DekCache {
             new ConcurrentHashMap<>();
     /** Access-ordered, so the eldest entry is the least recently used. Guarded by itself. */
     private final LinkedHashMap<Key, Entry> entries = new LinkedHashMap<>(16, 0.75f, true);
+    /** The keys of {@link #entries}, by slot, so a slot's work is its own size. Same lock. */
+    private final Map<Slot, Set<Key>> bySlot = new HashMap<>();
+    /** How many keys the last {@link #candidates} examined. Same lock. For a test only. */
+    private int lastWalked;
 
     public DekCache(Limits limits, LongSupplier nanoClock) {
         this.limits = limits;
@@ -143,14 +154,18 @@ public final class DekCache {
     }
 
     /**
-     * For a read: a copy of every fresh key in {@code slot}, by version. Counts no use.
+     * For a read: a copy of every fresh key in {@code slot}, by version. Counts no use, but marks
+     * each key recently used, so a key that only decrypts is not the first to go at capacity.
+     * Touches {@code slot}'s entries only.
      */
     public Map<String, byte[]> candidates(Slot slot) {
         Map<String, byte[]> out = new LinkedHashMap<>();
         synchronized (entries) {
-            for (Key k : List.copyOf(entries.keySet())) {
+            lastWalked = 0;
+            for (Key k : keysOf(slot)) {
+                lastWalked++;
                 Entry e = entries.get(k);
-                if (k.slot().equals(slot) && fresh(k, e)) {
+                if (e != null && fresh(k, e)) {
                     out.put(k.version(), e.key.clone());
                 }
             }
@@ -163,10 +178,10 @@ public final class DekCache {
      * versions its store no longer lists, which must stop decrypting (docs/09 §8.1, "all
      * currently-valid versions").
      */
-    public void retain(Slot slot, java.util.Set<String> versions) {
+    public void retain(Slot slot, Set<String> versions) {
         synchronized (entries) {
-            for (Key k : List.copyOf(entries.keySet())) {
-                if (k.slot().equals(slot) && !versions.contains(k.version())) {
+            for (Key k : keysOf(slot)) {
+                if (!versions.contains(k.version())) {
                     evict(k, Cause.RETIRED);
                 }
             }
@@ -181,6 +196,13 @@ public final class DekCache {
     public int size() {
         synchronized (entries) {
             return entries.size();
+        }
+    }
+
+    /** How many keys the last {@link #candidates} examined. Package-private, for a test. */
+    int lastWalked() {
+        synchronized (entries) {
+            return lastWalked;
         }
     }
 
@@ -204,11 +226,19 @@ public final class DekCache {
         return true;
     }
 
+    /** A snapshot of {@code slot}'s keys, in no promised order. Caller holds the lock. */
+    private List<Key> keysOf(Slot slot) {
+        Set<Key> keys = bySlot.get(slot);
+        return keys == null ? List.of() : List.copyOf(keys);
+    }
+
     private void put(Key key, byte[] material, byte[] keyId) {
         synchronized (entries) {
             Entry old = entries.put(key, new Entry(material, keyId, clock.getAsLong()));
             if (old != null) {
                 Arrays.fill(old.key, (byte) 0);
+            } else {
+                bySlot.computeIfAbsent(key.slot(), s -> new HashSet<>()).add(key);
             }
             while (entries.size() > limits.capacity()) {
                 evict(entries.keySet().iterator().next(), Cause.CAPACITY);
@@ -220,6 +250,10 @@ public final class DekCache {
     private void evict(Key key, Cause cause) {
         Entry e = entries.remove(key);
         if (e != null) {
+            Set<Key> keys = bySlot.get(key.slot());
+            if (keys != null && keys.remove(key) && keys.isEmpty()) {
+                bySlot.remove(key.slot());
+            }
             Arrays.fill(e.key, (byte) 0);
             evictions.get(cause).incrementAndGet();
         }
