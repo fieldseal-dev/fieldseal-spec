@@ -186,11 +186,11 @@ class EnvelopeProviderTest {
     }
 
     /**
-     * #192: by default {@code warm} blocks on the KMS on a daemon thread of its own, not on the
-     * ForkJoin common pool, whose threads the application's other async work needs.
+     * #192: by default {@code warm} blocks on the KMS on a thread of the core's daemon pool, not
+     * on the ForkJoin common pool, whose threads the application's other async work needs.
      */
     @Test
-    void warmDefaultsToADedicatedDaemonThread() {
+    void warmDefaultsToTheDaemonPoolNotTheCommonPool() {
         java.util.concurrent.atomic.AtomicReference<Thread> ran =
                 new java.util.concurrent.atomic.AtomicReference<>();
         Fieldseal fs = builder(KeyProviders.envelope(kms, r -> {

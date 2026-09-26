@@ -45,7 +45,12 @@ final class EnvelopeProvider implements KeyProvider {
         }
     }
 
-    /** The default warm pool's bound (review of #199). */
+    /**
+     * The default warm pool's bound (review of #199). Fixed, not the common pool's CPU count minus
+     * one: a warm waits on the KMS, not the CPU, and a documented number should not depend on the
+     * machine. It raises concurrency on one or two CPUs and lowers it on many; a caller who needs
+     * more passes a {@code warmExecutor}.
+     */
     static final int WARM_THREADS = 4;
 
     /**
