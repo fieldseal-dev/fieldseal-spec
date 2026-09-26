@@ -1,64 +1,64 @@
 {
-  "vector_suite_version": "0.8.0-provisional",
+  "vector_suite_version": "0.9.0-provisional",
   "spec_version": "0.1-draft",
   "provisional": true,
   "provisional_note": "Every suite identifier here is in the reserved 0xFF00-0xFFFF provisional range (spec §4.8). These vectors are built against constructions marked [PROVISIONAL] in the specification and adopted under Gate 0a; they are not a stable release and the expected values may change when Gate 0b closes.",
   "files": [
     {
       "path": "blind-index/argon2id.json",
-      "sha256": "7f8ae499b1cdc1eac232eabc434a126570c28ef21021e9807efcb0a09e8691e2",
+      "sha256": "4261e4d2713566627446b96eb43544ab8275ca5335ed040cffab2a6b61eeff78",
       "bytes": 30338
     },
     {
       "path": "blind-index/hmac-sha512.json",
-      "sha256": "6d91194c908625b07fcc1a055fd17420fda4aec8620b11e5b219a07e4d9a985b",
+      "sha256": "2d6f940eabcd0dd1198151e0f7535e7db102ba0d0fee66d7bcc1b9b949efd3d2",
       "bytes": 23047
     },
     {
       "path": "commitment/ff01.json",
-      "sha256": "b03f7e4afcbcd35ba5a7169e23baaec39d4551532f4b3c343dc13f1d00951216",
+      "sha256": "83707d113bfaedfb4b609ff18ee32e919d392aa984de11d830191bc2c94df2ff",
       "bytes": 1538
     },
     {
       "path": "context/canonical.json",
-      "sha256": "e22e3ea116246cd858af8017ff3e473b8df4c24f5cba35f5b010ad17d76b5535",
+      "sha256": "7bed77df0caba9136dc01c5e32aeada2023e729a0ea84a7e8191b55201b2ee78",
       "bytes": 38567
     },
     {
       "path": "envelope/ff01.json",
-      "sha256": "c48b9331c9be90b3dda1be508602d8e5ec2e922b8eff6385053da29581d31868",
+      "sha256": "897d8204c877a8e24ddf50d1b9f30fd07e233aa7f75092afd5729123bf60e04e",
       "bytes": 45113
     },
     {
       "path": "errors/crypto.json",
-      "sha256": "34e2d1cd6bf62d1abf27ecff3707c735e8b27295c1c6ff212645e43b9ef38c35",
+      "sha256": "a6092f3534220270d0fff505716ea97366574852c5853dc1669d590da77670e4",
       "bytes": 20158
     },
     {
       "path": "errors/format.json",
-      "sha256": "8887084d845d01987f50dac8cebfd647d6026277c611a8fddbeec94107993e77",
+      "sha256": "6237f1e046b0f6c288b81e751bb381a8cd62614c33d33176aad1f8a291fb53a2",
       "bytes": 55649
     },
     {
       "path": "errors/policy.json",
-      "sha256": "100dfc71ee5604846f23e7a448cc3c08658e0ee504796023f9560cfebc7844c0",
+      "sha256": "007da383da25e8aa2566e76e312adcc07a38de021429c6c166cbaa79d58ad0f9",
       "bytes": 20946
     },
     {
       "path": "kdf/index-key.json",
-      "sha256": "9df51646a45acd10009e22f98a13dd96707228c57d2df40748000681ae64c324",
-      "bytes": 14525
+      "sha256": "28fa78cb18da2f04e4860e04bbd0fb136c5053974aa2f4ea7ddf77a06136385b",
+      "bytes": 14535
     },
     {
       "path": "kdf/record-key.json",
-      "sha256": "e995da4066235a0e725357248194960df79c11deef482b08d2b26800292e4e58",
+      "sha256": "20c542b19e0ee7c584fe07a0b8efb056915b3f9adcbeac86f88b560a4d30a1df",
       "bytes": 21845
     }
   ],
   "adapter_files": [
     {
       "path": "codec/logical-types.json",
-      "sha256": "c18b8f91559b920f1a7652a7512b50ab21736bb0fbfcaddf2188b17b83cb55c1",
+      "sha256": "f9526db65bf30237a1e94ed8dd471d58f83b664f879d2074fca9546210754b4f",
       "bytes": 42042
     }
   ],
@@ -66,12 +66,12 @@
   "support": [
     {
       "path": "cross/corpus.json",
-      "sha256": "73ff331072655c9306404c9e41e39b02dcf199f6ba9ea197f94a8cecf45b27e4",
+      "sha256": "2046e375a36fe99af32142c470ebddc5867c156c06b06295cb71cbfbd3633047",
       "bytes": 26832
     },
     {
       "path": "keys/test-keys.json",
-      "sha256": "8b508853f2ad726101270d3bdc8f8ebf7cde548266d9f9138d7d4721f4902c71",
+      "sha256": "642a2ca8f9549229cf362a1064515164041803a42aaa8dcc7c1b6b2a29fcf4ef",
       "bytes": 1423
     }
   ],

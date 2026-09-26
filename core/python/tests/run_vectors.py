@@ -283,12 +283,17 @@ def run_kdf(doc: dict, results: list[dict]) -> None:
             _record(results, v["id"], got.hex() == v["expected"]["record_key"])
         else:
             # Suite 0.2.0: the context carries the index purpose itself
-            # (docs/18 D-06), so it is used exactly as given.
+            # (docs/18 D-06). It is the caller's context, so it may carry a
+            # row_id; expected.info is the §7.2 derivation context, after the
+            # drop (suite 0.9.0, #191).
             ctx = _ctx(v, sid)
             got = _index_key_from(H(v["tenant_index_key"]), ctx)
-            ok = (got.hex() == v["expected"]["index_key"]
-                  and canonical_context(ctx).hex() == v["expected"]["info"])
-            _record(results, v["id"], ok)
+            info = canonical_context(ctx.for_index(ctx.index_id))
+            bad = [name for name, ok in (
+                ("index_key", got.hex() == v["expected"]["index_key"]),
+                ("info", info.hex() == v["expected"]["info"])) if not ok]
+            _record(results, v["id"], not bad,
+                    f"mismatch: {', '.join(bad)}" if bad else "")
 
 
 def run_commitment(doc: dict, results: list[dict]) -> None:
@@ -491,7 +496,9 @@ def _run_blind_index_vector(v: dict, results: list[dict]) -> None:
     caller_ctx = FieldContext(
         table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
         purpose=f"index:{v['index_id']}", tenant_id=ctx.tenant_id,
-        row_id=None)
+        # Must be ignored by index derivation (spec §7.2), as in the
+        # TypeScript harness; None here left the drop unexercised (#191).
+        row_id=H("deadbeef"))
     fs = _client(bytes(16), b"\x22" * 32, H(v["tenant_index_key"]),
                  (_index_decl(v, ctx),))
     got = fs.blind_index(v["plaintext_preimage"], caller_ctx)

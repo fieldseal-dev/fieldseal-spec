@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-VECTOR_SUITE_VERSION = "0.8.0-provisional"
+VECTOR_SUITE_VERSION = "0.9.0-provisional"
 SPEC_VERSION = "0.1-draft"
 
 # Families generated but deliberately NOT part of the pinned suite. Listed

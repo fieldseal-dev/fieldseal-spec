@@ -52,11 +52,11 @@ MUTATIONS = [
      "int presence = (ctx.tenantId() != null ? PRESENCE_TENANT : 0)",
      "int presence = (ctx.tenantId() != null && ctx.tenantId().length > 0 ? PRESENCE_TENANT : 0)",
      [VEC + "*ContextVectorsTest"], "red"),
-    # The pinned kdf/index-key/row-id-dropped vector carries no row_id, so only the unit test
-    # sees this one (docs/07 §7, 2026-09-25).
+    # Until suite 0.9.0 the pinned kdf/index-key/row-id-dropped vector carried no row_id, so only
+    # the unit test saw this one (docs/07 §7, 2026-09-25); since 0.9.0 it carries one (#191).
     ("s4a context: index key keeps row_id", I / "context/CanonicalContext.java",
      "return encode(ctx.withoutRowId());", "return encode(ctx);",
-     [CORE + "*CanonicalContextTest"], "red"),
+     [VEC + "*KdfVectorsTest", CORE + "*CanonicalContextTest"], "red"),
     ("s4a commitment: label off by one byte", I / "commitment/Commitment.java",
      '"fieldseal-commit-v1".getBytes', '"fieldseal-commit-v2".getBytes',
      [VEC + "*CommitmentVectorsTest", CORE + "*CommitmentTest"], "red"),
