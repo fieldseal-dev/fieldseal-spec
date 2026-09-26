@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/kdf/v1",
-  "vector_suite_version": "0.8.0-provisional",
+  "vector_suite_version": "0.9.0-provisional",
   "group": "kdf",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -76,7 +76,7 @@
         "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
         "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
         "tenant_id": "74656e616e742d30303031",
-        "row_id": null,
+        "row_id": "726f772d3432",
         "purpose": "index:email-eq"
       },
       "expected": {
