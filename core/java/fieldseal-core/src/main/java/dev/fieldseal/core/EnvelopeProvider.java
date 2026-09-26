@@ -16,9 +16,9 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The envelope provider bound to one client's {@link DekCache} (docs/09 §8.2). The value path
@@ -45,22 +45,30 @@ final class EnvelopeProvider implements KeyProvider {
         }
     }
 
-    /**
-     * The default for {@code warm} (#192): daemon threads, so an application need not shut it
-     * down, created per {@code warm} in progress and gone after a minute idle. Not the ForkJoin
-     * common pool, whose threads the application's other async work needs (on two CPUs or fewer,
-     * {@code CompletableFuture} skips that pool and starts a thread per task).
-     */
-    static final Executor WARM_POOL = Executors.newCachedThreadPool(new ThreadFactory() {
-        private final AtomicInteger n = new AtomicInteger();
+    /** The default warm pool's bound (review of #199). */
+    static final int WARM_THREADS = 4;
 
-        @Override
-        public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, "fieldseal-warm-" + n.incrementAndGet());
-            t.setDaemon(true);
-            return t;
-        }
-    });
+    /**
+     * The default for {@code warm} (#192): at most {@value #WARM_THREADS} threads, shared by every
+     * client in the process, so clients share one thread budget and a warm beyond it waits its
+     * turn; it is never refused. Daemon threads, so an application need not shut the pool down,
+     * and each exits after a minute idle. They do not inherit the creating thread's inheritable
+     * thread-locals, so a request's context is not handed to a {@code Wrapper} that did not ask
+     * for it. Not the ForkJoin common pool, whose threads the application's other async work
+     * needs (on two CPUs or fewer, {@code CompletableFuture} skips that pool and starts a thread
+     * per task). The pool holds no client's state or configuration (docs/09 §10; docs/27 §5.5).
+     */
+    static final Executor WARM_POOL = warmPool();
+
+    /** A new pool configured as {@link #WARM_POOL} is. Package-private, for a test. */
+    static Executor warmPool() {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(WARM_THREADS, WARM_THREADS,
+                1, TimeUnit.MINUTES, new LinkedBlockingQueue<>(),
+                Thread.ofPlatform().daemon().name("fieldseal-warm-", 1)
+                        .inheritInheritableThreadLocals(false).factory());
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
 
     private static final String SCOPE = "envelope";
     private static final HexFormat HEX = HexFormat.of();

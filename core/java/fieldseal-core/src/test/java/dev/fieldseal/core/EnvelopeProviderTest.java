@@ -218,4 +218,75 @@ class EnvelopeProviderTest {
                 "" + e.getCause());
         assertEquals(0, store.lookups.get());
     }
+
+    /**
+     * Review of #199: the default pool is bounded, and every client shares its bound. Two clients
+     * start twice the bound's worth of warms against a store that blocks; no more than the bound
+     * are ever inside it at once.
+     */
+    @Test
+    void theDefaultPoolIsBoundedAndSharedByEveryClient() throws Exception {
+        int bound = EnvelopeProvider.WARM_THREADS;
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var inside = new java.util.concurrent.atomic.AtomicInteger();
+        var peak = new java.util.concurrent.atomic.AtomicInteger();
+        dev.fieldseal.core.keyprovider.WrappedKeyStore blocking = r -> {
+            peak.accumulateAndGet(inside.incrementAndGet(), Math::max);
+            try {
+                release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                inside.decrementAndGet();
+            }
+            return store.keys(r);
+        };
+        List<Fieldseal> clients = List.of(blockingClient(blocking), blockingClient(blocking));
+        var warms = new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+        try {
+            for (int i = 0; i < 2 * bound; i++) {
+                warms.add(clients.get(i % 2).warm(List.of(ctx())));
+            }
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (inside.get() < bound && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(100);
+            assertEquals(bound, peak.get(), "warms inside the store at once");
+        } finally {
+            release.countDown();
+        }
+        for (var w : warms) {
+            w.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Review of #199: a warm thread is a daemon and does not inherit the creating thread's
+     * inheritable thread-locals. A fresh pool, because the shared one's threads may predate the
+     * thread-local this test sets.
+     */
+    @Test
+    void theDefaultPoolsThreadsAreDaemonsAndInheritNoThreadLocals() throws Exception {
+        var requestContext = new InheritableThreadLocal<String>();
+        requestContext.set("request-scoped");
+        try {
+            var seen = new java.util.concurrent.CompletableFuture<Thread>();
+            var value = new java.util.concurrent.atomic.AtomicReference<String>("unset");
+            EnvelopeProvider.warmPool().execute(() -> {
+                value.set(requestContext.get());
+                seen.complete(Thread.currentThread());
+            });
+            Thread t = seen.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(t.isDaemon(), t.getName());
+            assertEquals(null, value.get(), "the warm thread inherited the caller's context");
+        } finally {
+            requestContext.remove();
+        }
+    }
+
+    private Fieldseal blockingClient(dev.fieldseal.core.keyprovider.WrappedKeyStore s) {
+        return builder(KeyProviders.envelope(kms, s))
+                .cachePolicy(new CachePolicy(Duration.ofMinutes(5), 1000, 100)).build();
+    }
 }

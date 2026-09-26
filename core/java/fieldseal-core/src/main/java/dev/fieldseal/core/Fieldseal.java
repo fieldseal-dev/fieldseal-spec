@@ -461,10 +461,16 @@ public final class Fieldseal {
 
         /**
          * Where the envelope provider's {@link Fieldseal#warm} runs its key-store and KMS calls,
-         * which block (#192). Refused with any other provider, and refused if null. By default,
-         * daemon threads named {@code fieldseal-warm-N}, one per {@code warm} in progress, that
-         * exit when idle: never the ForkJoin common pool, whose threads the application's other
-         * async work needs.
+         * which block (#192). Refused with any other provider. By default, a pool of four daemon
+         * threads named {@code fieldseal-warm-N}, shared by every client in the process, where a
+         * warm beyond the four waits its turn: never the ForkJoin common pool, whose threads the
+         * application's other async work needs. Pass your own to size it or to isolate a client.
+         *
+         * <p>A same-thread executor ({@code Runnable::run}) makes {@code warm} block the caller
+         * until the keys are loaded. Its failures still arrive through the returned future.
+         *
+         * <p>Unlike {@link #onWarning}, null is refused rather than taken as the default: a null
+         * executor is more likely a caller's bug than a request for the shared pool.
          */
         public Builder warmExecutor(Executor executor) {
             this.warmExecutor = executor;
