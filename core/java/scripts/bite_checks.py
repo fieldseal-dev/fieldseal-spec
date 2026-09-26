@@ -158,8 +158,8 @@ MUTATIONS = [
      "            if (e.uses >= limits.maxUses()) {", "            if (e.uses > limits.maxUses()) {",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: eviction does not erase", I / "cache/DekCache.java",
-     "        if (e != null) {\n            Arrays.fill(e.key, (byte) 0);\n            evictions",
-     "        if (e != null) {\n            evictions",
+     "            Arrays.fill(e.key, (byte) 0);\n            evictions",
+     "            evictions",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: no single-flight", I / "cache/DekCache.java",
      "        CompletableFuture<Void> running = inFlight.putIfAbsent(key, mine);",
@@ -206,6 +206,77 @@ MUTATIONS = [
     ("review client: allowedSuites copied with Set.copyOf", M / "Fieldseal.java",
      "new java.util.HashSet<>(suites);", "Set.copyOf(suites);",
      [CORE + "*FieldsealTest"], "red"),
+
+    # ---- #192: the cache indexed by slot ---------------------------------------------------
+    ("192 cache: the pre-index read (every slot walked, no recency)", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n",
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n"
+     "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: every slot walked, recency kept (review of #198)", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
+     "                Entry e = entries.get(k);\n",
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
+     "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n"
+     "                Entry e = entries.get(k);\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: a read age-checks other slots", I / "cache/DekCache.java",
+     "            lastWalked = 0;\n",
+     "            for (Key o : List.copyOf(entries.keySet())) {\n"
+     "                fresh(o, entries.get(o));\n            }\n"
+     "            lastWalked = 0;\n",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: eviction leaves the key in its slot's index", I / "cache/DekCache.java",
+     "            if (keys != null && keys.remove(key) && keys.isEmpty()) {",
+     "            if (false) {",
+     [CORE + "*DekCacheTest"], "red"),
+    # ---- #192: warm's executor -------------------------------------------------------------
+    ("192 warm: runs on the common pool, whatever executor it was given", M / "EnvelopeProvider.java",
+     "        }, warmExecutor);", "        });",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: the default pool's threads keep the JVM alive", M / "EnvelopeProvider.java",
+     "Thread.ofPlatform().daemon().name(", "Thread.ofPlatform().daemon(false).name(",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: the default pool unbounded (review of #199)", M / "EnvelopeProvider.java",
+     "WARM_THREADS, WARM_THREADS,\n"
+     "                1, TimeUnit.MINUTES, new LinkedBlockingQueue<>(),",
+     "WARM_THREADS, Integer.MAX_VALUE,\n"
+     "                1, TimeUnit.MINUTES, new java.util.concurrent.SynchronousQueue<>(),",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: a default pool per provider (review of #199)", M / "KeyProviders.java",
+     "return envelopeWithClock(wrapper, store, policy, EnvelopeProvider.WARM_POOL,",
+     "return envelopeWithClock(wrapper, store, policy, EnvelopeProvider.warmPool(),",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: threads inherit the caller's thread-locals (review of #199)",
+     M / "EnvelopeProvider.java",
+     ".inheritInheritableThreadLocals(false)", ".inheritInheritableThreadLocals(true)",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 envelope: a null warmExecutor accepted", M / "KeyProviders.java",
+     "        if (warmExecutor == null) {", "        if (false) {",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 envelope: the seam accepts a null clock (review of #201)", M / "KeyProviders.java",
+     "        if (nanoClock == null) {", "        if (false) {",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 envelope: an evicted key's refusal blames age and uses only (review of #201)",
+     M / "EnvelopeProvider.java", " or was evicted to make room for other", " or ran out of other",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 envelope: a null cache policy accepted", M / "KeyProviders.java",
+     "        if (policy == null) {", "        if (false) {",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 envelope: a direct warm throws an Error the executor threw (review of #201)", M / "EnvelopeProvider.java",
+     "        } catch (Throwable t) {\n            // Throwable, as in DekCache.load",
+     "        } catch (RuntimeException t) {\n            // Throwable, as in DekCache.load",
+     [CORE + "*EnvelopeProviderTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2
@@ -238,6 +309,7 @@ def main():
             sys.exit(3)
 
     as_expected = True
+    tally = {"bite": 0, "not as expected": 0, "none, as stated": 0}
     for name, path, old, new, tasks, expect in chosen:
         src = path.read_text(encoding="utf-8")
         if src.count(old) != 1:
@@ -253,12 +325,19 @@ def main():
             for t, v in zip(tasks, verdicts):
                 label = {RED: "RED (bites)", GREEN: "GREEN (DOES NOT BITE)", BROKEN: "BROKEN"}[v]
                 print(f"{label:22} {name} :: {t}", flush=True)
-            as_expected &= all(v == RED for v in verdicts)
+            bit = all(v == RED for v in verdicts)
+            tally["bite" if bit else "not as expected"] += 1
+            as_expected &= bit
         else:
             ok = all(v == GREEN for v in verdicts)
             print(f"{'no bite, as stated' if ok else f'NOT AS STATED {verdicts}':22} {name}",
                   flush=True)
+            tally["none, as stated" if ok else "not as expected"] += 1
             as_expected &= ok
+    anchors = len(chosen) - sum(tally.values())
+    print(f"{len(chosen)} mutations: {tally['bite']} bite, {tally['none, as stated']} change"
+          f" nothing as stated, {tally['not as expected']} not as expected, {anchors} anchors"
+          " moved. RED lines above are one per mutation and test task.")
     print("every file restored")
     sys.exit(0 if as_expected else 1)
 

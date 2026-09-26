@@ -26,6 +26,8 @@ class DekCacheTest {
     private static final DekCache.Slot SLOT = new DekCache.Slot("s", "t", DekCache.Role.DEK);
     private static final DekCache.Key K1 = new DekCache.Key(SLOT, "01");
     private static final DekCache.Key K2 = new DekCache.Key(SLOT, "02");
+    private static final DekCache.Key OTHER =
+            new DekCache.Key(new DekCache.Slot("s", "u", DekCache.Role.DEK), "01");
     private static final byte[] ID = new byte[16];
 
     private final AtomicLong now = new AtomicLong();
@@ -94,6 +96,58 @@ class DekCacheTest {
         assertTrue(c.takeForEncrypt(K2).isPresent());
         assertArrayEquals(new byte[32], held);
         assertEquals(1, c.evictions(DekCache.Cause.CAPACITY));
+    }
+
+    /**
+     * #192: a read touches its own slot only, and leaves another tenant's aged-out key for that
+     * tenant's next touch. A guard for the slot index, which must not start age-checking the
+     * slots it no longer walks.
+     */
+    @Test
+    void aReadTouchesOnlyItsOwnSlot() {
+        DekCache c = cache(100, 1_000, 10);
+        c.load(OTHER, ID, () -> key(9)).join();
+        byte[] other = c.heldArray(OTHER);
+        now.set(50);
+        c.load(K1, ID, () -> key(1)).join();
+        now.set(120);
+        assertEquals(1, c.candidates(SLOT).size());
+        assertEquals(0, c.evictions(DekCache.Cause.AGE), "the read reached another slot");
+        assertArrayEquals(key(9), other);
+    }
+
+    /**
+     * #192: a read walks its own slot's live keys and nothing else: not another slot's 64, and
+     * not a key its slot has evicted.
+     */
+    @Test
+    void aReadWalksOnlyItsOwnSlotsLiveKeys() {
+        DekCache c = cache(1_000, 1_000, 100);
+        c.load(K1, ID, () -> key(1)).join();
+        c.load(K2, ID, () -> key(2)).join();
+        for (int i = 0; i < 64; i++) {
+            c.load(new DekCache.Key(OTHER.slot(), "v" + i), ID, () -> key(9)).join();
+        }
+        c.candidates(SLOT);
+        assertEquals(2, c.lastWalked(), "a read walked other slots");
+        c.retain(SLOT, java.util.Set.of("02"));
+        c.candidates(SLOT);
+        assertEquals(1, c.lastWalked(), "an evicted key stayed in its slot's index");
+    }
+
+    /**
+     * #192: a read is a use for recency, though not for the use budget. Before the slot index,
+     * a key that only ever decrypted kept its place and was the first to go at capacity.
+     */
+    @Test
+    void aReadKeepsItsKeysRecentlyUsed() {
+        DekCache c = cache(1_000, 1_000, 2);
+        c.load(K1, ID, () -> key(1)).join();
+        c.load(OTHER, ID, () -> key(9)).join();
+        c.candidates(SLOT);
+        c.load(new DekCache.Key(OTHER.slot(), "03"), ID, () -> key(3)).join();
+        assertEquals(1, c.evictions(DekCache.Cause.CAPACITY));
+        assertEquals(1, c.candidates(SLOT).size(), "the key just read was evicted first");
     }
 
     @Test

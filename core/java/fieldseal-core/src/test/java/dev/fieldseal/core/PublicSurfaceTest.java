@@ -37,9 +37,19 @@ class PublicSurfaceTest {
     @Test
     void theBuildersPublicMethodsTakeNoEntropy() {
         assertEquals(new TreeSet<>(Set.of("allowedSuites(Set)", "armProvisionalSuites(boolean)",
-                "build()", "cachePolicy(CachePolicy)", "keyProvider(KeyProvider)",
-                "onWarning(Consumer)", "readMode(ReadMode)", "writeSuite(int)")),
+                "build()", "keyProvider(KeyProvider)", "onWarning(Consumer)",
+                "readMode(ReadMode)", "writeSuite(int)")),
                 signatures(Fieldseal.Builder.class));
+    }
+
+    /** #192 item 3: the envelope provider takes its cache policy and warm executor itself. */
+    @Test
+    void theShippedProvidersAreExactlyThese() {
+        assertEquals(new TreeSet<>(Set.of("derived(byte[])",
+                "envelope(Wrapper,WrappedKeyStore,CachePolicy)",
+                "envelope(Wrapper,WrappedKeyStore,CachePolicy,Executor)",
+                "staticKeys(byte[],byte[],byte[])")),
+                signatures(KeyProviders.class));
     }
 
     private static Set<String> signatures(Class<?> c) {

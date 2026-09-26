@@ -116,23 +116,26 @@ core/java/
 - `module-info.java` exports the three public packages, plus one qualified export (`exports … to dev.fieldseal.core.testing`) for the test seam, and nothing else.
 - `docs/09` §1's dependency rule is enforced by an ArchUnit test in CI, not by prose: `internal/*` may depend only on `registry` and `errors`, and `keyprovider` and `cache` only on `errors`.
 - The construction lives behind the `commitment` and `aead` module boundaries, so a Gate 0b change to G1 or ADR-0002 touches one module (`docs/26` §6).
-- **The three shipped providers are built in the api package, not in `keyprovider`** (decided 2026-09-25, `docs/07` §7). The derived provider needs `kdf` and the envelope provider needs `cache`, and `keyprovider` may reach `errors` only, so `keyprovider` holds the SPI and `KeyProviders` in the api package assembles the three. `docs/09` §1 and the ArchUnit rules are unchanged. The builder's validation lives in the api package for the same reason, which leaves `internal/config/` empty.
+- **The three shipped providers are built in the api package, not in `keyprovider`** (decided 2026-09-25, `docs/07` §7). The derived provider needs `kdf` and the envelope provider needs `cache`, and `keyprovider` may reach `errors` only, so `keyprovider` holds the SPI and `KeyProviders` in the api package assembles the three. `docs/09` §1 and the ArchUnit rules are unchanged. The builder's validation lives in the api package for the same reason, which leaves `internal/config/` empty. **The envelope provider is bound to a cache of its own when it is made** ([#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192), `docs/07` §7, revising the 2026-09-25 decision that a client binds it): `KeyProviders.envelope` takes the `CachePolicy`, and an optional warm `Executor`, and returns a provider that works whether a client or the caller calls it. Every client built with one provider shares its cache, which is what `docs/09` §8.3 describes: the cache is keyed by provider scope, not by client, so the per-client cache this replaces was the deviation. Sharing has three consequences: each key is unwrapped once; a key's max-uses budget counts every client's encryptions; and capacity is shared, so one client's warms can evict another client's keys, which then fail closed until warmed again. Clients that share a provider but serve different tenants need a `capacity` sized for all of those tenants together; `docs/09` §10's readonly-analytics-beside-strict-serving case is the likely one. A client that needs its own cache is built with a provider of its own. The refusal for an evicted key says that eviction is one of its causes.
 
 ## 4. Public API shape
 
 Bytes in, bytes out:
 
 ```java
+KeyProvider keys = KeyProviders.envelope(wrapper, store,   // or staticKeys / derived / your own
+    new CachePolicy(                          // required: the provider's own DEK cache
+        Duration.ofMinutes(10),               // max age
+        1L << 20,                             // max uses: long, since spec §5.5 allows up to 2^32
+        10_000));                             // capacity
+    // optional 4th argument: the Executor warm runs on; default: 4 shared daemon threads
+
 Fieldseal fs = Fieldseal.builder()
-    .keyProvider(KeyProviders.envelope(wrapper, store))   // required; or staticKeys / derived / your own
+    .keyProvider(keys)                        // required; every client built with keys shares its cache
     .allowedSuites(Set.of(0xFF01))            // required, non-empty
     .writeSuite(0xFF01)                       // required, member of allowedSuites
     .readMode(ReadMode.STRICT)                // STRICT | PERMISSIVE | READONLY
     .armProvisionalSuites(false)              // spec §4.8; also env FIELDSEAL_ARM_PROVISIONAL_SUITES=1
-    .cachePolicy(new CachePolicy(             // required with the envelope provider, refused otherwise
-        Duration.ofMinutes(10),               // max age
-        1L << 20,                             // max uses: long, since spec §5.5 allows up to 2^32
-        10_000))                              // capacity
     .onWarning(log::warn)                     // default: System.Logger at WARNING
     .indexes(List.of(new IndexDeclaration(...)))   // S5
     .build();                                 // validates everything; immutable afterwards
@@ -206,7 +209,7 @@ Decisions:
   - `SecretKeySpec` copies the key it is given;
   - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach;
   - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2);
-  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b; narrowing it is part of [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)).
+  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b). [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)'s slot index does not narrow them: it stops a decrypt from walking other tenants' entries, but a decrypt still receives one copy per fresh version in its own slot, as before. Narrowing them is [#200](https://github.com/fieldseal-dev/fieldseal-spec/issues/200).
 - `pinned_decisions.key-material-ownership` lists the steps performed, the provider carve-out, and a clause saying none of this is guaranteed (spec §5.5).
 - **No `mlock` and no swap protection:** a documented deviation, worded as `docs/10` and `docs/11` word theirs.
 
@@ -215,6 +218,8 @@ Decisions:
 - **CSPRNG:** one `new SecureRandom()` per client (it is thread-safe), never `getInstanceStrong()`.
 - **Fork-safety** does not apply: a JVM is not `fork()`ed while it is running.
 - **`warm`:** single-flight refresh, so N concurrent misses cause one unwrap per key (`docs/09` §8.3). Built at S4b as `ConcurrentHashMap.putIfAbsent` of a future that concurrent loads join, with the unwrap outside the cache's lock; a failed load leaves nothing behind.
+- **The value path's lock.** The `DekCache` has one lock, and its entries are indexed by slot, so `encryptionKey` and `decryptionKeys` hold it for their own slot's versions only, never for a walk of the whole cache ([#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)). The lock is still one for the whole cache, so tenants take turns for it: this is short of `docs/09` §8.3's "lock-free or fine-grained-locked reads", a recorded deviation until a striped or lock-free cache replaces it. Unwraps already run outside it, so no read waits on a KMS call. A read counts no use, but marks the keys it returns recently used, so a key that only decrypts is not the first evicted at capacity. Before #192 a read walked every entry in order, which left the order unchanged. That lengthens how long a key that is only read stays cached, which is the direction §5.4 is about: it now leaves at max-age, or when colder keys are gone, rather than first. Max-age still bounds it, because a read checks age before it returns a key.
+- **Where `warm` blocks.** The envelope provider's `warm` calls the key store and the KMS, which block, so it runs them on the executor passed to `KeyProviders.envelope` ([#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)). By default that is a pool of four daemon threads named `fieldseal-warm-N`, each gone after a minute idle. Four is fixed rather than the common pool's CPU count minus one: a `warm` waits on the KMS, not the CPU, and a documented bound should not vary by machine. That is more concurrency than before on one or two CPUs and less on many. A `warm` beyond the four waits its turn and is never refused. The threads do not inherit the calling thread's inheritable thread-locals, so a request's context is not handed to a `Wrapper`. It is never the ForkJoin common pool: that pool's threads belong to the application's other async work, and on two CPUs or fewer `CompletableFuture` uses a new thread per task instead of it. **The pool is shared by every envelope provider in the process**, the one process-wide object in this core whose contents change. `docs/09` §10's "no global mutable state" is there so that clients with different configurations coexist, and the pool holds no provider's or client's state or configuration, so they still do. What they now share is one thread budget: one provider's burst of warms delays another's. A caller who needs a bound of their own, or isolation, passes an executor to `KeyProviders.envelope`; a same-thread executor makes `warm` block its caller. A `warm` still loads its slots one after another; loading them in parallel is a separate change. An executor that rejects the task fails `warm`'s future.
 
 ## 6. Buffer limits and the report contract
 
@@ -374,7 +379,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
   - **`keyprovider`:** the SPI (`KeyProvider`, `KeyRequest`, `EnvelopeHeader`, `KeyMaterial`, `Wrapper`, `WrappedKeyStore`). **api:** `Fieldseal` with its builder, `FieldContext`, `CachePolicy`, and `KeyProviders` with the static, derived and envelope providers (§3, §4). **`cache`:** `DekCache`, with max-age, max-uses as a `long`, capacity LRU, erasure on eviction and single-flight loads.
   - **Exit tests:** `KeyMaterialOwnershipTest` (provider arrays byte-identical after every operation and failure path; every derived `record_key` zeroed) and `ApiBoundaryOrderTest` (each pair's precedence observed, and whether the provider was reached). `SeamWiringTest` is the wiring test's provider half (§6.2). `PublicSurfaceTest` pins the client's public methods, so a nonce or seed parameter cannot appear unnoticed (§7).
   - **Vectors through the client** (`ClientVectorsTest`): every `errors/` vector but the two `blind_index` ones (S5), that is 41, 12 and 14 of `format`, `crypto` and `policy`, and `envelope/` decrypted. `CodecVectorsTest` keeps its restatement until S6.
-  - **Bite checks:** `core/java/scripts/bite_checks.py` holds every S4a, S4b and review mutation. It runs each target test green first as a control, counts a mutation as biting only when Gradle reports failing tests, and restores every file. On the final S4b head, 37 mutations bite and the one below changes nothing, as stated.
+  - **Bite checks:** `core/java/scripts/bite_checks.py` holds every S4a, S4b and review mutation. It runs each target test green first as a control, counts a mutation as biting only when Gradle reports failing tests, and restores every file. On the final S4b head, 37 mutations bite and the one below changes nothing, as stated. Later changes add their own entries, and each PR states the count on its head; the script's output is the live count, one `RED (bites)` line per mutation and test task, so a mutation that names two tasks prints two.
   - **Not testable yet:** that `decrypt` takes the context's `suite_id` from the header and not from `writeSuite` (`docs/09` §3.2 step 4). With `0xFF01` the only suite this core can be configured with, the two are always equal; the mutation was run and changes no outcome. It becomes testable when a second suite is built.
 
 **S5 — Blind indexes and normalizers.**

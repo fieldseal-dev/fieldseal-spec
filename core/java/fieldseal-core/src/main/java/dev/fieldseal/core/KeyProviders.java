@@ -1,7 +1,7 @@
 package dev.fieldseal.core;
 
 import dev.fieldseal.core.errors.ConfigurationError;
-import dev.fieldseal.core.errors.KeyUnavailableError;
+import dev.fieldseal.core.internal.cache.DekCache;
 import dev.fieldseal.core.internal.kdf.Hkdf;
 import dev.fieldseal.core.keyprovider.EnvelopeHeader;
 import dev.fieldseal.core.keyprovider.KeyMaterial;
@@ -12,7 +12,8 @@ import dev.fieldseal.core.keyprovider.Wrapper;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.function.LongSupplier;
 
 /**
  * The three key providers spec §8 requires every implementation to ship (docs/09 §8.2).
@@ -20,7 +21,9 @@ import java.util.concurrent.CompletableFuture;
  * <p>They are built here, in the api package, rather than in {@code keyprovider}: docs/09 §1 lets
  * {@code keyprovider} depend on {@code errors} only, and the derived provider needs {@code kdf}
  * while the envelope provider needs {@code cache}. The api package may depend on everything, so it
- * assembles them, and {@code keyprovider} keeps the SPI (docs/07 §7, 2026-09-25).
+ * assembles them, and {@code keyprovider} keeps the SPI (docs/07 §7, 2026-09-25). The envelope
+ * provider is built bound to a cache of its own (#192, which revised the 2026-09-25 decision to
+ * bind it per client).
  *
  * <p>Each returns a fresh copy of its key material on every call (docs/09 §8.1).
  */
@@ -57,10 +60,11 @@ public final class KeyProviders {
 
     /**
      * KMS-wrapped keys, the production path (spec §8). {@code store} lists each tenant's
-     * wrapped keys and {@code wrapper} unwraps them, both from {@code warm} only. The value path
-     * reads the client's DEK cache and never waits on the KMS: a key that was not warmed, or has
-     * aged out or used up its budget, is {@code KEY_UNAVAILABLE} until the next {@code warm}.
-     * That is the fail-closed degradation mode (spec §8.1).
+     * wrapped keys and {@code wrapper} unwraps them, both from {@code warm} only, on the shared
+     * default warm pool. The value path reads this provider's DEK cache, built from {@code policy},
+     * and never waits on the KMS: a key that was not warmed, or has aged out or used up its budget,
+     * is {@code KEY_UNAVAILABLE} until the next {@code warm}. That is the fail-closed degradation
+     * mode (spec §8.1).
      *
      * <p>Each {@code warm} of a slot refreshes every version the store lists, evicts the versions it
      * no longer lists, and makes the first listed version active for writes, in that order and only
@@ -68,15 +72,57 @@ public final class KeyProviders {
      * and a version dropped from the store stops decrypting at the next successful warm of its
      * slot.
      *
-     * <p>The provider this returns is unbound. A client built with it, and with a {@link
-     * CachePolicy}, binds it to a cache of its own; called directly, it serves nothing.
+     * <p><b>The cache belongs to the provider</b> (#192). Every client built with this provider
+     * shares it, as docs/09 §8.3 keys the cache by provider scope: a key is unwrapped once
+     * however many clients use it, its max-uses budget counts every client's encryptions, and its
+     * capacity is shared too, so one client's warms can evict another client's keys. Size {@code
+     * capacity} for every tenant the sharing clients serve. A client that needs a cache of its own
+     * is built with a provider of its own. Called directly, the provider works as it does inside a
+     * client.
+     *
+     * @throws ConfigurationError if any argument is null: the cache limits are security parameters
+     *     with no default (spec §5.5)
      */
-    public static KeyProvider envelope(Wrapper wrapper, WrappedKeyStore store) {
+    public static KeyProvider envelope(Wrapper wrapper, WrappedKeyStore store, CachePolicy policy) {
+        return envelopeWithClock(wrapper, store, policy, EnvelopeProvider.WARM_POOL,
+                System::nanoTime);
+    }
+
+    /**
+     * {@link #envelope(Wrapper, WrappedKeyStore, CachePolicy)}, with {@code warm}'s key-store and
+     * KMS calls, which block, run on {@code warmExecutor} rather than the shared default pool of
+     * four daemon threads. Pass one to size it or to isolate this provider. A same-thread executor
+     * ({@code Runnable::run}) makes {@code warm} block its caller until the keys are loaded; its
+     * failures still arrive through the returned future. Null is refused rather than taken as the
+     * default: a null executor is more likely a caller's bug than a request for the shared pool.
+     *
+     * @throws ConfigurationError if any argument is null
+     */
+    public static KeyProvider envelope(Wrapper wrapper, WrappedKeyStore store, CachePolicy policy,
+            Executor warmExecutor) {
+        return envelopeWithClock(wrapper, store, policy, warmExecutor, System::nanoTime);
+    }
+
+    /** Test seam: the cache's clock. */
+    static KeyProvider envelopeWithClock(Wrapper wrapper, WrappedKeyStore store,
+            CachePolicy policy, Executor warmExecutor, LongSupplier nanoClock) {
         if (wrapper == null || store == null) {
             throw new ConfigurationError("the envelope provider needs a Wrapper and a"
                     + " WrappedKeyStore");
         }
-        return new EnvelopeProvider.Unbound(wrapper, store);
+        if (policy == null) {
+            throw new ConfigurationError("the envelope provider needs a CachePolicy: max-age,"
+                    + " max-uses and capacity are security parameters with no default (spec §5.5)");
+        }
+        if (warmExecutor == null) {
+            throw new ConfigurationError("the envelope provider's warmExecutor may not be null;"
+                    + " use the three-argument envelope() for the default");
+        }
+        if (nanoClock == null) {
+            throw new ConfigurationError("the envelope provider's cache needs a clock");
+        }
+        return new EnvelopeProvider(wrapper, store, new DekCache(policy.toLimits(), nanoClock),
+                warmExecutor);
     }
 
     static final class StaticProvider implements KeyProvider {
@@ -160,18 +206,5 @@ public final class KeyProviders {
 
     private static byte[] ascii(String s) {
         return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    /** Used only by the unbound envelope provider's refusal. */
-    static KeyUnavailableError unbound() {
-        return new KeyUnavailableError("this is the unbound envelope provider that"
-                + " KeyProviders.envelope returns: it serves no keys itself. A Fieldseal client built"
-                + " with it holds its own bound copy and cache; call that client's warm() and"
-                + " operations instead");
-    }
-
-    /** The unbound provider's {@code warm}: nothing to warm into. */
-    static CompletableFuture<Void> failed(RuntimeException e) {
-        return CompletableFuture.failedFuture(e);
     }
 }
