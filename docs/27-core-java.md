@@ -206,7 +206,7 @@ Decisions:
   - `SecretKeySpec` copies the key it is given;
   - `Cipher` and `Mac` internals, JIT register spills and GC compaction can leave copies the core cannot reach;
   - BouncyCastle's Argon2 takes one more copy of the salt on every call and never erases it (found at S2, §2);
-  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b; narrowing it is part of [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)).
+  - the DEK copies a provider returns on every call: one per `encryptionKey`, and one per cached version on every `decryptionKeys`. They are the provider's (`docs/09` §8.1), so the core may not erase them, and the envelope provider's are fresh copies that nothing erases. Their fate is the garbage collector's (S4b). [#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)'s slot index does not narrow them: it stops a decrypt from walking other tenants' entries, but a decrypt still receives one copy per fresh version in its own slot, as before.
 - `pinned_decisions.key-material-ownership` lists the steps performed, the provider carve-out, and a clause saying none of this is guaranteed (spec §5.5).
 - **No `mlock` and no swap protection:** a documented deviation, worded as `docs/10` and `docs/11` word theirs.
 
@@ -215,6 +215,7 @@ Decisions:
 - **CSPRNG:** one `new SecureRandom()` per client (it is thread-safe), never `getInstanceStrong()`.
 - **Fork-safety** does not apply: a JVM is not `fork()`ed while it is running.
 - **`warm`:** single-flight refresh, so N concurrent misses cause one unwrap per key (`docs/09` §8.3). Built at S4b as `ConcurrentHashMap.putIfAbsent` of a future that concurrent loads join, with the unwrap outside the cache's lock; a failed load leaves nothing behind.
+- **The value path's lock.** The `DekCache` has one lock, and its entries are indexed by slot, so `encryptionKey` and `decryptionKeys` hold it for their own slot's versions only, never for a walk of the whole cache ([#192](https://github.com/fieldseal-dev/fieldseal-spec/issues/192)). The lock is still one for the whole cache, so tenants take turns for it: this is short of `docs/09` §8.3's "lock-free or fine-grained-locked reads", a recorded deviation until a striped or lock-free cache replaces it. Unwraps already run outside it, so no read waits on a KMS call. A read counts no use, but marks the keys it returns recently used, so a key that only decrypts is not the first evicted at capacity. Before #192 a read walked every entry in order, which left the order unchanged.
 
 ## 6. Buffer limits and the report contract
 

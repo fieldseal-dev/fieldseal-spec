@@ -158,8 +158,8 @@ MUTATIONS = [
      "            if (e.uses >= limits.maxUses()) {", "            if (e.uses > limits.maxUses()) {",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: eviction does not erase", I / "cache/DekCache.java",
-     "        if (e != null) {\n            Arrays.fill(e.key, (byte) 0);\n            evictions",
-     "        if (e != null) {\n            evictions",
+     "            Arrays.fill(e.key, (byte) 0);\n            evictions",
+     "            evictions",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: no single-flight", I / "cache/DekCache.java",
      "        CompletableFuture<Void> running = inFlight.putIfAbsent(key, mine);",
@@ -206,6 +206,24 @@ MUTATIONS = [
     ("review client: allowedSuites copied with Set.copyOf", M / "Fieldseal.java",
      "new java.util.HashSet<>(suites);", "Set.copyOf(suites);",
      [CORE + "*FieldsealTest"], "red"),
+
+    # ---- #192: the cache indexed by slot ---------------------------------------------------
+    ("192 cache: a read walks every slot, as before the index", I / "cache/DekCache.java",
+     "            for (Key k : keysOf(slot)) {\n                Entry e = entries.get(k);\n"
+     "                if (fresh(k, e)) {",
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                Entry e = entries.get(k);\n"
+     "                if (k.slot().equals(slot) && fresh(k, e)) {",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: a read age-checks other slots", I / "cache/DekCache.java",
+     "            for (Key k : keysOf(slot)) {\n                Entry e = entries.get(k);",
+     "            for (Key o : List.copyOf(entries.keySet())) {\n"
+     "                fresh(o, entries.get(o));\n            }\n"
+     "            for (Key k : keysOf(slot)) {\n                Entry e = entries.get(k);",
+     [CORE + "*DekCacheTest"], "red"),
+    ("192 cache: eviction leaves the key in its slot's index", I / "cache/DekCache.java",
+     "            keys.remove(key);\n", "",
+     [CORE + "*DekCacheTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2
