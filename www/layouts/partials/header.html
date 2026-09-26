@@ -1,7 +1,12 @@
 <header class="site-header">
   <div class="wrap">
     <a class="brand" href="{{ "/" | relURL }}">
-      <span class="brand-mark" aria-hidden="true"></span>
+      {{/* The generated mark (tools/brand/), recoloured to follow --accent in both themes. */}}
+      {{ $mark := readFile "static/brand/fieldseal-mark.svg" }}
+      {{ $mark = replace $mark "<svg " `<svg class="brand-mark" aria-hidden="true" focusable="false" ` }}
+      {{ $mark = replace $mark `fill="#1f5fa8"` `fill="currentColor"` }}
+      {{ if not (strings.Contains $mark "currentColor") }}{{ errorf "header.html: the mark's fill is no longer #1f5fa8; update the replace above" }}{{ end }}
+      {{ $mark | safeHTML }}
       <span>{{ site.Title }}</span>
     </a>
     <nav aria-label="Main">

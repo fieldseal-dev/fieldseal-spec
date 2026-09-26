@@ -68,6 +68,8 @@ tools/
                           project publish as experimental pre-1.0 releases; publishes nothing
   figures/                extracts the static SVGs in docs/figures/ from Archify-rendered
                           diagrams; the JSON sources sit beside the SVGs
+  brand/                  generates the logo mark, favicons and touch icon in
+                          www/static/ from one geometry; never hand-edit those files
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
   backfill/               resumable migration tooling (placeholder)
 bench/                    published benchmarks and migration cost model
