@@ -240,6 +240,20 @@ MUTATIONS = [
      "            if (keys != null && keys.remove(key) && keys.isEmpty()) {",
      "            if (false) {",
      [CORE + "*DekCacheTest"], "red"),
+    # ---- #192: warm's executor -------------------------------------------------------------
+    ("192 warm: runs on the common pool, whatever the builder gave", M / "EnvelopeProvider.java",
+     "        }, warmExecutor);", "        });",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: the default pool's threads keep the JVM alive", M / "EnvelopeProvider.java",
+     "            t.setDaemon(true);", "            t.setDaemon(false);",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 builder: warmExecutor accepted with another provider", M / "Fieldseal.java",
+     "            } else if (warmExecutorSet) {", "            } else if (false) {",
+     [CORE + "*FieldsealTest"], "red"),
+    ("192 builder: a null warmExecutor accepted", M / "Fieldseal.java",
+     "                if (warmExecutorSet && warmExecutor == null) {",
+     "                if (false) {",
+     [CORE + "*FieldsealTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2

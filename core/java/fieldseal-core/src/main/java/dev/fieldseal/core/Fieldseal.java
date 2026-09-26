@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -407,6 +408,8 @@ public final class Fieldseal {
         private ReadMode readMode = ReadMode.STRICT;
         private boolean armProvisionalSuites;
         private CachePolicy cachePolicy;
+        private Executor warmExecutor;
+        private boolean warmExecutorSet;
         private Consumer<String> onWarning;
         private Function<String, String> environment = System::getenv;
         private RecordKeys recordKeys = KeyDerivation::recordKey;
@@ -453,6 +456,19 @@ public final class Fieldseal {
         /** Required with {@link KeyProviders#envelope}, refused with any other provider. */
         public Builder cachePolicy(CachePolicy policy) {
             this.cachePolicy = policy;
+            return this;
+        }
+
+        /**
+         * Where the envelope provider's {@link Fieldseal#warm} runs its key-store and KMS calls,
+         * which block (#192). Refused with any other provider, and refused if null. By default,
+         * daemon threads named {@code fieldseal-warm-N}, one per {@code warm} in progress, that
+         * exit when idle: never the ForkJoin common pool, whose threads the application's other
+         * async work needs.
+         */
+        public Builder warmExecutor(Executor executor) {
+            this.warmExecutor = executor;
+            this.warmExecutorSet = true;
             return this;
         }
 
@@ -514,10 +530,17 @@ public final class Fieldseal {
                             + " max-age, max-uses and capacity are security parameters with no"
                             + " default (spec §5.5)");
                 }
+                if (warmExecutorSet && warmExecutor == null) {
+                    throw new ConfigurationError("warmExecutor may not be null; leave it unset"
+                            + " for the default");
+                }
                 bound = new EnvelopeProvider(spec, new DekCache(cachePolicy.toLimits(),
-                        nanoClock));
+                        nanoClock), warmExecutorSet ? warmExecutor : EnvelopeProvider.WARM_POOL);
             } else if (cachePolicy != null) {
                 throw new ConfigurationError("cachePolicy applies to the envelope key provider"
+                        + " only; this provider would ignore it");
+            } else if (warmExecutorSet) {
+                throw new ConfigurationError("warmExecutor applies to the envelope key provider"
                         + " only; this provider would ignore it");
             }
 

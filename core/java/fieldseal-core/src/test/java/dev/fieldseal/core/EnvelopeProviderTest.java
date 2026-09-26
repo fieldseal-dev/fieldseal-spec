@@ -169,4 +169,53 @@ class EnvelopeProviderTest {
                 new dev.fieldseal.core.keyprovider.KeyRequest(Fixtures.TABLE, Fixtures.COLUMN,
                         null, null, "encrypt")));
     }
+
+    /** #192: {@code warm} runs its key-store and KMS calls on the executor the builder gives. */
+    @Test
+    void warmRunsOnTheGivenExecutor() {
+        var tasks = new java.util.concurrent.atomic.AtomicInteger();
+        Fieldseal fs = builder(KeyProviders.envelope(kms, store))
+                .cachePolicy(new CachePolicy(Duration.ofMinutes(5), 1000, 100))
+                .warmExecutor(r -> {
+                    tasks.incrementAndGet();
+                    r.run();
+                }).build();
+        fs.warm(List.of(ctx())).join();
+        assertEquals(1, tasks.get());
+        assertEquals(1, store.lookups.get());
+    }
+
+    /**
+     * #192: by default {@code warm} blocks on the KMS on a daemon thread of its own, not on the
+     * ForkJoin common pool, whose threads the application's other async work needs.
+     */
+    @Test
+    void warmDefaultsToADedicatedDaemonThread() {
+        java.util.concurrent.atomic.AtomicReference<Thread> ran =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Fieldseal fs = builder(KeyProviders.envelope(kms, r -> {
+            ran.set(Thread.currentThread());
+            return store.keys(r);
+        })).cachePolicy(new CachePolicy(Duration.ofMinutes(5), 1000, 100)).build();
+        fs.warm(List.of(ctx())).join();
+        Thread t = ran.get();
+        assertTrue(!(t instanceof java.util.concurrent.ForkJoinWorkerThread), t.getName());
+        assertTrue(t.isDaemon(), t.getName() + " would keep the JVM from exiting");
+        assertTrue(t.getName().startsWith("fieldseal-warm"), t.getName());
+    }
+
+    /** An executor that refuses the task fails {@code warm}'s future; {@code warm} never throws. */
+    @Test
+    void aRejectingExecutorFailsTheFuture() {
+        Fieldseal fs = builder(KeyProviders.envelope(kms, store))
+                .cachePolicy(new CachePolicy(Duration.ofMinutes(5), 1000, 100))
+                .warmExecutor(r -> {
+                    throw new java.util.concurrent.RejectedExecutionException("full");
+                }).build();
+        var f = fs.warm(List.of(ctx()));
+        CompletionException e = assertThrows(CompletionException.class, f::join);
+        assertTrue(e.getCause() instanceof java.util.concurrent.RejectedExecutionException,
+                "" + e.getCause());
+        assertEquals(0, store.lookups.get());
+    }
 }
