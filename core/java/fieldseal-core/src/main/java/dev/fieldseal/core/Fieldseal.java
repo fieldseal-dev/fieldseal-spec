@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -407,6 +408,8 @@ public final class Fieldseal {
         private ReadMode readMode = ReadMode.STRICT;
         private boolean armProvisionalSuites;
         private CachePolicy cachePolicy;
+        private Executor warmExecutor;
+        private boolean warmExecutorSet;
         private Consumer<String> onWarning;
         private Function<String, String> environment = System::getenv;
         private RecordKeys recordKeys = KeyDerivation::recordKey;
@@ -453,6 +456,25 @@ public final class Fieldseal {
         /** Required with {@link KeyProviders#envelope}, refused with any other provider. */
         public Builder cachePolicy(CachePolicy policy) {
             this.cachePolicy = policy;
+            return this;
+        }
+
+        /**
+         * Where the envelope provider's {@link Fieldseal#warm} runs its key-store and KMS calls,
+         * which block (#192). Refused with any other provider. By default, a pool of four daemon
+         * threads named {@code fieldseal-warm-N}, shared by every client in the process, where a
+         * warm beyond the four waits its turn: never the ForkJoin common pool, whose threads the
+         * application's other async work needs. Pass your own to size it or to isolate a client.
+         *
+         * <p>A same-thread executor ({@code Runnable::run}) makes {@code warm} block the caller
+         * until the keys are loaded. Its failures still arrive through the returned future.
+         *
+         * <p>Unlike {@link #onWarning}, null is refused rather than taken as the default: a null
+         * executor is more likely a caller's bug than a request for the shared pool.
+         */
+        public Builder warmExecutor(Executor executor) {
+            this.warmExecutor = executor;
+            this.warmExecutorSet = true;
             return this;
         }
 
@@ -514,10 +536,17 @@ public final class Fieldseal {
                             + " max-age, max-uses and capacity are security parameters with no"
                             + " default (spec §5.5)");
                 }
+                if (warmExecutorSet && warmExecutor == null) {
+                    throw new ConfigurationError("warmExecutor may not be null; leave it unset"
+                            + " for the default");
+                }
                 bound = new EnvelopeProvider(spec, new DekCache(cachePolicy.toLimits(),
-                        nanoClock));
+                        nanoClock), warmExecutorSet ? warmExecutor : EnvelopeProvider.WARM_POOL);
             } else if (cachePolicy != null) {
                 throw new ConfigurationError("cachePolicy applies to the envelope key provider"
+                        + " only; this provider would ignore it");
+            } else if (warmExecutorSet) {
+                throw new ConfigurationError("warmExecutor applies to the envelope key provider"
                         + " only; this provider would ignore it");
             }
 

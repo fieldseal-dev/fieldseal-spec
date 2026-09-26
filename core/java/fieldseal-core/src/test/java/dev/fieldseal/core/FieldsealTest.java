@@ -164,7 +164,11 @@ class FieldsealTest {
                 builder(p).writeSuite(0x0001),
                 builder(p).readMode(null),
                 builder(p).cachePolicy(new CachePolicy(java.time.Duration.ofMinutes(1), 10, 10)),
-                builder(KeyProviders.envelope(new Wrappers.Identity(), r -> List.of())));
+                builder(KeyProviders.envelope(new Wrappers.Identity(), r -> List.of())),
+                builder(p).warmExecutor(Runnable::run),
+                builder(KeyProviders.envelope(new Wrappers.Identity(), r -> List.of()))
+                        .cachePolicy(new CachePolicy(java.time.Duration.ofMinutes(1), 10, 10))
+                        .warmExecutor(null));
         for (Fieldseal.Builder b : bad) {
             assertThrows(ConfigurationError.class, b::build);
         }

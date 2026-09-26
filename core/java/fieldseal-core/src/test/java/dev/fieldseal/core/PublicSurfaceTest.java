@@ -38,7 +38,8 @@ class PublicSurfaceTest {
     void theBuildersPublicMethodsTakeNoEntropy() {
         assertEquals(new TreeSet<>(Set.of("allowedSuites(Set)", "armProvisionalSuites(boolean)",
                 "build()", "cachePolicy(CachePolicy)", "keyProvider(KeyProvider)",
-                "onWarning(Consumer)", "readMode(ReadMode)", "writeSuite(int)")),
+                "onWarning(Consumer)", "readMode(ReadMode)", "warmExecutor(Executor)",
+                "writeSuite(int)")),
                 signatures(Fieldseal.Builder.class));
     }
 

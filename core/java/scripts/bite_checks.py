@@ -240,6 +240,34 @@ MUTATIONS = [
      "            if (keys != null && keys.remove(key) && keys.isEmpty()) {",
      "            if (false) {",
      [CORE + "*DekCacheTest"], "red"),
+    # ---- #192: warm's executor -------------------------------------------------------------
+    ("192 warm: runs on the common pool, whatever the builder gave", M / "EnvelopeProvider.java",
+     "        }, warmExecutor);", "        });",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: the default pool's threads keep the JVM alive", M / "EnvelopeProvider.java",
+     "Thread.ofPlatform().daemon().name(", "Thread.ofPlatform().daemon(false).name(",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: the default pool unbounded (review of #199)", M / "EnvelopeProvider.java",
+     "WARM_THREADS, WARM_THREADS,\n"
+     "                1, TimeUnit.MINUTES, new LinkedBlockingQueue<>(),",
+     "WARM_THREADS, Integer.MAX_VALUE,\n"
+     "                1, TimeUnit.MINUTES, new java.util.concurrent.SynchronousQueue<>(),",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: a default pool per client (review of #199)", M / "Fieldseal.java",
+     "warmExecutorSet ? warmExecutor : EnvelopeProvider.WARM_POOL);",
+     "warmExecutorSet ? warmExecutor : EnvelopeProvider.warmPool());",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 warm: threads inherit the caller's thread-locals (review of #199)",
+     M / "EnvelopeProvider.java",
+     ".inheritInheritableThreadLocals(false)", ".inheritInheritableThreadLocals(true)",
+     [CORE + "*EnvelopeProviderTest"], "red"),
+    ("192 builder: warmExecutor accepted with another provider", M / "Fieldseal.java",
+     "            } else if (warmExecutorSet) {", "            } else if (false) {",
+     [CORE + "*FieldsealTest"], "red"),
+    ("192 builder: a null warmExecutor accepted", M / "Fieldseal.java",
+     "                if (warmExecutorSet && warmExecutor == null) {",
+     "                if (false) {",
+     [CORE + "*FieldsealTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2
@@ -272,6 +300,7 @@ def main():
             sys.exit(3)
 
     as_expected = True
+    tally = {"bite": 0, "not as expected": 0, "none, as stated": 0}
     for name, path, old, new, tasks, expect in chosen:
         src = path.read_text(encoding="utf-8")
         if src.count(old) != 1:
@@ -287,12 +316,19 @@ def main():
             for t, v in zip(tasks, verdicts):
                 label = {RED: "RED (bites)", GREEN: "GREEN (DOES NOT BITE)", BROKEN: "BROKEN"}[v]
                 print(f"{label:22} {name} :: {t}", flush=True)
-            as_expected &= all(v == RED for v in verdicts)
+            bit = all(v == RED for v in verdicts)
+            tally["bite" if bit else "not as expected"] += 1
+            as_expected &= bit
         else:
             ok = all(v == GREEN for v in verdicts)
             print(f"{'no bite, as stated' if ok else f'NOT AS STATED {verdicts}':22} {name}",
                   flush=True)
+            tally["none, as stated" if ok else "not as expected"] += 1
             as_expected &= ok
+    anchors = len(chosen) - sum(tally.values())
+    print(f"{len(chosen)} mutations: {tally['bite']} bite, {tally['none, as stated']} change"
+          f" nothing as stated, {tally['not as expected']} not as expected, {anchors} anchors"
+          " moved. RED lines above are one per mutation and test task.")
     print("every file restored")
     sys.exit(0 if as_expected else 1)
 
