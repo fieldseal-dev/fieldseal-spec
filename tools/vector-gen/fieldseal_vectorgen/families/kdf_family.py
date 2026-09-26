@@ -97,8 +97,8 @@ def _index_vector(slug: str, description: str, ctx: FieldContext,
     `row_id` as the caller gave it: §7.2 drops `row_id` inside the derivation,
     and `expected.info` is the context after that drop. Carrying the dropped
     context instead left `row-id-dropped` with no `row_id` to drop (#191)."""
-    caller = replace(ctx, purpose=f"index:{index_id}")
-    ictx = caller.for_index(index_id)
+    ictx = ctx.for_index(index_id)
+    caller = replace(ctx, purpose=ictx.purpose)
     ik = index_key(I.TENANT_INDEX_KEY, caller, index_id)
     vec = {
         "id": f"kdf/index-key/{slug}",
