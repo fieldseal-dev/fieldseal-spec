@@ -117,7 +117,7 @@ The specification requires every implementation to state these.
 - **Argon2id blind indexes cost roughly 10–100 ms per lookup term.** That is a product constraint, not tuning.
 - **Database query logs are sensitive.** Index values and envelopes that reach them are in scope for your threat model.
 - **The JVM's array limit.** A Java `byte[]` holds at most 2³¹−3 bytes on HotSpot, so the largest plaintext this core can encrypt is 2,147,483,534 bytes, a little under the specification's 2³¹−1 bound. Values that large indicate a design problem anyway.
-- **`warm` blocks on the key service, on the core's own threads.** By default four daemon threads shared by every client in the process: one client's burst of warms delays another's. Pass `warmExecutor` to size the pool or isolate a client.
+- **`warm` blocks on the key service, on the core's own threads.** By default four daemon threads shared by every envelope provider in the process: one provider's burst of warms delays another's. Pass an executor to `KeyProviders.envelope` to size the pool or isolate a provider.
 - **Best-effort erasure only.** The core overwrites the keys it derives, but the JVM can leave copies it cannot reach (JIT, garbage collection, the JDK's own cipher objects).
 
 ## Learn more

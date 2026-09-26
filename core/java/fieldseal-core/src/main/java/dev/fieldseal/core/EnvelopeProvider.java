@@ -21,47 +21,31 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The envelope provider bound to one client's {@link DekCache} (docs/09 §8.2). The value path
+ * The envelope provider, bound to a {@link DekCache} of its own when {@link KeyProviders#envelope}
+ * makes it (docs/09 §8.2; #192); every client built with it shares that cache. The value path
  * reads the cache and nothing else; {@link #warm} is the only place {@link WrappedKeyStore} and
  * {@link Wrapper} are called.
  */
 final class EnvelopeProvider implements KeyProvider {
 
-    /** What {@link KeyProviders#envelope} returns: a description, until a client binds it. */
-    record Unbound(Wrapper wrapper, WrappedKeyStore store) implements KeyProvider {
-        @Override
-        public KeyMaterial encryptionKey(KeyRequest request) {
-            throw KeyProviders.unbound();
-        }
-
-        @Override
-        public List<byte[]> decryptionKeys(EnvelopeHeader header) {
-            throw KeyProviders.unbound();
-        }
-
-        @Override
-        public CompletableFuture<Void> warm(Collection<KeyRequest> requests) {
-            return KeyProviders.failed(KeyProviders.unbound());
-        }
-    }
-
     /**
      * The default warm pool's bound (review of #199). Fixed, not the common pool's CPU count minus
      * one: a warm waits on the KMS, not the CPU, and a documented number should not depend on the
      * machine. It raises concurrency on one or two CPUs and lowers it on many; a caller who needs
-     * more passes a {@code warmExecutor}.
+     * more passes a warm executor to {@link KeyProviders#envelope}.
      */
     static final int WARM_THREADS = 4;
 
     /**
      * The default for {@code warm} (#192): at most {@value #WARM_THREADS} threads, shared by every
-     * client in the process, so clients share one thread budget and a warm beyond it waits its
-     * turn; it is never refused. Daemon threads, so an application need not shut the pool down,
-     * and each exits after a minute idle. They do not inherit the creating thread's inheritable
-     * thread-locals, so a request's context is not handed to a {@code Wrapper} that did not ask
-     * for it. Not the ForkJoin common pool, whose threads the application's other async work
-     * needs (on two CPUs or fewer, {@code CompletableFuture} skips that pool and starts a thread
-     * per task). The pool holds no client's state or configuration (docs/09 §10; docs/27 §5.5).
+     * envelope provider in the process, so they share one thread budget and a warm beyond it waits
+     * its turn; it is never refused. Daemon threads, so an application need not shut the pool
+     * down, and each exits after a minute idle. They do not inherit the creating thread's
+     * inheritable thread-locals, so a request's context is not handed to a {@code Wrapper} that
+     * did not ask for it. Not the ForkJoin common pool, whose threads the application's other async
+     * work needs (on two CPUs or fewer, {@code CompletableFuture} skips that pool and starts a
+     * thread per task). The pool holds no provider's or client's state or configuration (docs/09
+     * §10; docs/27 §5.5).
      */
     static final Executor WARM_POOL = warmPool();
 
@@ -85,9 +69,10 @@ final class EnvelopeProvider implements KeyProvider {
     /** Per slot, the version {@code warm} last found active-for-write. */
     private final Map<DekCache.Slot, String> active = new ConcurrentHashMap<>();
 
-    EnvelopeProvider(Unbound spec, DekCache cache, Executor warmExecutor) {
-        this.wrapper = spec.wrapper();
-        this.store = spec.store();
+    EnvelopeProvider(Wrapper wrapper, WrappedKeyStore store, DekCache cache,
+            Executor warmExecutor) {
+        this.wrapper = wrapper;
+        this.store = store;
         this.cache = cache;
         this.warmExecutor = warmExecutor;
     }
@@ -107,8 +92,10 @@ final class EnvelopeProvider implements KeyProvider {
                     + "; the envelope provider fails closed on a cache miss (spec §8.1)");
         }
         byte[][] hit = cache.takeForEncrypt(new DekCache.Key(slot, version)).orElseThrow(
-                () -> new KeyUnavailableError("the cached key for " + request + " has aged out"
-                        + " or used up its budget; warm it again (spec §5.5, §8.1)"));
+                () -> new KeyUnavailableError("the cached key for " + request + " is gone: it"
+                        + " aged out, used up its budget, or was evicted to make room for other"
+                        + " keys, which every client sharing this provider's cache can cause;"
+                        + " warm it again (spec §5.5, §8.1)"));
         return new KeyMaterial(hit[0], hit[1]);
     }
 
@@ -144,12 +131,19 @@ final class EnvelopeProvider implements KeyProvider {
      */
     @Override
     public CompletableFuture<Void> warm(Collection<KeyRequest> requests) {
-        List<KeyRequest> todo = List.copyOf(requests);
-        return CompletableFuture.runAsync(() -> {
-            for (KeyRequest r : todo) {
-                warmSlot(r);
-            }
-        }, warmExecutor);
+        try {
+            List<KeyRequest> todo = List.copyOf(requests);
+            return CompletableFuture.runAsync(() -> {
+                for (KeyRequest r : todo) {
+                    warmSlot(r);
+                }
+            }, warmExecutor);
+        } catch (Throwable t) {
+            // Throwable, as in DekCache.load: called directly rather than through a client, an
+            // executor that rejects the task or throws an Error, or a null collection, still
+            // fails the future rather than throwing.
+            return CompletableFuture.failedFuture(t);
+        }
     }
 
     private void warmSlot(KeyRequest r) {

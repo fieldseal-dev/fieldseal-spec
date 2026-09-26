@@ -11,7 +11,6 @@ import dev.fieldseal.core.errors.SuiteProvisionalError;
 import dev.fieldseal.core.errors.TagInvalidError;
 import dev.fieldseal.core.errors.UnknownFormatVersionError;
 import dev.fieldseal.core.internal.aead.Aead;
-import dev.fieldseal.core.internal.cache.DekCache;
 import dev.fieldseal.core.internal.commitment.Commitment;
 import dev.fieldseal.core.internal.context.CanonicalContext;
 import dev.fieldseal.core.internal.context.ContextFields;
@@ -39,10 +38,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.LongSupplier;
 
 /**
  * The Fieldseal client (docs/09 §2; docs/27 §4): one immutable, validated configuration, and the
@@ -407,13 +404,9 @@ public final class Fieldseal {
         private Integer writeSuite;
         private ReadMode readMode = ReadMode.STRICT;
         private boolean armProvisionalSuites;
-        private CachePolicy cachePolicy;
-        private Executor warmExecutor;
-        private boolean warmExecutorSet;
         private Consumer<String> onWarning;
         private Function<String, String> environment = System::getenv;
         private RecordKeys recordKeys = KeyDerivation::recordKey;
-        private LongSupplier nanoClock = System::nanoTime;
 
         private Builder() {}
 
@@ -453,31 +446,6 @@ public final class Fieldseal {
             return this;
         }
 
-        /** Required with {@link KeyProviders#envelope}, refused with any other provider. */
-        public Builder cachePolicy(CachePolicy policy) {
-            this.cachePolicy = policy;
-            return this;
-        }
-
-        /**
-         * Where the envelope provider's {@link Fieldseal#warm} runs its key-store and KMS calls,
-         * which block (#192). Refused with any other provider. By default, a pool of four daemon
-         * threads named {@code fieldseal-warm-N}, shared by every client in the process, where a
-         * warm beyond the four waits its turn: never the ForkJoin common pool, whose threads the
-         * application's other async work needs. Pass your own to size it or to isolate a client.
-         *
-         * <p>A same-thread executor ({@code Runnable::run}) makes {@code warm} block the caller
-         * until the keys are loaded. Its failures still arrive through the returned future.
-         *
-         * <p>Unlike {@link #onWarning}, null is refused rather than taken as the default: a null
-         * executor is more likely a caller's bug than a request for the shared pool.
-         */
-        public Builder warmExecutor(Executor executor) {
-            this.warmExecutor = executor;
-            this.warmExecutorSet = true;
-            return this;
-        }
-
         /**
          * Where warnings go (docs/09 §2): a permissive or readonly client, and the static provider
          * outside test configuration. By default, {@link System.Logger} at {@code WARNING}.
@@ -496,12 +464,6 @@ public final class Fieldseal {
         /** Test seam: how record keys are derived, so a test can see them erased. */
         Builder recordKeys(RecordKeys derive) {
             this.recordKeys = derive;
-            return this;
-        }
-
-        /** Test seam: the cache's clock. */
-        Builder nanoClock(LongSupplier clock) {
-            this.nanoClock = clock;
             return this;
         }
 
@@ -529,27 +491,6 @@ public final class Fieldseal {
             }
             Suite write = Registry.lookup(writeSuite).orElseThrow();
 
-            KeyProvider bound = keyProvider;
-            if (keyProvider instanceof EnvelopeProvider.Unbound spec) {
-                if (cachePolicy == null) {
-                    throw new ConfigurationError("the envelope key provider needs a cachePolicy:"
-                            + " max-age, max-uses and capacity are security parameters with no"
-                            + " default (spec §5.5)");
-                }
-                if (warmExecutorSet && warmExecutor == null) {
-                    throw new ConfigurationError("warmExecutor may not be null; leave it unset"
-                            + " for the default");
-                }
-                bound = new EnvelopeProvider(spec, new DekCache(cachePolicy.toLimits(),
-                        nanoClock), warmExecutorSet ? warmExecutor : EnvelopeProvider.WARM_POOL);
-            } else if (cachePolicy != null) {
-                throw new ConfigurationError("cachePolicy applies to the envelope key provider"
-                        + " only; this provider would ignore it");
-            } else if (warmExecutorSet) {
-                throw new ConfigurationError("warmExecutor applies to the envelope key provider"
-                        + " only; this provider would ignore it");
-            }
-
             boolean armed = armProvisionalSuites
                     || "1".equals(environment.apply(SuiteProvisionalError.ARMING_VARIABLE));
 
@@ -564,7 +505,7 @@ public final class Fieldseal {
                 warn.accept("Fieldseal client using the static key provider outside test"
                         + " configuration: it is for tests and development only (spec §8)");
             }
-            return new Fieldseal(this, bound, write, allow, armed);
+            return new Fieldseal(this, keyProvider, write, allow, armed);
         }
 
         /** The {@code unimplemented-registered-suite} pin: refused, naming G7. */
