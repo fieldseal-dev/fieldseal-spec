@@ -209,32 +209,32 @@ MUTATIONS = [
 
     # ---- #192: the cache indexed by slot ---------------------------------------------------
     ("192 cache: the pre-index read (every slot walked, no recency)", I / "cache/DekCache.java",
-     "            List<Key> keys = keysOf(slot);\n"
-     "            lastWalked = keys.size();\n"
-     "            for (Key k : keys) {\n"
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
      "                Entry e = entries.get(k);\n",
-     "            List<Key> keys = List.copyOf(entries.keySet());\n"
-     "            lastWalked = keys.size();\n"
-     "            for (Key k : keys) {\n"
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
      "                Entry e = entries.get(k);\n"
      "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n",
      [CORE + "*DekCacheTest"], "red"),
     ("192 cache: every slot walked, recency kept (review of #198)", I / "cache/DekCache.java",
-     "            List<Key> keys = keysOf(slot);\n"
-     "            lastWalked = keys.size();\n"
-     "            for (Key k : keys) {\n"
+     "            lastWalked = 0;\n"
+     "            for (Key k : keysOf(slot)) {\n"
+     "                lastWalked++;\n"
      "                Entry e = entries.get(k);\n",
-     "            List<Key> keys = List.copyOf(entries.keySet());\n"
-     "            lastWalked = keys.size();\n"
-     "            for (Key k : keys) {\n"
+     "            lastWalked = 0;\n"
+     "            for (Key k : List.copyOf(entries.keySet())) {\n"
+     "                lastWalked++;\n"
      "                if (!k.slot().equals(slot)) {\n                    continue;\n                }\n"
      "                Entry e = entries.get(k);\n",
      [CORE + "*DekCacheTest"], "red"),
     ("192 cache: a read age-checks other slots", I / "cache/DekCache.java",
-     "            List<Key> keys = keysOf(slot);\n",
+     "            lastWalked = 0;\n",
      "            for (Key o : List.copyOf(entries.keySet())) {\n"
      "                fresh(o, entries.get(o));\n            }\n"
-     "            List<Key> keys = keysOf(slot);\n",
+     "            lastWalked = 0;\n",
      [CORE + "*DekCacheTest"], "red"),
     ("192 cache: eviction leaves the key in its slot's index", I / "cache/DekCache.java",
      "            if (keys != null && keys.remove(key) && keys.isEmpty()) {",

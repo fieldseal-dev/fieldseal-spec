@@ -161,9 +161,9 @@ public final class DekCache {
     public Map<String, byte[]> candidates(Slot slot) {
         Map<String, byte[]> out = new LinkedHashMap<>();
         synchronized (entries) {
-            List<Key> keys = keysOf(slot);
-            lastWalked = keys.size();
-            for (Key k : keys) {
+            lastWalked = 0;
+            for (Key k : keysOf(slot)) {
+                lastWalked++;
                 Entry e = entries.get(k);
                 if (e != null && fresh(k, e)) {
                     out.put(k.version(), e.key.clone());
