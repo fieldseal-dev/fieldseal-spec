@@ -5,6 +5,11 @@
 [![npm: @fieldseal/core](https://img.shields.io/npm/v/%40fieldseal%2Fcore?label=npm%20%40fieldseal%2Fcore)](https://www.npmjs.com/package/@fieldseal/core)
 [![npm: @fieldseal/prisma](https://img.shields.io/npm/v/%40fieldseal%2Fprisma?label=npm%20%40fieldseal%2Fprisma)](https://www.npmjs.com/package/@fieldseal/prisma)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="www/static/brand/fieldseal-mark-dark.svg">
+  <img src="www/static/brand/fieldseal-mark.svg" alt="" width="72" height="72">
+</picture>
+
 # Fieldseal
 
 **A portable format for field-level encryption at rest, with reference implementations that prove it in CI.**
