@@ -194,6 +194,74 @@ class EnvelopeProviderTest {
         assertEquals(unwraps, kms.unwraps.get());
     }
 
+    private static FieldContext tenant(String t) {
+        return FieldContext.of(Fixtures.TABLE, Fixtures.COLUMN)
+                .withTenant(t.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+    }
+
+    /** Review of #201: a key's max-uses budget counts every client's encryptions. */
+    @Test
+    void clientsSharingAProviderShareEachKeysUseBudget() {
+        var keys = KeyProviders.envelope(kms, store,
+                new CachePolicy(Duration.ofMinutes(5), 1, 100));
+        Fieldseal a = builder(keys).build();
+        Fieldseal b = builder(keys).build();
+        a.warm(List.of(ctx())).join();
+        a.encrypt(PT, ctx());
+        assertThrows(KeyUnavailableError.class, () -> b.encrypt(PT, ctx()), "a spent it");
+    }
+
+    /** Review of #201: a client built with a provider of its own does not see another's warm. */
+    @Test
+    void aClientWithItsOwnProviderSeesNoOtherWarm() {
+        Fieldseal a = builder(KeyProviders.envelope(kms, store, POLICY)).build();
+        Fieldseal b = builder(KeyProviders.envelope(kms, store, POLICY)).build();
+        a.warm(List.of(ctx())).join();
+        assertThrows(KeyUnavailableError.class, () -> b.encrypt(PT, ctx()));
+    }
+
+    /**
+     * Review of #201: in a shared cache, one client's warms can evict another's keys at capacity,
+     * and the refusal says so rather than blaming age or uses.
+     */
+    @Test
+    void anotherClientsWarmsCanEvictAKeyAndTheRefusalSaysSo() {
+        var keys = KeyProviders.envelope(kms, store,
+                new CachePolicy(Duration.ofMinutes(5), 1000, 2));
+        Fieldseal a = builder(keys).build();
+        Fieldseal b = builder(keys).build();
+        a.warm(List.of(tenant("t1"))).join();
+        a.encrypt(PT, tenant("t1"));
+        b.warm(List.of(tenant("t2"))).join();
+        var e = assertThrows(KeyUnavailableError.class, () -> a.encrypt(PT, tenant("t1")));
+        assertTrue(String.valueOf(e.getMessage()).contains("evicted"), e.getMessage());
+    }
+
+    /** Review of #201: called directly, warm fails its future for an Error or a null collection. */
+    @Test
+    void aDirectWarmNeverThrows() {
+        var request = new dev.fieldseal.core.keyprovider.KeyRequest(Fixtures.TABLE,
+                Fixtures.COLUMN, null, null, "encrypt");
+        var erroring = KeyProviders.envelope(kms, store, POLICY, r -> {
+            throw new StackOverflowError("simulated");
+        });
+        var f = erroring.warm(List.of(request));
+        CompletionException e = assertThrows(CompletionException.class, f::join);
+        assertTrue(e.getCause() instanceof StackOverflowError, "" + e.getCause());
+        var keys = KeyProviders.envelope(kms, store, POLICY);
+        assertThrows(CompletionException.class, () -> keys.warm(null).join());
+    }
+
+    /** Review of #201: the seam every envelope provider is built through checks what it needs. */
+    @Test
+    void theEnvelopeSeamRefusesANullExecutorOrClock() {
+        assertThrows(dev.fieldseal.core.errors.ConfigurationError.class,
+                () -> KeyProviders.envelopeWithClock(kms, store, POLICY, null, now::get));
+        assertThrows(dev.fieldseal.core.errors.ConfigurationError.class,
+                () -> KeyProviders.envelopeWithClock(kms, store, POLICY,
+                        EnvelopeProvider.WARM_POOL, null));
+    }
+
     @Test
     void theEnvelopeFactoryRefusesMissingParts() {
         List<org.junit.jupiter.api.function.Executable> bad = List.of(
@@ -206,7 +274,7 @@ class EnvelopeProviderTest {
         }
     }
 
-    /** #192: {@code warm} runs its key-store and KMS calls on the executor the builder gives. */
+    /** #192: {@code warm} runs its key-store and KMS calls on the executor it is given. */
     @Test
     void warmRunsOnTheGivenExecutor() {
         var tasks = new java.util.concurrent.atomic.AtomicInteger();
@@ -256,12 +324,12 @@ class EnvelopeProviderTest {
     }
 
     /**
-     * Review of #199: the default pool is bounded, and every client shares its bound. Two clients
-     * start twice the bound's worth of warms against a store that blocks; no more than the bound
+     * Review of #199: the default pool is bounded, and every envelope provider shares its bound.
+     * Two clients, each with a provider of its own, start twice the bound's worth of warms against a store that blocks; no more than the bound
      * are ever inside it at once.
      */
     @Test
-    void theDefaultPoolIsBoundedAndSharedByEveryClient() throws Exception {
+    void theDefaultPoolIsBoundedAndSharedByEveryProvider() throws Exception {
         int bound = EnvelopeProvider.WARM_THREADS;
         var release = new java.util.concurrent.CountDownLatch(1);
         var inside = new java.util.concurrent.atomic.AtomicInteger();

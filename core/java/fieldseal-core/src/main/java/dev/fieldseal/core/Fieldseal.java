@@ -446,8 +446,6 @@ public final class Fieldseal {
             return this;
         }
 
-
-
         /**
          * Where warnings go (docs/09 §2): a permissive or readonly client, and the static provider
          * outside test configuration. By default, {@link System.Logger} at {@code WARNING}.
@@ -468,7 +466,6 @@ public final class Fieldseal {
             this.recordKeys = derive;
             return this;
         }
-
 
         /** @throws ConfigurationError on the first setting that fails validation */
         public Fieldseal build() {

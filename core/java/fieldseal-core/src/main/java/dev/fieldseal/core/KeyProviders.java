@@ -73,10 +73,12 @@ public final class KeyProviders {
      * slot.
      *
      * <p><b>The cache belongs to the provider</b> (#192). Every client built with this provider
-     * shares it, so a key is unwrapped once however many clients use it, and its max-uses budget
-     * counts every client's encryptions, since the budget is the key's (spec §5.5). A client that
-     * needs a cache of its own is built with a provider of its own. Called directly, the provider
-     * works as it does inside a client.
+     * shares it, as docs/09 §8.3 keys the cache by provider scope: a key is unwrapped once
+     * however many clients use it, its max-uses budget counts every client's encryptions, and its
+     * capacity is shared too, so one client's warms can evict another client's keys. Size {@code
+     * capacity} for every tenant the sharing clients serve. A client that needs a cache of its own
+     * is built with a provider of its own. Called directly, the provider works as it does inside a
+     * client.
      *
      * @throws ConfigurationError if any argument is null: the cache limits are security parameters
      *     with no default (spec §5.5)
@@ -98,10 +100,6 @@ public final class KeyProviders {
      */
     public static KeyProvider envelope(Wrapper wrapper, WrappedKeyStore store, CachePolicy policy,
             Executor warmExecutor) {
-        if (warmExecutor == null) {
-            throw new ConfigurationError("the envelope provider's warmExecutor may not be null;"
-                    + " use the three-argument envelope() for the default");
-        }
         return envelopeWithClock(wrapper, store, policy, warmExecutor, System::nanoTime);
     }
 
@@ -115,6 +113,13 @@ public final class KeyProviders {
         if (policy == null) {
             throw new ConfigurationError("the envelope provider needs a CachePolicy: max-age,"
                     + " max-uses and capacity are security parameters with no default (spec §5.5)");
+        }
+        if (warmExecutor == null) {
+            throw new ConfigurationError("the envelope provider's warmExecutor may not be null;"
+                    + " use the three-argument envelope() for the default");
+        }
+        if (nanoClock == null) {
+            throw new ConfigurationError("the envelope provider's cache needs a clock");
         }
         return new EnvelopeProvider(wrapper, store, new DekCache(policy.toLimits(), nanoClock),
                 warmExecutor);

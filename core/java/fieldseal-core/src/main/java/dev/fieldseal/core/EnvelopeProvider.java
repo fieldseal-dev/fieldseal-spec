@@ -92,8 +92,10 @@ final class EnvelopeProvider implements KeyProvider {
                     + "; the envelope provider fails closed on a cache miss (spec §8.1)");
         }
         byte[][] hit = cache.takeForEncrypt(new DekCache.Key(slot, version)).orElseThrow(
-                () -> new KeyUnavailableError("the cached key for " + request + " has aged out"
-                        + " or used up its budget; warm it again (spec §5.5, §8.1)"));
+                () -> new KeyUnavailableError("the cached key for " + request + " is gone: it"
+                        + " aged out, used up its budget, or was evicted to make room for other"
+                        + " keys, which every client sharing this provider's cache can cause;"
+                        + " warm it again (spec §5.5, §8.1)"));
         return new KeyMaterial(hit[0], hit[1]);
     }
 
@@ -136,10 +138,11 @@ final class EnvelopeProvider implements KeyProvider {
                     warmSlot(r);
                 }
             }, warmExecutor);
-        } catch (RuntimeException e) {
-            // Called directly rather than through a client: a rejecting executor, or a null
-            // collection, still fails the future rather than throwing.
-            return CompletableFuture.failedFuture(e);
+        } catch (Throwable t) {
+            // Throwable, as in DekCache.load: called directly rather than through a client, an
+            // executor that rejects the task or throws an Error, or a null collection, still
+            // fails the future rather than throwing.
+            return CompletableFuture.failedFuture(t);
         }
     }
 
