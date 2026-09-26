@@ -387,6 +387,29 @@ def test_bytes_in_equals_text_in_for_the_text_normalizer():
             == fs.blind_index("alice@example.com", ctx))
 
 
+def test_blind_index_drops_the_callers_row_id():
+    """Spec §7.2: one value has one index key across rows. The client drops
+    row_id before key acquisition as well as inside the derivation; the
+    derivation's drop masks a missing client drop in the output, so the
+    provider's view is what observes it (#191 review)."""
+    seen = []
+
+    class _Recording(StaticKeyProvider):
+        def encryption_key(self, ctx):
+            seen.append(ctx)
+            return super().encryption_key(ctx)
+
+    fs = _client(provider=_Recording(KEY_ID, DEK, INDEX_KEY), indexes=[_decl()])
+    rowless = CTX.for_index("email-eq")
+    with_row = FieldContext(table_uuid=rowless.table_uuid,
+                            column_uuid=rowless.column_uuid,
+                            purpose=rowless.purpose,
+                            tenant_id=rowless.tenant_id, row_id=b"row-42")
+    assert (fs.blind_index("alice@example.com", with_row)
+            == fs.blind_index("alice@example.com", rowless))
+    assert seen and all(c.row_id is None for c in seen)
+
+
 def test_invalid_utf8_is_refused_not_folded():
     """Replacement characters would map distinct invalid inputs onto one index
     value (docs/18 D-10(d))."""

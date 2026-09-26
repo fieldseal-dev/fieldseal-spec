@@ -97,9 +97,9 @@ def _index_vector(slug: str, description: str, ctx: FieldContext,
     `row_id` as the caller gave it: §7.2 drops `row_id` inside the derivation,
     and `expected.info` is the context after that drop. Carrying the dropped
     context instead left `row-id-dropped` with no `row_id` to drop (#191)."""
-    ictx = ctx.for_index(index_id)
-    caller = replace(ctx, purpose=ictx.purpose)
-    ik = index_key(I.TENANT_INDEX_KEY, ctx, index_id)
+    caller = replace(ctx, purpose=f"index:{index_id}")
+    ictx = caller.for_index(index_id)
+    ik = index_key(I.TENANT_INDEX_KEY, caller, index_id)
     vec = {
         "id": f"kdf/index-key/{slug}",
         "description": description,
@@ -162,7 +162,6 @@ def generate_index_key() -> dict:
     assert (vectors[3]["expected"]["index_key"]
             == vectors[0]["expected"]["index_key"])
     vectors[3]["same_as"] = vectors[0]["id"]
-    _assert_same_as_inputs_differ(vectors)
 
     # §7.2: two indexes MUST NOT share a key. Inputs carried (docs/18 D-08).
     ctx = _ctx()
@@ -184,4 +183,5 @@ def generate_index_key() -> dict:
         "expected": {"key_a": a.hex(), "key_b": b.hex(),
                      "must_be_equal": False},
     })
+    _assert_same_as_inputs_differ(vectors)
     return wrapper("kdf", vectors)
