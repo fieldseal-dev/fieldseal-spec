@@ -372,7 +372,7 @@ The corollary for providers is worth stating, because it is where the cost lands
 **What sharing one provider means (normative consequences, not choices).** The key carries the tenant scope, but the capacity LRU is **one queue over the whole cache**, not one per tenant. So for the clients built from a single provider:
 
 - a key is unwrapped **once**, whichever client first needs it;
-- a key's `max_uses` budget is spent by **every** client's returns of that key, not one client's;
+- a DEK entry's `max_uses` budget is **shared**: every client's returns of that key spend one budget, not one each (which returns count as uses is §8.3's own business, and is the same for every client);
 - `capacity` is **one budget covering every tenant the sharing clients serve**, so one client's warms can evict a key that another client — serving a tenant it has nothing to do with — is relying on. The evicted key then fails closed with `KEY_UNAVAILABLE` until it is warmed again, and the refusal should say that eviction is one of its causes. Size `capacity` for the sum over tenants, or give tenants separate providers, where that coupling is not wanted;
 - the client's own immutability is unaffected — this is about who shares the cache, not about what a client can change.
 
