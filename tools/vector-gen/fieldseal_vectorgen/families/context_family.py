@@ -3,6 +3,7 @@ boundary lengths of docs/08 §4.3, and the lengths G14 is about."""
 
 from __future__ import annotations
 
+from .. import declaration
 from .. import inputs as I
 from ..context import FieldContext, canonical_context
 from ._common import ctx_json, suite_str, wrapper
@@ -107,4 +108,48 @@ def generate() -> dict:
         },
         "provisional_on": ["G4"],
     })
+    vectors += declaration_vectors()
     return wrapper("context", vectors)
+
+
+# Spec §12 and docs/08 §4.3 (G11, #210): index declarations whose identifier
+# breaks the §6.1 grammar are refused when declared. Each is otherwise valid
+# (P = 2^20, b = 16 sits inside the §7.4 band and clears the §7.6 gate), so
+# the identifier is the only thing wrong. The 32-character twin is accepted:
+# without it, a core that refused every declaration would pass all four.
+_DECL_P, _DECL_B = 1 << 20, 16
+IDENTIFIER_CASES = [
+    ("index-id-uppercase", "Exact",
+     "index:Exact -- uppercase is outside [a-z0-9-]"),
+    ("index-id-non-ascii", "é",
+     "index:é -- U+00E9, two UTF-8 bytes C3 A9, outside the ASCII "
+     "grammar"),
+    ("index-id-empty", "",
+     "index: -- the grammar requires at least one character"),
+    ("index-id-33-bytes", "a" * 33,
+     "a 33-byte identifier -- one past the grammar's 32-byte maximum"),
+]
+
+
+def declaration_vectors() -> list[dict]:
+    out = []
+    for slug, index_id, why in IDENTIFIER_CASES:
+        out.append(declaration.vector(
+            f"context/canonical/{slug}",
+            f"index declaration refused at declaration time: {why} "
+            "(configuration refusal, no §9 code)",
+            "§6.1, §7.2, §12",
+            declaration.Declaration(index_id=index_id,
+                                    projected_population=_DECL_P,
+                                    truncate_bits=_DECL_B),
+            "refused", "§6.1 index-id"))
+    out.append(declaration.vector(
+        "context/canonical/index-id-32-bytes-accepted",
+        "index declaration with a 32-byte identifier, the grammar's maximum, "
+        "is accepted -- the positive twin of index-id-33-bytes",
+        "§6.1, §7.2",
+        declaration.Declaration(index_id=MAX_INDEX_ID,
+                                projected_population=_DECL_P,
+                                truncate_bits=_DECL_B),
+        "accepted", None))
+    return out
