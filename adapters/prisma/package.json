@@ -50,7 +50,21 @@
     "@fieldseal/core are its published operations plus warm(), and the only",
     "reason any cipher exists in this tree is transitively, through the core.",
     "A direct crypto dependency here is a conformance failure, not a style",
-    "question -- CI asserts it rather than trusting review."
+    "question -- CI asserts it rather than trusting review.",
+    "",
+    "overrides: the prisma CLI (7.9.1, 7.10.0) pins mysql2 3.15.3 exactly,",
+    "which has GHSA-3f6p-5ww8-9rcr (auth downgrade to mysql_clear_password).",
+    "It was never reachable here: no schema in this repository uses a MySQL",
+    "datasource.",
+    "mysql2 is dev-only in this package. npm honours `overrides` in the root",
+    "project only, so this field constrains nothing for anyone who installs",
+    "@fieldseal/prisma, although release staging copies it into the",
+    "published package.json, where it is inert.",
+    "The override is a floor on an unexercised dependency, not a tested",
+    "configuration -- nothing in CI runs MySQL, so the 3.15.3 -> 3.24.4 jump",
+    "is untested. Drop it when prisma stops depending on mysql2 (8.x already",
+    "has) or pins a mysql2 at or above 3.22.0. CI asserts the floor in both",
+    "lockfiles (conformance.yml, prisma-adapter job)."
   ],
   "dependencies": {
     "@fieldseal/core": "file:../../core/typescript"
@@ -68,6 +82,9 @@
     "prisma": "7.10.0",
     "typescript": "~5.9.3",
     "vitest": "^4.0.0"
+  },
+  "overrides": {
+    "mysql2": "^3.22.0"
   },
   "publishConfig": {
     "access": "public"

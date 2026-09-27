@@ -28,7 +28,24 @@
     "version the adapter is verified against. The adapter's peer range is",
     ">=7.10.0 <8 and npm auto-installs peers, so an unpinned demo would drift",
     "off it silently -- and the `prisma` CLI's `latest` tag currently points",
-    "at an 8.0.0-rc."
+    "at an 8.0.0-rc.",
+    "",
+    "overrides: the prisma CLI (7.9.1, 7.10.0) pins mysql2 3.15.3 exactly,",
+    "which has GHSA-3f6p-5ww8-9rcr (auth downgrade to mysql_clear_password).",
+    "It was never reachable here: no schema in this repository uses a MySQL",
+    "datasource.",
+    "mysql2 is devOptional here, not dev (@prisma/client declares prisma",
+    "as an optional peer), and the demo is private and never published.",
+    "The override is a floor on an unexercised dependency, not a tested",
+    "configuration -- nothing in CI runs MySQL, so the 3.15.3 -> 3.24.4 jump",
+    "is untested. Drop it when prisma stops depending on mysql2 (8.x already",
+    "has) or pins a mysql2 at or above 3.22.0. CI asserts the floor in both",
+    "lockfiles (conformance.yml, prisma-adapter job).",
+    "",
+    "`npm ls mysql2` here reports the adapter's linked copy as invalid: npm",
+    "checks it against prisma's exact pin without the adapter's own",
+    "override. That is noise, not a fault. Deleting either override to quiet",
+    "it reopens the alert."
   ],
   "dependencies": {
     "@fieldseal/core": "file:../../../core/typescript",
@@ -40,5 +57,8 @@
     "@types/node": "^24.3.0",
     "prisma": "7.10.0",
     "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "mysql2": "^3.22.0"
   }
 }
