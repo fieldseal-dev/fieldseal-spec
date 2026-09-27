@@ -23,8 +23,12 @@ import java.util.function.Supplier;
  *   <li><b>Three limits, all enforced:</b> max-age, max-uses (a {@code long}, at most 2³²) and
  *       capacity with least-recently-used eviction. An entry past its age or out of uses is
  *       evicted when next touched; the last permitted use evicts it immediately.
- *   <li><b>Uses are encryptions.</b> {@link #takeForEncrypt} counts one; {@link #candidates},
- *       the read path, counts none (docs/09 §8.1). Both mark a key recently used.
+ *   <li><b>Uses are encryptions.</b> {@link #takeForEncrypt} counts one for a {@link Role#DEK}
+ *       key; {@link #candidates}, the read path, counts none (docs/09 §8.1). An {@link
+ *       Role#INDEX} key has no use budget at all (docs/09 §8.3, #212): it is never AEAD key
+ *       material and draws no nonce, so spec §5.5's ceiling does not reach it. The role is read
+ *       from the key, so no caller can forget it. Max-age and capacity apply to both roles. Both
+ *       methods mark a key recently used.
  *   <li><b>One lock, held per slot's worth of work.</b> Entries are indexed by slot, so a read
  *       or a {@link #retain} touches its own slot's versions and no other tenant's (#192). The
  *       lock is still the whole cache's, so tenants still take turns for it; that falls short
@@ -135,8 +139,10 @@ public final class DekCache {
     }
 
     /**
-     * For an encryption: copies of the key and its {@code key_id}, counting one use. Empty when
-     * the key is not cached, too old, or out of uses; the last two are evicted and erased.
+     * For the value path's {@code encryption_key}: copies of the key and its {@code key_id}. A
+     * {@link Role#DEK} key counts one use, an encryption; an {@link Role#INDEX} key counts none
+     * (docs/09 §8.3). Empty when the key is not cached, too old, or, for a DEK, out of uses; the
+     * last two are evicted and erased.
      */
     public Optional<byte[][]> takeForEncrypt(Key key) {
         synchronized (entries) {
@@ -144,9 +150,8 @@ public final class DekCache {
             if (e == null || !fresh(key, e)) {
                 return Optional.empty();
             }
-            e.uses++;
             byte[][] out = {e.key.clone(), e.keyId.clone()};
-            if (e.uses >= limits.maxUses()) {
+            if (key.slot().role() == Role.DEK && ++e.uses >= limits.maxUses()) {
                 evict(key, Cause.USES);
             }
             return Optional.of(out);

@@ -76,6 +76,38 @@ class EnvelopeProviderTest {
         fs.encrypt(PT, ctx());
     }
 
+    /**
+     * #212 / #221, end to end: under maxUses = 2, a blind index derived maxUses + 1 times still
+     * finds its index key, which max-age then retires; the DEK beside it is still use-evicted.
+     */
+    @Test
+    void theIndexRoleHasNoUseBudget() {
+        Fieldseal fs = builder(KeyProviders.envelopeWithClock(kms, store,
+                new CachePolicy(Duration.ofSeconds(10), 2, 100), EnvelopeProvider.WARM_POOL,
+                now::get))
+                .indexes(List.of(IndexDeclaration.builder(Fixtures.TABLE, Fixtures.COLUMN)
+                        .indexId("email-eq").idf(IndexDeclaration.Idf.HMAC_SHA512)
+                        .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
+                        .projectedPopulation(100_000).build()))
+                .build();
+        FieldContext ix = ctx().forIndex("email-eq");
+        fs.warm(List.of(ctx())).join();
+        byte[] first = fs.blindIndex("ada@example.com", ix);
+        for (int i = 0; i < 2; i++) {
+            assertArrayEquals(first, fs.blindIndex("ada@example.com", ix),
+                    "derivation " + (i + 2));
+        }
+        fs.encrypt(PT, ctx());
+        fs.encrypt(PT, ctx());
+        assertThrows(KeyUnavailableError.class, () -> fs.encrypt(PT, ctx()),
+                "the DEK's third use");
+        assertArrayEquals(first, fs.blindIndex("ada@example.com", ix),
+                "after the DEK's use eviction");
+        now.addAndGet(Duration.ofSeconds(10).toNanos() + 1);
+        assertThrows(KeyUnavailableError.class, () -> fs.blindIndex("ada@example.com", ix),
+                "max-age still retires the index key");
+    }
+
     @Test
     void maxAgeExpires() {
         Fieldseal fs = client(1000, Duration.ofSeconds(10));

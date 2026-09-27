@@ -71,6 +71,68 @@ class DekCacheTest {
         assertTrue(c.takeForEncrypt(K1).isEmpty(), "third encryption");
     }
 
+    // --- #212 / #221: the index role has no use budget (docs/09 §8.3) ------------------------
+
+    private static final DekCache.Slot INDEX_SLOT =
+            new DekCache.Slot("s", "t", DekCache.Role.INDEX);
+    private static final DekCache.Key IX = new DekCache.Key(INDEX_SLOT, "01");
+
+    /** maxUses + 1 fetches, and the index key is still served: nothing counted them. */
+    @Test
+    void anIndexKeyIsNotUseEvicted() {
+        DekCache c = cache(1_000, 3, 10);
+        c.load(IX, ID, () -> key(9)).join();
+        for (int i = 0; i < 3 + 1; i++) {
+            int fetch = i + 1;
+            assertArrayEquals(key(9), c.takeForEncrypt(IX).orElseThrow(
+                    () -> new AssertionError("index key gone at fetch " + fetch))[0]);
+        }
+        assertEquals(0, c.evictions(DekCache.Cause.USES));
+    }
+
+    /** max-age still applies to the index role, and the cause recorded is AGE. */
+    @Test
+    void anIndexKeyStillAgesOut() {
+        DekCache c = cache(100, 3, 10);
+        c.load(IX, ID, () -> key(9)).join();
+        byte[] held = c.heldArray(IX);
+        now.set(100);
+        assertTrue(c.takeForEncrypt(IX).isPresent());
+        now.set(101);
+        assertTrue(c.takeForEncrypt(IX).isEmpty());
+        assertArrayEquals(new byte[32], held, "aged-out index key not erased");
+        assertEquals(1, c.evictions(DekCache.Cause.AGE));
+        assertEquals(0, c.evictions(DekCache.Cause.USES));
+    }
+
+    /**
+     * The DEK's budget is untouched by index traffic on the same tenant, and still ends at
+     * exactly maxUses.
+     */
+    @Test
+    void aDekIsStillUseEvictedBesideABusyIndexKey() {
+        DekCache c = cache(1_000, 2, 10);
+        c.load(K1, ID, () -> key(7)).join();
+        c.load(IX, ID, () -> key(9)).join();
+        for (int i = 0; i < 2; i++) {
+            assertTrue(c.takeForEncrypt(IX).isPresent());
+        }
+        assertTrue(c.takeForEncrypt(K1).isPresent(), "first encryption");
+        assertTrue(c.takeForEncrypt(K1).isPresent(), "second encryption");
+        assertTrue(c.takeForEncrypt(K1).isEmpty(), "third encryption: past maxUses");
+        assertEquals(1, c.evictions(DekCache.Cause.USES));
+    }
+
+    /** Capacity still applies to the index role: it is the LRU entry like any other. */
+    @Test
+    void anIndexKeyIsStillEvictedAtCapacity() {
+        DekCache c = cache(1_000, 3, 1);
+        c.load(IX, ID, () -> key(9)).join();
+        c.load(K1, ID, () -> key(7)).join();
+        assertTrue(c.takeForEncrypt(IX).isEmpty());
+        assertEquals(1, c.evictions(DekCache.Cause.CAPACITY));
+    }
+
     @Test
     void maxAgeIsInclusiveThenEvicts() {
         DekCache c = cache(100, 1_000, 10);
