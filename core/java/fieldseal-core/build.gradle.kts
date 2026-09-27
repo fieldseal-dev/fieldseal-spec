@@ -1,11 +1,15 @@
-// module dev.fieldseal.core (docs/27 §3). No runtime dependencies yet:
-// BouncyCastle arrives for Argon2id only, at S2/S5 (docs/27 §2).
+// module dev.fieldseal.core (docs/27 §3). One runtime dependency: BouncyCastle,
+// for Argon2id only (docs/27 §2), since S5.
 dependencies {
+    implementation(libs.bcprov)
+
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.archunit)
     // The codec fuzzing pass (docs/09 §4; docs/27 §7). jqwik is a JUnit Platform engine.
     testImplementation(libs.jqwik)
+    // The exhaustive oracle for the vendored Unicode tables (docs/09 §7.1 clause 3). Test-only.
+    testImplementation(libs.icu4j)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

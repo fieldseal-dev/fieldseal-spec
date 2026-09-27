@@ -1,6 +1,6 @@
 # Java Core Technical Specification
 
-**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stages S1 (scaffold and CI), S2 (capability audit) and S3 (envelope codec, registry, errors) of §8 are built, and the core itself holds no cryptographic code yet · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
+**Date:** 2026-09-22 · **Status:** Draft 1, the tech spec the Java core is built against; stages S1 to S5 of §8 are built: scaffold and CI, capability audit, envelope codec, crypto pipeline and client, and blind indexes · **Purpose:** the Java/JVM binding of [`docs/09-core-architecture.md`](09-core-architecture.md), in the shape of `docs/10` and `docs/11`. It is the first Phase 2 core (WS-I, [`docs/26-phase-2-plan.md`](26-phase-2-plan.md) §2) and the third implementation of the format. It is built under the `docs/17` isolation protocol, against the vector inputs and the specification, never against another core.
 
 **Where it came from.** This document is the JVM core design drafted and reviewed on 2026-09-19, made into a repository document when Phase 2 opened (`docs/26` §1 item 3). On the way in, it lost what was true only on the day it was drafted:
 - its premise that `docs/09` §4's buffer-maxima flag waited on this core ([#167](https://github.com/fieldseal-dev/fieldseal-spec/issues/167) and #168 turned that flag into a per-binding obligation, which §6 here discharges);
@@ -68,7 +68,7 @@ A second agent reviewed the first draft of the design against the repository and
 
 | Item | Decision | Notes |
 |---|---|---|
-| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy. Stage S4a since 2026-09-25: the crypto primitives (`context`, `kdf`, `aead`, `commitment`). Stage S4b since 2026-09-25: the key providers, the `DekCache` and the client |
+| Location | `core/java/` | Stage S1 since 2026-09-23: the Gradle scaffold, the module skeleton and the `java-core` job. Stage S2 since 2026-09-24: `CapabilitiesTest` and the `java-memory-probe` job. Stage S3 since 2026-09-24: the codec, the registry and the error taxonomy. Stage S4a since 2026-09-25: the crypto primitives (`context`, `kdf`, `aead`, `commitment`). Stage S4b since 2026-09-25: the key providers, the `DekCache` and the client. Stage S5 since 2026-09-27: blind indexes, the normalizers and the vendored Unicode tables |
 | Build | Gradle 9.x, `foojay-resolver-convention` toolchains | A pinned JDK patch; nightly legs float the latest patch (`docs/14` §5) |
 | JDK floor | **21 (LTS)** | §0.3. HKDF is written over `Mac` (§5.2); JEP 510's `javax.crypto.KDF` arrives with JDK 25 and is not used |
 | Module | `dev.fieldseal.core`, plus `dev.fieldseal.core.testing` as a separate artifact | Final names follow the governance decision on coordinates (§0.3) |
@@ -88,8 +88,9 @@ No change to the comparison or to the existing consumers is needed.
 |---|---|---|
 | AES-256-GCM, HMAC-SHA-512, constant-time compare, CSPRNG | the JDK (SunJCE, `SecureRandom`) | No third-party crypto for suite `0xFF01` apart from Argon2id |
 | HKDF-SHA-512 | written in the core over `Mac.getInstance("HmacSHA512")` | RFC 5869; about 20 lines; checked by `kdf/` (§5.2) |
-| Argon2id (spec §7.3) | `org.bouncycastle:bcprov-jdk18on` 1.86, **for Argon2id only** | SunJCE has no Argon2. BouncyCastle is pure JVM, while `argon2-jvm` goes through JNA to native code. **Confirmed at S2:** the class names (`org.bouncycastle.crypto.generators.Argon2BytesGenerator`, `org.bouncycastle.crypto.params.Argon2Parameters.Builder`), and that `withVersion(ARGON2_VERSION_13)`, `withParallelism(1)` and a 16-byte salt reproduce all 12 `raw` values in `blind-index/argon2id.json`, at both cost points it pins (t = 3 and t = 4, m = 32768). **The salt, answered:** the builder copies it (`withSalt`), `build()` copies it again, and `getSalt()` returns a copy. `Builder.clear()` and `Argon2Parameters.clear()` erase the two copies they hold, and the core is to call both (S5). A third copy, taken through `getSalt()` inside every `generateBytes` call, is never erased; that is read from the 1.86 bytecode, since no test can observe it, and §5.4 counts it. The builder also caps `m` at 2²⁴ KiB (16 GiB) through the system property `org.bouncycastle.argon2.max_memory_exp`, far above any cost spec §7.3 contemplates |
-| Tests only | JUnit 5, jqwik (property and fuzz testing), Jackson (vector JSON), ArchUnit | None of these ships in the published artifact |
+| Argon2id (spec §7.3) | `org.bouncycastle:bcprov-jdk18on` 1.86, **for Argon2id only**, the core's one runtime dependency since S5 (`requires org.bouncycastle.provider`) | SunJCE has no Argon2. BouncyCastle is pure JVM, while `argon2-jvm` goes through JNA to native code. **Confirmed at S2:** the class names (`org.bouncycastle.crypto.generators.Argon2BytesGenerator`, `org.bouncycastle.crypto.params.Argon2Parameters.Builder`), and that `withVersion(ARGON2_VERSION_13)`, `withParallelism(1)` and a 16-byte salt reproduce all 12 `raw` values in `blind-index/argon2id.json`, at both cost points it pins (t = 3 and t = 4, m = 32768). **The salt, answered:** the builder copies it (`withSalt`), `build()` copies it again, and `getSalt()` returns a copy. `Builder.clear()` and `Argon2Parameters.clear()` erase the two copies they hold, and the core is to call both (S5). A third copy, taken through `getSalt()` inside every `generateBytes` call, is never erased; that is read from the 1.86 bytecode, since no test can observe it, and §5.4 counts it. The builder also caps `m` at 2²⁴ KiB (16 GiB) through the system property `org.bouncycastle.argon2.max_memory_exp`, far above any cost spec §7.3 contemplates |
+| Unicode 17.0.0 tables (`docs/09` §7.1) | vendored: a text resource `tools/ucd-gen` generates into `internal/blindindex`, never the platform's | JDK 21's `java.text.Normalizer` is at Unicode 15.1, below the pin. The resource rather than generated source because a Java string constant is capped at 65,535 bytes and the folding table is larger; one copy per core rather than one shared, hashed resource, so that each is checked by the same `--check` (decided at S5, `docs/07` §7, 2026-09-27) |
+| Tests only | JUnit 5, jqwik (property and fuzz testing), Jackson (vector JSON), ArchUnit, ICU4J 78.3 (the Unicode 17.0.0 oracle, since S5) | None of these ships in the published artifact |
 
 ## 3. Module layout
 
@@ -98,7 +99,7 @@ Package root `dev.fieldseal.core`. The packages mirror `docs/09` §1's modules, 
 ```
 core/java/
   fieldseal-core/            module dev.fieldseal.core
-    dev/fieldseal/core/                  api: Fieldseal, FieldContext, KeyProviders, IndexDeclaration, CachePolicy, ReadMode   (exported)
+    dev/fieldseal/core/                  api: Fieldseal, FieldContext, KeyProviders, IndexDeclaration, ValidatedIndex, Unassigned, CachePolicy, ReadMode   (exported)
     dev/fieldseal/core/errors/           FieldsealError + one subclass per §9 code                              (exported)
     dev/fieldseal/core/keyprovider/      KeyProvider SPI, KeyRequest, EnvelopeHeader, KeyMaterial, Wrapper, WrappedKeyStore   (exported: callers implement the SPI)
     dev/fieldseal/core/internal/envelope/     header, parse, serialize, isCiphertext, BufferLimits, Operand (the §6.2 seam)
@@ -107,7 +108,7 @@ core/java/
     dev/fieldseal/core/internal/kdf/          HKDF, record_key, index_key
     dev/fieldseal/core/internal/aead/         0xFF01 over javax.crypto.Cipher
     dev/fieldseal/core/internal/commitment/   §4.6 compute/verify (provisional, G1)
-    dev/fieldseal/core/internal/blindindex/   IDFs, truncation, normalizers, UCD tables
+    dev/fieldseal/core/internal/blindindex/   IDFs, truncation, normalizers, UCD tables (resource ucd-17.0.0.txt)
     dev/fieldseal/core/internal/cache/        DekCache
     dev/fieldseal/core/internal/config/       (empty since S4b: the builder validates, in api)
   fieldseal-core-testing/    module dev.fieldseal.core.testing: encrypt_with_materials, armed by FIELDSEAL_TEST_MODE=1 (docs/08 §6)
@@ -137,22 +138,24 @@ Fieldseal fs = Fieldseal.builder()
     .readMode(ReadMode.STRICT)                // STRICT | PERMISSIVE | READONLY
     .armProvisionalSuites(false)              // spec §4.8; also env FIELDSEAL_ARM_PROVISIONAL_SUITES=1
     .onWarning(log::warn)                     // default: System.Logger at WARNING
-    .indexes(List.of(new IndexDeclaration(...)))   // S5
+    .indexes(List.of(IndexDeclaration.builder(table, column)...build()))
     .build();                                 // validates everything; immutable afterwards
 
-FieldContext ctx = FieldContext.of(tableUuid, columnUuid).withTenant(tenantId);   // .withRow(rowId)
+FieldContext ctx = FieldContext.of(tableUuid, columnUuid).withTenant(tenantId);   // .withRow(rowId); .forIndex(id)
 byte[]  ct  = fs.encrypt(plaintext, ctx);
 byte[]  pt  = fs.decrypt(envelope, ctx);
-byte[]  ix  = fs.blindIndex(value, ctx);      // S5: String (preferred) or byte[] (strict UTF-8)
-byte[]  mk  = fs.unindexableMarker(ctx);      // S5
+byte[]  ix  = fs.blindIndex(value, ctx.forIndex("email-eq"));   // String (preferred) or byte[] (strict UTF-8)
+byte[]  mk  = fs.unindexableMarker(ctx.forIndex("email-eq"));
 boolean ok  = fs.isCiphertext(bytes);
 byte[]  ct2 = fs.rotate(envelope, ctx);       // ciphertext to ciphertext in every mode (spec §11.1)
 CompletableFuture<Void> w = fs.warm(List.of(ctx));   // docs/09 §3.6: async where the language has it
 
 // docs/09 §2 configuration reflection: validated, resolved, not mutable
 fs.readMode(); fs.writeSuite(); fs.allowedSuites(); fs.provisionalArmed();
-Map<String, ValidatedIndex> fs.indexes();     // S5, keyed by indexRegistryKey(...)
-// + public validateIndexDeclaration, indexRegistryKey, firstUnassigned -> Unassigned, UNICODE_VERSION (docs/09 §12, G18/G22)
+Map<String, ValidatedIndex> fs.indexes();     // keyed by indexRegistryKey(...)
+// + static on Fieldseal: validateIndexDeclaration, indexRegistryKey,
+//   firstUnassigned -> Optional<Unassigned>, UNICODE_VERSION (docs/09 §12, G18/G22)
+// + IndexDeclaration.Normalizer.normalize(String | byte[]): spec §7.5's comparison (docs/09 §7)
 ```
 
 The cache values above are examples, not defaults: `CachePolicy` has none, and every limit is required (decided 2026-09-25, `docs/07` §7). Its documentation and the README describe the limits as security parameters, not performance tuning (spec §5.5).
@@ -161,7 +164,12 @@ Decisions:
 
 - **`byte[]` is the byte type** (`docs/09` §12, "idiomatic byte type"). The public value path has no `ByteBuffer`.
 - **`blindIndex` accepts `String` and `byte[]`** (`docs/09` §7.1, "where the refusal has to live"). The `byte[]` form decodes with a `CharsetDecoder` set to `CodingErrorAction.REPORT`, and a decoding failure is `INVALID_ARGUMENT`, which the `blind-index/` `refuse` vectors pin (suite `0.8.0-provisional`). `new String(bytes, UTF_8)` replaces malformed input silently and MUST NOT appear in a value path; CI greps for it.
-- **`firstUnassigned` offsets count code points, not UTF-16 units** (`docs/09` §12). This is the JVM-specific way to get it wrong, and it has an astral-plane test.
+- **`firstUnassigned` offsets count code points, not UTF-16 units** (`docs/09` §12). This is the JVM-specific way to get it wrong, and it has an astral-plane test. It reports a lone surrogate as well as an unassigned code point, since `nfc-casefold-v1` refuses both.
+- **A blind index is selected through the context, and its purpose is the core's** (S5). `FieldContext.forIndex(id)` names the index; the core looks the declaration up by `(table_uuid, column_uuid, id)` and derives under `"index:" + id` from that declaration, so a derivation string is never one a caller passed (spec §6.1). An id outside the §6.1 grammar is refused by `forIndex` itself. `encrypt`, `decrypt` and `rotate` refuse a context that names an index (`INVALID_ARGUMENT`). `indexRegistryKey` is the table and column in lowercase hex and the id, joined by `/`: a language-local key, not a portable one.
+- **Order on `blindIndex`**, as built (S5, `BlindIndexClientTest`): the value (null) → the context (null, or naming no index: `INVALID_ARGUMENT`) → the declaration (none: `ConfigurationError`, never a default IDF; `docs/09` §3.3 step 2) → key acquisition (`KEY_UNAVAILABLE`) → normalization. Neither the read mode nor spec §4.8's arming gates it (spec §10.3). The index-key request carries the purpose and no `row_id`, since the index key is not per row (spec §7.2).
+- **What `on_unindexable = bucket` catches** (S5): every refusal `nfc-casefold-v1` makes, which is an unassigned code point, a lone surrogate in a `String`, and malformed UTF-8 in a `byte[]`. `docs/09` §7.2 names the first; the other two are refused on the same terms (§7.1 clauses 1 and 5), so they take the same route. No vector distinguishes the readings. `identity` over a `String` holding a lone surrogate is refused too, because the text has no UTF-8 encoding to hand on; `bucket` is not allowed under `identity`, so that refusal always raises. That is `docs/09` §7.2's gate, whose predicate is "refuses well-formed text" (clarified there after #208's review): spec §3.6 has an adapter refuse to store such a string at all, so a marker would keep no row findable.
+- **The index key follows the write suite** (S5; #208 review, [#213](https://github.com/fieldseal-dev/fieldseal-spec/issues/213)). `canonical_context` carries a `suite_id`, and on the index path the only suite a client has is `writeSuite`. So a client's index bytes depend on `writeSuite()` as well as on `indexes()`, and a registry comparison must compare both. Changing the write suite re-keys every index. No document states which suite the index context carries; #213 asks the spec to decide. Unobservable while `0xFF01` is the only suite that can be built.
+- **Declaration validation** (S5, `IndexValidation`): spec §7.4's band in integers, `2^(b+1) ≤ P < 2^(2b)` with `P ≥ 16`; spec §7.6's gate at `P < 2^10` or a column declared `skewed`, lifted only by a `cardinalityOverride` with a non-blank reason, approver and a date; `docs/09` §7.2's rules for `bucket`; the Argon2id cost against spec §7.3's minima and against BouncyCastle's own memory ceiling (a system property, 2²⁴ KiB by default), so that a cost it would refuse is refused at declaration, not at the first derivation; and one declaration per registry key. **Every override is logged** through `onWarning` when the client is built, with its reason, approver and date: spec §7.6 requires the override to be logged. **`skewed`** is spec §7.6's second half, a boolean gated exactly as a small `P` is. It was missing from the first push, because `docs/09` §7's sketch did not show it; the other two cores have it, which a review comment on [#211](https://github.com/fieldseal-dev/fieldseal-spec/issues/211) reported (an isolation exposure, named at S8), and `docs/09` §7 now shows it.
 - **The five operations are synchronous and I/O-free** (spec §11.1). This binding ships **no async companions**: Hibernate cannot await in the value path, and a companion would still pay Argon2id's CPU cost on some thread. This is the binding's G9 decision (`docs/09` §11), and the report says `async_companions: false`.
 - **Errors:** `FieldsealError` subclasses whose `.code()` returns the exact §9 string (the base class is `sealed` over exactly these, since S3), plus the local configuration code (`docs/09` §9) and `INVALID_ARGUMENT` (`docs/09` §7.1). Mappings:
   - `AEADBadTagException` → `TAG_INVALID`, and only after the commitment has verified (`docs/09` §3.2 step 6);
@@ -200,10 +208,11 @@ Decisions:
   - version 0x13, p = 1, output 64 bytes;
   - `t` and `m` from the declaration, defaulting to the §7.3 minima;
   - construction refuses a declaration below either minimum, and one carrying `t` or `m` on an `hmac-sha512` index (`docs/09` §12);
-  - the salt is the 16-byte HKDF-derived value, erased after the call.
+  - the salt is the 16-byte HKDF-derived value, erased after the call, with both BouncyCastle copies this code can reach (`Builder.clear()`, `Argon2Parameters.clear()`);
+  - built at S5 in `internal/blindindex/Idf`, over an injected HKDF, as `commitment` is (§8, S4a).
 
 ### 5.4 Zeroization and the memory model (this binding's G17 half)
-- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the untruncated IDF output, the Argon2id salt, the HKDF PRK and expand blocks, the commitment recomputed on decrypt, and the AEAD output on every exit that does not return it.
+- `byte[]` is mutable, so `Arrays.fill(x, (byte) 0)` in a `finally` performs `docs/09` §3's erasure steps on the buffers the core owns: `record_key` on both paths, the index key, the normalized value, the untruncated IDF output, the Argon2id salt, the HKDF PRK and expand blocks, the commitment recomputed on decrypt, and the AEAD output on every exit that does not return it. The normalized value is always the core's own copy, `identity` included, so erasing it never touches a caller's array. What a `String` holds cannot be erased, and nor can the intermediate code point arrays' copies inside `String` construction.
 - **The core never zeroizes provider-owned material** (`docs/09` §8.1, G17). It validates what a provider returns (key length, `key_id` length) and maps exceptions to `KEY_UNAVAILABLE`. A test with a provider that keeps and inspects its own buffer proves the core never writes to it.
 - **What the core cannot promise:**
   - `SecretKeySpec` copies the key it is given;
@@ -389,6 +398,17 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 - `IndexDeclaration` validation, the §7.4 band, the §7.6 cardinality gate and `on_unindexable`.
 - *Exit:* `blind-index/` green, including `argon2id.json` at every cost point it pins and the four `refuse` vectors; the lone-surrogate entry passes.
 
+- *Built 2026-09-27.* `docs/07` §7 has the entry.
+  - **`tools/ucd-gen`** has a Java target: `core/java/fieldseal-core/src/main/resources/dev/fieldseal/core/internal/blindindex/ucd-17.0.0.txt`, the same parse as the other three targets in a line-oriented text form, so the `unicode-tables` job's `--check` covers it. The loader checks the version line and the table counts the generator writes.
+  - **`internal/blindindex`:** `UnicodeTables` (the loader), `Nfc` (this core's own transcription of UAX #15 decomposition, ordering and composition, with Hangul by arithmetic, and full case folding), `Normalizers` (the three normalizers, `firstUnassigned`, the strict decode and the reserved preimage) and `Idf` (HMAC-SHA-512, Argon2id, truncation).
+  - **api:** `IndexDeclaration` (with its builder and the nested `Idf`, `Normalizer`, `OnUnindexable`, `Argon2Params` and `ReviewedOverride`), `ValidatedIndex`, `Unassigned`, `FieldContext.forIndex`, and on `Fieldseal`: `blindIndex` (text and bytes), `unindexableMarker`, `indexes()`, the builder's `indexes(...)`, and the static `validateIndexDeclaration`, `indexRegistryKey`, `firstUnassigned` and `UNICODE_VERSION`. `warm` now warms, for each context, the index key of every index declared on its column, and sends the provider each distinct request once (#208 review: N contexts on one column had been N identical unwraps).
+  - **Vectors:** `blind-index/` in full (`BlindIndexVectorsTest`): 44 vectors, every shape, and each primitive vector a second time as `#pipeline` through the public client, over text and bytes, with a `row_id` on the caller's context; 68 results. Both cost points `argon2id.json` pins (t = 3 and t = 4) pass, as do the four `refuse` vectors. `ClientVectorsTest` runs the two `errors/policy` `blind_index` vectors it deferred. Every value passed on the first run: the mismatch list is empty.
+  - **The Unicode tables against an oracle:** `UnicodeAgreementTest` compares the assigned set, NFD, NFC, full folding and the whole of `nfc-casefold-v1` with ICU4J 78.3 (Unicode 17.0.0, test-only): the assigned set over all 1,114,112 code points, the rest over every assigned one, then over 200,000 seeded random strings drawn from combining marks, Hangul and decomposable letters. It fails, rather than skips, if ICU4J's Unicode version is not the pin. No disagreement.
+  - **The lone-surrogate entry** (§6.5): `"a\uD800b"` and `"a\uDC00b"` are both refused, with messages naming U+D800 and U+DC00, through `Normalizers` and through `blindIndex` (`NormalizersTest`, `BlindIndexClientTest`). S6 records it in the report.
+  - **The strict-UTF-8 grep** (§4) is a test, `StrictUtf8GrepTest`: it scans every main source file for a lossy decode (`new String(…, UTF_8)`, a charset-named `new String`, `UTF_8.decode`), so it runs in the `java-core` job.
+  - **Bite checks:** 26 S5 entries in `bite_checks.py`, among them truncation unmasked and LSB-first, the second NFC dropped, unassigned code points or lone surrogates accepted, malformed UTF-8 replaced, offsets in UTF-16 units, canonical ordering skipped, composition exclusions ignored, a Hangul composition off by one, the Argon2id cost taken from the minima rather than the declaration, each band edge, the gate at 2⁹, `bucket` without its override, an index-key request carrying the row, the index role not warmed, an unlogged override, and a lossy decode added to a value path. The count on the PR's head is in the PR.
+  - **Not testable:** that the core erases the index key, the normalized value and the salt. A wiped buffer and a live one derive the same bytes, and none of the three leaves the core; the steps are declared in `key-material-ownership` at S6.
+
 **S6 — Testing artifact, full harness, report.**
 - `encrypt_with_materials` in the testing artifact, armed only by `FIELDSEAL_TEST_MODE=1`.
 - The full harness and the report.
@@ -433,7 +453,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 | The empty-salt trap (§5.2) mismatches `kdf/` | Caught at S2 by the KAT; the fix is the RFC 5869 substitution, which the spec already states |
 | BouncyCastle's Argon2 differs from the vectors, or copies and keeps its salt | Caught by the S2 KAT; the salt behaviour is documented, not claimed |
 | SunJCE's GCM buffering makes large decrypts memory-heavy | Measured at S2 (§6.3): it buffers through `update()` only, so the core decrypts in one `doFinal`. Spec §3.5 makes an out-of-memory failure conformant |
-| `tools/ucd-gen` has no Java emitter | S5 work, shared with WS-J; CI's `--check` stays the single gate |
+| `tools/ucd-gen` has no Java emitter | Built at S5: a Java target, checked by the same `--check`. WS-J adds its own target rather than reading this one |
 | One implementer writes the JVM and .NET cores | `docs/17`'s rule: say so in both reports. The claim is weakened, not invalidated. The cores are sequenced, never interleaved (`docs/26` §2.2) |
 | This document leaks reference-core facts to the implementer | Facts are cited to documents, not code, and the isolation statement names this document (header) |
 | The memory probe destabilises CI | A separate job and tagged tests; no gate depends on it |

@@ -22,13 +22,20 @@ class PublicSurfaceTest {
     void theClientsPublicMethodsAreExactlyThese() {
         Set<String> expected = new TreeSet<>(Set.of(
                 "allowedSuites()",
+                "blindIndex(String,FieldContext)",
+                "blindIndex(byte[],FieldContext)",
                 "builder()",
                 "decrypt(byte[],FieldContext)",
                 "encrypt(byte[],FieldContext)",
+                "firstUnassigned(CharSequence)",
+                "indexRegistryKey(byte[],byte[],String)",
+                "indexes()",
                 "isCiphertext(byte[])",
                 "provisionalArmed()",
                 "readMode()",
                 "rotate(byte[],FieldContext)",
+                "unindexableMarker(FieldContext)",
+                "validateIndexDeclaration(IndexDeclaration)",
                 "warm(Collection)",
                 "writeSuite()"));
         assertEquals(expected, signatures(Fieldseal.class));
@@ -37,7 +44,7 @@ class PublicSurfaceTest {
     @Test
     void theBuildersPublicMethodsTakeNoEntropy() {
         assertEquals(new TreeSet<>(Set.of("allowedSuites(Set)", "armProvisionalSuites(boolean)",
-                "build()", "keyProvider(KeyProvider)", "onWarning(Consumer)",
+                "build()", "indexes(Collection)", "keyProvider(KeyProvider)", "onWarning(Consumer)",
                 "readMode(ReadMode)", "writeSuite(int)")),
                 signatures(Fieldseal.Builder.class));
     }
