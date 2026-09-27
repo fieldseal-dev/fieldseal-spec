@@ -41,7 +41,7 @@ Fieldseal(config) where config = {
     read_mode        : strict | permissive | readonly    (default: strict)
     index_registry   : declared blind-index configurations (§7 below)
     on_warning       : hook (permissive-mode plaintext reads, StaticKeyProvider outside test)
-    metrics          : hook (counters: plaintext_reads, decrypt_errors by type, cache evictions)
+    metrics          : hook (counters: plaintext_reads, decrypt_errors by type; cache counters are the provider's, §8.3)
 }
 ```
 
@@ -367,16 +367,16 @@ The corollary for providers is worth stating, because it is where the cost lands
 - **Zeroization on eviction is best-effort and honesty-documented per language** — GC languages cannot guarantee no copies (spec §5.5's own "honest limitation"). Each per-language spec states exactly what its zeroization does and does not achieve; no language doc may claim guaranteed erasure.
 - `mlock`/no-swap: SHOULD where the platform supports it (spec §5.5). Python and Node cannot do this meaningfully for GC-managed buffers; both per-language specs document the deviation instead of pretending.
 - Concurrency: single-flight on refresh (one KMS unwrap per key even under concurrent misses), lock-free or fine-grained-locked reads; the value path never blocks on another tenant's refresh.
-- Metrics: hits, misses, evictions by cause, age distribution — the §5.5 "TTL is a security parameter" stance needs observability to be auditable.
+- Metrics: hits, misses, evictions by cause, age distribution — the §5.5 "TTL is a security parameter" stance needs observability to be auditable. **These counters live on the provider's cache, not on the client's `metrics` hook (§2):** the client does not own the cache, so it has nothing to count them on, and a provider shared by several clients has one set of counters for all of them. The three shipped cores already do this — Python `CacheMetrics.evictions`, TypeScript `DekCache.metrics.evictions`, Java `DekCache.evictions(cause)`.
 
 **What sharing one provider means (normative consequences, not choices).** The key carries the tenant scope, but the capacity LRU is **one queue over the whole cache**, not one per tenant. So for the clients built from a single provider:
 
-- a key is unwrapped **once**, whichever client first needs it;
+- a key is unwrapped **once per residency** in the cache, whichever client first needs it (a refresh or a re-warm after eviction unwraps it again, and restarts its age and budget);
 - a DEK entry's `max_uses` budget is **shared**: every client's returns of that key spend one budget, not one each (which returns count as uses is §8.3's own business, and is the same for every client);
-- `capacity` is **one budget covering every tenant the sharing clients serve**, so one client's warms can evict a key that another client — serving a tenant it has nothing to do with — is relying on. The evicted key then fails closed with `KEY_UNAVAILABLE` until it is warmed again, and the refusal should say that eviction is one of its causes. Size `capacity` for the sum over tenants, or give tenants separate providers, where that coupling is not wanted;
+- `capacity` is **one budget covering every tenant the sharing clients serve**, so one client's warms can evict a key that another client — serving a tenant it has nothing to do with — is relying on. The evicted key then fails closed with `KEY_UNAVAILABLE` until it is warmed again (a key evicted because its store no longer lists it — Java's `RETIRED` cause — is not restored by warming). The refusal SHOULD name eviction as one of its causes; that is advisory, not a conformance requirement: a refusal that tells the caller to warm the key, as the Python and TypeScript cores' do, is conformant, and Java's wording, which also names eviction, is the better message rather than the floor. Size `capacity` for the sum over tenants, or give tenants separate providers, where that coupling is not wanted;
 - the client's own immutability is unaffected — this is about who shares the cache, not about what a client can change.
 
-A core MAY partition the capacity queue per tenant, or key entries by client as well as by tenant, if it says so in its binding document. The three shipped cores keep **one global queue** — Python `cache.py`'s `while len(self._entries) >= self.policy.capacity`, the TypeScript `cache.ts` equivalent, and the Java `DekCache`'s `while (entries.size() > limits.capacity())` over its whole `entries` map, whose `Slot(scope, tenant, role)` index makes *lookup* per-slot without partitioning *capacity*. Verified 2026-09-27 at `origin/dev`; Java's slot index is described in `docs/27` §3.
+A core MAY partition the capacity queue per tenant, or key entries by client as well as by tenant, if it says so in its binding document. The three shipped cores keep **one global queue** — Python `cache.py`'s `while len(self._entries) >= self.policy.capacity`, the TypeScript `cache.ts` equivalent, and the Java `DekCache`'s `while (entries.size() > limits.capacity())` over its whole `entries` map, whose `Slot(scope, tenant, role)` index makes *lookup* per-slot without partitioning *capacity*. The loops differ in one detail that does not change the conclusion: Python and TypeScript evict before inserting and never exceed `capacity`, while Java inserts first and evicts down to it, so it briefly holds `capacity + 1` entries inside its lock. Verified 2026-09-27 at `origin/dev`; Java's slot index is described in `docs/27` §3.
 
 ## 9. Errors
 

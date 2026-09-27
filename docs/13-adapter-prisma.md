@@ -68,8 +68,6 @@ export function fieldsealExtension(opts: {
   readMode?: ReadMode;             // Django adapter, docs/12 §7): only the extension sees the parsed
   allowedSuites: number[];         // schema annotations, so only it can hand the core the complete
   writeSuite: number;              // IndexDeclaration registry that construction-time validation
-  cache?: CachePolicy;             // forwarded to EnvelopeKeyProvider, never to the client:
-                                   // `docs/09` §2 refuses a `cache` key on Fieldseal itself
   cardinalityOverride?: { table: string; field: string; reason: string;
                           approvedBy: string; date: string }[];   // spec §7.6 logged override
   fieldMap: FieldMap;              // the generator's output; replaces the `dmmf` option,
@@ -80,6 +78,8 @@ export function fieldsealExtension(opts: {
 ```
 
 There is no `client` option: a pre-built core client cannot contain declarations parsed from the schema, and a split registry (some indexes in the client, some in the extension) is a configuration drift with no way to notice it. **This decision is unchanged by G18 but its justification is narrower than it was.** It previously read as though verifying a supplied client were impossible; it is not, as of `docs/09` §2's *Configuration reflection* clause — `Fieldseal.indexes` reports the validated registry and the Django adapter's E006 now checks exactly that. Removing the option here remains the right call for a different reason: this extension always parses the schema, so a supplied client would be a second source for declarations that already have one, and no deployment need is served by it. That is a design choice, not a constraint. Worth recording that until 2026-08-26 it *was* a constraint in this language and not merely in this adapter: the TypeScript core's configuration lives behind a `#`-private field on a frozen instance, so an extension had no way to read a supplied client's registry well or badly, while the Python adapter could at least have reached into `_indexes`.
+
+There is no `cache` option either. The §5.5 cache policy belongs to the key provider (`docs/09` §2, §8.3): the deployment hands its `CachePolicy` to its own `EnvelopeKeyProvider` and passes that provider in as `keyProvider`. So one provider means one cache, one `max_uses` budget per DEK and one `capacity` across every client the extension builds from it.
 
 Pipeline per operation:
 
