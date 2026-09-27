@@ -29,8 +29,8 @@ import org.junit.jupiter.api.TestFactory;
 class KdfVectorsTest {
 
     private static final Map<String, int[]> PINNED = Map.of(
-            "kdf/record-key.json", new int[] {4, 1},
-            "kdf/index-key.json", new int[] {5, 1});
+            "kdf/record-key.json", new int[] {4, 1, 0},
+            "kdf/index-key.json", new int[] {5, 1, 0});
 
     @TestFactory
     Stream<DynamicTest> recordAndIndexKeys() {

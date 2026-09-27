@@ -22,7 +22,7 @@ import org.junit.jupiter.api.TestFactory;
 class CommitmentVectorsTest {
 
     private static final Map<String, int[]> PINNED = Map.of("commitment/ff01.json",
-            new int[] {1, 1});
+            new int[] {1, 1, 0});
 
     private static final Commitment.Kdf KDF = Hkdf::derive;
 

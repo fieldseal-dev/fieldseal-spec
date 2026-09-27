@@ -34,7 +34,7 @@ import org.junit.jupiter.api.TestFactory;
 class EnvelopeCryptoVectorsTest {
 
     private static final Map<String, int[]> PINNED = Map.of("envelope/ff01.json",
-            new int[] {9, 0});
+            new int[] {9, 0, 0});
 
     private static final Commitment.Kdf KDF = Hkdf::derive;
 

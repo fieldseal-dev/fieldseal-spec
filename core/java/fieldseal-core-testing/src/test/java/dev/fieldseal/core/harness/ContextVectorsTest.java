@@ -15,11 +15,13 @@ import org.junit.jupiter.api.TestFactory;
 /**
  * {@code context/} (docs/08 §4.3) through the core's {@code canonical_context} (spec §6.2): the
  * presence byte, the encoding and its length, and the absent-versus-zero-length distinction.
+ * Since suite {@code 0.10.0-provisional} it also carries spec §6.1's {@code index-id} grammar as
+ * {@code declaration} vectors (#210), which run through a client's construction.
  */
 class ContextVectorsTest {
 
     private static final Map<String, int[]> PINNED = Map.of("context/canonical.json",
-            new int[] {14, 1});
+            new int[] {14, 1, 5});
 
     @TestFactory
     Stream<DynamicTest> canonicalContext() {

@@ -34,6 +34,7 @@ M = ROOT / "fieldseal-core/src/main/java/dev/fieldseal/core"
 I = M / "internal"
 CORE = ":fieldseal-core:test --tests "
 VEC = ":fieldseal-core-testing:test --tests "
+T = ROOT / "fieldseal-core-testing/src/test/java/dev/fieldseal/core/harness"
 
 # (name, file, old text, new text, test tasks, expectation). The old text must occur exactly once.
 MUTATIONS = [
@@ -381,7 +382,48 @@ MUTATIONS = [
     ("s5 review: a skewed column is not gated", M / "IndexValidation.java",
      "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
      "if (d.projectedPopulation() < CARDINALITY_GATE) {",
-     [CORE + "*BlindIndexClientTest"], "red"),
+     [CORE + "*BlindIndexClientTest", VEC + "*BlindIndexVectorsTest"], "red"),
+    # ---- #210/#211: the declaration vectors (suite 0.10.0) ----------------------------------
+    ("decl vectors: the index-id grammar reduced to non-empty", M / "IndexValidation.java",
+     "if (!Purpose.isValidIndexId(id)) {", "if (id.isEmpty()) {",
+     [VEC + "*ContextVectorsTest"], "red"),
+    ("decl vectors: the gate at P <= 2^10", M / "IndexValidation.java",
+     "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
+     "if (d.projectedPopulation() <= CARDINALITY_GATE || d.skewed()) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    # gate-skewed-refused is the S5 review entry above, whose second task is the vectors'.
+    ("decl vectors: a low population is not gated", M / "IndexValidation.java",
+     "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
+     "if (d.skewed()) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    ("decl vectors: an empty index id accepted", I / "context/Purpose.java",
+     'Pattern.compile("[a-z0-9-]{1,32}")', 'Pattern.compile("[a-z0-9-]{0,32}")',
+     [VEC + "*ContextVectorsTest"], "red"),
+    ("decl vectors: the grammar stops at 31", I / "context/Purpose.java",
+     'Pattern.compile("[a-z0-9-]{1,32}")', 'Pattern.compile("[a-z0-9-]{1,31}")',
+     [VEC + "*ContextVectorsTest"], "red"),
+    ("decl harness: argon2id without its cost takes the minima",
+     T / "DeclarationVectors.java",
+     """                assertTrue(p.has("time_cost") && p.has("memory_kib"),""",
+     """                if (!p.has("time_cost")) { return; }
+                assertTrue(p.has("time_cost") && p.has("memory_kib"),""",
+     [VEC + "*DeclarationVectorsTest"], "red"),
+    ("decl harness: hmac-sha512 idf_params unchecked", T / "DeclarationVectors.java",
+     """            case "hmac-sha512" -> assertEquals(0, p.size(),""",
+     """            case "hmac-sha512" -> assertEquals(p.size(), p.size(),""",
+     [VEC + "*DeclarationVectorsTest"], "red"),
+    ("decl harness: a fractional number truncated", T / "DeclarationVectors.java",
+     "        assertTrue(n.path(field).isIntegralNumber() && n.path(field).canConvertToLong(),",
+     "        assertTrue(n.path(field).canConvertToLong(),",
+     [VEC + "*DeclarationVectorsTest"], "red"),
+    ("decl vectors: an override without an approver", M / "IndexValidation.java",
+     "if (blank(o.reason()) || blank(o.approvedBy()) || o.date() == null) {",
+     "if (blank(o.reason()) || o.date() == null) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    ("decl vectors: a recorded override ignored", M / "IndexValidation.java",
+     "            if (d.cardinalityOverride() == null) {",
+     "            if (true) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2

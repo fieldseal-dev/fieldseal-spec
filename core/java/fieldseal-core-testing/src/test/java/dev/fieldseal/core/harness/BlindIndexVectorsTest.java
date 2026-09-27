@@ -59,8 +59,11 @@ class BlindIndexVectorsTest {
     static {
         PINNED.put("blind-index/argon2id.json", new TreeMap<>(Map.of("primitive", 12, "equal", 6,
                 "unindexable-marker", 2, "unindexable-bucket", 1, "refuse", 2)));
+        // Since suite 0.10.0-provisional, spec §7.6's gate as six declaration vectors (#211),
+        // in this file only: the gate never reads the IDF (docs/08 §4.4).
         PINNED.put("blind-index/hmac-sha512.json", new TreeMap<>(Map.of("primitive", 11,
-                "equal", 6, "unindexable-marker", 1, "unindexable-bucket", 1, "refuse", 2)));
+                "equal", 6, "unindexable-marker", 1, "unindexable-bucket", 1, "refuse", 2,
+                "declaration", 6)));
     }
 
     private static final byte[] DEK = bytes("000102030405060708090a0b0c0d0e0f"
@@ -98,6 +101,8 @@ class BlindIndexVectorsTest {
                     case "unindexable-bucket" ->
                             tests.add(DynamicTest.dynamicTest(slug(v), () -> bucket(v)));
                     case "refuse" -> tests.add(DynamicTest.dynamicTest(slug(v), () -> refuse(v)));
+                    case "declaration" -> tests.add(DynamicTest.dynamicTest(slug(v),
+                            () -> DeclarationVectors.run(v)));
                     default -> tests.add(DynamicTest.dynamicTest(slug(v), () -> fail(
                             "unrecognised assertion kind '" + shape + "' (docs/08 §4: fail,"
                                     + " never skip)")));
