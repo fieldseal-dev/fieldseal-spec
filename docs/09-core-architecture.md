@@ -350,7 +350,7 @@ KeyProvider:
 
 The corollary for providers is worth stating, because it is where the cost lands: a provider that wants its returned material erased MUST erase it itself, on its own schedule. Returning a copy remains the safe default and is what the three shipped providers do.
 
-**Candidate reads are not uses (normative).** `decryption_keys` MUST NOT count against §8.3's `max_uses`. §8.3 states use counting only from the write side — incremented per `encryption_key` return — and the read-path half has to be said rather than inferred: a decrypt resolving four candidate versions would otherwise spend four uses of a budget spec §5.5 defines as a limit on **encryptions** under one key, and a rotation sweep would evict the key it is reading with. The candidate list is a read of what the cache already holds.
+**Candidate reads are not uses (normative).** `decryption_keys` MUST NOT count against §8.3's `max_uses`. §8.3 states use counting only from the write side — incremented per DEK-role `encryption_key` return — and the read-path half has to be said rather than inferred: a decrypt resolving four candidate versions would otherwise spend four uses of a budget spec §5.5 defines as a limit on **encryptions** under one key, and a rotation sweep would evict the key it is reading with. The candidate list is a read of what the cache already holds. The same argument, one level over, is why §8.3 gives the index role no use budget at all.
 
 ### 8.2 The three shipped providers
 
@@ -361,7 +361,7 @@ The corollary for providers is worth stating, because it is where the cost lands
 ### 8.3 DEK cache (spec §5.5)
 
 - Keyed by (provider scope, tenant, key version, role: dek|index).
-- Eviction: max-age AND max-uses (≤ 2³²) AND capacity LRU. Use counting is per cached entry, incremented per `encryption_key` return.
+- Eviction: max-age AND max-uses (≤ 2³²) AND capacity LRU. Use counting is per cached entry, incremented per **DEK-role** `encryption_key` return. **The index role has no use budget.** An index key is never AEAD key material (spec §8: `encryption_key` returns the tenant index key, never the tenant DEK) and draws no nonce, so the SP 800-38D ceiling spec §5.5 sets `max_uses` for does not reach it; spending that budget on index derivations bounds nothing, and is reachable in practice, since `max_uses` is configurable from 1 to 2³² while index derivation runs on every write and on every query. `max_age` and the **capacity LRU still apply to both roles** — an index key retires on TTL and can be evicted under memory pressure exactly as a DEK can. This is §8.1's "candidate reads are not uses" one level over, and by the same argument: a budget §5.5 defines as a limit on **encryptions** must not be spent by a path that is not an encryption.
 - **Zeroization on eviction is best-effort and honesty-documented per language** — GC languages cannot guarantee no copies (spec §5.5's own "honest limitation"). Each per-language spec states exactly what its zeroization does and does not achieve; no language doc may claim guaranteed erasure.
 - `mlock`/no-swap: SHOULD where the platform supports it (spec §5.5). Python and Node cannot do this meaningfully for GC-managed buffers; both per-language specs document the deviation instead of pretending.
 - Concurrency: single-flight on refresh (one KMS unwrap per key even under concurrent misses), lock-free or fine-grained-locked reads; the value path never blocks on another tenant's refresh.

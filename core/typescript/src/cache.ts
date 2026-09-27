@@ -5,8 +5,13 @@
  * material is overwritten with zeros. Max-age is enforced on every read
  * (`get`, `peek`, `has`) and swept on every `put`, so expired material does
  * not linger until its exact key happens to be read again. Uses count per
- * cached entry, incremented per `encryption_key` return (docs/09 §8.3);
- * decrypt-path candidate reads go through `peek` and do not count.
+ * cached entry, incremented per **DEK-role** `encryption_key` return
+ * (docs/09 §8.3); the index role has no use budget, because an index key is
+ * never AEAD key material and draws no nonce, so the SP 800-38D ceiling
+ * `maxUses` exists for does not reach it while `maxUses` is configurable as
+ * low as 1 — the provider passes `countUse: false` there, and max-age plus the
+ * capacity LRU still apply. Decrypt-path candidate reads go through `peek` and
+ * likewise do not count.
  *
  * Zeroization honesty (docs/11 §5): `fill(0)` overwrites the visible
  * allocation. V8 may have copied the bytes during earlier operations and
@@ -105,8 +110,15 @@ export class DekCache {
    * Returns a copy of the cached material, or undefined. Counts one use; an
    * entry that reaches max-uses is returned this last time and then evicted,
    * so the threshold is an exact count of returns.
+   *
+   * `countUse: false` is docs/09 §8.3's index role: the same lookup, the same
+   * copy, the same max-age enforcement and the same LRU touch, with the use
+   * counter left alone. It is a distinct case from `peek` because it is a
+   * *hit* that recency matters for, not a read of what the cache happens to
+   * hold.
    */
-  get(key: string): Uint8Array | undefined {
+  get(key: string, options: { readonly countUse?: boolean } = {}): Uint8Array | undefined {
+    const countUse = options.countUse ?? true;
     const e = this.#entries.get(key);
     if (e === undefined) {
       this.metrics.misses++;
@@ -119,14 +131,16 @@ export class DekCache {
     }
     this.metrics.hits++;
     const out = new Uint8Array(e.material);
-    e.uses++;
-    if (e.uses >= this.policy.maxUses) {
-      this.#drop(key, e, "max-uses", true);
-    } else {
-      // LRU touch.
-      this.#entries.delete(key);
-      this.#entries.set(key, e);
+    if (countUse) {
+      e.uses++;
+      if (e.uses >= this.policy.maxUses) {
+        this.#drop(key, e, "max-uses", true);
+        return out;
+      }
     }
+    // LRU touch.
+    this.#entries.delete(key);
+    this.#entries.set(key, e);
     return out;
   }
 

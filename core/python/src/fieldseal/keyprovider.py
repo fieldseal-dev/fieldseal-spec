@@ -247,7 +247,13 @@ class EnvelopeKeyProvider:
                 f"key_id {active.key_id.hex()}: active version "
                 f"{active.version} has no wrapped index key registered for "
                 "this scope; warm() cannot provide one")
-        key = self.cache.get(_cache_key(scope, active.version, role))
+        # docs/09 §8.3: `max_uses` counts DEK-role returns only. An index key
+        # is never AEAD key material and draws no nonce, so the SP 800-38D
+        # ceiling the threshold exists for cannot reach it, while a
+        # configurable `max_uses` of 1 can. max_age and the capacity LRU are
+        # unaffected.
+        key = self.cache.get(_cache_key(scope, active.version, role),
+                             count_use=role == "dek")
         if key is None:
             # docs/09 §9: messages carry the key_id (public envelope
             # content).

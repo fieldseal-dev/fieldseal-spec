@@ -5,13 +5,17 @@ is overwritten with zeros. Max-age is enforced on every read (`get`, `peek`,
 `has`) and swept on every `put`, so expired material does not linger until its
 exact key happens to be read again.
 
-Use counting is per cached entry, incremented per `encryption_key` return
-(docs/09 §8.3) -- `get`. Decrypt-path candidate reads go through `peek` and do
-not count: charging them would advance a version's counter with the tenant's
-total decrypt traffic, a per-provider count wearing a per-key-version name,
-and would evict old-but-valid versions at a rate unrelated to their actual
-use. That bug was fixed in the TypeScript core in PR #55; docs/10 §6 pins the
-regression test so this port cannot reintroduce it.
+Use counting is per cached entry, incremented per **DEK-role** `encryption_key`
+return (docs/09 §8.3) -- `get`. The index role has no use budget: an index key
+is never AEAD key material and draws no nonce, so the SP 800-38D ceiling
+`max_uses` exists for does not reach it, and `max_uses` is configurable as low
+as 1. The provider therefore passes `count_use=False` for an index lookup, and
+`max_age` plus the capacity LRU still apply to it. Decrypt-path candidate reads
+go through `peek` and likewise do not count: charging them would advance a
+version's counter with the tenant's total decrypt traffic, a per-provider count
+wearing a per-key-version name, and would evict old-but-valid versions at a rate
+unrelated to their actual use. That bug was fixed in the TypeScript core in PR
+#55; docs/10 §6 pins the regression test so this port cannot reintroduce it.
 
 Zeroization honesty (docs/10 §5): entries are held as `bytearray` and
 overwritten with zeros on eviction. CPython cannot erase immutable `bytes`;
@@ -139,10 +143,17 @@ class DekCache:
                                         inserted_at=self._now(), uses=0)
         self._fire(deferred)
 
-    def get(self, key: str) -> bytes | None:
+    def get(self, key: str, *, count_use: bool = True) -> bytes | None:
         """Returns a copy of the cached material, or None. Counts one use; an
         entry reaching max_uses is returned this last time and then evicted,
-        so the threshold is an exact count of returns."""
+        so the threshold is an exact count of returns.
+
+        `count_use=False` is docs/09 §8.3's index role: the same lookup, the
+        same copy, the same max-age enforcement and the same LRU touch, with
+        the use counter left alone. It is a distinct case from `peek` because
+        it is a *hit* that recency matters for, not a read of what the cache
+        happens to hold.
+        """
         deferred: list[tuple[str, EvictionCause]] = []
         try:
             with self._lock:
@@ -157,14 +168,15 @@ class DekCache:
                     return None
                 self.metrics.hits += 1
                 out = bytes(e.material)
-                e.uses += 1
-                if e.uses >= self.policy.max_uses:
-                    self._drop(key, e, "max-uses", count=True,
-                               deferred=deferred)
-                else:
-                    # LRU touch.
-                    del self._entries[key]
-                    self._entries[key] = e
+                if count_use:
+                    e.uses += 1
+                    if e.uses >= self.policy.max_uses:
+                        self._drop(key, e, "max-uses", count=True,
+                                   deferred=deferred)
+                        return out
+                # LRU touch.
+                del self._entries[key]
+                self._entries[key] = e
                 return out
         finally:
             self._fire(deferred)

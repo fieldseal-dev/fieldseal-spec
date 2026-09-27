@@ -326,7 +326,11 @@ export class EnvelopeKeyProvider implements KeyProvider {
     if (set === undefined) throw new KeyUnavailableError(null, "no key set is registered for this tenant scope");
     const active = set.versions.find((v) => v.version === set.activeVersion) as WrappedKeyVersion;
     const role = isIndexPurpose(ctx) ? "index" : "dek";
-    const key = this.cache.get(cacheKey(scope, active.version, role));
+    // docs/09 §8.3: `maxUses` counts DEK-role returns only. An index key is
+    // never AEAD key material and draws no nonce, so the SP 800-38D ceiling
+    // the threshold exists for cannot reach it, while a configurable
+    // `maxUses` of 1 can. max-age and the capacity LRU are unaffected.
+    const key = this.cache.get(cacheKey(scope, active.version, role), { countUse: role === "dek" });
     if (key === undefined) {
       throw new KeyUnavailableError(
         active.keyId,
