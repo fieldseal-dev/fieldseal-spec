@@ -53,11 +53,14 @@ final class IndexValidation {
         }
         Argon2Params cost = argon2(where, d.idf(), d.argon2());
         band(where, d.truncateBits(), d.projectedPopulation());
-        if (d.projectedPopulation() < CARDINALITY_GATE) {
+        // spec §7.6's two halves: too few distinct values, or declared heavily skewed.
+        if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {
             if (d.cardinalityOverride() == null) {
-                throw new ConfigurationError(where + ": a projected population of "
-                        + d.projectedPopulation() + " distinct values is below spec §7.6's"
-                        + " default-deny gate of 2^10; an index on it needs a"
+                throw new ConfigurationError(where + ": " + (d.skewed()
+                        ? "a column declared heavily skewed"
+                        : "a projected population of " + d.projectedPopulation()
+                                + " distinct values, below 2^10,") + " is behind spec §7.6's"
+                        + " default-deny gate; an index on it needs a"
                         + " cardinalityOverride {reason, approvedBy, date}");
             }
             override(where, "cardinalityOverride", d.cardinalityOverride());
@@ -67,10 +70,11 @@ final class IndexValidation {
         OnUnindexable policy = d.onUnindexable() == null ? OnUnindexable.REFUSE
                 : d.onUnindexable();
         if (policy == OnUnindexable.BUCKET) {
-            if (!d.normalize().impl().canRefuseText()) {
+            if (!d.normalize().impl().canRefuseWellFormedText()) {
                 throw new ConfigurationError(where + ": on_unindexable = bucket under "
-                        + d.normalize().id() + ", which never refuses a value, could never take"
-                        + " effect (docs/09 §7.2)");
+                        + d.normalize().id() + " could never take effect: it refuses no"
+                        + " well-formed text, and the one value it does refuse, text with a lone"
+                        + " surrogate, cannot be stored at all (spec §3.6; docs/09 §7.2)");
             }
             if (d.unindexableOverride() == null) {
                 throw new ConfigurationError(where + ": on_unindexable = bucket needs an"
@@ -81,7 +85,7 @@ final class IndexValidation {
             override(where, "unindexableOverride", d.unindexableOverride());
         }
         return new ValidatedIndex(d.tableUuid(), d.columnUuid(), id, d.idf(), cost,
-                d.normalize(), d.truncateBits(), d.projectedPopulation(),
+                d.normalize(), d.truncateBits(), d.projectedPopulation(), d.skewed(),
                 d.cardinalityOverride(), policy, d.unindexableOverride());
     }
 

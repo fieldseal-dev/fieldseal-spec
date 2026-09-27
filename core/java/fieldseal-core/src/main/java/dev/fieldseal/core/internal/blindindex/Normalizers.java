@@ -50,10 +50,14 @@ public final class Normalizers {
         }
 
         /**
-         * Whether this normalizer can refuse a well-formed value: only one that consults a
-         * Unicode table can (docs/09 §7.2), so only it can take {@code on_unindexable = bucket}.
+         * Whether this normalizer can refuse well-formed text, a sequence of Unicode scalar
+         * values: only one that consults a Unicode table can (docs/09 §7.2), so only it can take
+         * {@code on_unindexable = bucket}. Every normalizer refuses text that is <em>not</em>
+         * well formed (a lone surrogate, which has no UTF-8 encoding), and that refusal is not
+         * what {@code bucket} is for: spec §3.6 has an adapter refuse to store such a value at
+         * all, so there is no row for a marker to keep findable.
          */
-        public boolean canRefuseText() {
+        public boolean canRefuseWellFormedText() {
             return consultsUnicode;
         }
     }

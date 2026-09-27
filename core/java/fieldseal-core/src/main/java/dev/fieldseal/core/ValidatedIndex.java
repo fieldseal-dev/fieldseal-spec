@@ -25,7 +25,7 @@ import java.util.Objects;
  */
 public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId, Idf idf,
         Argon2Params argon2, Normalizer normalize, int truncateBits, long projectedPopulation,
-        ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
+        boolean skewed, ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
         ReviewedOverride unindexableOverride) {
 
     public ValidatedIndex {
@@ -59,6 +59,7 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
                 && Arrays.equals(columnUuid, v.columnUuid) && indexId.equals(v.indexId)
                 && idf == v.idf && Objects.equals(argon2, v.argon2) && normalize == v.normalize
                 && truncateBits == v.truncateBits && projectedPopulation == v.projectedPopulation
+                && skewed == v.skewed
                 && Objects.equals(cardinalityOverride, v.cardinalityOverride)
                 && onUnindexable == v.onUnindexable
                 && Objects.equals(unindexableOverride, v.unindexableOverride);
@@ -67,7 +68,7 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
     @Override
     public int hashCode() {
         return Objects.hash(Arrays.hashCode(tableUuid), Arrays.hashCode(columnUuid), indexId,
-                idf, argon2, normalize, truncateBits, projectedPopulation, cardinalityOverride,
+                idf, argon2, normalize, truncateBits, projectedPopulation, skewed, cardinalityOverride,
                 onUnindexable, unindexableOverride);
     }
 
@@ -77,7 +78,7 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
         return "ValidatedIndex[table=" + h.formatHex(tableUuid) + ", column="
                 + h.formatHex(columnUuid) + ", indexId=" + indexId + ", idf=" + idf.id()
                 + ", argon2=" + argon2 + ", normalize=" + normalize.id() + ", truncateBits="
-                + truncateBits + ", projectedPopulation=" + projectedPopulation
+                + truncateBits + ", projectedPopulation=" + projectedPopulation + ", skewed=" + skewed
                 + ", cardinalityOverride=" + cardinalityOverride + ", onUnindexable="
                 + onUnindexable.id() + ", unindexableOverride=" + unindexableOverride + "]";
     }

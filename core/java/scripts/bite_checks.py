@@ -373,6 +373,15 @@ MUTATIONS = [
      "        CharBuffer out = CharBuffer.wrap(new String(value, StandardCharsets.UTF_8));"
      " out = CharBuffer.allocate(value.length);",
      [CORE + "*StrictUtf8GrepTest"], "red"),
+    # ---- #208 review ----------------------------------------------------------------------
+    ("s5 review: warm sends duplicate requests", M / "Fieldseal.java",
+     "Set<KeyRequest> requests = new LinkedHashSet<>();",
+     "List<KeyRequest> requests = new ArrayList<>();",
+     [CORE + "*BlindIndexClientTest"], "red"),
+    ("s5 review: a skewed column is not gated", M / "IndexValidation.java",
+     "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
+     "if (d.projectedPopulation() < CARDINALITY_GATE) {",
+     [CORE + "*BlindIndexClientTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2

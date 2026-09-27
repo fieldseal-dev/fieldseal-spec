@@ -38,6 +38,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -245,7 +246,9 @@ public final class Fieldseal {
             if (contexts == null) {
                 throw new InvalidArgumentError("the contexts to warm are null");
             }
-            List<KeyRequest> requests = new ArrayList<>();
+            // One request per distinct key: N contexts on one column would otherwise cost the
+            // provider N identical unwraps, each a KMS call for the envelope provider.
+            Set<KeyRequest> requests = new LinkedHashSet<>();
             for (FieldContext c : contexts) {
                 requests.add(request(requireAnyContext(c), Purpose.ENCRYPT));
                 // The index role too, for every index declared on the column (docs/27 §8, S5).
@@ -256,7 +259,7 @@ public final class Fieldseal {
                     }
                 }
             }
-            CompletableFuture<Void> f = provider.warm(requests);
+            CompletableFuture<Void> f = provider.warm(List.copyOf(requests));
             return f != null ? f : CompletableFuture.failedFuture(
                     new KeyUnavailableError("the key provider's warm returned no future"));
         } catch (RuntimeException e) {

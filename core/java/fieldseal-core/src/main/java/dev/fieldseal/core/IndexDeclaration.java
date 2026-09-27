@@ -29,13 +29,16 @@ import java.util.HexFormat;
  * @param normalize the normalizer, from the closed set of docs/09 §7
  * @param truncateBits {@code b}, within spec §7.4's band for {@code projectedPopulation}
  * @param projectedPopulation {@code P}, the projected number of distinct values (spec §7.4)
- * @param cardinalityOverride required when {@code P} is below spec §7.6's gate of 2^10
+ * @param skewed that the column's values are heavily skewed, one or a few values dominating:
+ *     gated by spec §7.6 exactly as a small {@code P} is. Default false
+ * @param cardinalityOverride required when {@code P} is below spec §7.6's gate of 2^10, or the
+ *     column is declared {@code skewed}
  * @param onUnindexable docs/09 §7.2; null means {@link OnUnindexable#REFUSE}
  * @param unindexableOverride required for {@link OnUnindexable#BUCKET} (docs/09 §7.2)
  */
 public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String indexId, Idf idf,
         Argon2Params argon2, Normalizer normalize, int truncateBits, long projectedPopulation,
-        ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
+        boolean skewed, ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
         ReviewedOverride unindexableOverride) {
 
     public IndexDeclaration {
@@ -65,6 +68,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
                 && java.util.Objects.equals(indexId, d.indexId) && idf == d.idf
                 && java.util.Objects.equals(argon2, d.argon2) && normalize == d.normalize
                 && truncateBits == d.truncateBits && projectedPopulation == d.projectedPopulation
+                && skewed == d.skewed
                 && java.util.Objects.equals(cardinalityOverride, d.cardinalityOverride)
                 && onUnindexable == d.onUnindexable
                 && java.util.Objects.equals(unindexableOverride, d.unindexableOverride);
@@ -74,7 +78,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
     public int hashCode() {
         return java.util.Objects.hash(Arrays.hashCode(tableUuid), Arrays.hashCode(columnUuid),
                 indexId, idf, argon2, normalize, truncateBits, projectedPopulation,
-                cardinalityOverride, onUnindexable, unindexableOverride);
+                skewed, cardinalityOverride, onUnindexable, unindexableOverride);
     }
 
     @Override
@@ -84,7 +88,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
                 + ", column=" + (columnUuid == null ? null : h.formatHex(columnUuid))
                 + ", indexId=" + indexId + ", idf=" + idf + ", argon2=" + argon2 + ", normalize="
                 + normalize + ", truncateBits=" + truncateBits + ", projectedPopulation="
-                + projectedPopulation + ", cardinalityOverride=" + cardinalityOverride
+                + projectedPopulation + ", skewed=" + skewed + ", cardinalityOverride=" + cardinalityOverride
                 + ", onUnindexable=" + onUnindexable + ", unindexableOverride="
                 + unindexableOverride + "]";
     }
@@ -133,6 +137,12 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
         /**
          * The normalized bytes of {@code value}.
          *
+         * <p><b>For spec §7.5's re-verification</b>, compare a candidate with the queried value
+         * on these bytes. Where this refuses a value, that side of the comparison falls back to
+         * the value's raw plaintext bytes, so two refused values are equal only byte for byte
+         * (spec §7.5, G19). That is how two different values in one {@code bucket} are told
+         * apart.
+         *
          * @throws InvalidArgumentError if this normalizer refuses the value: a code point not
          *     assigned in the pinned Unicode version, or a lone surrogate (docs/09 §7.1)
          */
@@ -145,7 +155,8 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
 
         /**
          * The normalized bytes of {@code value}. {@link #NFC_CASEFOLD_V1} decodes it as strict
-         * UTF-8 first (docs/09 §7.1 clause 5).
+         * UTF-8 first (docs/09 §7.1 clause 5). Re-verification compares as {@link
+         * #normalize(String)} describes, falling back to {@code value} itself on a refusal.
          *
          * @throws InvalidArgumentError on malformed UTF-8, or as {@link #normalize(String)}
          */
@@ -216,6 +227,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
         private Normalizer normalize;
         private int truncateBits;
         private long projectedPopulation;
+        private boolean skewed;
         private ReviewedOverride cardinalityOverride;
         private OnUnindexable onUnindexable;
         private ReviewedOverride unindexableOverride;
@@ -261,6 +273,12 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
             return this;
         }
 
+        /** Default false. A skewed column needs a {@link #cardinalityOverride} (spec §7.6). */
+        public Builder skewed(boolean skewed) {
+            this.skewed = skewed;
+            return this;
+        }
+
         public Builder cardinalityOverride(ReviewedOverride o) {
             this.cardinalityOverride = o;
             return this;
@@ -279,8 +297,8 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
 
         public IndexDeclaration build() {
             return new IndexDeclaration(tableUuid, columnUuid, indexId, idf, argon2, normalize,
-                    truncateBits, projectedPopulation, cardinalityOverride, onUnindexable,
-                    unindexableOverride);
+                    truncateBits, projectedPopulation, skewed, cardinalityOverride,
+                    onUnindexable, unindexableOverride);
         }
     }
 }

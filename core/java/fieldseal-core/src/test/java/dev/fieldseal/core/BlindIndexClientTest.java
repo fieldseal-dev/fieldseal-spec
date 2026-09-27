@@ -142,6 +142,23 @@ class BlindIndexClientTest {
         Fieldseal.validateIndexDeclaration(email().truncateBits(6).projectedPopulation(1024).build());
     }
 
+    /** spec §7.6's second half: a column declared heavily skewed is gated like a small P. */
+    @Test
+    void aSkewedColumnIsGatedWhateverItsPopulation() {
+        ConfigurationError e = refusedDeclaration(b -> b.skewed(true));
+        assertTrue(e.getMessage().contains("skewed") && e.getMessage().contains("§7.6"),
+                e.getMessage());
+        ValidatedIndex v = Fieldseal.validateIndexDeclaration(
+                email().skewed(true).cardinalityOverride(REVIEWED).build());
+        assertTrue(v.skewed());
+        assertNotEquals(Fieldseal.validateIndexDeclaration(email().build()), v,
+                "skewed is part of the validated form");
+        List<String> warnings = new ArrayList<>();
+        builder(new Fixtures.SpyProvider()).onWarning(warnings::add).indexes(List.of(
+                email().skewed(true).cardinalityOverride(REVIEWED).build())).build();
+        assertEquals(1, warnings.size(), "the override is logged");
+    }
+
     /** docs/09 §7.2: bucket needs its override, and a normalizer that can refuse. */
     @Test
     void bucketNeedsAnOverrideAndARefusingNormalizer() {
@@ -328,5 +345,10 @@ class BlindIndexClientTest {
         assertEquals(List.of("encrypt", "index:email-eq", "index:raw"),
                 seen.stream().map(KeyRequest::purpose).toList(),
                 "the DEK, then this column's two indexes, not the other column's");
+        // #208 review F3: N contexts for one key are one request, not N unwraps.
+        seen.clear();
+        fs.warm(List.of(ctx(), ctx(), ctx().forIndex("raw"))).join();
+        assertEquals(List.of("encrypt", "index:email-eq", "index:raw"),
+                seen.stream().map(KeyRequest::purpose).toList(), "deduplicated, in first order");
     }
 }
