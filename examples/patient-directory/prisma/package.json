@@ -39,7 +39,7 @@
     "The override is a floor on an unexercised dependency, not a tested",
     "configuration -- nothing in CI runs MySQL, so the 3.15.3 -> 3.24.4 jump",
     "is untested. Drop it when prisma stops depending on mysql2 (8.x already",
-    "has) or raises its own floor to 3.22.0. CI asserts the floor in both",
+    "has) or pins a mysql2 at or above 3.22.0. CI asserts the floor in both",
     "lockfiles (conformance.yml, prisma-adapter job).",
     "",
     "`npm ls mysql2` here reports the adapter's linked copy as invalid: npm",

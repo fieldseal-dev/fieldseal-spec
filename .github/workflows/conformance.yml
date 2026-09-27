@@ -435,9 +435,11 @@ jobs:
       # GHSA-3f6p-5ww8-9rcr: prisma 7.x pins mysql2 3.15.3, and both Prisma
       # trees override it to >= 3.22.0. A floor nothing asserts is dropped by
       # the first stray `npm install`, and only Dependabot notices, days later.
-      # Reads the lockfiles, so it needs no install. It also fails once prisma
-      # stops pulling mysql2 in, because the override is then dead and should
-      # go -- see the `//` note in either package.json.
+      # Reads the lockfiles, so it needs no install, and each package.json,
+      # because a lockfile still at 3.24.4 says nothing about whether the
+      # override that put it there survives the next `npm install`. It also
+      # fails once prisma stops pulling mysql2 in, because the override is
+      # then dead and should go -- see the `//` note in either package.json.
       - name: The mysql2 override is in force (GHSA-3f6p-5ww8-9rcr)
         if: matrix.db == 'sqlite'
         run: |
@@ -445,10 +447,13 @@ jobs:
             let bad = 0;
             for (const dir of ["adapters/prisma", "examples/patient-directory/prisma"]) {
               const pkgs = require(`./${dir}/package-lock.json`).packages;
-              // Every copy, not only the top-level one: without the override
-              // npm nests 3.15.3 under node_modules/prisma/.
+              // Every copy, not only the top-level one: removing the override
+              // from a tree that already resolved 3.24.4 leaves prisma its own
+              // 3.15.3 nested under node_modules/prisma/, and the hoisted copy
+              // disappears. (A fresh resolve would hoist 3.15.3 instead.)
               const hits = Object.entries(pkgs).filter(([k]) => k.endsWith("node_modules/mysql2"));
               if (!hits.length) { console.error(`${dir}: prisma no longer pulls in mysql2; drop the override.`); bad = 1; continue; }
+              if (!require(`./${dir}/package.json`).overrides?.mysql2) { console.error(`${dir}: overrides.mysql2 is gone from package.json; the lockfile floor will not survive the next npm install.`); bad = 1; }
               for (const [k, { version: v }] of hits) {
                 const [a, b] = v.split(".").map(Number);
                 if (a < 3 || (a === 3 && b < 22)) { console.error(`${dir}: ${k} is ${v}, below the 3.22.0 floor; the override was dropped.`); bad = 1; }
