@@ -41,6 +41,13 @@ final class DependencyRules {
     /** docs/09 §1's two modules that may depend on {@code errors} only. */
     static final List<String> ERRORS_ONLY = List.of("keyprovider", "cache");
 
+    /**
+     * The core's half of docs/09 §1's {@code testing} (S6): a gate and a hook the api installs,
+     * so {@code errors} only. docs/09 §1 states no rule for it; this one keeps any pipeline step
+     * from being written into the seam, where a vector would then test a parallel path.
+     */
+    static final String TESTING = "testing";
+
     private DependencyRules() {}
 
     /** Module name to the ArchUnit package pattern its classes live under (docs/27 §3). */
@@ -51,7 +58,7 @@ final class DependencyRules {
         m.put("keyprovider", ROOT + ".keyprovider..");
         for (String internal :
                 List.of("envelope", "registry", "context", "kdf", "aead", "commitment",
-                        "blindindex", "cache", "config")) {
+                        "blindindex", "cache", "config", TESTING)) {
             m.put(internal, ROOT + ".internal." + internal + "..");
         }
         return m;
@@ -74,6 +81,7 @@ final class DependencyRules {
         for (String m : ERRORS_ONLY) {
             rules.put(m, onlyDependsOn(m, Set.of("errors"), modules));
         }
+        rules.put(TESTING, onlyDependsOn(TESTING, Set.of("errors"), modules));
 
         rules.put("no-module-imports-api",
                 noClasses().that().resideInAPackage(ROOT + ".*..")

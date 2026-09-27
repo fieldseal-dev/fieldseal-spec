@@ -110,8 +110,8 @@ The specification is written in RFC 2119 language with the justification for eve
 
 | Claim | Where it is checked |
 |---|---|
-| Both cores agree with the pinned vectors | `vectors/`: 161 vectors, 193 results per core, hashed in `MANIFEST.json`. `python-core` and `typescript-core` jobs; the TypeScript core also runs every vector through its async companions (364 results). |
-| Both cores produce identical result ids | `cross-core-result-ids` |
+| The cores agree with the pinned vectors | `vectors/`: 161 vectors, 193 results per core, hashed in `MANIFEST.json`. `python-core`, `typescript-core` and `java-core` jobs; the TypeScript core also runs every vector through its async companions (364 results). |
+| Every core produces identical result ids | `cross-core-result-ids`: Python, TypeScript and Java |
 | Each core decrypts what the other core and both adapters wrote | `cross-produce` / `cross-consume`: every producer encrypts a shared 16-case corpus through its production path; every consumer decrypts every producer, self-pairs included (`docs/14` §3). |
 | Adapters render logical types identically | `vectors/codec/`: 124 vectors, both directions, refusals included; run by both adapters against SQLite and PostgreSQL. |
 | Adapters contain no cryptography | A CI grep of each adapter's `src/` for crypto imports fails the build on a hit (spec §11.3). |
