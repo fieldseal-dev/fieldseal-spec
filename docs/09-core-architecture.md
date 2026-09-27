@@ -22,7 +22,7 @@ core/<lang>/
   blindindex   IDFs (Argon2id, HMAC-SHA-512), truncation, normalizers  (spec §7)
   keyprovider  KeyProvider interface + Static/Derived/Envelope providers  (spec §8)
   cache        DEK cache (max-age + max-uses + zeroization)  (spec §5.5)
-  config       client configuration: mode, allow-list, provider, cache policy, index declarations
+  config       client configuration: mode, allow-list, provider, index declarations
   errors       the §9 taxonomy as typed errors
   testing      encrypt_with_materials + fixed entropy source  (docs/08 §6; never exported from the main module)
 ```
@@ -39,18 +39,19 @@ Fieldseal(config) where config = {
     allowed_suites   : set<suite_id>         (required, non-empty — no implicit "all registered")
     write_suite      : suite_id              (required; MUST be in allowed_suites)
     read_mode        : strict | permissive | readonly    (default: strict)
-    cache            : { max_age, max_uses (≤ 2^32), capacity }   (required for EnvelopeKeyProvider)
     index_registry   : declared blind-index configurations (§7 below)
     on_warning       : hook (permissive-mode plaintext reads, StaticKeyProvider outside test)
-    metrics          : hook (counters: plaintext_reads, decrypt_errors by type, cache evictions)
+    metrics          : hook (counters: plaintext_reads, decrypt_errors by type; cache counters are the provider's, §8.3)
 }
 ```
+
+**The cache policy is the provider's, not a client field (normative).** The §5.5 thresholds — `cache: { max_age, max_uses (≤ 2^32), capacity }` — are a **required argument of the envelope key provider** (`EnvelopeKeyProvider(cache: …)`), and the provider creates and owns the cache that policy describes (§8.3). The client's configuration has no `cache` member in any binding. A binding MAY **refuse** a `cache` key in the client configuration rather than accept and ignore it, and one does (docs/11 §4, a `ConfigurationError` naming the provider's option); what no binding may do is keep a second copy of the policy, validate it in one place and enforce it in another, or fall back to a default when the deployment supplied none — spec §5.5 gives the thresholds no defaults, and a default here is a silently weakened security threshold. (`§5.5` throughout this document is the **spec's** §5.5; this document's own cache section is §8.3.)
 
 Design rules:
 
 - **Explicit allow-list.** `allowed_suites` has no default. Forcing the deployment to write `["0xFF01"]` is the §4.3 retirement mechanism working as designed.
 - **The client is immutable after construction.** Mode changes, suite changes, and provider changes are new clients. This removes a class of concurrency bugs and makes "which config produced this ciphertext" answerable.
-- **Construction validates everything**: write suite in allow-list, cache thresholds within §5.5 bounds, every declared index passing the §7.6 cardinality gate or carrying an explicit logged override, StaticKeyProvider triggering the §8 warning outside test configuration.
+- **Construction validates everything the client was given**: write suite in allow-list, every declared index passing the §7.6 cardinality gate or carrying an explicit logged override, StaticKeyProvider triggering the §8 warning outside test configuration. The **cache thresholds are validated where the policy is constructed** — in the provider's constructor, and in the policy type itself where the language has one — raising the binding's construction-time configuration error. No core validates them at client construction, because the client is never handed them.
 - Per-language surface (constructor idioms, builder patterns) is defined in the per-language specs; the semantics above are fixed.
 
 **Configuration reflection (normative).** A constructed client MUST be able to report back every element of its validated configuration that affects stored bytes, query results, or read behaviour: at minimum `read_mode`, `write_suite`, `allowed_suites`, the spec §4.8 arming state, and the **validated index declarations** (§7). Values MUST be reported in their **validated, resolved form** — defaults filled in — not as supplied. A client MUST NOT expose its `KeyProvider`, its cache, or any key material through this surface. An accessor MUST NOT permit mutation of the client: a core returning a collection MUST return one the caller cannot use to alter the client's own state, which the immutability rule above otherwise only claims.
@@ -362,10 +363,20 @@ The corollary for providers is worth stating, because it is where the cost lands
 
 - Keyed by (provider scope, tenant, key version, role: dek|index).
 - Eviction: max-age AND max-uses (≤ 2³²) AND capacity LRU. Use counting is per cached entry, incremented per **DEK-role** `encryption_key` return. **The index role has no use budget.** An index key is never AEAD key material (spec §8: `encryption_key` returns the tenant index key, never the tenant DEK) and draws no nonce, so the SP 800-38D ceiling spec §5.5 sets `max_uses` for does not reach it; spending that budget on index derivations bounds nothing, and is reachable in practice, since `max_uses` is configurable from 1 to 2³² while index derivation runs on every write and on every query. `max_age` and the **capacity LRU still apply to both roles** — an index key retires on TTL and can be evicted under memory pressure exactly as a DEK can. This is §8.1's "candidate reads are not uses" one level over, and by the same argument: a budget §5.5 defines as a limit on **encryptions** must not be spent by a path that is not an encryption.
+- **The cache belongs to the provider, not to the client.** Its policy is a provider argument (§2), its instance is created in the provider's constructor, and its lifetime is the provider's, so it outlives any one client built on it. A deployment that wants a private cache builds a provider of its own; a binding MUST NOT give a client a second cache, or copy the policy into the client.
 - **Zeroization on eviction is best-effort and honesty-documented per language** — GC languages cannot guarantee no copies (spec §5.5's own "honest limitation"). Each per-language spec states exactly what its zeroization does and does not achieve; no language doc may claim guaranteed erasure.
 - `mlock`/no-swap: SHOULD where the platform supports it (spec §5.5). Python and Node cannot do this meaningfully for GC-managed buffers; both per-language specs document the deviation instead of pretending.
 - Concurrency: single-flight on refresh (one KMS unwrap per key even under concurrent misses), lock-free or fine-grained-locked reads; the value path never blocks on another tenant's refresh.
-- Metrics: hits, misses, evictions by cause, age distribution — the §5.5 "TTL is a security parameter" stance needs observability to be auditable.
+- Metrics: hits, misses, evictions by cause, age distribution — the §5.5 "TTL is a security parameter" stance needs observability to be auditable. **These counters live on the provider's cache, not on the client's `metrics` hook (§2):** the client does not own the cache, so it has nothing to count them on, and a provider shared by several clients has one set of counters for all of them. The three shipped cores already do this — Python `CacheMetrics.evictions`, TypeScript `DekCache.metrics.evictions`, Java `DekCache.evictions(cause)`.
+
+**What sharing one provider means (normative consequences, not choices).** The key carries the tenant scope, but the capacity LRU is **one queue over the whole cache**, not one per tenant. So for the clients built from a single provider:
+
+- a key is unwrapped **once per residency** in the cache, whichever client first needs it (a refresh or a re-warm after eviction unwraps it again, and restarts its age and budget);
+- a DEK entry's `max_uses` budget is **shared**: every client's returns of that key spend one budget, not one each (which returns count as uses is §8.3's own business, and is the same for every client);
+- `capacity` is **one budget covering every tenant the sharing clients serve**, so one client's warms can evict a key that another client — serving a tenant it has nothing to do with — is relying on. The evicted key then fails closed with `KEY_UNAVAILABLE` until it is warmed again (a key evicted because its store no longer lists it — Java's `RETIRED` cause — is not restored by warming). The refusal SHOULD name eviction as one of its causes; that is advisory, not a conformance requirement: a refusal that tells the caller to warm the key, as the Python and TypeScript cores' do, is conformant, and Java's wording, which also names eviction, is the better message rather than the floor. Size `capacity` for the sum over tenants, or give tenants separate providers, where that coupling is not wanted;
+- the client's own immutability is unaffected — this is about who shares the cache, not about what a client can change.
+
+A core MAY partition the capacity queue per tenant, or key entries by client as well as by tenant, if it says so in its binding document. The three shipped cores keep **one global queue** — Python `cache.py`'s `while len(self._entries) >= self.policy.capacity`, the TypeScript `cache.ts` equivalent, and the Java `DekCache`'s `while (entries.size() > limits.capacity())` over its whole `entries` map, whose `Slot(scope, tenant, role)` index makes *lookup* per-slot without partitioning *capacity*. The loops differ in one detail that does not change the conclusion: Python and TypeScript evict before inserting and never exceed `capacity`, while Java inserts first and evicts down to it, so it briefly holds `capacity + 1` entries inside its lock. Verified 2026-09-27 at `origin/dev`; Java's slot index is described in `docs/27` §3.
 
 ## 9. Errors
 
@@ -373,8 +384,8 @@ One root type per language (`FieldsealError`) with exactly the §9 taxonomy as s
 
 ## 10. Concurrency and process model
 
-- The client is thread-safe after construction (immutable config + concurrent-safe cache). All five sync operations are re-entrant.
-- No global mutable state; multiple clients with different configs coexist in one process (needed for `readonly` analytics alongside `strict` serving, §10.3).
+- The client is thread-safe after construction: its configuration is immutable, and every provider it was given is safe to call from several threads and to share between clients (§8.3). All five sync operations are re-entrant.
+- No global mutable state; multiple clients with different configs coexist in one process (needed for `readonly` analytics alongside `strict` serving, §10.3). Clients that share a provider also share its cache, its use budgets and its capacity — see §8.3 — so a process mixing a `readonly` analytics client and a `strict` serving client over one provider is sharing one §5.5 cache, not two.
 - Fork-safety: CSPRNG must be fork-safe (per-language: Python `os.urandom`/`secrets` — kernel-backed, fork-safe; Node `crypto.randomBytes` — kernel-backed). Cache contents surviving a fork are DEK copies in the child — documented as part of the §5.5 memory-exposure honesty, with guidance to construct clients post-fork in prefork servers (gunicorn/uwsgi).
 
 ## 11. What the core deliberately does not contain
