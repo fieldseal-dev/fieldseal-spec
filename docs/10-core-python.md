@@ -64,8 +64,19 @@ py.typed
 ## 4. Public API shape
 
 ```python
-from fieldseal import Fieldseal, FieldContext
+from datetime import timedelta
+
+from fieldseal import Fieldseal, FieldContext, IndexDeclaration
+from fieldseal.cache import CachePolicy
 from fieldseal.keyprovider import EnvelopeKeyProvider
+
+# The §5.5 cache policy is the provider's, not the client's (docs/09 §2, §8.3):
+# `Fieldseal.__init__` has no `cache` parameter, and passing one is a TypeError.
+provider = EnvelopeKeyProvider(
+    wrapper=kms_wrapper,            # any object with `unwrap(wrapped, scope)`
+    directory=key_directory,        # anything with `by_scope(scope)`
+    cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
+)
 
 fs = Fieldseal(
     key_provider=provider,
@@ -73,7 +84,6 @@ fs = Fieldseal(
     write_suite=0xFF01,
     read_mode="strict",
     arm_provisional_suites=False,      # spec §4.8; or FIELDSEAL_ARM_PROVISIONAL_SUITES=1 (docs/14 §4)
-    cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
     indexes=[IndexDeclaration(...)],
 )
 
@@ -98,6 +108,7 @@ fs.indexes           # -> Mapping[str, ValidatedIndex], keyed by index_registry_
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
 - Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `SuiteProvisional` (code `SUITE_PROVISIONAL`, spec §4.8), and two implementation-local codes docs/09 §9 permits outside §9: `ConfigurationError` (construction time) and `InvalidArgument` (an operand refused at the API boundary — an index purpose handed to `encrypt`, invalid UTF-8 handed to a text normalizer). Each carries `.code: str` equal to the vector-suite string (docs/09 §9). `FieldsealWarning` is the spec §10.3 warning for the pass-through modes.
 - `KeyProvider` is spec §8's interface by name: `encryption_key(ctx) -> (key_material, key_id)` with purpose routing, and `decryption_keys(header) -> Sequence[bytes]` returning every currently-valid version in preference order; the client tries each candidate's commitment in turn (docs/09 §3.2 step 6).
+- **No client-level `cache` parameter (docs/09 §2, §8.3).** `Fieldseal.__init__` takes `key_provider`, `allowed_suites`, `write_suite`, `read_mode`, `indexes` and `arm_provisional_suites`, and nothing else; handing it `cache=` is a `TypeError`, not a silently ignored argument. The §5.5 policy is `EnvelopeKeyProvider`'s own required `cache` option (`from fieldseal.cache import CachePolicy`), validated in `CachePolicy.__post_init__` and raised at that construction. Python has no client-config dictionary to screen, so it has nothing to refuse: the keyword simply does not exist. Every client built on one provider shares that provider's cache, its use budgets and its capacity, and one client's warms can evict another's keys (docs/09 §8.3) — **no test in this core pins that yet**.
 - **Configuration reflection (docs/09 §2, added by G18).** The five properties above are read-only and report the validated form: `indexes` returns `ValidatedIndex` records with the §7.3 Argon2 minima filled in, `index_id` defaulted to `"exact"` and `on_unindexable` to `refuse`. `ValidatedIndex`, `validate_index_declaration` and `index_registry_key` are exported from the package for the purpose — a caller comparing its own declarations against a client's registry needs the last two to build the same keys and resolve the same defaults. The mapping is a `MappingProxyType` over the client's registry, not the dict: `mappingproxy` carries no mutating methods at all, which is a stronger guarantee than refusing them, and the `ValidatedIndex` records are frozen dataclasses, so a caller holding one cannot rewrite the truncation length of a live index. `key_provider` and the cache are deliberately absent from this surface (docs/09 §2's carve-out).
 
 ## 5. Security-relevant implementation notes
