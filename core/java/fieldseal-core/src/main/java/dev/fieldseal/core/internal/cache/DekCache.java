@@ -20,9 +20,10 @@ import java.util.function.Supplier;
  * {@code warm} and the value path.
  *
  * <ul>
- *   <li><b>Three limits, all enforced:</b> max-age, max-uses (a {@code long}, at most 2³²) and
- *       capacity with least-recently-used eviction. An entry past its age or out of uses is
- *       evicted when next touched; the last permitted use evicts it immediately.
+ *   <li><b>Three limits:</b> max-age and capacity with least-recently-used eviction for every
+ *       key, and max-uses (a {@code long}, at most 2³²) for a {@link Role#DEK} key only. An entry
+ *       past its age, or a DEK out of uses, is evicted when next touched; a DEK's last permitted
+ *       use evicts it immediately.
  *   <li><b>Uses are encryptions.</b> {@link #takeForEncrypt} counts one for a {@link Role#DEK}
  *       key; {@link #candidates}, the read path, counts none (docs/09 §8.1). An {@link
  *       Role#INDEX} key has no use budget at all (docs/09 §8.3, #212): it is never AEAD key
@@ -151,8 +152,13 @@ public final class DekCache {
                 return Optional.empty();
             }
             byte[][] out = {e.key.clone(), e.keyId.clone()};
-            if (key.slot().role() == Role.DEK && ++e.uses >= limits.maxUses()) {
-                evict(key, Cause.USES);
+            // The count is its own statement, so no reordering of a condition can make an
+            // index-role fetch count (#224 review).
+            if (key.slot().role() == Role.DEK) {
+                e.uses++;
+                if (e.uses >= limits.maxUses()) {
+                    evict(key, Cause.USES);
+                }
             }
             return Optional.of(out);
         }

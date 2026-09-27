@@ -27,10 +27,10 @@ class EnvelopeProviderTest {
     private final Wrappers.Store store = new Wrappers.Store(kms);
     private final AtomicLong now = new AtomicLong();
 
-    private Fieldseal client(long maxUses, Duration maxAge) {
+    private Fieldseal client(long maxUses, Duration maxAge, IndexDeclaration... indexes) {
         return builder(KeyProviders.envelopeWithClock(kms, store,
                 new CachePolicy(maxAge, maxUses, 100), EnvelopeProvider.WARM_POOL, now::get))
-                .build();
+                .indexes(List.of(indexes)).build();
     }
 
     @Test
@@ -82,14 +82,7 @@ class EnvelopeProviderTest {
      */
     @Test
     void theIndexRoleHasNoUseBudget() {
-        Fieldseal fs = builder(KeyProviders.envelopeWithClock(kms, store,
-                new CachePolicy(Duration.ofSeconds(10), 2, 100), EnvelopeProvider.WARM_POOL,
-                now::get))
-                .indexes(List.of(IndexDeclaration.builder(Fixtures.TABLE, Fixtures.COLUMN)
-                        .indexId("email-eq").idf(IndexDeclaration.Idf.HMAC_SHA512)
-                        .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
-                        .projectedPopulation(100_000).build()))
-                .build();
+        Fieldseal fs = client(2, Duration.ofSeconds(10), Fixtures.emailIndex().build());
         FieldContext ix = ctx().forIndex("email-eq");
         fs.warm(List.of(ctx())).join();
         byte[] first = fs.blindIndex("ada@example.com", ix);
@@ -104,8 +97,10 @@ class EnvelopeProviderTest {
         assertArrayEquals(first, fs.blindIndex("ada@example.com", ix),
                 "after the DEK's use eviction");
         now.addAndGet(Duration.ofSeconds(10).toNanos() + 1);
-        assertThrows(KeyUnavailableError.class, () -> fs.blindIndex("ada@example.com", ix),
-                "max-age still retires the index key");
+        KeyUnavailableError aged = assertThrows(KeyUnavailableError.class,
+                () -> fs.blindIndex("ada@example.com", ix), "max-age still retires the index key");
+        assertTrue(!aged.getMessage().contains("budget"),
+                "an index key has no budget to have used up: " + aged.getMessage());
     }
 
     @Test

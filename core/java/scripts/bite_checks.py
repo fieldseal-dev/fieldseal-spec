@@ -158,17 +158,32 @@ MUTATIONS = [
      "                    e.uses++;\n                    out.put(k.version(), e.key.clone());",
      [CORE + "*DekCacheTest"], "red"),
     ("s4b cache: maxUses off by one", I / "cache/DekCache.java",
-     "&& ++e.uses >= limits.maxUses()) {", "&& ++e.uses > limits.maxUses()) {",
+     "                if (e.uses >= limits.maxUses()) {",
+     "                if (e.uses > limits.maxUses()) {",
      [CORE + "*DekCacheTest"], "red"),
     # #212 / #221: the index role has no use budget (docs/09 §8.3).
     ("212 cache: index-role fetches spend the use budget", I / "cache/DekCache.java",
-     "if (key.slot().role() == Role.DEK && ++e.uses >= limits.maxUses()) {",
-     "if (++e.uses >= limits.maxUses()) {",
+     "            if (key.slot().role() == Role.DEK) {\n                e.uses++;",
+     "            if (true) {\n                e.uses++;",
      [CORE + "*DekCacheTest", CORE + "*EnvelopeProviderTest"], "red"),
     ("212 cache: no role counts, so a DEK is never use-evicted", I / "cache/DekCache.java",
-     "if (key.slot().role() == Role.DEK && ++e.uses >= limits.maxUses()) {",
-     "if (key.slot().role() == Role.INDEX && ++e.uses >= limits.maxUses()) {",
+     "            if (key.slot().role() == Role.DEK) {\n                e.uses++;",
+     "            if (key.slot().role() == Role.INDEX) {\n                e.uses++;",
      [CORE + "*DekCacheTest", CORE + "*EnvelopeProviderTest"], "red"),
+    # Iterating an access-ordered LinkedHashMap's entrySet leaves the order alone, so this is a
+    # lookup that finds the key without marking it recently used.
+    ("212 cache: an index fetch does not mark the key recently used", I / "cache/DekCache.java",
+     "            Entry e = entries.get(key);\n            if (e == null || !fresh(key, e)) {",
+     "            Entry e = key.slot().role() != Role.INDEX ? entries.get(key)"
+     " : entries.entrySet().stream().filter(x -> x.getKey().equals(key))"
+     ".map(Map.Entry::getValue).findFirst().orElse(null);\n"
+     "            if (e == null || !fresh(key, e)) {",
+     [CORE + "*DekCacheTest"], "red"),
+    ("212 envelope: an index key's refusal blames a budget it has not got",
+     M / "EnvelopeProvider.java",
+     '''                                : " aged out")''',
+     '''                                : " aged out, used up its budget,")''',
+     [CORE + "*EnvelopeProviderTest"], "red"),
     ("212 cache: an index key skips max-age too", I / "cache/DekCache.java",
      "            if (e == null || !fresh(key, e)) {\n                return Optional.empty();\n"
      "            }\n            byte[][] out",

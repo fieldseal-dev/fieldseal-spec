@@ -114,13 +114,30 @@ class DekCacheTest {
         DekCache c = cache(1_000, 2, 10);
         c.load(K1, ID, () -> key(7)).join();
         c.load(IX, ID, () -> key(9)).join();
-        for (int i = 0; i < 2; i++) {
-            assertTrue(c.takeForEncrypt(IX).isPresent());
+        for (int i = 0; i < 2 + 1; i++) {
+            assertTrue(c.takeForEncrypt(IX).isPresent(), "index fetch " + (i + 1));
         }
         assertTrue(c.takeForEncrypt(K1).isPresent(), "first encryption");
         assertTrue(c.takeForEncrypt(K1).isPresent(), "second encryption");
         assertTrue(c.takeForEncrypt(K1).isEmpty(), "third encryption: past maxUses");
         assertEquals(1, c.evictions(DekCache.Cause.USES));
+        assertTrue(c.takeForEncrypt(IX).isPresent(), "the index key outlives the DEK's budget");
+    }
+
+    /**
+     * An index-role fetch counts no use but still marks the key recently used, so a hot index key
+     * is not the first to go at capacity (#224 review).
+     */
+    @Test
+    void anIndexFetchKeepsItsKeyRecentlyUsed() {
+        DekCache c = cache(1_000, 3, 2);
+        c.load(IX, ID, () -> key(9)).join();
+        c.load(K1, ID, () -> key(7)).join();
+        assertTrue(c.takeForEncrypt(IX).isPresent());
+        c.load(OTHER, ID, () -> key(8)).join();
+        assertTrue(c.takeForEncrypt(K1).isEmpty(), "the DEK was the least recently used");
+        assertTrue(c.takeForEncrypt(IX).isPresent(), "the fetched index key stayed");
+        assertEquals(1, c.evictions(DekCache.Cause.CAPACITY));
     }
 
     /** Capacity still applies to the index role: it is the LRU entry like any other. */
