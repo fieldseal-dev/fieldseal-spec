@@ -90,10 +90,9 @@ final class DeclarationVectors {
                 .idf(byId(Idf.values(), Idf::id, text(d, "idf")))
                 .normalize(byId(Normalizer.values(), Normalizer::id, text(d, "normalize")))
                 .truncateBits(integer(d, "truncate_bits"))
-                .projectedPopulation(d.path("projected_population").asLong())
+                .projectedPopulation(longInteger(d, "projected_population"))
                 .onUnindexable(byId(OnUnindexable.values(), OnUnindexable::id,
                         text(d, "on_unindexable")));
-        assertTrue(d.path("projected_population").canConvertToLong(), "projected_population");
         assertTrue(d.path("skewed").isBoolean(), "skewed is a boolean");
         b.skewed(d.path("skewed").asBoolean());
         JsonNode o = d.path("cardinality_override");
@@ -101,12 +100,34 @@ final class DeclarationVectors {
             b.cardinalityOverride(new ReviewedOverride(text(o, "reason"), text(o, "approved_by"),
                     LocalDate.parse(text(o, "date"))));
         }
-        JsonNode p = d.path("idf_params");
-        assertTrue(p.isObject(), "idf_params is an object");
-        if (p.has("time_cost") || p.has("memory_kib")) {
-            b.argon2(new Argon2Params(integer(p, "time_cost"), integer(p, "memory_kib")));
-        }
+        idfParams(b, text(d, "idf"), d.path("idf_params"));
         return b.build();
+    }
+
+    /**
+     * docs/08 §4.4's rules for {@code idf_params}, as {@code BlindIndexVectorsTest.params} applies
+     * them: {@code hmac-sha512} carries none; {@code argon2id} carries {@code time_cost} and
+     * {@code memory_kib}, since a missing one is malformed and never the core's minima, and any
+     * {@code version}, {@code parallelism} or {@code output_len} it declares is spec §7.3's.
+     */
+    private static void idfParams(IndexDeclaration.Builder b, String idf, JsonNode p) {
+        assertTrue(p.isObject(), "idf_params is an object");
+        switch (idf) {
+            case "hmac-sha512" -> assertEquals(0, p.size(),
+                    "hmac-sha512 carries empty idf_params: malformed (docs/08 §4.4)");
+            case "argon2id" -> {
+                assertTrue(p.has("time_cost") && p.has("memory_kib"),
+                        "argon2id idf_params without time_cost and memory_kib: malformed");
+                for (String[] pin : new String[][] {{"version", "19"}, {"parallelism", "1"},
+                    {"output_len", "64"}}) {
+                    if (p.has(pin[0])) {
+                        assertEquals(pin[1], p.path(pin[0]).asText(), pin[0] + " is spec §7.3's");
+                    }
+                }
+                b.argon2(new Argon2Params(integer(p, "time_cost"), integer(p, "memory_kib")));
+            }
+            default -> throw new AssertionError("unknown idf '" + idf + "'");
+        }
     }
 
     private static String text(JsonNode n, String field) {
@@ -114,9 +135,17 @@ final class DeclarationVectors {
         return n.path(field).asText();
     }
 
+    /** An integral JSON number in {@code int} range: 1023.9 is malformed, not 1023. */
     private static int integer(JsonNode n, String field) {
-        assertTrue(n.path(field).canConvertToInt(), field + " is an integer");
+        assertTrue(n.path(field).isIntegralNumber() && n.path(field).canConvertToInt(),
+                field + " is an integer");
         return n.path(field).asInt();
+    }
+
+    private static long longInteger(JsonNode n, String field) {
+        assertTrue(n.path(field).isIntegralNumber() && n.path(field).canConvertToLong(),
+                field + " is an integer");
+        return n.path(field).asLong();
     }
 
     private static <E> E byId(E[] values, java.util.function.Function<E, String> id, String want) {
