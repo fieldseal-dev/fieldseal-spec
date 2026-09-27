@@ -86,10 +86,10 @@ class FieldsealTestingTest {
     void theApiBoundaryOrderIsEncrypts() {
         Fieldseal readonly = builder().readMode(ReadMode.READONLY).build();
         assertThrows(ModeViolationError.class, () -> seal(readonly, null, null));
+        // The test task removes FIELDSEAL_ARM_PROVISIONAL_SUITES, so this client is unarmed.
         Fieldseal unarmed = builder().armProvisionalSuites(false).build();
-        if (!unarmed.provisionalArmed()) {
-            assertThrows(SuiteProvisionalError.class, () -> seal(unarmed, null, null));
-        }
+        assertFalse(unarmed.provisionalArmed(), "the environment armed the client");
+        assertThrows(SuiteProvisionalError.class, () -> seal(unarmed, null, null));
         Fieldseal fs = builder().build();
         FieldsealError e = assertThrows(InvalidArgumentError.class, () -> seal(fs, null, null));
         assertEquals("the plaintext is null", e.getMessage());

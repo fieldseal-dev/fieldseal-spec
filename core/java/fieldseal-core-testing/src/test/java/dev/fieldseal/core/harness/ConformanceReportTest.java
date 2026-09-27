@@ -170,6 +170,20 @@ class ConformanceReportTest {
         assertEquals(List.of(), validate(r));
     }
 
+    /**
+     * A problem found after assembly (the schema check, a validation violation) withdraws the L0
+     * claim in the printed report, and the report still validates.
+     */
+    @Test
+    void aLateProblemWithdrawsTheL0Claim() {
+        Assembled a = assemble(allPassing(), oobPassing());
+        ConformanceReport.finish(a.report(), List.of());
+        assertTrue(a.report().path("claimed_levels").path("L0").asBoolean(), "no problem");
+        ConformanceReport.finish(a.report(), List.of("vectors/schema/ exists"));
+        assertFalse(a.report().path("claimed_levels").path("L0").asBoolean());
+        assertEquals(List.of(), validate(a.report()));
+    }
+
     // --- validation: each rule, broken once ---------------------------------------------------
 
     private static void assertInvalid(String fragment, Consumer<ObjectNode> breakIt) {

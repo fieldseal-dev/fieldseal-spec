@@ -21,6 +21,8 @@ val coreTests = project(":fieldseal-core").the<SourceSetContainer>()["test"]
 // docs/08 §6: encrypt_with_materials runs only under FIELDSEAL_TEST_MODE=1. The harness needs it
 // for envelope/'s encrypt direction, and nothing else in this module's tests is changed by it.
 val testMode = "FIELDSEAL_TEST_MODE"
+// spec §4.8: this variable arms every client in the process, whatever its builder says.
+val armProvisional = "FIELDSEAL_ARM_PROVISIONAL_SUITES"
 
 // `./gradlew -q vectors`: the conformance report (docs/14 §4) on stdout, the counterpart of the
 // other cores' report commands. Exit status 1 when a result fails or the report does not
@@ -34,6 +36,7 @@ tasks.register<JavaExec>("vectors") {
     systemProperty("fieldseal.vectors", rootDir.resolve("../../vectors").canonicalPath)
     systemProperty("fieldseal.version", project.version.toString())
     environment(testMode, "1")
+    environment.remove(armProvisional)
 }
 
 // The platform-maximum probe (docs/27 §6.4) allocates arrays of nearly 2 GiB, so it is kept
@@ -41,6 +44,8 @@ tasks.register<JavaExec>("vectors") {
 tasks.test {
     useJUnitPlatform { excludeTags("memory", "unarmed") }
     environment(testMode, "1")
+    // ClientVectorsTest's unarmed vectors and the API-boundary tests need it absent (spec §4.8).
+    environment.remove(armProvisional)
     // GcmAllocation (docs/27 §6.3) holds about 400 MiB live at its peak: 192 MiB of caller
     // arrays over a 64 MiB operand plus the update() path's 3x internal buffering. Gradle's
     // default 512 MiB worker heap leaves that no headroom, and an OutOfMemoryError there would

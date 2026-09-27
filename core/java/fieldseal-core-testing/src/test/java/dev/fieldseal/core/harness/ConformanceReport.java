@@ -276,6 +276,19 @@ public final class ConformanceReport {
         return new Assembled(r, problems);
     }
 
+    /**
+     * Withdraws the L0 claim when the run found any problem, including those found after
+     * {@link #assemble}: the {@code vectors/schema/} check and every {@link #validate} violation.
+     * The printed report is the artifact CI uploads, so it must not claim a level the run did not
+     * earn (#219 review). A withdrawn claim never adds a violation, so validation need not run
+     * again.
+     */
+    static void finish(ObjectNode report, List<String> problems) {
+        if (!problems.isEmpty()) {
+            ((ObjectNode) report.path("claimed_levels")).put("L0", false);
+        }
+    }
+
     // --- validating ----------------------------------------------------------------------------
 
     /**
@@ -579,6 +592,7 @@ public final class ConformanceReport {
                 implementation(vectors), environment());
         problems.addAll(a.problems());
         validate(a.report(), manifest, expected).forEach(v -> problems.add("invalid: " + v));
+        finish(a.report(), problems);
         stdout.println(JSON.writeValueAsString(a.report()));
         stdout.flush();
         problems.forEach(p -> System.err.println("PROBLEM " + p));

@@ -20,6 +20,18 @@ public final class FieldsealTesting {
     /** docs/08 §6's arming variable. Only the byte-exact value {@code 1} arms. */
     public static final String ARMING_VARIABLE = MaterialsSeam.ARMING_VARIABLE;
 
+    static {
+        // A class literal does not initialize its class (JLS §12.4.1), and Fieldseal's static
+        // initializer is what installs the encryptor. Without this, an armed process that has
+        // never built a client and passes a null one would get the seam's IllegalStateException
+        // instead of the api's InvalidArgumentError (#219 review).
+        try {
+            Class.forName(Fieldseal.class.getName(), true, Fieldseal.class.getClassLoader());
+        } catch (ClassNotFoundException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     private FieldsealTesting() {}
 
     /**
