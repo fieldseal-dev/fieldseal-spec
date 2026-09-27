@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.9.0-provisional",
+  "vector_suite_version": "0.10.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -589,6 +589,168 @@
       },
       "expected": {
         "refuse": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-low-cardinality-refused",
+      "description": "index declaration: P = 2^10 - 1 distinct values, below the §7.6 gate, no override: refused (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 6,
+          "projected_population": 1023,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-at-threshold-accepted",
+      "description": "index declaration: P = 2^10 distinct values, exactly the §7.6 gate, is not below it: accepted without an override (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 6,
+          "projected_population": 1024,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "accepted"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-low-cardinality-override-accepted",
+      "description": "index declaration: P = 2^10 - 1 with a recorded cardinality_override {reason, approved_by, date}: the gate is relieved, accepted (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 6,
+          "projected_population": 1023,
+          "skewed": false,
+          "cardinality_override": {
+            "reason": "vector: reviewed low-cardinality column",
+            "approved_by": "vectors",
+            "date": "2026-09-27"
+          },
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "accepted"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-override-incomplete-refused",
+      "description": "index declaration: P = 2^10 - 1 with a cardinality_override whose approved_by is empty: not a reviewed override (§7.6), refused (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 6,
+          "projected_population": 1023,
+          "skewed": false,
+          "cardinality_override": {
+            "reason": "vector: reviewed low-cardinality column",
+            "approved_by": "",
+            "date": "2026-09-27"
+          },
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-skewed-refused",
+      "description": "index declaration: P = 2^20 but declared skewed, no override: refused by the §7.6 gate's second half (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": true,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/gate-skewed-override-accepted",
+      "description": "index declaration: P = 2^20, declared skewed, with a recorded cardinality_override: the gate is relieved, accepted (configuration outcome, no §9 code)",
+      "spec_ref": "§7.6",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": true,
+          "cardinality_override": {
+            "reason": "vector: reviewed low-cardinality column",
+            "approved_by": "vectors",
+            "date": "2026-09-27"
+          },
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "accepted"
       }
     }
   ],

@@ -96,10 +96,10 @@ def compare(reports: dict[str, Any], manifest: Any) -> tuple[list[str], list[str
 
         # docs/14 line 126 defines the flag over both halves: the companions
         # exist, AND every first-pass result is twinned. Checking only that
-        # '#async' results are present would pass a partial second pass -- 182
+        # '#async' results are present would pass a partial second pass -- 193
         # synchronous, 69 twins -- because stripping the suffix cannot shrink
         # the synchronous set, so the comparison below would still see
-        # 182 == 182. The suffix is appended last at the pass boundary, so
+        # 193 == 193. The suffix is appended last at the pass boundary, so
         # composed ids ('<id>#decrypt#async') strip correctly.
         if flag:
             if not second:

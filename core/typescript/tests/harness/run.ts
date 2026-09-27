@@ -23,6 +23,7 @@ import { FMT_VER, SUITE_FF01, getSuite, isProvisionalId } from "../../src/regist
 import { encrypt_with_materials } from "../../src/testing/index.ts";
 import { hex, hexOrNull, loadSuite, parseSuiteId, type LoadedSuite } from "./suite.ts";
 import { codeOfError } from "../errcode.ts";
+import { ConfigurationError } from "../../src/errors.ts";
 
 export type Status = "pass" | "fail" | "skipped";
 
@@ -354,8 +355,59 @@ function runKdf(v: Record<string, unknown>): Result {
   return verdict(id, problems);
 }
 
+/**
+ * `assertion: "declaration"` (suite 0.10.0; #210 in context/, #211 in
+ * blind-index/): declare the vector's index to a client at construction.
+ * A refusal is configuration-level and has no §9 code (docs/08 §4.3), so the
+ * check is the error's class, never a code: `ConfigurationError` passes, and
+ * anything else — a §9 `FieldsealError` included — fails, since the
+ * declaration was then refused for the wrong reason. An accepted declaration
+ * must construct cleanly. There is no asynchronous companion to construction,
+ * so the `#async` pass re-runs this unchanged.
+ */
+function runDeclaration(v: Record<string, unknown>): Result {
+  const id = v.id as string;
+  const d = (v.inputs as Record<string, unknown>).declaration as Record<string, unknown>;
+  const want = (v.expected as Record<string, unknown>).declaration;
+  const o = d.cardinality_override as { reason: string; approved_by: string; date: string } | null;
+  if (d.idf !== "hmac-sha512" || Object.keys(d.idf_params as object).length !== 0) {
+    return { id, status: "fail", reason: "declaration vector with an IDF this runner does not build" };
+  }
+  try {
+    new Fieldseal(
+      {
+        keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: new Uint8Array(32).fill(0xbb) }),
+        allowedSuites: [parseSuiteId(v.suite_id as string)],
+        writeSuite: parseSuiteId(v.suite_id as string),
+        indexes: [
+          {
+            tableUuid: hex(d.table_uuid as string),
+            columnUuid: hex(d.column_uuid as string),
+            indexId: d.index_id as string,
+            idf: d.idf as IdfId,
+            normalize: d.normalize as NormalizerId,
+            truncateBits: d.truncate_bits as number,
+            projectedPopulation: d.projected_population as number,
+            skewed: d.skewed as boolean,
+            ...(o === null ? {} : { cardinalityOverride: { reason: o.reason, approvedBy: o.approved_by, date: o.date } }),
+            onUnindexable: d.on_unindexable as "refuse" | "bucket",
+          },
+        ],
+      },
+      { armProvisionalSuites: true },
+    );
+  } catch (e) {
+    if (e instanceof ConfigurationError) {
+      return want === "refused" ? { id, status: "pass" } : { id, status: "fail", reason: `declaration refused (${e.message}), want accepted` };
+    }
+    return { id, status: "fail", reason: `declaration raised ${errCode(e)}, not a configuration refusal` };
+  }
+  return want === "accepted" ? { id, status: "pass" } : { id, status: "fail", reason: "declaration accepted, want refused at declaration time" };
+}
+
 function runContext(v: Record<string, unknown>): Result {
   const id = v.id as string;
+  if (v.assertion === "declaration") return runDeclaration(v);
   if (v.assertion !== undefined) return runAssertion(v);
   const ex = v.expected as Record<string, string | number>;
   const ctx = ctxFromVector(v.context as Record<string, unknown>);
@@ -751,6 +803,7 @@ async function runBlindIndex(v: Record<string, unknown>, ops: IndexOps): Promise
   const id = v.id as string;
   if (v.assertion === "unindexable-marker" || v.assertion === "unindexable-bucket") return [await runUnindexable(v, ops)];
   if (v.assertion === "refuse") return [await runRefuse(v, ops)];
+  if (v.assertion === "declaration") return [runDeclaration(v)];
   if (v.assertion !== undefined) return [ops.pass === "async" ? await runAssertionAsync(v) : runAssertion(v)];
   const i = blindIndexInputs(v);
   const results: Result[] = [];
@@ -895,7 +948,7 @@ function runErrors(v: Record<string, unknown>): Result {
  * every other `errors/` operation have no companion to route through.
  */
 function routesThroughCompanion(group: string, v: Record<string, unknown>): boolean {
-  if (group === "blind-index") return true;
+  if (group === "blind-index") return v.assertion !== "declaration";
   return group === "errors" && ((v.operation ?? "decrypt") as string) === "blind_index";
 }
 
@@ -1125,7 +1178,7 @@ async function runPass(suite: LoadedSuite, ops: IndexOps): Promise<Result[]> {
           results.push({ id: v.id as string, status: "fail", reason: `no runner for family ${doc.group}` });
       }
       // Every `#async` result says which of the two it is. Without this the
-      // report offers 182 `#async` ids and no way to see that only 69 of them
+      // report offers 193 `#async` ids and no way to see that only 69 of them
       // went through a companion at all, which reads as far more coverage
       // than the second pass actually buys (#111 review).
       if (pass === "async") {
@@ -1253,6 +1306,7 @@ export const HARNESS_NOTES: string[] = [
   "'<id>#pipeline' results run blind-index vectors through Fieldseal.blindIndex() end to end, using the tenant index key and context the vector carries (suite 0.2.0).",
   "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex preimage to Fieldseal.blindIndex() as bytes under on_unindexable=\"refuse\" and match the raised code against expected.refuse; the bytes are never decoded by the harness.",
   "Every out_of_band entry carries basis \"direct\" (docs/14 §4): this harness allocates the length-bound operands and holds the lone-surrogate operand in a string, so it uses neither the seam route nor the representability route.",
+  "'declaration' vectors (suite 0.10.0, #210 context/ and #211 blind-index/) build the vector's index declaration into a Fieldseal client at construction. 'refused' passes only on a ConfigurationError -- no §9 code is matched, because none exists for a configuration refusal (docs/08 §4.3); anything else is a failure. 'accepted' passes only if construction succeeds. Construction has no asynchronous companion, so their #async twins are sync re-runs.",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
   "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the blind-index/ refuse vectors, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",

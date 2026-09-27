@@ -49,6 +49,7 @@ from fieldseal.blindindex import (  # noqa: E402
 from fieldseal.context import aad, canonical_context  # noqa: E402
 from fieldseal.envelope import MAX_PLAINTEXT, serialize_header  # noqa: E402
 from fieldseal.errors import (  # noqa: E402
+    ConfigurationError,
     FieldsealError,
     InvalidArgument,
     LengthExceeded,
@@ -228,8 +229,60 @@ def _ctx_from(c: dict, suite_id: int) -> FieldContext:
 
 # -- families -----------------------------------------------------------------
 
+def _run_declaration(v: dict, results: list[dict]) -> None:
+    """`assertion: "declaration"` (suite 0.10.0; #210, #211): declare the
+    vector's index to a client at construction and check the outcome.
+
+    A refusal is configuration-level and has no §9 code (docs/08 §4.3), so
+    the check is the exception's type, never a code: `ConfigurationError`
+    passes, and any other exception -- a §9 `FieldsealError` included -- is a
+    failure, since it means the declaration was refused for the wrong reason
+    or not refused at all. An accepted declaration must construct cleanly.
+    """
+    d = v["inputs"]["declaration"]
+    o = d["cardinality_override"]
+    want = v["expected"]["declaration"]
+    if want not in ("refused", "accepted"):
+        _record(results, v["id"], False,
+                f"unknown expected.declaration {want!r}")
+        return
+    if d["idf"] != "hmac-sha512" or d["idf_params"] != {}:
+        # The declaration vectors carry no Argon2id cost; one that did would
+        # need `_argon2_params`, which this runner does not apply.
+        _record(results, v["id"], False,
+                "declaration vector with an IDF this runner does not build")
+        return
+    try:
+        # Built inside the boundary: a malformed vector is its own recorded
+        # failure, never an abort with no report (the #108 lesson).
+        decl = IndexDeclaration(
+            table_uuid=H(d["table_uuid"]), column_uuid=H(d["column_uuid"]),
+            index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
+            truncate_bits=d["truncate_bits"],
+            projected_population=d["projected_population"],
+            skewed=d["skewed"],
+            cardinality_override=None if o is None else CardinalityOverride(
+                reason=o["reason"], approved_by=o["approved_by"],
+                date=o["date"]),
+            on_unindexable=d["on_unindexable"])
+        _client(H("00" * 16), H("aa" * 32), H("bb" * 32), (decl,))
+    except ConfigurationError as exc:
+        _record(results, v["id"], want == "refused",
+                f"declaration refused ({exc}), want accepted")
+        return
+    except Exception as exc:  # noqa: BLE001 - a harness reports, not raises
+        _record(results, v["id"], False,
+                f"declaration raised {exc!r}, not a configuration refusal")
+        return
+    _record(results, v["id"], want == "accepted",
+            "declaration accepted, want refused at declaration time")
+
+
 def run_context(doc: dict, results: list[dict]) -> None:
     for v in doc["vectors"]:
+        if v.get("assertion") == "declaration":
+            _run_declaration(v, results)
+            continue
         sid = _suite_id(v)
         if v.get("assertion") == "distinct":
             # Suite 0.2.0 carries both inputs (docs/18 D-08): reproduce each
@@ -366,6 +419,9 @@ def run_blind_index(doc: dict, results: list[dict]) -> None:
 
 
 def _run_blind_index_vector(v: dict, results: list[dict]) -> None:
+    if v.get("assertion") == "declaration":
+        _run_declaration(v, results)
+        return
     sid = _suite_id(v)
     if v.get("assertion") == "equal":
         i = v["inputs"]
@@ -846,6 +902,13 @@ def run() -> dict:
             "code against expected.refuse; the bytes are never decoded by the "
             "harness. An assertion kind this harness does not know is a "
             "recorded failure.",
+            "'declaration' vectors (suite 0.10.0, #210 context/ and #211 "
+            "blind-index/) build the vector's index declaration into a "
+            "Fieldseal client at construction. 'refused' passes only on a "
+            "ConfigurationError -- no §9 code is matched, because none "
+            "exists for a configuration refusal (docs/08 §4.3); any other "
+            "exception is a failure. 'accepted' passes only if construction "
+            "succeeds.",
             "Every out_of_band entry carries basis 'direct' (docs/14 §4): the "
             "length-bound operands are allocated or mapped and the "
             "lone-surrogate operand is held in a str, so this harness uses "

@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/context/v1",
-  "vector_suite_version": "0.9.0-provisional",
+  "vector_suite_version": "0.10.0-provisional",
   "group": "context",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -299,6 +299,131 @@
       "provisional_on": [
         "G4"
       ]
+    },
+    {
+      "id": "context/canonical/index-id-uppercase",
+      "description": "index declaration refused at declaration time: index:Exact -- uppercase is outside [a-z0-9-] (configuration refusal, no §9 code)",
+      "spec_ref": "§6.1, §7.2, §12",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "Exact",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "context/canonical/index-id-non-ascii",
+      "description": "index declaration refused at declaration time: index:é -- U+00E9, two UTF-8 bytes C3 A9, outside the ASCII grammar (configuration refusal, no §9 code)",
+      "spec_ref": "§6.1, §7.2, §12",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "é",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "context/canonical/index-id-empty",
+      "description": "index declaration refused at declaration time: index: -- the grammar requires at least one character (configuration refusal, no §9 code)",
+      "spec_ref": "§6.1, §7.2, §12",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "context/canonical/index-id-33-bytes",
+      "description": "index declaration refused at declaration time: a 33-byte identifier -- one past the grammar's 32-byte maximum (configuration refusal, no §9 code)",
+      "spec_ref": "§6.1, §7.2, §12",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "context/canonical/index-id-32-bytes-accepted",
+      "description": "index declaration with a 32-byte identifier, the grammar's maximum, is accepted -- the positive twin of index-id-33-bytes",
+      "spec_ref": "§6.1, §7.2",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "accepted"
+      }
     }
   ],
   "retired": []

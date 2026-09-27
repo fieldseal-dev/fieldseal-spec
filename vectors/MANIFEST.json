@@ -1,78 +1,78 @@
 {
-  "vector_suite_version": "0.9.0-provisional",
+  "vector_suite_version": "0.10.0-provisional",
   "spec_version": "0.1-draft",
   "provisional": true,
   "provisional_note": "Every suite identifier here is in the reserved 0xFF00-0xFFFF provisional range (spec §4.8). These vectors are built against constructions marked [PROVISIONAL] in the specification and adopted under Gate 0a; they are not a stable release and the expected values may change when Gate 0b closes.",
   "files": [
     {
       "path": "blind-index/argon2id.json",
-      "sha256": "4261e4d2713566627446b96eb43544ab8275ca5335ed040cffab2a6b61eeff78",
-      "bytes": 30338
+      "sha256": "5bfcaf18249770b57601311f2df49a7437d7f420437d0d41b66c419fc276c5b1",
+      "bytes": 30339
     },
     {
       "path": "blind-index/hmac-sha512.json",
-      "sha256": "2d6f940eabcd0dd1198151e0f7535e7db102ba0d0fee66d7bcc1b9b949efd3d2",
-      "bytes": 23047
+      "sha256": "deda90a1b5ddef0282da59b85113817198c49a8bef5ea331d6584e448276745c",
+      "bytes": 28839
     },
     {
       "path": "commitment/ff01.json",
-      "sha256": "83707d113bfaedfb4b609ff18ee32e919d392aa984de11d830191bc2c94df2ff",
-      "bytes": 1538
+      "sha256": "962f299c629c6453d0e0e765cc979b4deaa5469b47fa8c8ac0f695e164125e5e",
+      "bytes": 1539
     },
     {
       "path": "context/canonical.json",
-      "sha256": "7bed77df0caba9136dc01c5e32aeada2023e729a0ea84a7e8191b55201b2ee78",
-      "bytes": 38567
+      "sha256": "bbf59e38056ed807b4494733c35622296124965e7d31b5248d4cc8237b6de4d2",
+      "bytes": 42998
     },
     {
       "path": "envelope/ff01.json",
-      "sha256": "897d8204c877a8e24ddf50d1b9f30fd07e233aa7f75092afd5729123bf60e04e",
-      "bytes": 45113
+      "sha256": "df85836b8fc25740297927942272e8edb6ccabf1b47c69450b8d028e26f5d47e",
+      "bytes": 45114
     },
     {
       "path": "errors/crypto.json",
-      "sha256": "a6092f3534220270d0fff505716ea97366574852c5853dc1669d590da77670e4",
-      "bytes": 20158
+      "sha256": "4ecdcbff5e4b4d97ed7c12a86e696dd77e49064db974b6649a19b6cd297b8b49",
+      "bytes": 20159
     },
     {
       "path": "errors/format.json",
-      "sha256": "6237f1e046b0f6c288b81e751bb381a8cd62614c33d33176aad1f8a291fb53a2",
-      "bytes": 55649
+      "sha256": "d2f08db33645fe73effc97476e149062282103d9c98fb98896314d1f68315dff",
+      "bytes": 55650
     },
     {
       "path": "errors/policy.json",
-      "sha256": "007da383da25e8aa2566e76e312adcc07a38de021429c6c166cbaa79d58ad0f9",
-      "bytes": 20946
+      "sha256": "3fa7f85bd8d233de51aa3429defd004f1d456feca4289fd01d123588e1b26da3",
+      "bytes": 20947
     },
     {
       "path": "kdf/index-key.json",
-      "sha256": "28fa78cb18da2f04e4860e04bbd0fb136c5053974aa2f4ea7ddf77a06136385b",
-      "bytes": 14535
+      "sha256": "7467f9e0166138c9c2fb6378568bab7bac4c8dfe1d652654185aafc201662ff9",
+      "bytes": 14536
     },
     {
       "path": "kdf/record-key.json",
-      "sha256": "20c542b19e0ee7c584fe07a0b8efb056915b3f9adcbeac86f88b560a4d30a1df",
-      "bytes": 21845
+      "sha256": "2a758ebdfcb16ac1f7cec3cca8d15381daf4b41a5bb121ab9a230c78f3681b0a",
+      "bytes": 21846
     }
   ],
   "adapter_files": [
     {
       "path": "codec/logical-types.json",
-      "sha256": "f9526db65bf30237a1e94ed8dd471d58f83b664f879d2074fca9546210754b4f",
-      "bytes": 42042
+      "sha256": "71a14f05bdd75663107e19599c082a02c8d84b47a36fdaa73e524e6c7ba561a6",
+      "bytes": 42043
     }
   ],
   "adapter_files_note": "Pinned families that bind adapters rather than cores (spec §3.6). A core's conformance run iterates `files` only; an adapter's run iterates `files` through its core and `adapter_files` itself.",
   "support": [
     {
       "path": "cross/corpus.json",
-      "sha256": "2046e375a36fe99af32142c470ebddc5867c156c06b06295cb71cbfbd3633047",
-      "bytes": 26832
+      "sha256": "7d5dd7bb269e9534d42b9865a897f8986a644ae8c6f49f94a21ea7da1e9c0d43",
+      "bytes": 26833
     },
     {
       "path": "keys/test-keys.json",
-      "sha256": "642a2ca8f9549229cf362a1064515164041803a42aaa8dcc7c1b6b2a29fcf4ef",
-      "bytes": 1423
+      "sha256": "65d6fc67a26b963f713acc061f30f8b9f6dc95cc8197969d850b2b8f72bac5ac",
+      "bytes": 1424
     }
   ],
   "held_out": [],

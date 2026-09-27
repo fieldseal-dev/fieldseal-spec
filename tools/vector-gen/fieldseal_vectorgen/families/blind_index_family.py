@@ -5,6 +5,7 @@ File shape per docs/08 §4.4; normalizer identifiers per docs/09 §7.
 
 from __future__ import annotations
 
+from .. import declaration
 from .. import inputs as I
 from ..blindindex import (ARGON2_MEMORY_KIB, ARGON2_OUTPUT_LEN,
                           ARGON2_PARALLELISM, ARGON2_TIME_COST, ARGON2_VERSION,
@@ -382,7 +383,64 @@ def _raised_cost_vectors(index_id: str, ctx: FieldContext, ik: bytes,
 
 
 def generate_hmac() -> dict:
-    return wrapper("blind-index", _vectors("email-eq", "hmac-sha512", idf_hmac))
+    return wrapper("blind-index", _vectors("email-eq", "hmac-sha512", idf_hmac)
+                   + gate_vectors())
+
+
+# Spec §7.6's default-deny gate (#211), as `"declaration"` vectors: the gate
+# is a refusal at declaration time with no §9 code, the shape #210's
+# identifier refusals use. They live in blind-index/ because §7.6 is a
+# blind-index rule, where the identifier refusals sit in context/ because
+# §6.1 is a context rule (docs/08 §4.3). And they live in this file only: the
+# gate reads P, `skewed` and the override, never the IDF, so a copy in
+# argon2id.json would count one requirement twice.
+#
+# Each refusal has an accepted twin that differs in one field, so a core that
+# refused everything, or gated at <= 2^10, or ignored the override, fails one.
+_GATE_LOW, _GATE_HIGH = (1 << 10) - 1, 1 << 20
+_GATE_CASES = [
+    # (slug, description, P, b, skewed, override, expect)
+    ("gate-low-cardinality-refused",
+     "P = 2^10 - 1 distinct values, below the §7.6 gate, no override: refused",
+     _GATE_LOW, 6, False, None, "refused"),
+    ("gate-at-threshold-accepted",
+     "P = 2^10 distinct values, exactly the §7.6 gate, is not below it: "
+     "accepted without an override",
+     1 << 10, 6, False, None, "accepted"),
+    ("gate-low-cardinality-override-accepted",
+     "P = 2^10 - 1 with a recorded cardinality_override {reason, "
+     "approved_by, date}: the gate is relieved, accepted",
+     _GATE_LOW, 6, False, declaration.OVERRIDE, "accepted"),
+    ("gate-override-incomplete-refused",
+     "P = 2^10 - 1 with a cardinality_override whose approved_by is empty: "
+     "not a reviewed override (§7.6), refused",
+     _GATE_LOW, 6, False, {**declaration.OVERRIDE, "approved_by": ""},
+     "refused"),
+    ("gate-skewed-refused",
+     "P = 2^20 but declared skewed, no override: refused by the §7.6 gate's "
+     "second half",
+     _GATE_HIGH, 16, True, None, "refused"),
+    ("gate-skewed-override-accepted",
+     "P = 2^20, declared skewed, with a recorded cardinality_override: the "
+     "gate is relieved, accepted",
+     _GATE_HIGH, 16, True, declaration.OVERRIDE, "accepted"),
+]
+
+
+def gate_vectors() -> list[dict]:
+    return [
+        declaration.vector(
+            f"blind-index/hmac-sha512/{slug}",
+            f"index declaration: {description} (configuration outcome, no §9 "
+            "code)",
+            "§7.6",
+            declaration.Declaration(index_id="email-eq",
+                                    projected_population=p, truncate_bits=b,
+                                    skewed=skewed,
+                                    cardinality_override=override),
+            expect, "§7.6 gate" if expect == "refused" else None)
+        for slug, description, p, b, skewed, override, expect in _GATE_CASES
+    ]
 
 
 def generate_argon2id() -> dict:
