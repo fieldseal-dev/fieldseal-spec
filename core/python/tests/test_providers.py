@@ -332,17 +332,29 @@ class TestEnvelopeKeyProvider:
         assert p.cache.metrics.evictions["max-uses"] == 0
 
     def test_index_traffic_does_not_spend_the_dek_budget(self):
-        """The roles are separate entries with separate counters, so index
-        derivations cannot use-evict a DEK — and the DEK's own budget is
-        still exactly max_uses (docs/09 §8.3)."""
-        p, _ = _provider(max_uses=2)
+        """The two roles are separate entries, so index derivations cannot
+        spend a DEK's budget (docs/09 §8.3).
+
+        **This case is green on the unfixed code, deliberately.** The role has
+        always been part of the cache key, so the entries were always separate
+        and index traffic never touched the DEK's counter; what #212 changed
+        is the index entry's own counter, which the two cases above pin. This
+        one is here to bite the mutation its name is about — a cache key that
+        dropped the role, where `warm` would put the index key over the DEK and
+        `size` would read 1 — so its content is the two-entry assertion plus
+        the DEK's budget spent exactly, with index traffic at the size of that
+        budget in between.
+        """
+        p, _ = _provider(max_uses=3)
         c = _client(p, indexes=(_index_decl(),))
         _run(c.warm([CTX]))
+        assert p.cache.size == 2       # one entry per role
         ictx = CTX.for_index("exact")
-        for _ in range(50):
-            c.blind_index(PT, ictx)
-        c.encrypt(PT, CTX)                     # DEK use 1
-        c.encrypt(PT, CTX)                     # DEK use 2 → evicted on return
+        for _ in range(3):             # three of the DEK's three, unspent
+            assert c.blind_index(PT, ictx)
+        assert c.encrypt(PT, CTX)      # DEK use 1
+        assert c.encrypt(PT, CTX)      # DEK use 2
+        assert c.encrypt(PT, CTX)      # DEK use 3 → evicted on return
         with pytest.raises(KeyUnavailable):
             c.encrypt(PT, CTX)
 

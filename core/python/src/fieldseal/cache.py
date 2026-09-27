@@ -9,13 +9,15 @@ Use counting is per cached entry, incremented per **DEK-role** `encryption_key`
 return (docs/09 §8.3) -- `get`. The index role has no use budget: an index key
 is never AEAD key material and draws no nonce, so the SP 800-38D ceiling
 `max_uses` exists for does not reach it, and `max_uses` is configurable as low
-as 1. The provider therefore passes `count_use=False` for an index lookup, and
-`max_age` plus the capacity LRU still apply to it. Decrypt-path candidate reads
-go through `peek` and likewise do not count: charging them would advance a
-version's counter with the tenant's total decrypt traffic, a per-provider count
-wearing a per-key-version name, and would evict old-but-valid versions at a rate
-unrelated to their actual use. That bug was fixed in the TypeScript core in PR
-#55; docs/10 §6 pins the regression test so this port cannot reintroduce it.
+as 1. Whether an entry has a budget is therefore decided once, in `put`, where
+the role is known -- not on each read, where a caller that forgot the role would
+quietly bring the bug back. `max_age` plus the capacity LRU apply to every
+entry, counted or not. Decrypt-path candidate reads go through `peek` and
+likewise do not count: charging them would advance a version's counter with the
+tenant's total decrypt traffic, a per-provider count wearing a per-key-version
+name, and would evict old-but-valid versions at a rate unrelated to their actual
+use. That bug was fixed in the TypeScript core in PR #55; docs/10 §6 pins the
+regression test so this port cannot reintroduce it.
 
 Zeroization honesty (docs/10 §5): entries are held as `bytearray` and
 overwritten with zeros on eviction. CPython cannot erase immutable `bytes`;
@@ -79,6 +81,10 @@ class _Entry:
     material: bytearray
     inserted_at: float
     uses: int
+    # Whether this entry has a §5.5 use budget at all (docs/09 §8.3: the DEK
+    # role only). Decided once, where the role is known -- `put` -- so no
+    # reader can forget it and quietly spend a budget the entry does not have.
+    counted: bool = True
 
 
 class DekCache:
@@ -121,9 +127,18 @@ class DekCache:
         with self._lock:
             return len(self._entries)
 
-    def put(self, key: str, material: bytes | bytearray) -> None:
+    def put(self, key: str, material: bytes | bytearray, *,
+            counted: bool = True) -> None:
         """Stores a private copy of `material`; the caller's buffer is never
-        aliased."""
+        aliased.
+
+        `counted=False` gives the entry no §5.5 use budget (docs/09 §8.3's
+        index role: an index key is never AEAD key material and draws no
+        nonce, so the ceiling `max_uses` bounds is not reached by using it).
+        Max-age and the capacity LRU still apply. It is set here, where the
+        caller knows the role, rather than on every read, so the rule cannot
+        be forgotten on the path that would break it.
+        """
         deferred: list[tuple[str, EvictionCause]] = []
         with self._lock:
             # TTL is a security parameter: expired material must not sit in
@@ -140,19 +155,16 @@ class DekCache:
                 self._drop(oldest, self._entries[oldest], "capacity",
                            count=True, deferred=deferred)
             self._entries[key] = _Entry(material=bytearray(material),
-                                        inserted_at=self._now(), uses=0)
+                                        inserted_at=self._now(), uses=0,
+                                        counted=counted)
         self._fire(deferred)
 
-    def get(self, key: str, *, count_use: bool = True) -> bytes | None:
-        """Returns a copy of the cached material, or None. Counts one use; an
-        entry reaching max_uses is returned this last time and then evicted,
-        so the threshold is an exact count of returns.
-
-        `count_use=False` is docs/09 §8.3's index role: the same lookup, the
-        same copy, the same max-age enforcement and the same LRU touch, with
-        the use counter left alone. It is a distinct case from `peek` because
-        it is a *hit* that recency matters for, not a read of what the cache
-        happens to hold.
+    def get(self, key: str) -> bytes | None:
+        """Returns a copy of the cached material, or None. Counts one use
+        against the entry's budget -- an entry put with `counted=False` has no
+        budget, so an index-role lookup is a hit that never spends one. An
+        entry reaching max_uses is returned this last time and then evicted, so
+        the threshold is an exact count of returns.
         """
         deferred: list[tuple[str, EvictionCause]] = []
         try:
@@ -168,7 +180,7 @@ class DekCache:
                     return None
                 self.metrics.hits += 1
                 out = bytes(e.material)
-                if count_use:
+                if e.counted:
                     e.uses += 1
                     if e.uses >= self.policy.max_uses:
                         self._drop(key, e, "max-uses", count=True,
@@ -183,11 +195,11 @@ class DekCache:
 
     def peek(self, key: str) -> bytes | None:
         """Returns a copy without counting a §5.5 use. docs/09 §8.3: use
-        counting increments per `encryption_key` return; a decrypt-path
-        candidate read is not a use of the entry. Max-age is still enforced --
-        an expired key must never be served, counted or not -- and there is no
-        LRU touch, so peeks do not keep an otherwise-idle entry alive past
-        capacity pressure."""
+        counting increments per **DEK-role** `encryption_key` return; a
+        decrypt-path candidate read is a read of a DEK entry and is not a use
+        of it. Max-age is still enforced -- an expired key must never be
+        served, counted or not -- and there is no LRU touch, so peeks do not
+        keep an otherwise-idle entry alive past capacity pressure."""
         deferred: list[tuple[str, EvictionCause]] = []
         try:
             with self._lock:

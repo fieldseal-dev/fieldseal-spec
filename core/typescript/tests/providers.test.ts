@@ -271,9 +271,9 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     expect(p.cache.metrics.evictions["max-uses"]).toBe(0);
   });
 
-  it("an index key is still evicted on max-age, and index traffic does not spend the DEK's budget", async () => {
-    // max_age applies to both roles (docs/09 §8.3), so dropping the index
-    // role's use counter must not drop the TTL check with it.
+  it("an index key is still evicted on max-age (docs/09 §8.3: max_age applies to both roles)", async () => {
+    // Dropping the index role's use counter must not drop the TTL check with
+    // it.
     let now = Date.now();
     const p = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 100, maxUses: 2, capacity: 16 }, cacheHooks: { now: () => now } });
     const c = makeClient({ keyProvider: p, indexes: [idxDecl] });
@@ -286,18 +286,26 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     expect(codeOf(() => c.blindIndex(PT, ictx))).toBe("KEY_UNAVAILABLE");
     expect(p.cache.metrics.evictions["max-age"]).toBe(1);
     expect(p.cache.metrics.evictions["max-uses"]).toBe(0);
+  });
 
-    // The two roles are separate entries with separate counters, so index
-    // derivations cannot use-evict a DEK — and a DEK's own budget is still
-    // exactly maxUses.
-    const q = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 2, capacity: 16 } });
+  it("index traffic does not spend the DEK's budget (green before #212, by design)", async () => {
+    // The role has always been part of the cache key, so the entries were
+    // always separate and index traffic never touched the DEK's counter; what
+    // #212 changed is the index entry's own counter, which the two cases above
+    // pin. This one bites the mutation its name is about — a cache key that
+    // dropped the role, where warm() would put the index key over the DEK and
+    // size would read 1.
+    const q = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 3, capacity: 16 } });
     const d = makeClient({ keyProvider: q, indexes: [idxDecl] });
     await d.warm([CTX]);
-    for (let i = 0; i < 50; i++) {
-      d.blindIndex(PT, ictx);
+    expect(q.cache.size).toBe(2); // one entry per role
+    const ictx = { ...CTX, purpose: "index:exact" as const };
+    for (let i = 0; i < 3; i++) {
+      expect(d.blindIndex(PT, ictx)).toBeDefined(); // three of the DEK's three, unspent
     }
     d.encrypt(PT, CTX); // DEK use 1
-    d.encrypt(PT, CTX); // DEK use 2 → evicted on return
+    d.encrypt(PT, CTX); // DEK use 2
+    d.encrypt(PT, CTX); // DEK use 3 → evicted on return
     expect(codeOf(() => d.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
   });
 });

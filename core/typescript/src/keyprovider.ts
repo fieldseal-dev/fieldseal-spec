@@ -326,11 +326,10 @@ export class EnvelopeKeyProvider implements KeyProvider {
     if (set === undefined) throw new KeyUnavailableError(null, "no key set is registered for this tenant scope");
     const active = set.versions.find((v) => v.version === set.activeVersion) as WrappedKeyVersion;
     const role = isIndexPurpose(ctx) ? "index" : "dek";
-    // docs/09 §8.3: `maxUses` counts DEK-role returns only. An index key is
-    // never AEAD key material and draws no nonce, so the SP 800-38D ceiling
-    // the threshold exists for cannot reach it, while a configurable
-    // `maxUses` of 1 can. max-age and the capacity LRU are unaffected.
-    const key = this.cache.get(cacheKey(scope, active.version, role), { countUse: role === "dek" });
+    // The role is in the cache key and the budget was decided at `put`
+    // (docs/09 §8.3: `maxUses` counts DEK-role returns; an index entry has
+    // none), so there is nothing to pass here and nothing to forget.
+    const key = this.cache.get(cacheKey(scope, active.version, role));
     if (key === undefined) {
       throw new KeyUnavailableError(
         active.keyId,
@@ -350,8 +349,8 @@ export class EnvelopeKeyProvider implements KeyProvider {
     // what the cache can decrypt").
     //
     // `peek`, not `get`: docs/09 §8.3 increments the §5.5 use count per
-    // `encryption_key` return. Charging every offered candidate here would
-    // advance every version's counter with the scope's total decrypt
+    // **DEK-role** `encryptionKey` return. Charging every offered candidate
+    // here would advance every version's counter with the scope's total decrypt
     // traffic -- a per-provider count wearing a per-key-version name -- and
     // evict old-but-valid versions at a rate unrelated to their actual use.
     const order = [hit.version, set.activeVersion, ...set.versions.map((v) => v.version)].filter((v, i, a) => a.indexOf(v) === i);
@@ -397,7 +396,10 @@ export class EnvelopeKeyProvider implements KeyProvider {
         dek.fill(0);
         if (v.wrappedIndexKey !== undefined) {
           const ik = await this.#wrapper.unwrap(v.wrappedIndexKey, scope);
-          this.cache.put(cacheKey(scope, v.version, "index"), ik);
+          // docs/09 §8.3: the index role is cached with no §5.5 use budget.
+          // Decided here, where the role is known, so the value path cannot
+          // reintroduce #212 by leaving a flag off.
+          this.cache.put(cacheKey(scope, v.version, "index"), ik, { counted: false });
           ik.fill(0);
         }
       }
