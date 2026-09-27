@@ -425,7 +425,6 @@ MUTATIONS = [
      "            if (d.cardinalityOverride() == null) {",
      "            if (true) {",
      [VEC + "*BlindIndexVectorsTest"], "red"),
-     [CORE + "*BlindIndexClientTest"], "red"),
     # ---- S6: the testing artifact, the report -------------------------------------------
     ("s6 seam: the arming gate lets anything through", I / "testing/MaterialsSeam.java",
      'if (!"1".equals(environment.apply(ARMING_VARIABLE))) {', "if (false) {",
