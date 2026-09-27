@@ -289,6 +289,27 @@ public final class ConformanceReport {
         }
     }
 
+    /**
+     * Everything the run does after {@link #assemble}: the {@code vectors/schema/} check, the
+     * assembly's own problems, every {@link #validate} violation, then {@link #finish}. {@code
+     * main} calls this and nothing else between assembling and printing, so a test of it is a test
+     * of what {@code main} prints (#219 re-review).
+     *
+     * @return every problem, in the order found
+     */
+    static List<String> conclude(Path vectors, JsonNode manifest, List<String> expected,
+            Assembled a) {
+        List<String> problems = new ArrayList<>();
+        if (Files.exists(vectors.resolve("schema"))) {
+            problems.add("vectors/schema/ exists and this harness does not validate against it"
+                    + " (docs/08 §5 item 2); the harness note says it does not exist");
+        }
+        problems.addAll(a.problems());
+        validate(a.report(), manifest, expected).forEach(v -> problems.add("invalid: " + v));
+        finish(a.report(), problems);
+        return problems;
+    }
+
     // --- validating ----------------------------------------------------------------------------
 
     /**
@@ -567,11 +588,6 @@ public final class ConformanceReport {
         }
         JsonNode manifest = VectorHarness.read(vectors.resolve("MANIFEST.json"));
         List<String> expected = expectedIds(vectors, walk);
-        List<String> problems = new ArrayList<>();
-        if (Files.exists(vectors.resolve("schema"))) {
-            problems.add("vectors/schema/ exists and this harness does not validate against it"
-                    + " (docs/08 §5 item 2); the harness note says it does not exist");
-        }
 
         // What the tests print is theirs, not the report's: stdout carries the JSON alone.
         PrintStream stdout = System.out;
@@ -590,9 +606,7 @@ public final class ConformanceReport {
 
         Assembled a = assemble(manifest, expected, harness, oob, OUT_OF_BAND,
                 implementation(vectors), environment());
-        problems.addAll(a.problems());
-        validate(a.report(), manifest, expected).forEach(v -> problems.add("invalid: " + v));
-        finish(a.report(), problems);
+        List<String> problems = conclude(vectors, manifest, expected, a);
         stdout.println(JSON.writeValueAsString(a.report()));
         stdout.flush();
         problems.forEach(p -> System.err.println("PROBLEM " + p));

@@ -35,6 +35,7 @@ I = M / "internal"
 CORE = ":fieldseal-core:test --tests "
 VEC = ":fieldseal-core-testing:test --tests "
 UNARMED = ":fieldseal-core-testing:unarmedTest"
+FRESH = ":fieldseal-core-testing:freshJvmTest"
 T = ROOT / "fieldseal-core-testing/src/test/java/dev/fieldseal/core/harness"
 
 # (name, file, old text, new text, test tasks, expectation). The old text must occur exactly once.
@@ -484,6 +485,16 @@ MUTATIONS = [
      "        if (!problems.isEmpty()) {\n            ((ObjectNode) report",
      "        if (false) {\n            ((ObjectNode) report",
      [VEC + "*ConformanceReportTest"], "red"),
+    ("s6 report: conclude never withdraws the claim", T / "ConformanceReport.java",
+     "        finish(a.report(), problems);\n        return problems;",
+     "        return problems;",
+     [VEC + "*ConformanceReportTest"], "red"),
+    # Initialize=false keeps the checked exception, so this compiles and only the init is lost.
+    ("s6 seam: the testing module does not initialize the api",
+     ROOT / "fieldseal-core-testing/src/main/java/dev/fieldseal/core/testing/FieldsealTesting.java",
+     "Class.forName(Fieldseal.class.getName(), true, Fieldseal.class.getClassLoader());",
+     "Class.forName(Fieldseal.class.getName(), false, Fieldseal.class.getClassLoader());",
+     [FRESH], "red"),
     ("s6 validate: results need not be the required ids", T / "ConformanceReport.java",
      "        if (!ids.equals(expected)) {", "        if (false) {",
      [VEC + "*ConformanceReportTest"], "red"),

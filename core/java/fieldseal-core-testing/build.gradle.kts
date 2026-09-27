@@ -42,7 +42,7 @@ tasks.register<JavaExec>("vectors") {
 // The platform-maximum probe (docs/27 §6.4) allocates arrays of nearly 2 GiB, so it is kept
 // out of `build` and runs on its own: `./gradlew memoryProbe`. Informational, never a gate.
 tasks.test {
-    useJUnitPlatform { excludeTags("memory", "unarmed") }
+    useJUnitPlatform { excludeTags("memory", "unarmed", "fresh") }
     environment(testMode, "1")
     // ClientVectorsTest's unarmed vectors and the API-boundary tests need it absent (spec §4.8).
     environment.remove(armProvisional)
@@ -63,7 +63,18 @@ val unarmedTest = tasks.register<Test>("unarmedTest") {
     useJUnitPlatform { includeTags("unarmed") }
     environment.remove(testMode)
 }
-tasks.check { dependsOn(unarmedTest) }
+// A JVM of its own that has never initialized Fieldseal, armed: what a test in the shared JVM
+// cannot reproduce, because every other test builds a client first (FreshJvmTest).
+val freshJvmTest = tasks.register<Test>("freshJvmTest") {
+    group = "verification"
+    description = "encrypt_with_materials in an armed JVM that never built a client (docs/08 §6)."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("fresh") }
+    environment(testMode, "1")
+    environment.remove(armProvisional)
+}
+tasks.check { dependsOn(unarmedTest, freshJvmTest) }
 
 tasks.register<Test>("memoryProbe") {
     group = "verification"

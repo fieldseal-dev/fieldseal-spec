@@ -11,6 +11,7 @@ import dev.fieldseal.core.harness.ConformanceReport.Assembled;
 import dev.fieldseal.core.harness.ConformanceReport.Outcome;
 import dev.fieldseal.core.harness.ConformanceReport.Status;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,6 +20,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The report's assembly and its validation (docs/14 §4; docs/27 §9 gate D), against the pinned
@@ -182,6 +184,30 @@ class ConformanceReportTest {
         ConformanceReport.finish(a.report(), List.of("vectors/schema/ exists"));
         assertFalse(a.report().path("claimed_levels").path("L0").asBoolean());
         assertEquals(List.of(), validate(a.report()));
+    }
+
+    /**
+     * What {@code main} runs after assembly: a {@code schema/} directory beside the manifest, or a
+     * report that fails validation, is a problem, and the claim is withdrawn before printing.
+     */
+    @Test
+    void concludeWithdrawsTheClaimForTheSchemaCheckAndForAViolation(@TempDir Path dir)
+            throws IOException {
+        Assembled clean = assemble(allPassing(), oobPassing());
+        assertEquals(List.of(), ConformanceReport.conclude(dir, manifest, expected, clean));
+        assertTrue(clean.report().path("claimed_levels").path("L0").asBoolean());
+
+        Files.createDirectory(dir.resolve("schema"));
+        Assembled schema = assemble(allPassing(), oobPassing());
+        List<String> p = ConformanceReport.conclude(dir, manifest, expected, schema);
+        assertTrue(p.size() == 1 && p.get(0).startsWith("vectors/schema/ exists"), p.toString());
+        assertFalse(schema.report().path("claimed_levels").path("L0").asBoolean());
+
+        Assembled invalid = assemble(allPassing(), oobPassing());
+        ((ObjectNode) invalid.report().path("environment")).remove("os");
+        p = ConformanceReport.conclude(vectors, manifest, expected, invalid);
+        assertTrue(p.stream().anyMatch(x -> x.startsWith("invalid: environment.os")), p.toString());
+        assertFalse(invalid.report().path("claimed_levels").path("L0").asBoolean());
     }
 
     // --- validation: each rule, broken once ---------------------------------------------------

@@ -159,7 +159,8 @@ jobs:
       # CapabilitiesTest, the unit, wiring and property tests, the vector tests,
       # and the report's assembly and validation. `check` also runs
       # unarmedTest, encrypt_with_materials in a process without
-      # FIELDSEAL_TEST_MODE (docs/08 §6).
+      # FIELDSEAL_TEST_MODE (docs/08 §6), and freshJvmTest, the same armed in a
+      # process that has never built a client.
       - name: Build and test
         run: ./gradlew build --console=plain
 
