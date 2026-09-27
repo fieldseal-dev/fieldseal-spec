@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -208,14 +209,24 @@ DIRECTORY = InMemoryKeyDirectory([
 ])
 
 
-def _provider(max_uses: int = 1000) -> tuple[EnvelopeKeyProvider,
-                                             CountingXorWrapper]:
+def _provider(max_uses: int = 1000,
+              max_age: timedelta = timedelta(seconds=60)
+              ) -> tuple[EnvelopeKeyProvider, CountingXorWrapper]:
     wrapper = CountingXorWrapper()
     provider = EnvelopeKeyProvider(
         wrapper=wrapper, directory=DIRECTORY,
-        cache=CachePolicy(max_age=timedelta(seconds=60),
-                          max_uses=max_uses, capacity=16))
+        cache=CachePolicy(max_age=max_age, max_uses=max_uses, capacity=16))
     return provider, wrapper
+
+
+def _index_decl() -> IndexDeclaration:
+    """An `hmac-sha512` equality index on CTX's column: cheap enough that the
+    index-role tests stay fast, and identity normalization keeps the derived
+    value a function of the index key alone."""
+    return IndexDeclaration(
+        table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+        index_id="exact", idf="hmac-sha512", normalize="identity",
+        truncate_bits=15, projected_population=65536)
 
 
 class TestEnvelopeKeyProvider:
@@ -282,6 +293,68 @@ class TestEnvelopeKeyProvider:
             assert c.decrypt(env, CTX) == PT        # candidate reads: no use
         c.encrypt(PT, CTX)                          # use 2
         c.encrypt(PT, CTX)                          # use 3 → evicted on return
+        with pytest.raises(KeyUnavailable):
+            c.encrypt(PT, CTX)
+
+    def test_index_key_returns_do_not_deplete_max_uses(self):
+        """docs/09 §8.3 (#212): use counting is per **DEK-role**
+        `encryption_key` return, so the index role has no use budget at all.
+        An index key is never AEAD key material (spec §8) and draws no nonce,
+        which is the whole reason spec §5.5 sets max_uses. The assertion is
+        the negative one — fetched well past max_uses and still served —
+        because "does not count" and "counts" differ only there."""
+        p, _ = _provider(max_uses=2)
+        c = _client(p, indexes=(_index_decl(),))
+        _run(c.warm([CTX]))
+        ictx = CTX.for_index("exact")
+        first = c.blind_index(PT, ictx)
+        for _ in range(10):
+            assert c.blind_index(PT, ictx) == first
+        assert p.cache.metrics.evictions["max-uses"] == 0
+
+    def test_index_key_is_still_evicted_on_max_age(self):
+        """max_age applies to both roles (docs/09 §8.3), so dropping the index
+        role's use counter must not drop the TTL check with it. The clock is
+        injected on the cache the provider owns because
+        EnvelopeKeyProvider takes no DekCache hooks."""
+        p, _ = _provider(max_uses=2, max_age=timedelta(seconds=100))
+        c = _client(p, indexes=(_index_decl(),))
+        clock = [time.monotonic()]
+        p.cache._now = lambda: clock[0]
+        _run(c.warm([CTX]))
+        ictx = CTX.for_index("exact")
+        for _ in range(10):
+            c.blind_index(PT, ictx)   # past max_uses; TTL is now the cause
+        clock[0] += 100.0
+        with pytest.raises(KeyUnavailable):
+            c.blind_index(PT, ictx)
+        assert p.cache.metrics.evictions["max-age"] == 1
+        assert p.cache.metrics.evictions["max-uses"] == 0
+
+    def test_index_traffic_does_not_spend_the_dek_budget(self):
+        """The two roles are separate entries, so index derivations cannot
+        spend a DEK's budget (docs/09 §8.3).
+
+        **This case is green on the unfixed code, deliberately.** The role has
+        always been part of the cache key, so the entries were always separate
+        and index traffic never touched the DEK's counter; what #212 changed
+        is the index entry's own counter, which the two cases above pin. This
+        one is here to bite the mutation its name is about — a cache key that
+        dropped the role, where `warm` would put the index key over the DEK and
+        `size` would read 1 — so its content is the two-entry assertion plus
+        the DEK's budget spent exactly, with index traffic at the size of that
+        budget in between.
+        """
+        p, _ = _provider(max_uses=3)
+        c = _client(p, indexes=(_index_decl(),))
+        _run(c.warm([CTX]))
+        assert p.cache.size == 2       # one entry per role
+        ictx = CTX.for_index("exact")
+        for _ in range(3):             # three of the DEK's three, unspent
+            assert c.blind_index(PT, ictx)
+        assert c.encrypt(PT, CTX)      # DEK use 1
+        assert c.encrypt(PT, CTX)      # DEK use 2
+        assert c.encrypt(PT, CTX)      # DEK use 3 → evicted on return
         with pytest.raises(KeyUnavailable):
             c.encrypt(PT, CTX)
 

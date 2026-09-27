@@ -194,6 +194,10 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     { scope, activeVersion: 1, versions: [{ version: 1, keyId: KEY_ID, wrappedDek: wrap(dekPlain), wrappedIndexKey: wrap(ikPlain) }] },
   ]);
   const provider = (): EnvelopeKeyProvider => new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 1000, capacity: 16 } });
+  // An `hmac-sha512` equality index on CTX's column: cheap enough that the
+  // index-role tests stay fast, and identity normalization keeps the derived
+  // value a function of the index key alone.
+  const idxDecl = { tableUuid: TABLE, columnUuid: COLUMN, indexId: "exact", idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
 
   it("value path is cache-only: KEY_UNAVAILABLE before warm(), works after, never unwraps on the value path", async () => {
     const p = provider();
@@ -249,6 +253,60 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     c.encrypt(PT, CTX); // use 2
     c.encrypt(PT, CTX); // use 3 → evicted on return
     expect(codeOf(() => c.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
+  });
+  it("index-role returns do not deplete max-uses; the index role has no use budget (docs/09 §8.3)", async () => {
+    // `max_uses` counts DEK-role returns only. An index key is never AEAD key
+    // material (spec §8) and draws no nonce, which is the whole reason
+    // spec §5.5 sets the threshold, and `maxUses` is configurable as low as 1.
+    // The assertion is the negative one — fetched well past maxUses and still
+    // served — because "does not count" and "counts" differ only there.
+    const p = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 2, capacity: 16 } });
+    const c = makeClient({ keyProvider: p, indexes: [idxDecl] });
+    await c.warm([CTX]);
+    const ictx = { ...CTX, purpose: "index:exact" as const };
+    const first = c.blindIndex(PT, ictx);
+    for (let i = 0; i < 10; i++) {
+      expect(Buffer.from(c.blindIndex(PT, ictx)).equals(Buffer.from(first))).toBe(true);
+    }
+    expect(p.cache.metrics.evictions["max-uses"]).toBe(0);
+  });
+
+  it("an index key is still evicted on max-age (docs/09 §8.3: max_age applies to both roles)", async () => {
+    // Dropping the index role's use counter must not drop the TTL check with
+    // it.
+    let now = Date.now();
+    const p = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 100, maxUses: 2, capacity: 16 }, cacheHooks: { now: () => now } });
+    const c = makeClient({ keyProvider: p, indexes: [idxDecl] });
+    await c.warm([CTX]);
+    const ictx = { ...CTX, purpose: "index:exact" as const };
+    for (let i = 0; i < 10; i++) {
+      c.blindIndex(PT, ictx); // past maxUses; TTL is now the only cause
+    }
+    now += 100;
+    expect(codeOf(() => c.blindIndex(PT, ictx))).toBe("KEY_UNAVAILABLE");
+    expect(p.cache.metrics.evictions["max-age"]).toBe(1);
+    expect(p.cache.metrics.evictions["max-uses"]).toBe(0);
+  });
+
+  it("index traffic does not spend the DEK's budget (green before #212, by design)", async () => {
+    // The role has always been part of the cache key, so the entries were
+    // always separate and index traffic never touched the DEK's counter; what
+    // #212 changed is the index entry's own counter, which the two cases above
+    // pin. This one bites the mutation its name is about — a cache key that
+    // dropped the role, where warm() would put the index key over the DEK and
+    // size would read 1.
+    const q = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: 3, capacity: 16 } });
+    const d = makeClient({ keyProvider: q, indexes: [idxDecl] });
+    await d.warm([CTX]);
+    expect(q.cache.size).toBe(2); // one entry per role
+    const ictx = { ...CTX, purpose: "index:exact" as const };
+    for (let i = 0; i < 3; i++) {
+      expect(d.blindIndex(PT, ictx)).toBeDefined(); // three of the DEK's three, unspent
+    }
+    d.encrypt(PT, CTX); // DEK use 1
+    d.encrypt(PT, CTX); // DEK use 2
+    d.encrypt(PT, CTX); // DEK use 3 → evicted on return
+    expect(codeOf(() => d.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
   });
 });
 
