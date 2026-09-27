@@ -11,6 +11,8 @@ import dev.fieldseal.core.errors.SuiteProvisionalError;
 import dev.fieldseal.core.errors.TagInvalidError;
 import dev.fieldseal.core.errors.UnknownFormatVersionError;
 import dev.fieldseal.core.internal.aead.Aead;
+import dev.fieldseal.core.internal.blindindex.Idf;
+import dev.fieldseal.core.internal.blindindex.Normalizers;
 import dev.fieldseal.core.internal.commitment.Commitment;
 import dev.fieldseal.core.internal.context.CanonicalContext;
 import dev.fieldseal.core.internal.context.ContextFields;
@@ -33,9 +35,13 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -59,8 +65,18 @@ import java.util.function.Function;
  * the tag ({@code TAG_INVALID}). No candidate verifying is {@code COMMITMENT_INVALID}; this core
  * never raises {@code AAD_MISMATCH}, because under spec §6.3's dual binding a wrong context and a
  * wrong key cannot be told apart (docs/09 §3.2 step 7, G5).
+ *
+ * <p><b>Order on {@code blindIndex}</b>: the value (null: {@code INVALID_ARGUMENT}), then the
+ * context (null, or naming no index: {@code INVALID_ARGUMENT}), then the declaration (none for the
+ * context's column and index: a {@link ConfigurationError}, never a default IDF; docs/09 §3.3 step
+ * 2), then key acquisition ({@code KEY_UNAVAILABLE}), then normalization (a refused value is {@code
+ * INVALID_ARGUMENT}, or the reserved marker under {@code bucket}). Neither the read mode nor the
+ * spec §4.8 arming gates it: an index computed for a query is not a write (spec §10.3).
  */
 public final class Fieldseal {
+
+    /** The Unicode version {@code nfc-casefold-v1} is pinned to (docs/09 §7.1, §12). */
+    public static final String UNICODE_VERSION = "17.0.0";
 
     /** The in-code arming form spec §4.8 asks each binding to name. */
     static final String IN_CODE_ARMING = "Fieldseal.builder().armProvisionalSuites(true)";
@@ -69,6 +85,7 @@ public final class Fieldseal {
     static final String TEST_MODE_VARIABLE = "FIELDSEAL_TEST_MODE";
 
     private static final Commitment.Kdf KDF = Hkdf::derive;
+    private static final Idf.Kdf IDF_KDF = Hkdf::derive;
     private static final HexFormat HEX = HexFormat.of();
 
     /** How a record key is derived: {@link KeyDerivation#recordKey}, or a test's recorder. */
@@ -83,16 +100,19 @@ public final class Fieldseal {
     private final AllowList allowed;
     private final boolean armed;
     private final RecordKeys recordKeys;
+    /** By {@link #indexRegistryKey}; unmodifiable, and the values are immutable. */
+    private final Map<String, ValidatedIndex> indexes;
     private final SecureRandom random = new SecureRandom();
 
     private Fieldseal(Builder b, KeyProvider provider, Suite writeSuite, AllowList allowed,
-            boolean armed) {
+            boolean armed, Map<String, ValidatedIndex> indexes) {
         this.provider = provider;
         this.readMode = b.readMode;
         this.writeSuite = writeSuite;
         this.allowed = allowed;
         this.armed = armed;
         this.recordKeys = b.recordKeys;
+        this.indexes = Collections.unmodifiableMap(indexes);
     }
 
     public static Builder builder() {
@@ -133,9 +153,87 @@ public final class Fieldseal {
     }
 
     /**
+     * The blind index of {@code value} for the index {@code ctx} names ({@link
+     * FieldContext#forIndex}): spec §7.2's {@code truncate(IDF(index_key, normalize(value)), b)},
+     * with every parameter from that index's declaration. The result is the stored form, exactly
+     * {@code ⌈b/8⌉} bytes (spec §7.11). Text is the preferred form (docs/09 §7.1).
+     *
+     * @throws InvalidArgumentError if the normalizer refuses the value and the index is declared
+     *     {@code refuse}
+     * @throws ConfigurationError if the client declares no such index on the column
+     */
+    public byte[] blindIndex(String value, FieldContext ctx) {
+        if (value == null) {
+            throw new InvalidArgumentError("the value to index is null");
+        }
+        return blindIndex(ctx, v -> Normalizers.apply(v.normalize().impl(), value));
+    }
+
+    /**
+     * As {@link #blindIndex(String, FieldContext)}, over bytes. {@code nfc-casefold-v1} decodes
+     * them as strict UTF-8 first, and malformed input is refused, never replaced (docs/09 §7.1
+     * clause 5); {@code identity} and {@code digits-only-v1} are defined on bytes.
+     */
+    public byte[] blindIndex(byte[] value, FieldContext ctx) {
+        if (value == null) {
+            throw new InvalidArgumentError("the value to index is null");
+        }
+        return blindIndex(ctx, v -> Normalizers.apply(v.normalize().impl(), value));
+    }
+
+    /**
+     * The reserved marker of the index {@code ctx} names (docs/09 §7.2): {@code
+     * truncate(IDF(index_key, 0xFF || "fieldseal-unindexable-v1"), b)}, the value a {@code bucket}
+     * index derives for a value its normalizer refuses. It looks like any other index value.
+     */
+    public byte[] unindexableMarker(FieldContext ctx) {
+        return blindIndex(ctx, v -> new Normalizers.Result.Value(Normalizers.reservedPreimage()));
+    }
+
+    private byte[] blindIndex(FieldContext ctx, Function<ValidatedIndex, Normalizers.Result> in) {
+        FieldContext c = requireAnyContext(ctx);
+        if (c.indexId() == null) {
+            throw new InvalidArgumentError("the context names no index: pass"
+                    + " ctx.forIndex(indexId) (spec §6.1)");
+        }
+        ValidatedIndex v = indexes.get(indexRegistryKey(c.tableUuid(), c.columnUuid(),
+                c.indexId()));
+        if (v == null) {
+            throw new ConfigurationError("this client declares no index '" + c.indexId()
+                    + "' on table " + HEX.formatHex(c.tableUuid()) + ", column "
+                    + HEX.formatHex(c.columnUuid()) + " (docs/09 §3.3 step 2)");
+        }
+        KeyMaterial km = encryptionKey(indexRequest(c, v));
+        byte[] indexKey = KeyDerivation.indexKey(km.key(), CanonicalContext.encodeForIndexKey(
+                fields(c, writeSuite.id(), v.purpose())));
+        byte[] normalized = null;
+        try {
+            normalized = switch (in.apply(v)) {
+                case Normalizers.Result.Value val -> val.bytes();
+                case Normalizers.Result.Refused r -> {
+                    if (v.onUnindexable() != IndexDeclaration.OnUnindexable.BUCKET) {
+                        throw new InvalidArgumentError(r.reason() + "; index '" + v.indexId()
+                                + "' is declared on_unindexable = refuse (docs/09 §7.2)");
+                    }
+                    yield Normalizers.reservedPreimage();
+                }
+            };
+            return Idf.blindIndex(IndexValidation.params(v), indexKey, normalized,
+                    v.truncateBits(), IDF_KDF);
+        } finally {
+            Arrays.fill(indexKey, (byte) 0);
+            if (normalized != null) {
+                Arrays.fill(normalized, (byte) 0);
+            }
+        }
+    }
+
+    /**
      * Fetches key material for {@code contexts} ahead of the value path (docs/09 §3.6): the only
      * place a key provider may do I/O. Call it on a schedule shorter than the cache's max age: it
-     * refreshes keys that are still cached, restarting their age and use budget.
+     * refreshes keys that are still cached, restarting their age and use budget. Each context
+     * warms its column's DEK and, for every index declared on the column, the index key; a
+     * context that names an index warms the same.
      *
      * <p>Every failure, including a null collection or a null context, completes the returned
      * future exceptionally; none is thrown. What a failure leaves cached is the provider's
@@ -149,7 +247,14 @@ public final class Fieldseal {
             }
             List<KeyRequest> requests = new ArrayList<>();
             for (FieldContext c : contexts) {
-                requests.add(request(requireContext(c), Purpose.ENCRYPT));
+                requests.add(request(requireAnyContext(c), Purpose.ENCRYPT));
+                // The index role too, for every index declared on the column (docs/27 §8, S5).
+                for (ValidatedIndex v : indexes.values()) {
+                    if (Arrays.equals(v.tableUuid(), c.tableUuid())
+                            && Arrays.equals(v.columnUuid(), c.columnUuid())) {
+                        requests.add(indexRequest(c, v));
+                    }
+                }
             }
             CompletableFuture<Void> f = provider.warm(requests);
             return f != null ? f : CompletableFuture.failedFuture(
@@ -342,7 +447,17 @@ public final class Fieldseal {
                 + " (spec §3.1, §3.4); this data was written by a newer implementation");
     }
 
+    /** A value operation's context: present, and naming no index. */
     private static FieldContext requireContext(FieldContext ctx) {
+        FieldContext c = requireAnyContext(ctx);
+        if (c.indexId() != null) {
+            throw new InvalidArgumentError("the context names index '" + c.indexId() + "': a"
+                    + " value is encrypted under purpose \"encrypt\" only (spec §6.1)");
+        }
+        return c;
+    }
+
+    private static FieldContext requireAnyContext(FieldContext ctx) {
         if (ctx == null) {
             throw new InvalidArgumentError("the field context is null");
         }
@@ -354,9 +469,18 @@ public final class Fieldseal {
         return new KeyRequest(c.tableUuid(), c.columnUuid(), c.tenantId(), c.rowId(), purpose);
     }
 
+    /** For the index key: its purpose from the declaration, and no row (spec §7.2). */
+    private static KeyRequest indexRequest(FieldContext c, ValidatedIndex v) {
+        return new KeyRequest(c.tableUuid(), c.columnUuid(), c.tenantId(), null, v.purpose());
+    }
+
     private static ContextFields fields(FieldContext c, int suiteId) {
+        return fields(c, suiteId, Purpose.ENCRYPT);
+    }
+
+    private static ContextFields fields(FieldContext c, int suiteId, String purpose) {
         return new ContextFields(suiteId, c.tableUuid(), c.columnUuid(), c.tenantId(), c.rowId(),
-                Purpose.ENCRYPT);
+                purpose);
     }
 
     /** The operand's array: the public entry points build only array operands. */
@@ -395,6 +519,48 @@ public final class Fieldseal {
     }
 
     /**
+     * The validated index declarations, by {@link #indexRegistryKey} (docs/09 §2): resolved, with
+     * every default filled in. Unmodifiable, and each value is immutable.
+     */
+    public Map<String, ValidatedIndex> indexes() {
+        return indexes;
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // What a caller needs to compare its own declarations with a client's, and to check text
+    // before it reaches a refusal (docs/09 §7, §7.1, §12).
+
+    /**
+     * Validates {@code declaration} as {@link Builder#build} does, and returns it resolved.
+     *
+     * @throws ConfigurationError naming the first rule it fails
+     */
+    public static ValidatedIndex validateIndexDeclaration(IndexDeclaration declaration) {
+        return IndexValidation.validate(declaration);
+    }
+
+    /** The key {@link #indexes} files an index under: table and column in hex, then the id. */
+    public static String indexRegistryKey(byte[] tableUuid, byte[] columnUuid, String indexId) {
+        if (tableUuid == null || columnUuid == null || indexId == null) {
+            throw new InvalidArgumentError("a registry key needs a table, a column and an id");
+        }
+        return HEX.formatHex(tableUuid) + "/" + HEX.formatHex(columnUuid) + "/" + indexId;
+    }
+
+    /**
+     * The first code point in {@code text} that {@code nfc-casefold-v1} would refuse, with its
+     * offset in code points; empty if there is none (docs/09 §7.1). A lone surrogate is reported
+     * too, since it is refused on the same terms.
+     */
+    public static Optional<Unassigned> firstUnassigned(CharSequence text) {
+        if (text == null) {
+            throw new InvalidArgumentError("the text to check is null");
+        }
+        int[] u = Normalizers.firstUnassigned(text);
+        return u == null ? Optional.empty() : Optional.of(new Unassigned(u[0], u[1]));
+    }
+
+    /**
      * Builds a {@link Fieldseal}. {@link #build} validates everything and the result is
      * immutable (docs/09 §2).
      */
@@ -407,8 +573,19 @@ public final class Fieldseal {
         private Consumer<String> onWarning;
         private Function<String, String> environment = System::getenv;
         private RecordKeys recordKeys = KeyDerivation::recordKey;
+        private List<IndexDeclaration> indexes = List.of();
 
         private Builder() {}
+
+        /**
+         * The blind indexes this client derives (docs/09 §7). Each is validated in {@link
+         * #build}; a declaration carrying an override is logged there, through {@link
+         * #onWarning}, because spec §7.6 requires the override to be logged.
+         */
+        public Builder indexes(Collection<IndexDeclaration> declarations) {
+            this.indexes = declarations == null ? null : new ArrayList<>(declarations);
+            return this;
+        }
 
         /** Required. */
         public Builder keyProvider(KeyProvider provider) {
@@ -505,7 +682,40 @@ public final class Fieldseal {
                 warn.accept("Fieldseal client using the static key provider outside test"
                         + " configuration: it is for tests and development only (spec §8)");
             }
-            return new Fieldseal(this, keyProvider, write, allow, armed);
+            Map<String, ValidatedIndex> registry = registry(warn);
+            return new Fieldseal(this, keyProvider, write, allow, armed, registry);
+        }
+
+        private Map<String, ValidatedIndex> registry(Consumer<String> warn) {
+            if (indexes == null) {
+                throw new ConfigurationError("indexes may not be null; pass an empty list");
+            }
+            Map<String, ValidatedIndex> out = new LinkedHashMap<>();
+            for (IndexDeclaration d : indexes) {
+                ValidatedIndex v = IndexValidation.validate(d);
+                if (out.putIfAbsent(v.registryKey(), v) != null) {
+                    throw new ConfigurationError("index '" + v.indexId() + "' is declared twice"
+                            + " on table " + HEX.formatHex(v.tableUuid()) + ", column "
+                            + HEX.formatHex(v.columnUuid()) + " (spec §7.2: one key per index)");
+                }
+                if (v.cardinalityOverride() != null) {
+                    warn.accept(overridden(v, "spec §7.6's cardinality gate",
+                            v.cardinalityOverride()));
+                }
+                if (v.onUnindexable() == IndexDeclaration.OnUnindexable.BUCKET) {
+                    warn.accept(overridden(v, "docs/09 §7.2's refusal of unindexable values"
+                            + " (on_unindexable = bucket)", v.unindexableOverride()));
+                }
+            }
+            return out;
+        }
+
+        private static String overridden(ValidatedIndex v, String rule,
+                IndexDeclaration.ReviewedOverride o) {
+            return "index '" + v.indexId() + "' on table " + HEX.formatHex(v.tableUuid())
+                    + ", column " + HEX.formatHex(v.columnUuid()) + " overrides " + rule
+                    + ": \"" + o.reason() + "\", approved by " + o.approvedBy() + " on "
+                    + o.date();
         }
 
         /** The {@code unimplemented-registered-suite} pin: refused, naming G7. */

@@ -11,6 +11,9 @@
  * this list, so the addition is a deliberate test change.
  */
 module dev.fieldseal.core {
+    // Argon2id only (docs/27 §2); read by internal.blindindex and nothing else.
+    requires org.bouncycastle.provider;
+
     exports dev.fieldseal.core;
     exports dev.fieldseal.core.errors;
     exports dev.fieldseal.core.keyprovider;

@@ -61,6 +61,24 @@ class KeyMaterialOwnershipTest {
         assertArrayEquals(Fixtures.KEY_ID, p.keyId);
     }
 
+    /** The index path too (S5): derive, the marker, and a refusal after the key is fetched. */
+    @Test
+    void providerArraysAreNeverWrittenOnTheIndexPath() {
+        Fixtures.SpyProvider p = new Fixtures.SpyProvider();
+        Fieldseal fs = builder(p).indexes(List.of(IndexDeclaration.builder(Fixtures.TABLE,
+                        Fixtures.COLUMN).idf(IndexDeclaration.Idf.ARGON2ID)
+                .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
+                .projectedPopulation(100_000).build())).build();
+        FieldContext ix = ctx().forIndex("exact");
+        fs.blindIndex("Ada", ix);
+        fs.blindIndex("Ada".getBytes(java.nio.charset.StandardCharsets.US_ASCII), ix);
+        fs.unindexableMarker(ix);
+        assertThrows(FieldsealError.class, () -> fs.blindIndex("a͸", ix));
+        assertArrayEquals(Fixtures.DEK, p.dek);
+        assertArrayEquals(Fixtures.INDEX_KEY, p.indexKey);
+        assertArrayEquals(Fixtures.KEY_ID, p.keyId);
+    }
+
     @Test
     void everyRecordKeyIsErasedOnEveryPath() {
         Fixtures.SpyProvider p = new Fixtures.SpyProvider();
