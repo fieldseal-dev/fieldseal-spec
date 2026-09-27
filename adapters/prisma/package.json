@@ -50,7 +50,12 @@
     "@fieldseal/core are its published operations plus warm(), and the only",
     "reason any cipher exists in this tree is transitively, through the core.",
     "A direct crypto dependency here is a conformance failure, not a style",
-    "question -- CI asserts it rather than trusting review."
+    "question -- CI asserts it rather than trusting review.",
+    "",
+    "overrides: the prisma CLI pins mysql2 3.15.3, which has",
+    "GHSA-3f6p-5ww8-9rcr (clear-password auth downgrade). Dev-only, never",
+    "shipped, and no Prisma 7 release moves the pin. Drop this when prisma",
+    "does."
   ],
   "dependencies": {
     "@fieldseal/core": "file:../../core/typescript"
@@ -68,6 +73,9 @@
     "prisma": "7.10.0",
     "typescript": "~5.9.3",
     "vitest": "^4.0.0"
+  },
+  "overrides": {
+    "mysql2": "^3.22.0"
   },
   "publishConfig": {
     "access": "public"
