@@ -122,18 +122,18 @@ jobs:
           name: conformance-python
           path: conformance-python.json
 
-  # The Java core (WS-I, docs/27), at stage S5 (docs/27 §8): the Gradle
+  # The Java core (WS-I, docs/27), at stage S6 (docs/27 §8): the Gradle
   # scaffold, the module descriptor, docs/09 §1's dependency rule, the
   # harness's integrity walk, the capability audit (CapabilitiesTest), the
-  # envelope codec, the crypto primitives, the key providers, the client and
-  # blind indexes. kdf/, context/ and commitment/ run against the primitives;
+  # envelope codec, the crypto primitives, the key providers, the client,
+  # blind indexes, and the testing artifact's encrypt_with_materials, armed and
+  # unarmed. kdf/, context/ and commitment/ run against the primitives;
   # errors/ and envelope/ run through the public client; blind-index/ runs
   # both ways. Its Unicode tables are covered by the unicode-tables job's
-  # --check, like the other cores'. The harness emits no conformance report yet,
-  # so it is not in `cross-core-result-ids` or the cross job: those joins
-  # are S6 and S7 (docs/27 §1).
+  # --check, like the other cores'. Since S6 it emits the docs/14 §4 report and
+  # joins `cross-core-result-ids`; the cross job is S7 (docs/27 §1).
   java-core:
-    name: "Java core (S5: blind indexes; no conformance report yet)"
+    name: "Java core vs the pinned vector suite"
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -153,15 +153,27 @@ jobs:
         with:
           cache-provider: basic
 
-      # Compiles with -Xlint:all -Werror, then runs the module-descriptor pin,
-      # the dependency rules with one injected violation per rule, the
-      # harness's guards against synthetic suites, CapabilitiesTest, the
-      # codec's unit, wiring and property tests, and CodecVectorsTest.
+      # Compiles with -Xlint:all -Werror, then runs every test of both modules:
+      # the module-descriptor pin, the dependency rules with one injected
+      # violation per rule, the harness's guards against synthetic suites,
+      # CapabilitiesTest, the unit, wiring and property tests, the vector tests,
+      # and the report's assembly and validation. `check` also runs
+      # unarmedTest, encrypt_with_materials in a process without
+      # FIELDSEAL_TEST_MODE (docs/08 §6).
       - name: Build and test
         run: ./gradlew build --console=plain
 
-      - name: Walk the pinned vector suite (hashes, wrappers, ids)
-        run: ./gradlew -q vectors
+      # The report runs the vector tests again through the JUnit launcher and
+      # exits 1 on a failed result, a problem or a report that does not
+      # validate (ConformanceReport). The summary line goes to stderr.
+      - name: Emit the conformance report
+        run: ./gradlew -q vectors > ../../conformance-java.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-java
+          path: conformance-java.json
 
   # docs/27 §6.4: the platform-maximum probe, in a job of its own because it
   # allocates arrays of nearly 2 GiB (-Xmx6g; this public repository's Linux
@@ -191,25 +203,26 @@ jobs:
       - name: Probe
         run: ./gradlew memoryProbe --console=plain
 
-  # docs/08 line 414 claims the two cores produce identical result ids on the
+  # docs/08 line 414 claims the cores produce identical result ids on the
   # synchronous pass. Until 2026-09-04 nothing enforced it: each core job
-  # uploaded its own report and no job ever opened both. That left the
+  # uploaded its own report and no job ever opened two. Java joined at its
+  # stage S6 (docs/27 §8), the third core compared. That left the
   # project's central claim -- cross-implementation agreement -- resting on a
   # hand check, and it left one failure invisible: a core that silently
   # stopped running a family would still emit a green report, because a report
   # is only ever compared with the vectors that core chose to run.
   #
   # What this job does NOT catch, stated so the docs do not overclaim: a drop
-  # that hits both cores identically AND is removed from the manifest. The
-  # manifest cross-check below closes the both-cores half; a family deleted
+  # that hits every core identically AND is removed from the manifest. The
+  # manifest cross-check below closes the every-core half; a family deleted
   # from MANIFEST.json as well is a suite change, and that belongs to
   # `suite-integrity` and `vectors-reproducible`.
   cross-core-result-ids:
-    name: Both cores report the same result ids
+    name: Every core reports the same result ids
     runs-on: ubuntu-24.04
-    needs: [typescript-core, python-core]
+    needs: [typescript-core, python-core, java-core]
     # Deliberately not the implicit `success()` gate a bare `needs:` gives.
-    # Both core jobs upload with `if: always()`, so their reports exist even
+    # Every core job uploads with `if: always()`, so its report exists even
     # when they are red -- and a red core is exactly when a silently dropped
     # family is most likely to be missed, because attention goes to the
     # failing vector. Running regardless is what makes docs/08's "on every
@@ -222,7 +235,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # Two named downloads rather than one `pattern: conformance-*`: the
+      # Named downloads rather than one `pattern: conformance-*`: the
       # prisma jobs also upload `conformance-prisma-adapter-<db>`, which that
       # pattern matched and pulled in for no reason. A named download also
       # fails the step outright when its input is missing, rather than leaving
@@ -233,6 +246,9 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: conformance-typescript
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conformance-java
 
       # Guards first, against synthetic reports: each one was verified by hand
       # when this job was written, and a guard nobody exercises is one a
@@ -245,7 +261,7 @@ jobs:
       # named here rather than defaulted: adding one is a `needs` entry, a
       # named download above and a name in this list (WS-L, docs/26 §1).
       - name: Compare the synchronous result-id sets
-        run: python tools/conformance/compare_result_ids.py --cores python,typescript
+        run: python tools/conformance/compare_result_ids.py --cores python,typescript,java
 
   django-adapter:
     name: Django adapter (L1+L2) on SQLite and Postgres

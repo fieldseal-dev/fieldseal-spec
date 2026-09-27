@@ -83,6 +83,11 @@ public final class SuiteFiles {
         return HEX.formatHex(bytes);
     }
 
+    /** The vector's full id: what the harness names its dynamic test and its result by. */
+    public static String id(JsonNode vector) {
+        return vector.path("id").asText();
+    }
+
     public static String slug(JsonNode vector) {
         String id = vector.path("id").asText();
         return id.substring(id.lastIndexOf('/') + 1);

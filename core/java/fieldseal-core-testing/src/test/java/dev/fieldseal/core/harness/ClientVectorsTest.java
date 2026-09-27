@@ -2,9 +2,8 @@ package dev.fieldseal.core.harness;
 
 import static dev.fieldseal.core.capabilities.SuiteFiles.files;
 import static dev.fieldseal.core.capabilities.SuiteFiles.hex;
-import static dev.fieldseal.core.capabilities.SuiteFiles.slug;
+import static dev.fieldseal.core.capabilities.SuiteFiles.id;
 import static dev.fieldseal.core.capabilities.SuiteFiles.vectors;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -33,13 +32,13 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DynamicTest;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * {@code errors/} and the decrypt direction of {@code envelope/}, through the public client
- * (S4b). Each vector's {@code config} builds a {@link Fieldseal}, and a provider that knows only
- * the vector's {@code key_id} and {@code tenant_dek} answers its key lookups (docs/08 §4.6). The
+ * {@code errors/} through the public client (S4b). The decrypt direction of {@code envelope/},
+ * which ran here until S6, is {@code EnvelopeVectorsTest}'s {@code #decrypt} results. Each
+ * vector's {@code config} builds a {@link Fieldseal}, and a provider that knows only the
+ * vector's {@code key_id} and {@code tenant_dek} answers its key lookups (docs/08 §4.6). The
  * read-mode mapping, the allow-list, the key lookup, the commitment and the tag are the client's
  * now, not a restatement in this test.
  *
@@ -157,7 +156,7 @@ class ClientVectorsTest {
             int[] seen = new int[2];
             for (JsonNode v : vectors(path)) {
                 seen[v.path("operation").asText().equals("blind_index") ? 1 : 0]++;
-                tests.add(DynamicTest.dynamicTest(slug(v), () -> run(v)));
+                tests.add(DynamicTest.dynamicTest(id(v), () -> run(v)));
             }
             assertEquals(Arrays.toString(ERRORS.get(path)), Arrays.toString(seen),
                     path + ": {value, blind_index} counts moved");
@@ -206,21 +205,6 @@ class ClientVectorsTest {
             assertSame(input, out, "pass-through returns the input itself (spec §10.3)");
         } else {
             fail("unrecognised expectation " + e);
-        }
-    }
-
-    /** envelope/ read back through the public decrypt, under a strict client. */
-    @Test
-    void envelopeFamilyDecryptsThroughTheClient() {
-        List<JsonNode> vs = vectors("envelope/ff01.json");
-        assertEquals(9, vs.size());
-        for (JsonNode v : vs) {
-            Fieldseal fs = Fieldseal.builder()
-                    .keyProvider(new VectorKeys(hex(v.path("tenant_dek")), hex(v.path("key_id"))))
-                    .allowedSuites(Set.of(0xFF01)).writeSuite(0xFF01).onWarning(w -> { }).build();
-            assertArrayEquals(hex(v.path("plaintext")),
-                    fs.decrypt(hex(v.path("expected").path("envelope")), context(v.path("context"))),
-                    v.path("id").asText());
         }
     }
 }

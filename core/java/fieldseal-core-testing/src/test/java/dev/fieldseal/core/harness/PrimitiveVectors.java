@@ -2,7 +2,7 @@ package dev.fieldseal.core.harness;
 
 import static dev.fieldseal.core.capabilities.SuiteFiles.files;
 import static dev.fieldseal.core.capabilities.SuiteFiles.hex;
-import static dev.fieldseal.core.capabilities.SuiteFiles.slug;
+import static dev.fieldseal.core.capabilities.SuiteFiles.id;
 import static dev.fieldseal.core.capabilities.SuiteFiles.vectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -56,7 +56,7 @@ final class PrimitiveVectors {
      */
     static Stream<DynamicTest> run(Stream<JsonNode> vectors, java.util.function.Consumer<JsonNode> value,
             Function<JsonNode, byte[][]> pair) {
-        return vectors.map(v -> DynamicTest.dynamicTest(slug(v), () -> {
+        return vectors.map(v -> DynamicTest.dynamicTest(id(v), () -> {
             if (!v.has("assertion")) {
                 value.accept(v);
             } else if ("distinct".equals(v.path("assertion").asText())) {

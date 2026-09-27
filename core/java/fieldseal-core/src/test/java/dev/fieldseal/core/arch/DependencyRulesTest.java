@@ -43,6 +43,7 @@ class DependencyRulesTest {
             Map.entry("blindindex", fixture("internal.blindindex", "keyprovider")),
             Map.entry("keyprovider", fixture("keyprovider", "internal.registry")),
             Map.entry("cache", fixture("internal.cache", "internal.registry")),
+            Map.entry("testing", fixture("internal.testing", "internal.registry")),
             Map.entry("no-module-imports-api", fixture("internal.config", ""))));
 
     /** A leading '#' marks a fully qualified name outside {@code dev.fieldseal.core}. */
