@@ -64,8 +64,19 @@ py.typed
 ## 4. Public API shape
 
 ```python
-from fieldseal import Fieldseal, FieldContext
+from datetime import timedelta
+
+from fieldseal import Fieldseal, FieldContext, IndexDeclaration
+from fieldseal.cache import CachePolicy
 from fieldseal.keyprovider import EnvelopeKeyProvider
+
+# The §5.5 cache policy is the provider's, not the client's (docs/09 §2, §8.3):
+# `Fieldseal.__init__` has no `cache` parameter, and passing one is a TypeError.
+provider = EnvelopeKeyProvider(
+    wrapper=kms_wrapper,            # any object with `unwrap(wrapped, scope)`
+    directory=key_directory,        # anything with `by_scope(scope)`
+    cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
+)
 
 fs = Fieldseal(
     key_provider=provider,
@@ -73,7 +84,6 @@ fs = Fieldseal(
     write_suite=0xFF01,
     read_mode="strict",
     arm_provisional_suites=False,      # spec §4.8; or FIELDSEAL_ARM_PROVISIONAL_SUITES=1 (docs/14 §4)
-    cache=CachePolicy(max_age=timedelta(minutes=10), max_uses=1_000_000, capacity=10_000),
     indexes=[IndexDeclaration(...)],
 )
 
@@ -98,6 +108,7 @@ fs.indexes           # -> Mapping[str, ValidatedIndex], keyed by index_registry_
 - All five operations are strictly synchronous and perform no I/O (spec §11.1). `warm` is `async def`; a sync convenience `warm_blocking()` wraps it for WSGI apps (it may do network I/O — it is not in the value path).
 - Errors: `FieldsealError` → `UnknownFormatVersion`, `SuiteNotAllowed`, `KeyUnavailable`, `AadMismatch`, `TagInvalid`, `CommitmentInvalid`, `NotCiphertext`, `ModeViolation` (spec §9 code `MODE_VIOLATION`, added by G6), `LengthExceeded` (code `LENGTH_EXCEEDED`, added by G10 — spec §3.5), `SuiteProvisional` (code `SUITE_PROVISIONAL`, spec §4.8), and two implementation-local codes docs/09 §9 permits outside §9: `ConfigurationError` (construction time) and `InvalidArgument` (an operand refused at the API boundary — an index purpose handed to `encrypt`, invalid UTF-8 handed to a text normalizer). Each carries `.code: str` equal to the vector-suite string (docs/09 §9). `FieldsealWarning` is the spec §10.3 warning for the pass-through modes.
 - `KeyProvider` is spec §8's interface by name: `encryption_key(ctx) -> (key_material, key_id)` with purpose routing, and `decryption_keys(header) -> Sequence[bytes]` returning every currently-valid version in preference order; the client tries each candidate's commitment in turn (docs/09 §3.2 step 6).
+- **No client-level `cache` parameter (docs/09 §2, §8.3).** `Fieldseal.__init__` takes `key_provider`, `allowed_suites`, `write_suite`, `read_mode`, `indexes` and `arm_provisional_suites` (§2's `on_warning` and `metrics` hooks are not implemented in this binding; see [#223](https://github.com/fieldseal-dev/fieldseal-spec/issues/223)); handing it `cache=` is a `TypeError`, not a silently ignored argument. The §5.5 policy is `EnvelopeKeyProvider`'s own required `cache` option (`from fieldseal.cache import CachePolicy`), validated in `CachePolicy.__post_init__` and raised at that construction. Python has no client-config dictionary to screen, so it has nothing to refuse: the keyword simply does not exist. Every client built on one provider shares that provider's cache, its use budgets and its capacity, and one client's warms can evict another's keys (docs/09 §8.3) — **no test in this core pins that yet**.
 - **Configuration reflection (docs/09 §2, added by G18).** The five properties above are read-only and report the validated form: `indexes` returns `ValidatedIndex` records with the §7.3 Argon2 minima filled in, `index_id` defaulted to `"exact"` and `on_unindexable` to `refuse`. `ValidatedIndex`, `validate_index_declaration` and `index_registry_key` are exported from the package for the purpose — a caller comparing its own declarations against a client's registry needs the last two to build the same keys and resolve the same defaults. The mapping is a `MappingProxyType` over the client's registry, not the dict: `mappingproxy` carries no mutating methods at all, which is a stronger guarantee than refusing them, and the `ValidatedIndex` records are frozen dataclasses, so a caller holding one cannot rewrite the truncation length of a live index. `key_provider` and the cache are deliberately absent from this surface (docs/09 §2's carve-out).
 
 ## 5. Security-relevant implementation notes
@@ -115,7 +126,7 @@ fs.indexes           # -> Mapping[str, ValidatedIndex], keyed by index_registry_
 ## 6. Testing plan
 
 1. **Vector harness** (`tests/vectors/`): implements the full contract of docs/08 §5 — manifest hash check, schema validation (`jsonschema` dev-dependency), both-direction envelope runs, exact error-code mapping, machine-readable report emission (docs/14 §4). Vector path resolved from the repo root so `core/python` never copies vectors.
-2. **Unit tests** per module, including: codec truncation at every byte offset of a valid envelope (must never panic — always a typed error); allow-list vs registry decoupling (spec §3.4 double-encryption regression case, verification-log defect #6); cache max-age/max-uses/zeroize-on-evict, with use counting per `encryption_key` return — `decryption_keys` candidate reads must not deplete `max_uses` (docs/09 §8.3; mirror the TypeScript `providers.test.ts` "decrypt-path candidate reads do not deplete §5.5 max-uses" case — this test is written down here *before* `cache.py`/`EnvelopeKeyProvider` exist so the bug fixed in PR #55 is not re-introduced when they land); provider purpose-routing (index purpose must never return the DEK — spec §8).
+2. **Unit tests** per module, including: codec truncation at every byte offset of a valid envelope (must never panic — always a typed error); allow-list vs registry decoupling (spec §3.4 double-encryption regression case, verification-log defect #6); cache max-age/max-uses/zeroize-on-evict, with use counting per **DEK-role** `encryption_key` return and none at all for the index role — `decryption_keys` candidate reads must not deplete `max_uses` (docs/09 §8.3; mirror the TypeScript `providers.test.ts` "decrypt-path candidate reads do not deplete §5.5 max-uses" case — this test is written down here *before* `cache.py`/`EnvelopeKeyProvider` exist so the bug fixed in PR #55 is not re-introduced when they land); **and the index role has no use budget** — `docs/09` §8.3 gives `max_uses` to DEK-role returns only, because an index key is never AEAD key material and draws no nonce, so the SP 800-38D ceiling the threshold exists for cannot reach it, while `max_uses` is configurable as low as 1 and index derivation runs on every write and every query; `max_age` and the capacity LRU still apply to both roles, so the cases are an index key fetched past `max_uses` and still served, an index key still evicted on `max_age`, index traffic not spending a DEK's budget, and a DEK still use-evicted at `max_uses` — `tests/test_providers.py`'s `test_index_key_returns_do_not_deplete_max_uses` and `test_index_key_is_still_evicted_on_max_age` (both red before the fix), plus `test_index_traffic_does_not_spend_the_dek_budget`, which is green before it by design — the role has always been part of the cache key, so that case guards the two entries staying separate and bites a cache key that dropped the role; the three are mirrored one-for-one in `core/typescript/tests/providers.test.ts`; provider purpose-routing (index purpose must never return the DEK — spec §8).
 3. **Property tests** (hypothesis): `parse(serialize(h))` identity; `is_ciphertext` total on arbitrary bytes (never raises); `decrypt(encrypt(p, ctx), ctx) == p` for random valid inputs with the real CSPRNG path.
 4. **Cross-output producer**: a pytest-invocable script emitting the `cross/` file (docs/08 §4.7) from the production path.
 5. **Negative import test:** `import fieldseal` must not import `fieldseal.testing`; enforced by a test asserting `"fieldseal.testing" not in sys.modules` after a clean import. A second test asserts `encrypt_with_materials` raises when `FIELDSEAL_TEST_MODE` is unset (the docs/08 §6 arming gate). The module docstring carries the consequence verbatim: *"an implementation that accepts a caller-supplied nonce or seed outside of vector-test mode is non-conformant"* (`vectors/README.md`).

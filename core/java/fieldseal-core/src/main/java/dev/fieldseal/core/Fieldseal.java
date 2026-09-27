@@ -27,6 +27,7 @@ import dev.fieldseal.core.internal.kdf.KeyDerivation;
 import dev.fieldseal.core.internal.registry.AllowList;
 import dev.fieldseal.core.internal.registry.Registry;
 import dev.fieldseal.core.internal.registry.Suite;
+import dev.fieldseal.core.internal.testing.MaterialsSeam;
 import dev.fieldseal.core.keyprovider.EnvelopeHeader;
 import dev.fieldseal.core.keyprovider.KeyMaterial;
 import dev.fieldseal.core.keyprovider.KeyProvider;
@@ -89,6 +90,21 @@ public final class Fieldseal {
     private static final Idf.Kdf IDF_KDF = Hkdf::derive;
     private static final HexFormat HEX = HexFormat.of();
 
+    static {
+        // docs/08 §6: the one route by which fixed materials reach seal(), armed only by
+        // FIELDSEAL_TEST_MODE=1 (MaterialsSeam; the testing module's encrypt_with_materials).
+        MaterialsSeam.install(Fieldseal.class, FieldContext.class, Fieldseal::encryptWithMaterials);
+    }
+
+    /**
+     * Where an envelope's {@code msg_seed} and nonce come from: the client's CSPRNG on every
+     * public path, and a caller's fixed values on {@link #encryptWithMaterials} only.
+     */
+    @FunctionalInterface
+    private interface Entropy {
+        void fill(byte[] msgSeed, byte[] nonce);
+    }
+
     /** How a record key is derived: {@link KeyDerivation#recordKey}, or a test's recorder. */
     @FunctionalInterface
     interface RecordKeys {
@@ -104,6 +120,10 @@ public final class Fieldseal {
     /** By {@link #indexRegistryKey}; unmodifiable, and the values are immutable. */
     private final Map<String, ValidatedIndex> indexes;
     private final SecureRandom random = new SecureRandom();
+    private final Entropy csprng = (msgSeed, nonce) -> {
+        random.nextBytes(msgSeed);
+        random.nextBytes(nonce);
+    };
 
     private Fieldseal(Builder b, KeyProvider provider, Suite writeSuite, AllowList allowed,
             boolean armed, Map<String, ValidatedIndex> indexes) {
@@ -268,6 +288,10 @@ public final class Fieldseal {
     }
 
     byte[] encrypt(Operand plaintext, FieldContext ctx) {
+        return encrypt(plaintext, ctx, csprng);
+    }
+
+    private byte[] encrypt(Operand plaintext, FieldContext ctx, Entropy entropy) {
         refuseInReadonly("encrypt");
         requireArmed();
         if (plaintext == null) {
@@ -275,7 +299,7 @@ public final class Fieldseal {
         }
         BufferLimits.requirePlaintextWithinBound(plaintext);
         FieldContext c = requireContext(ctx);
-        return seal(bytes(plaintext), c);
+        return seal(bytes(plaintext), c, entropy);
     }
 
     byte[] decrypt(Operand envelope, FieldContext ctx) {
@@ -309,7 +333,7 @@ public final class Fieldseal {
         };
         try {
             BufferLimits.requirePlaintextWithinBound(Operand.of(plaintext));
-            return seal(plaintext, ctx);
+            return seal(plaintext, ctx, csprng);
         } finally {
             // An intermediate plaintext the core produced and the caller never sees (docs/09 §3).
             Arrays.fill(plaintext, (byte) 0);
@@ -319,15 +343,14 @@ public final class Fieldseal {
     // ----------------------------------------------------------------------------------------
     // docs/09 §3.1 steps 3-13 and §3.2 steps 3-7.
 
-    private byte[] seal(byte[] plaintext, FieldContext ctx) {
+    private byte[] seal(byte[] plaintext, FieldContext ctx, Entropy entropy) {
         Suite suite = writeSuite;
         Aead aead = Aead.forSuite(suite).orElseThrow(
                 () -> new IllegalStateException("write suite " + suite.hexId() + " is not built"));
         KeyMaterial km = encryptionKey(request(ctx, Purpose.ENCRYPT));
         byte[] msgSeed = new byte[32];
         byte[] nonce = new byte[suite.nonceLen()];
-        random.nextBytes(msgSeed);
-        random.nextBytes(nonce);
+        entropy.fill(msgSeed, nonce);
         byte[] cc = CanonicalContext.encode(fields(ctx, suite.id()));
         byte[] recordKey = recordKeys.derive(suite, km.key(), km.keyId(), msgSeed, cc);
         try {
@@ -382,6 +405,33 @@ public final class Fieldseal {
         throw new CommitmentInvalidError("no candidate key's commitment verified (spec §4.6):"
                 + " the key or the context is not the one this envelope was written under; "
                 + describe(p, c));
+    }
+
+    /**
+     * docs/08 §6's {@code encrypt_with_materials}, reached only through {@link MaterialsSeam}:
+     * {@link #encrypt(byte[], FieldContext)} in full, API-boundary order included, except that
+     * the envelope's {@code msg_seed} and nonce are the caller's. The materials are checked
+     * first, since a wrong length is the harness's mistake, not an outcome the pipeline decides.
+     */
+    private static byte[] encryptWithMaterials(Fieldseal client, byte[] plaintext,
+            FieldContext ctx, byte[] msgSeed, byte[] nonce) {
+        MaterialsSeam.requireArmed();
+        if (client == null) {
+            throw new InvalidArgumentError("the client is null");
+        }
+        int nonceLen = client.writeSuite.nonceLen();
+        if (msgSeed == null || msgSeed.length != 32) {
+            throw new InvalidArgumentError("msg_seed must be 32 bytes (spec §3.1)");
+        }
+        if (nonce == null || nonce.length != nonceLen) {
+            throw new InvalidArgumentError("the nonce must be " + nonceLen + " bytes for suite "
+                    + client.writeSuite.hexId() + " (spec §4.4)");
+        }
+        return client.encrypt(plaintext == null ? null : Operand.of(plaintext), ctx,
+                (s, n) -> {
+                    System.arraycopy(msgSeed, 0, s, 0, s.length);
+                    System.arraycopy(nonce, 0, n, 0, n.length);
+                });
     }
 
     // ----------------------------------------------------------------------------------------

@@ -40,9 +40,7 @@ class BlindIndexClientTest {
 
     /** An hmac-sha512 email index at P = 100,000, b = 15: inside spec §7.4's band. */
     private static IndexDeclaration.Builder email() {
-        return IndexDeclaration.builder(TABLE, COLUMN).indexId("email-eq").idf(Idf.HMAC_SHA512)
-                .normalize(Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
-                .projectedPopulation(100_000);
+        return Fixtures.emailIndex();
     }
 
     private static Fieldseal client(Fixtures.SpyProvider p, IndexDeclaration... ds) {

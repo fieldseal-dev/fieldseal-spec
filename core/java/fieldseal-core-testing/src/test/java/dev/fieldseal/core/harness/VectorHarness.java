@@ -16,10 +16,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * The vector harness (docs/08 §5; docs/27 §7), at stage S1: it walks the pinned suite and
- * executes nothing.
- *
- * <p>What the walk does now, and keeps doing when vectors run (S3 onward):
+ * The suite walk (docs/08 §5 item 1; docs/27 §7): what every vector test and the conformance
+ * report read the pinned suite through. It runs no vector itself.
  *
  * <ul>
  *   <li>reads {@code MANIFEST.json}, takes {@code vector_suite_version} from it rather than from
@@ -32,9 +30,10 @@ import java.util.regex.Pattern;
  *       well-formed {@code id} and a {@code reason}.
  * </ul>
  *
- * <p>What it does not do yet: run a vector, or emit the docs/14 §4 report (S6). docs/08 §5
- * item 2's schema validation has no input, since the repository has no {@code vectors/schema/}.
- * Any problem is fatal: a malformed suite fails loudly and is never skipped (docs/08 §5 item 2).
+ * <p>docs/08 §5 item 2's schema validation has no input, since the repository has no {@code
+ * vectors/schema/}. Any problem is fatal: a malformed suite fails loudly and is never skipped
+ * (docs/08 §5 item 2). Since S6 the report ({@link ConformanceReport}) is {@code ./gradlew -q
+ * vectors}, and it walks the suite first.
  */
 public final class VectorHarness {
 
@@ -197,26 +196,6 @@ public final class VectorHarness {
             return MessageDigest.getInstance("SHA-256").digest(bytes);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("every JDK provides SHA-256", e);
-        }
-    }
-
-    /** {@code ./gradlew -q vectors}. Exit status 1 on any problem. */
-    public static void main(String[] args) throws IOException {
-        if (args.length != 1) {
-            System.err.println("usage: VectorHarness <vectors-dir>");
-            System.exit(2);
-        }
-        Walk walk = walk(Path.of(args[0]));
-        System.out.printf("vector suite %s: %d files, %d vectors walked%n",
-                walk.suiteVersion(), walk.files().size(), walk.vectors());
-        for (FileWalk f : walk.files()) {
-            System.out.printf("  %-30s %s%n", f.path(),
-                    f.walked() ? String.format("%3d", f.vectors()) : "not walked (see PROBLEM)");
-        }
-        System.out.println("held_out: " + (walk.heldOut().isEmpty() ? "none" : walk.heldOut()));
-        walk.problems().forEach(p -> System.err.println("PROBLEM " + p));
-        if (!walk.problems().isEmpty()) {
-            System.exit(1);
         }
     }
 }

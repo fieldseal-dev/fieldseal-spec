@@ -141,13 +141,29 @@ function validateShape(path: string, doc: VectorFile): void {
       // silently ignore a whole class of requirement and still report green.
       // Suite 0.8.0 adds "refuse" (G26): a bytes preimage the index path
       // must refuse, with the code it must refuse with and no index.
-      const ASSERTIONS = ["distinct", "equal", "unindexable-marker", "unindexable-bucket", "refuse"];
+      // Suite 0.10.0 adds "declaration" (#210, #211): an index declaration
+      // the client must refuse or accept at construction, with no §9 code.
+      const ASSERTIONS = ["distinct", "equal", "unindexable-marker", "unindexable-bucket", "refuse", "declaration"];
       if (typeof v.assertion !== "string" || !ASSERTIONS.includes(v.assertion)) {
         throw new SuiteIntegrityError(`${path} ${id}: unknown assertion ${String(v.assertion)}`);
       }
       // Suite 0.2.0: assertion vectors carry the inputs of both sides (D-08).
       req(path, id, v, "inputs", isObj, "an object");
-      if (v.assertion === "distinct" || v.assertion === "equal") {
+      if (v.assertion === "declaration") {
+        req(path, id, v, "suite_id", isSuiteId, "a 0xXXXX suite id");
+        const d = (v.inputs as Record<string, unknown>).declaration;
+        if (!isObj(d)) throw new SuiteIntegrityError(`${path} ${id}: inputs.declaration is not an object`);
+        req(path, id, d, "table_uuid", (x) => isHex(x) && x.length === 32, "32 hex chars");
+        req(path, id, d, "column_uuid", (x) => isHex(x) && x.length === 32, "32 hex chars");
+        for (const k of ["index_id", "idf", "normalize", "on_unindexable"]) req(path, id, d, k, (x) => typeof x === "string", "a string");
+        req(path, id, d, "idf_params", isObj, "an object");
+        for (const k of ["truncate_bits", "projected_population"]) req(path, id, d, k, Number.isInteger, "an integer");
+        req(path, id, d, "skewed", (x) => typeof x === "boolean", "a boolean");
+        req(path, id, d, "cardinality_override", (x) => x === null || (isObj(x) && ["reason", "approved_by", "date"].every((k) => typeof x[k] === "string")), "null or {reason, approved_by, date}");
+        // No code, by design: a configuration refusal is outside §9.
+        req(path, id, ex, "declaration", (x) => x === "refused" || x === "accepted", '"refused" or "accepted"');
+        if (Object.keys(ex).length !== 1) throw new SuiteIntegrityError(`${path} ${id}: a declaration vector's expected carries only "declaration"`);
+      } else if (v.assertion === "distinct" || v.assertion === "equal") {
         req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
       } else if (v.assertion === "refuse") {
         const inp = v.inputs as Record<string, unknown>;

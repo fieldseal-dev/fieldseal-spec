@@ -2,7 +2,7 @@ package dev.fieldseal.core.harness;
 
 import static dev.fieldseal.core.capabilities.SuiteFiles.files;
 import static dev.fieldseal.core.capabilities.SuiteFiles.hex;
-import static dev.fieldseal.core.capabilities.SuiteFiles.slug;
+import static dev.fieldseal.core.capabilities.SuiteFiles.id;
 import static dev.fieldseal.core.capabilities.SuiteFiles.vectors;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -59,8 +59,11 @@ class BlindIndexVectorsTest {
     static {
         PINNED.put("blind-index/argon2id.json", new TreeMap<>(Map.of("primitive", 12, "equal", 6,
                 "unindexable-marker", 2, "unindexable-bucket", 1, "refuse", 2)));
+        // Since suite 0.10.0-provisional, spec §7.6's gate as six declaration vectors (#211),
+        // in this file only: the gate never reads the IDF (docs/08 §4.4).
         PINNED.put("blind-index/hmac-sha512.json", new TreeMap<>(Map.of("primitive", 11,
-                "equal", 6, "unindexable-marker", 1, "unindexable-bucket", 1, "refuse", 2)));
+                "equal", 6, "unindexable-marker", 1, "unindexable-bucket", 1, "refuse", 2,
+                "declaration", 6)));
     }
 
     private static final byte[] DEK = bytes("000102030405060708090a0b0c0d0e0f"
@@ -88,17 +91,19 @@ class BlindIndexVectorsTest {
                 seen.merge(shape, 1, Integer::sum);
                 switch (shape) {
                     case "primitive" -> {
-                        tests.add(DynamicTest.dynamicTest(slug(v), () -> primitive(v)));
-                        tests.add(DynamicTest.dynamicTest(slug(v) + "#pipeline",
+                        tests.add(DynamicTest.dynamicTest(id(v), () -> primitive(v)));
+                        tests.add(DynamicTest.dynamicTest(id(v) + "#pipeline",
                                 () -> pipeline(v)));
                     }
-                    case "equal" -> tests.add(DynamicTest.dynamicTest(slug(v), () -> equal(v)));
+                    case "equal" -> tests.add(DynamicTest.dynamicTest(id(v), () -> equal(v)));
                     case "unindexable-marker" ->
-                            tests.add(DynamicTest.dynamicTest(slug(v), () -> marker(v)));
+                            tests.add(DynamicTest.dynamicTest(id(v), () -> marker(v)));
                     case "unindexable-bucket" ->
-                            tests.add(DynamicTest.dynamicTest(slug(v), () -> bucket(v)));
-                    case "refuse" -> tests.add(DynamicTest.dynamicTest(slug(v), () -> refuse(v)));
-                    default -> tests.add(DynamicTest.dynamicTest(slug(v), () -> fail(
+                            tests.add(DynamicTest.dynamicTest(id(v), () -> bucket(v)));
+                    case "refuse" -> tests.add(DynamicTest.dynamicTest(id(v), () -> refuse(v)));
+                    case "declaration" -> tests.add(DynamicTest.dynamicTest(id(v),
+                            () -> DeclarationVectors.run(v)));
+                    default -> tests.add(DynamicTest.dynamicTest(id(v), () -> fail(
                             "unrecognised assertion kind '" + shape + "' (docs/08 §4: fail,"
                                     + " never skip)")));
                 }
@@ -249,7 +254,7 @@ class BlindIndexVectorsTest {
         assertEquals(s.path("octets").asInt(), index.length, "stored.octets");
         assertEquals((bits + 7) / 8, index.length, "stored.octets is ⌈b/8⌉");
         // stored.hex: this core returns binary only (docs/09 §3.3), so there is no hex form to
-        // compare. It is reported as skipped by the S6 report, never as passed.
+        // compare. The report says so in harness_notes; it is never counted as passed.
     }
 
     private static byte[] index(JsonNode in, byte[] key, byte[] normalized, int bits) {

@@ -14,8 +14,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Pins the compiled module descriptor to docs/27 §3: three public packages, exported to
- * everyone, and nothing else. The internal packages are hidden by being absent from this list,
- * so a stray {@code exports} line would publish one silently; this test is what notices.
+ * everyone, and the testing seam, exported to the testing module alone, and nothing else. The
+ * internal packages are hidden by being absent from this list, so a stray {@code exports} line
+ * would publish one silently; this test is what notices.
  */
 class ModuleDescriptorTest {
 
@@ -33,9 +34,13 @@ class ModuleDescriptorTest {
         assertEquals(
                 Set.of("dev.fieldseal.core", "dev.fieldseal.core.errors",
                         "dev.fieldseal.core.keyprovider"),
-                d.exports().stream().map(ModuleDescriptor.Exports::source).collect(Collectors.toSet()));
-        // Qualified exports arrive at S6, with the testing seam (module-info.java).
-        assertTrue(d.exports().stream().noneMatch(ModuleDescriptor.Exports::isQualified));
+                d.exports().stream().filter(e -> !e.isQualified())
+                        .map(ModuleDescriptor.Exports::source).collect(Collectors.toSet()));
+        // S6: the one qualified export, the seam encrypt_with_materials enters (docs/08 §6).
+        assertEquals(Set.of("dev.fieldseal.core.internal.testing -> [dev.fieldseal.core.testing]"),
+                d.exports().stream().filter(ModuleDescriptor.Exports::isQualified)
+                        .map(e -> e.source() + " -> " + e.targets().stream().sorted().toList())
+                        .collect(Collectors.toSet()));
         assertTrue(d.opens().isEmpty(), "no package is open to reflection");
     }
 

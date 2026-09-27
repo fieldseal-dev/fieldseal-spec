@@ -14,6 +14,10 @@ dependencies {
 }
 
 tasks.test {
+    // The gate tests (MaterialsSeamTest) assert the process is unarmed, and the rest inject
+    // their environment: a developer's or runner's FIELDSEAL_* variables must not reach them.
+    environment.remove("FIELDSEAL_TEST_MODE")
+    environment.remove("FIELDSEAL_ARM_PROVISIONAL_SUITES")
     // ModuleDescriptorTest reads the compiled descriptor from here, so it
     // tests this build's module-info rather than whatever a classpath
     // lookup of "module-info.class" finds first (every JUnit jar has one).

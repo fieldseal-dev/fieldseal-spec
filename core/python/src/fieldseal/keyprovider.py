@@ -247,6 +247,9 @@ class EnvelopeKeyProvider:
                 f"key_id {active.key_id.hex()}: active version "
                 f"{active.version} has no wrapped index key registered for "
                 "this scope; warm() cannot provide one")
+        # The role is in the cache key and the budget was decided at `put`
+        # (docs/09 §8.3: `max_uses` counts DEK-role returns; an index entry has
+        # none), so there is nothing to pass here and nothing to forget.
         key = self.cache.get(_cache_key(scope, active.version, role))
         if key is None:
             # docs/09 §9: messages carry the key_id (public envelope
@@ -268,7 +271,7 @@ class EnvelopeKeyProvider:
         # The version the header names first, then active, then the rest --
         # all from cache; what is not cached is simply not a candidate.
         #
-        # `peek`, not `get`: docs/09 §8.3 counts a §5.5 use per
+        # `peek`, not `get`: docs/09 §8.3 counts a §5.5 use per **DEK-role**
         # `encryption_key` return. Charging every offered candidate would
         # advance every version's counter with the scope's total decrypt
         # traffic -- a per-provider count wearing a per-key-version name --
@@ -345,7 +348,11 @@ class EnvelopeKeyProvider:
             self.cache.put(_cache_key(scope, v.version, "dek"), dek)
             if v.wrapped_index_key is not None:
                 ik = await self._wrapper.unwrap(v.wrapped_index_key, scope)
-                self.cache.put(_cache_key(scope, v.version, "index"), ik)
+                # docs/09 §8.3: the index role is cached with no §5.5 use
+                # budget. Decided here, where the role is known, so the value
+                # path cannot reintroduce #212 by leaving a flag off.
+                self.cache.put(_cache_key(scope, v.version, "index"), ik,
+                               counted=False)
             # Zeroization honesty: `dek`/`ik` are typically immutable `bytes`
             # returned by the wrapper; CPython gives us nothing to overwrite.
             # A wrapper returning `bytearray` precisely to permit erasure is

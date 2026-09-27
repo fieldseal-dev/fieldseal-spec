@@ -3,7 +3,7 @@
 Field-level encryption for JVM applications, with a format that other languages can read.
 
 > **Under construction: not released.**
-> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, and passes the shared test vectors for those operations. The conformance report and the cross-implementation checks are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S6–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
+> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, passes every shared test vector, and emits the conformance report CI compares with the other cores'. The cross-implementation checks are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S7–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
 
 This library encrypts individual database values, one field at a time, into a self-describing **envelope**: bytes in, bytes out. Every envelope is bound to the table and column it belongs to, and to the tenant and row when you supply them, so a value copied to the wrong place fails to decrypt instead of decrypting silently.
 
@@ -148,11 +148,11 @@ The specification requires every implementation to state these.
 
 ## Contributing to this core
 
-It is built in stages (`docs/27` §8). S1–S5 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, and blind indexes. Next is S6, the conformance report.
+It is built in stages (`docs/27` §8). S1–S6 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, blind indexes, and the testing artifact with the conformance report. Next is S7, the cross-implementation job.
 
 ```
 ./gradlew build          # compile (-Xlint:all -Werror) and run every test
-./gradlew -q vectors     # verify the pinned test-vector suite's hashes and structure
+./gradlew -q vectors     # the conformance report (docs/14 §4) on stdout; exit 1 on any failure
 ./gradlew memoryProbe    # informational: the largest byte[] this JVM allocates (~6 GiB heap)
 python scripts/bite_checks.py   # each recorded mutation must turn its tests red (JAVA_HOME set)
 ```

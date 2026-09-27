@@ -93,9 +93,13 @@ final class EnvelopeProvider implements KeyProvider {
         }
         byte[][] hit = cache.takeForEncrypt(new DekCache.Key(slot, version)).orElseThrow(
                 () -> new KeyUnavailableError("the cached key for " + request + " is gone: it"
-                        + " aged out, used up its budget, or was evicted to make room for other"
-                        + " keys, which every client sharing this provider's cache can cause;"
-                        + " warm it again (spec §5.5, §8.1)"));
+                        + (slot.role() == DekCache.Role.DEK
+                                ? " aged out, used up its budget,"
+                                // docs/09 §8.3: an index key has no use budget to use up.
+                                : " aged out")
+                        + " or was evicted to make room for other keys, which every client"
+                        + " sharing this provider's cache can cause; warm it again (spec §5.5,"
+                        + " §8.1)"));
         return new KeyMaterial(hit[0], hit[1]);
     }
 
