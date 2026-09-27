@@ -77,10 +77,10 @@ public final class KeyProviders {
      * <p><b>The cache belongs to the provider</b> (#192). Every client built with this provider
      * shares it, as docs/09 §8.3 keys the cache by provider scope: a key is unwrapped once
      * however many clients use it, a DEK's max-uses budget counts every client's encryptions, and
-     * its capacity is shared too, so one client's warms can evict another client's keys. Size {@code
-     * capacity} for every tenant the sharing clients serve. A client that needs a cache of its own
-     * is built with a provider of its own. Called directly, the provider works as it does inside a
-     * client.
+     * its capacity is shared too, so one client's warms can evict another client's keys. Size
+     * {@code capacity} for every tenant the sharing clients serve. A client that needs a cache of
+     * its own is built with a provider of its own. Called directly, the provider works as it does
+     * inside a client.
      *
      * @throws ConfigurationError if any argument is null: the cache limits are security parameters
      *     with no default (spec §5.5)
