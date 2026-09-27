@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.fieldseal.core.FieldContext;
 import dev.fieldseal.core.Fieldseal;
+import dev.fieldseal.core.IndexDeclaration;
 import dev.fieldseal.core.ReadMode;
 import dev.fieldseal.core.errors.FieldsealError;
 import dev.fieldseal.core.errors.SuiteProvisionalError;
@@ -42,12 +43,13 @@ import org.junit.jupiter.api.TestFactory;
  * read-mode mapping, the allow-list, the key lookup, the commitment and the tag are the client's
  * now, not a restatement in this test.
  *
- * <p>{@code blind_index} vectors wait for S5, where the operation arrives; {@link #DEFERRED} pins
- * how many, per file, so a suite change that moves one fails here.
+ * <p>A {@code blind_index} vector (S5) declares its index to the client, and the provider answers
+ * an index purpose with the vector's {@code tenant_index_key}. {@link #ERRORS} pins how many of
+ * each file's vectors are run as which operation, so a suite change that moves one fails here.
  */
 class ClientVectorsTest {
 
-    /** Per errors/ file: {vectors run, vectors deferred to S5}. */
+    /** Per errors/ file: {value-operation vectors, blind_index vectors}; all are run. */
     private static final Map<String, int[]> ERRORS = new LinkedHashMap<>();
 
     static {
@@ -68,10 +70,23 @@ class ClientVectorsTest {
                         + " cannot run under it");
     }
 
-    /** Answers with the vector's key only when asked for the vector's key_id. */
-    private record VectorKeys(byte[] dek, byte[] keyId) implements KeyProvider {
+    /**
+     * Answers with the vector's key only when asked for the vector's key_id, and an index purpose
+     * with its tenant index key (spec §8: never the DEK).
+     */
+    private record VectorKeys(byte[] dek, byte[] keyId, byte[] indexKey) implements KeyProvider {
+        VectorKeys(byte[] dek, byte[] keyId) {
+            this(dek, keyId, null);
+        }
+
         @Override
         public KeyMaterial encryptionKey(KeyRequest request) {
+            if (request.isIndex()) {
+                if (indexKey == null) {
+                    throw new IllegalStateException("this vector carries no tenant_index_key");
+                }
+                return new KeyMaterial(indexKey.clone(), keyId.clone());
+            }
             return new KeyMaterial(dek.clone(), keyId.clone());
         }
 
@@ -92,14 +107,37 @@ class ClientVectorsTest {
         JsonNode cfg = v.path("config");
         assertEquals(Registry.all().stream().map(s -> s.id()).collect(Collectors.toSet()),
                 ids(cfg.path("registered_suites")), "registered_suites is this core's registry");
+        JsonNode decl = v.path("index_declaration");
+        List<IndexDeclaration> indexes = decl.isMissingNode() ? List.of() : List.of(declaration(v));
         return Fieldseal.builder()
-                .keyProvider(new VectorKeys(hex(v.path("tenant_dek")), hex(v.path("key_id"))))
+                .keyProvider(new VectorKeys(hex(v.path("tenant_dek")), hex(v.path("key_id")),
+                        v.has("tenant_index_key") ? hex(v.path("tenant_index_key")) : null))
+                .indexes(indexes)
                 .allowedSuites(ids(cfg.path("allowed_suites")))
                 .writeSuite(Integer.decode(cfg.path("write_suite").asText()))
                 .readMode(ReadMode.valueOf(cfg.path("read_mode").asText().toUpperCase()))
                 .armProvisionalSuites(cfg.path("arm_provisional_suites").asBoolean())
                 .onWarning(w -> { })
                 .build();
+    }
+
+    /**
+     * docs/08 §4.6: {@code index_id}, {@code idf}, {@code normalize}, {@code truncate_bits}. The
+     * vector carries no {@code P} and no cost: the smallest {@code P} in spec §7.4's band, and
+     * spec §7.3's minima for an Argon2id one.
+     */
+    private static IndexDeclaration declaration(JsonNode v) {
+        JsonNode d = v.path("index_declaration");
+        JsonNode c = v.path("context");
+        int bits = d.path("truncate_bits").asInt();
+        IndexDeclaration.Idf idf = Arrays.stream(IndexDeclaration.Idf.values())
+                .filter(i -> i.id().equals(d.path("idf").asText())).findFirst().orElseThrow();
+        IndexDeclaration.Normalizer n = Arrays.stream(IndexDeclaration.Normalizer.values())
+                .filter(x -> x.id().equals(d.path("normalize").asText())).findFirst()
+                .orElseThrow();
+        return IndexDeclaration.builder(hex(c.path("table_uuid")), hex(c.path("column_uuid")))
+                .indexId(d.path("index_id").asText()).idf(idf).normalize(n).truncateBits(bits)
+                .projectedPopulation(1L << (bits + 1)).build();
     }
 
     private static Set<Integer> ids(JsonNode list) {
@@ -118,15 +156,11 @@ class ClientVectorsTest {
         for (String path : listed) {
             int[] seen = new int[2];
             for (JsonNode v : vectors(path)) {
-                if (v.path("operation").asText().equals("blind_index")) {
-                    seen[1]++;
-                    continue;
-                }
-                seen[0]++;
+                seen[v.path("operation").asText().equals("blind_index") ? 1 : 0]++;
                 tests.add(DynamicTest.dynamicTest(slug(v), () -> run(v)));
             }
             assertEquals(Arrays.toString(ERRORS.get(path)), Arrays.toString(seen),
-                    path + ": {run, deferred} counts moved");
+                    path + ": {value, blind_index} counts moved");
         }
         return tests.stream();
     }
@@ -148,6 +182,10 @@ class ClientVectorsTest {
                 case "decrypt" -> fs.decrypt(input, ctx);
                 case "encrypt" -> fs.encrypt(input, ctx);
                 case "rotate" -> fs.rotate(input, ctx);
+                // The vector's context is a value context; the client derives for the index the
+                // declaration names (docs/08 §4.6). Its input is bytes, as the vector keys it.
+                case "blind_index" -> fs.blindIndex(input,
+                        ctx.forIndex(v.path("index_declaration").path("index_id").asText()));
                 default -> throw new AssertionError("unrecognised operation '" + op + "'");
             };
         } catch (FieldsealError err) {
@@ -161,6 +199,8 @@ class ClientVectorsTest {
             fail("expected " + e.path("error").asText() + ", got a result");
         } else if (e.has("plaintext")) {
             assertEquals(e.path("plaintext").asText(), hex(out));
+        } else if (e.has("index")) {
+            assertEquals(e.path("index").asText(), hex(out));
         } else if (e.has("value")) {
             assertEquals(e.path("value").asText(), hex(out));
             assertSame(input, out, "pass-through returns the input itself (spec §10.3)");

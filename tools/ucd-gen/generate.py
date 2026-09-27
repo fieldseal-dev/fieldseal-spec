@@ -64,6 +64,14 @@ TS_OUT = os.path.join(REPO, "core", "typescript", "src", "unicode", "tables-%s.t
 # the published UCD is not a dependency; sharing an implementation would be,
 # and would let one core's bug be blessed as the expected value.
 GEN_OUT = os.path.join(REPO, "tools", "vector-gen", "fieldseal_vectorgen", "_ucd_tables.py")
+# The Java core reads a text resource rather than a generated source file: a
+# Java string constant is capped at 65,535 bytes of UTF-8, and the folding table
+# alone is larger, so a .java target would be split across dozens of constants
+# for no gain. The resource sits in the non-exported blindindex package, which
+# JPMS keeps private to the core's own module.
+JAVA_OUT = os.path.join(REPO, "core", "java", "fieldseal-core", "src", "main", "resources",
+                        "dev", "fieldseal", "core", "internal", "blindindex",
+                        "ucd-%s.txt" % VERSION)
 
 
 # --------------------------------------------------------------------------
@@ -278,6 +286,26 @@ export const EXCLUSIONS =
            excl=wrap(enc_set(excl2), 96, "  ").replace('"\n  "', '" +\n  "'))
 
 
+def emit_java(casefold, assigned, ccc, decomp, excl2) -> str:
+    """A line-oriented resource: a `version` line, a `counts` line the loader
+    checks, then one `[name]` section per table holding the same encodings as
+    the other targets, chunked at 100 characters so a regeneration diffs by
+    line. `#` lines are comments."""
+    b = "\n".join("# " + l if l else "#" for l in BANNER.split("\n"))
+    sections = [("casefold", enc_map(casefold)), ("assigned", enc_ranges(assigned)),
+                ("ccc", enc_ccc(ccc)), ("decomp", enc_map(decomp)),
+                ("exclusions", enc_set(excl2))]
+    out = [b,
+           "# Read by dev.fieldseal.core.internal.blindindex.UnicodeTables (docs/27 S5).",
+           "version %s" % VERSION,
+           "counts casefold=%d assigned=%d ccc=%d decomp=%d exclusions=%d"
+           % (len(casefold), len(assigned), len(ccc), len(decomp), len(excl2))]
+    for name, text in sections:
+        out.append("[%s]" % name)
+        out.extend(text[i:i + 100] for i in range(0, len(text), 100))
+    return "\n".join(out) + "\n"
+
+
 UCD_FILES = ("CaseFolding.txt", "UnicodeData.txt", "DerivedNormalizationProps.txt")
 UCD_URL = "https://www.unicode.org/Public/%s/ucd/%s"
 
@@ -389,7 +417,8 @@ def main() -> int:
     py = emit_python(casefold, assigned, ccc, decomp, excl2)
     targets = [(PY_OUT, py),
                (TS_OUT, emit_ts(casefold, assigned, ccc, decomp, excl2)),
-               (GEN_OUT, py)]
+               (GEN_OUT, py),
+               (JAVA_OUT, emit_java(casefold, assigned, ccc, decomp, excl2))]
 
     rc = 0
     for path, text in targets:

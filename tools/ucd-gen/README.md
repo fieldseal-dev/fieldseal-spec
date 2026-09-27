@@ -9,6 +9,7 @@ Database, into three places:
 | `core/python/src/fieldseal/unicode/_tables.py` | data only; the algorithms live in that package's `__init__.py` |
 | `core/typescript/src/unicode/tables-17.0.0.ts` | data only; the algorithms live in `src/unicode/index.ts` |
 | `tools/vector-gen/fieldseal_vectorgen/_ucd_tables.py` | data only; the generator's own algorithms live in `normalizer.py` |
+| `core/java/fieldseal-core/src/main/resources/dev/fieldseal/core/internal/blindindex/ucd-17.0.0.txt` | data only, as a text resource (a Java string constant cannot hold the folding table); the algorithms live in that package's `Nfc` and `Normalizers` |
 
 **Pinned version: Unicode 17.0.0.**
 
@@ -24,24 +25,32 @@ get there honestly.
 The repository carries the *output* rather than the input: the three UCD source
 files total about 3.7 MB, more than the tables they produce.
 
-## Why three copies rather than one shared module
+## Why one copy per implementation rather than one shared module
 
-The two cores are independent implementations (`docs/17`), and the vector
+The cores are independent implementations (`docs/17`), and the vector
 generator imports neither — its expected values must not come from the code
 they are meant to check, or a bug in a core would be published as the answer
 every other implementation is verified against.
 
 Sharing the *data* does not weaken that: the data is the Unicode Character
-Database, and all three copies are byte-identical by construction and checked
-in CI. Sharing an *implementation* would weaken it, so each of the three
-carries its own transcription of UAX #15 — canonical decomposition, canonical
+Database, and every copy is generated from the same parse and checked in CI.
+Sharing an *implementation* would weaken it, so each one carries its own
+transcription of UAX #15 — canonical decomposition, canonical
 ordering, canonical composition — over the same tables. All three are verified
 independently:
 
 - the Python core and the generator against the official `NormalizationTest.txt`
   (60,102 cases, all passing);
 - the TypeScript core against ICU exhaustively, in `tests/unicode.test.ts`,
-  wherever the runtime's Unicode is at least the pin.
+  wherever the runtime's Unicode is at least the pin;
+- the Java core against ICU4J exhaustively, in `UnicodeAgreementTest`, with
+  ICU4J a test-only dependency whose Unicode version the test checks first.
+
+The Java target is a text resource rather than generated source, and it is one
+file per core rather than one resource the Phase 2 cores share: decided at WS-I
+S5 (`docs/07` §7, 2026-09-27), so that each core's copy is checked by the same
+`--check` as the others, and a later core adds a target here rather than
+reading another core's file.
 
 ## Usage
 

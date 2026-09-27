@@ -40,9 +40,9 @@ class ModuleDescriptorTest {
     }
 
     @Test
-    void requiresNothingButTheJdkBase() throws IOException {
-        // docs/27 §2: no third-party runtime dependency until BouncyCastle, for Argon2id only.
-        assertEquals(Set.of("java.base"),
+    void requiresTheJdkBaseAndBouncyCastleOnly() throws IOException {
+        // docs/27 §2: one third-party runtime dependency, BouncyCastle, for Argon2id only (S5).
+        assertEquals(Set.of("java.base", "org.bouncycastle.provider"),
                 descriptor().requires().stream().map(ModuleDescriptor.Requires::name)
                         .collect(Collectors.toSet()));
     }

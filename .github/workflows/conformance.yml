@@ -122,17 +122,18 @@ jobs:
           name: conformance-python
           path: conformance-python.json
 
-  # The Java core (WS-I, docs/27), at stage S4 (docs/27 §8): the Gradle
+  # The Java core (WS-I, docs/27), at stage S5 (docs/27 §8): the Gradle
   # scaffold, the module descriptor, docs/09 §1's dependency rule, the
   # harness's integrity walk, the capability audit (CapabilitiesTest), the
-  # envelope codec, the crypto primitives, the key providers and the client.
-  # kdf/, context/ and commitment/ run against the primitives; errors/ (all
-  # but its two blind_index vectors, which are S5's) and envelope/ run through
-  # the public client. The harness emits no conformance report yet,
+  # envelope codec, the crypto primitives, the key providers, the client and
+  # blind indexes. kdf/, context/ and commitment/ run against the primitives;
+  # errors/ and envelope/ run through the public client; blind-index/ runs
+  # both ways. Its Unicode tables are covered by the unicode-tables job's
+  # --check, like the other cores'. The harness emits no conformance report yet,
   # so it is not in `cross-core-result-ids` or the cross job: those joins
   # are S6 and S7 (docs/27 §1).
   java-core:
-    name: "Java core (S4: client; no conformance report yet)"
+    name: "Java core (S5: blind indexes; no conformance report yet)"
     runs-on: ubuntu-24.04
     defaults:
       run:
