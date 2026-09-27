@@ -382,6 +382,26 @@ MUTATIONS = [
      "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
      "if (d.projectedPopulation() < CARDINALITY_GATE) {",
      [CORE + "*BlindIndexClientTest"], "red"),
+    # ---- #210/#211: the declaration vectors (suite 0.10.0) ----------------------------------
+    ("decl vectors: the index-id grammar reduced to non-empty", M / "IndexValidation.java",
+     "if (!Purpose.isValidIndexId(id)) {", "if (id.isEmpty()) {",
+     [VEC + "*ContextVectorsTest"], "red"),
+    ("decl vectors: the gate at P <= 2^10", M / "IndexValidation.java",
+     "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
+     "if (d.projectedPopulation() <= CARDINALITY_GATE || d.skewed()) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    ("decl vectors: a skewed column is not gated", M / "IndexValidation.java",
+     "if (d.projectedPopulation() < CARDINALITY_GATE || d.skewed()) {",
+     "if (d.projectedPopulation() < CARDINALITY_GATE) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    ("decl vectors: an override without an approver", M / "IndexValidation.java",
+     "if (blank(o.reason()) || blank(o.approvedBy()) || o.date() == null) {",
+     "if (blank(o.reason()) || o.date() == null) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
+    ("decl vectors: a recorded override ignored", M / "IndexValidation.java",
+     "            if (d.cardinalityOverride() == null) {",
+     "            if (true) {",
+     [VEC + "*BlindIndexVectorsTest"], "red"),
 ]
 
 RED, GREEN, BROKEN = 1, 0, 2

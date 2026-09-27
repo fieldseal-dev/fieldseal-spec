@@ -22,15 +22,16 @@ import org.junit.jupiter.api.DynamicTest;
  * What the S4 primitive families ({@code kdf/}, {@code context/}, {@code commitment/}) share: the
  * manifest enumeration with pinned counts, the assertion-kind dispatch, and the context reader.
  *
- * <p>docs/08 §4's two assertion kinds these families use are a value vector (no
- * {@code assertion} field) and {@code distinct}. Any other kind fails the vector: docs/08 says a
- * harness "MUST fail on an assertion kind it does not recognise, never skip it".
+ * <p>docs/08 §4's assertion kinds these families use are a value vector (no {@code assertion}
+ * field), {@code distinct}, and since suite {@code 0.10.0-provisional} {@code declaration}
+ * ({@link DeclarationVectors}; {@code context/} carries five). Any other kind fails the vector:
+ * docs/08 says a harness "MUST fail on an assertion kind it does not recognise, never skip it".
  */
 final class PrimitiveVectors {
 
     private PrimitiveVectors() {}
 
-    /** Per-file pinned counts: {value vectors, distinct vectors}. */
+    /** Per-file pinned counts: {value vectors, distinct and other vectors, declaration vectors}. */
     static Stream<JsonNode> family(String family, Map<String, int[]> pinned) {
         List<String> listed = files().stream().map(VectorHarness.FileWalk::path)
                 .filter(p -> p.startsWith(family + "/")).toList();
@@ -39,10 +40,11 @@ final class PrimitiveVectors {
         List<JsonNode> all = new ArrayList<>();
         for (String path : listed) {
             List<JsonNode> vs = vectors(path);
-            int[] seen = new int[2];
-            vs.forEach(v -> seen[v.has("assertion") ? 1 : 0]++);
+            int[] seen = new int[3];
+            vs.forEach(v -> seen[!v.has("assertion") ? 0
+                    : "declaration".equals(v.path("assertion").asText()) ? 2 : 1]++);
             assertEquals(Arrays.toString(pinned.get(path)), Arrays.toString(seen),
-                    path + ": {value, distinct} counts moved");
+                    path + ": {value, distinct, declaration} counts moved");
             all.addAll(vs);
         }
         return all.stream();
@@ -59,6 +61,8 @@ final class PrimitiveVectors {
                 value.accept(v);
             } else if ("distinct".equals(v.path("assertion").asText())) {
                 distinct(v, pair.apply(v));
+            } else if ("declaration".equals(v.path("assertion").asText())) {
+                DeclarationVectors.run(v);
             } else {
                 fail(v.path("id").asText() + ": unrecognised assertion kind '"
                         + v.path("assertion").asText() + "' (docs/08 §4: fail, never skip)");
