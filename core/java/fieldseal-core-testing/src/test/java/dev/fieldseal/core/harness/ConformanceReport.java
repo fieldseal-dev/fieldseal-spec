@@ -116,8 +116,10 @@ public final class ConformanceReport {
      * A rule with no bytes to compare cannot be a vector (docs/08 §8), so the report runs the test
      * that proves it, and a backing test that is missing or not passing is a problem. A backing
      * test is a single Jupiter {@code @Test} method: {@link #run} filters to the Jupiter engine,
-     * so a jqwik {@code @Property} would run no test, and a {@code @ParameterizedTest} or {@code
-     * @TestFactory} more than one ({@code ConformanceReportTest} refuses both). Insertion-ordered,
+     * so a jqwik {@code @Property} would run no test, and a {@code @TestFactory} or any {@code
+     * @TestTemplate} ({@code @ParameterizedTest}, {@code @RepeatedTest}) may run more than one.
+     * None of them is annotated {@code @Test}, which is what {@code ConformanceReportTest}
+     * checks, so it refuses them all. Insertion-ordered,
      * so the problems and violations it produces come out in the same order on every run.
      */
     static final Map<String, List<String>> PINNED_TESTS = pinnedTests();
