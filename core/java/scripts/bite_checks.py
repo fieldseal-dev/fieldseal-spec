@@ -620,6 +620,30 @@ MUTATIONS = [
      "    static void fresh(ArrayNode cases) {\n        if (cases != null) {\n            return;\n"
      "        }\n",
      [VEC + "*CrossTest"], "red"),
+    # #232 review: the reviewer's reading of the offset (byte length - 66, a nonce byte) must
+    # redden the pin, though the flip it makes is still TAG_INVALID.
+    ("s7 test: the tag flip lands on a nonce byte", T / "CrossTest.java",
+     "        int at = e.length() - 2 * 33;", "        int at = e.length() - 2 * 66;",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: 15 envelope cases enough", T / "CrossTest.java",
+     "        if (cases.size() < 16) {", "        if (cases.size() < 15) {",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: one context shape of a field enough", T / "CrossTest.java",
+     "            if (!present || !absent) {", "            if (!present && !absent) {",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: any normalizer enough", T / "CrossTest.java",
+     "        if (!normalizers.containsAll(registry)) {", "        if (normalizers.isEmpty()) {",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: no bucket declaration passes the marker rule", T / "CrossTest.java",
+     "        if (bucketed.isEmpty() || !marked.containsAll(bucketed)) {",
+     "        if (!marked.containsAll(bucketed)) {",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: non-ASCII not required", T / "CrossTest.java",
+     "        if (!nonAscii) {", "        if (false) {",
+     [VEC + "*CrossTest"], "red"),
+    ("s7 floor: a colliding pair not required", T / "CrossTest.java",
+     "        if (!collides) {", "        if (false) {",
+     [VEC + "*CrossTest"], "red"),
     # Production encrypt cannot repeat a msg_seed or nonce, so produce's own call to fresh never
     # fires under test; the direct test above and every consumer's repeat check cover the check.
     ("s7 producer: produce no longer checks its own entropy", T / "CrossProduce.java",
