@@ -13,8 +13,9 @@ dependencies {
     testImplementation(libs.junit.platform.launcher)
 }
 
-// The report also runs four of fieldseal-core's tests, the out-of-band entries (docs/14 §4), so
-// its classpath carries that module's test classes as well.
+// The report also runs five of fieldseal-core's test classes, behind the out-of-band entries
+// (docs/14 §4) and the backed pinned decision (#225), so its classpath carries that module's test
+// classes as well; so does `test`'s, where ConformanceReportTest checks the backing tests exist.
 evaluationDependsOn(":fieldseal-core")
 val coreTests = project(":fieldseal-core").the<SourceSetContainer>()["test"]
 
@@ -46,6 +47,8 @@ tasks.test {
     environment(testMode, "1")
     // ClientVectorsTest's unarmed vectors and the API-boundary tests need it absent (spec §4.8).
     environment.remove(armProvisional)
+    // On the classpath only: testClassesDirs is unchanged, so none of them runs here.
+    classpath += coreTests.output
     // GcmAllocation (docs/27 §6.3) holds about 400 MiB live at its peak: 192 MiB of caller
     // arrays over a 64 MiB operand plus the update() path's 3x internal buffering. Gradle's
     // default 512 MiB worker heap leaves that no headroom, and an OutOfMemoryError there would

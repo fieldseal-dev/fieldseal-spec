@@ -316,6 +316,7 @@ The result is a fact for §6.1 ("on JDK X / HotSpot, the largest `byte[]` is 2³
 - **The `blind-index/` `refuse` vectors** are ordinary results, not out-of-band. They pass through `blindIndex(byte[])` (§4).
 - **Every out-of-band entry carries `basis`.** A level claim quoted outside the report names the two `seam` entries (`docs/14` §4).
 - **`pinned_decisions`:** all six mandatory keys (`docs/14` §4). This core may add a `platform-byte-buffer-max` key carrying the probe's figure.
+- **A backed pinned decision** (#225): `index-role-use-budget` states `docs/09` §8.3's "the index role has no use budget", a rule with no bytes to compare and so no vector (`docs/08` §8). The key's text cites `EnvelopeProviderTest.theIndexRoleHasNoUseBudget`, which the report runs through the launcher. That test derives a blind index `maxUses + 1` times under `maxUses = 2`, then use-evicts the DEK beside it as the positive control. A backing test that is missing, or does not pass, is a report problem: the L0 claim is withdrawn and the run exits 1. The key is this core's own until `docs/14` §4 makes it mandatory, which needs the other cores' halves.
 - **`harness_notes`:** the near-maximum envelope asymmetry from §6.1.
 
 ## 7. Testing plan
