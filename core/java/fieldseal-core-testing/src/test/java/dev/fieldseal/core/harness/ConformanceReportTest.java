@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -81,9 +82,21 @@ class ConformanceReportTest {
         return m;
     }
 
+    private static Map<String, List<Outcome>> pinsPassing() {
+        Map<String, List<Outcome>> m = new LinkedHashMap<>();
+        ConformanceReport.PINNED_TESTS.forEach((key, tests) -> m.put(key, tests.stream()
+                .map(t -> new Outcome(t + "()", true, Status.PASS, null)).toList()));
+        return m;
+    }
+
     private static Assembled assemble(List<Outcome> harness, Map<String, List<Outcome>> oob) {
+        return assemble(harness, oob, pinsPassing());
+    }
+
+    private static Assembled assemble(List<Outcome> harness, Map<String, List<Outcome>> oob,
+            Map<String, List<Outcome>> pins) {
         return ConformanceReport.assemble(manifest, expected, harness, oob,
-                ConformanceReport.OUT_OF_BAND,
+                ConformanceReport.OUT_OF_BAND, pins,
                 ConformanceReport.implementation(vectors), ConformanceReport.environment());
     }
 
@@ -173,6 +186,67 @@ class ConformanceReportTest {
     }
 
     /**
+     * #225: a backed pinned decision whose test did not run, or failed, is a problem, and the L0
+     * claim goes with it. The key's text stays: it states the decision, and the problem says it is
+     * not backed.
+     */
+    @Test
+    void aBackedPinWhoseTestFailsOrDidNotRunIsAProblem() {
+        for (List<Outcome> ran : List.of(List.<Outcome>of(),
+                List.of(new Outcome("theIndexRoleHasNoUseBudget()", true, Status.FAIL, "evicted")),
+                List.of(new Outcome("EnvelopeProviderTest", false, Status.FAIL, "no class")))) {
+            Map<String, List<Outcome>> pins = pinsPassing();
+            pins.put("index-role-use-budget", ran);
+            Assembled a = assemble(allPassing(), oobPassing(), pins);
+            assertEquals(1, a.problems().size(), a.problems().toString());
+            assertTrue(a.problems().get(0).startsWith(
+                    "pinned_decisions.index-role-use-budget is not backed: "), a.problems().get(0));
+            assertFalse(a.report().path("claimed_levels").path("L0").asBoolean());
+            assertEquals(List.of(), validate(a.report()));
+        }
+    }
+
+    /**
+     * Each backed key's text cites its tests, and each test exists as a JUnit test: the report
+     * would record a renamed one as not run, and this says which.
+     */
+    @Test
+    void eachBackedPinCitesTestsThatExist() throws ReflectiveOperationException {
+        assertEquals(Set.of("index-role-use-budget"), ConformanceReport.PINNED_TESTS.keySet());
+        for (var e : ConformanceReport.PINNED_TESTS.entrySet()) {
+            String text = ConformanceReport.PINNED_DECISIONS.get(e.getKey());
+            assertFalse(e.getValue().isEmpty(), e.getKey());
+            for (String t : e.getValue()) {
+                String cls = t.substring(0, t.indexOf('#'));
+                String method = t.substring(t.indexOf('#') + 1);
+                String cited = cls.substring(cls.lastIndexOf('.') + 1) + "." + method;
+                assertTrue(text.contains(cited), e.getKey() + " does not cite " + cited);
+                assertTrue(Class.forName(cls).getDeclaredMethod(method)
+                        .isAnnotationPresent(Test.class), t + " is not a @Test");
+            }
+        }
+    }
+
+    /**
+     * A test that does not exist runs no test: the launcher reports a failed discovery instead,
+     * and {@link ConformanceReport#unmet} counts zero tests of one. The control: the real backing
+     * tests run, each once, and pass.
+     */
+    @Test
+    void aMissingBackingTestIsUnmet() {
+        for (List<String> real : ConformanceReport.PINNED_TESTS.values()) {
+            List<Outcome> ran = ConformanceReport.runMethods(real);
+            assertEquals(real.size(), ran.stream().filter(Outcome::test).count(), ran.toString());
+            assertEquals(null, ConformanceReport.unmet(real, ran));
+        }
+        List<String> missing = List.of(
+                "dev.fieldseal.core.EnvelopeProviderTest#theIndexRoleHasNoUseBudgetRenamed");
+        List<Outcome> ran = ConformanceReport.runMethods(missing);
+        assertEquals(0, ran.stream().filter(Outcome::test).count(), ran.toString());
+        assertTrue(ConformanceReport.unmet(missing, ran).startsWith("0 of 1 named tests ran"));
+    }
+
+    /**
      * A problem found after assembly (the schema check, a validation violation) withdraws the L0
      * claim in the printed report, and the report still validates.
      */
@@ -229,7 +303,9 @@ class ConformanceReportTest {
         assertInvalid("provisional_suites", r -> r.put("provisional_suites", false));
         assertInvalid("environment.unicode_tables", r -> ((ObjectNode) r.path("environment"))
                 .remove("unicode_tables"));
-        for (String k : ConformanceReport.MANDATORY_PINNED) {
+        List<String> keys = new ArrayList<>(ConformanceReport.MANDATORY_PINNED);
+        keys.add("index-role-use-budget");
+        for (String k : keys) {
             assertInvalid("pinned_decisions." + k, r -> ((ObjectNode) r.path("pinned_decisions"))
                     .remove(k));
         }

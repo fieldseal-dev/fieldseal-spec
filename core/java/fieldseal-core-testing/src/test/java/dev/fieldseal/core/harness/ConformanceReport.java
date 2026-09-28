@@ -41,15 +41,17 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * reads each dynamic test's outcome under its name, which is the vector id plus the docs/14 §4
  * suffix. So a result and the test {@code ./gradlew build} runs are the same code. {@link
  * #HARNESS} lists the classes whose dynamic tests are results; {@link #OUT_OF_BAND} names the
- * tests behind each out-of-band entry.
+ * tests behind each out-of-band entry, and {@link #PINNED_TESTS} the tests behind each pinned
+ * decision that one backs (#225).
  *
  * <p><b>What cannot go missing silently.</b> The ids a run must produce are computed from the
  * suite, not from the run: every vector of every file {@code MANIFEST.files} lists, plus {@code
  * #decrypt} for {@code envelope/} and {@code #pipeline} for a {@code blind-index/} primitive
  * vector. An expected id no test produced is a failed result that says so; a vector-named test
  * that no expected id matches, a duplicated one, a failed container or a failed harness check
- * outside the results is a problem. Problems are printed to stderr and fail the run, and so does
- * a report that does not validate ({@link #validate}).
+ * outside the results is a problem, and so is a backed pinned decision whose tests did not all run
+ * and pass. Problems are printed to stderr and fail the run, and so does a report that does not
+ * validate ({@link #validate}).
  */
 public final class ConformanceReport {
 
@@ -109,6 +111,26 @@ public final class ConformanceReport {
                             "dev.fieldseal.core.BlindIndexClientTest"
                                     + "#twoLoneSurrogatesAreRefusedDistinguishably")));
 
+    /**
+     * The pinned decisions a test backs, and the tests ({@code Class#method}) behind each (#225).
+     * A rule with no bytes to compare cannot be a vector (docs/08 §8), so the report runs the test
+     * that proves it, and a backing test that is missing or not passing is a problem. A backing
+     * test is a single Jupiter {@code @Test} method: {@link #run} filters to the Jupiter engine,
+     * so a jqwik {@code @Property} would run no test, and a {@code @TestFactory} or any {@code
+     * @TestTemplate} ({@code @ParameterizedTest}, {@code @RepeatedTest}) may run more than one.
+     * None of them is annotated {@code @Test}, which is what {@code ConformanceReportTest}
+     * checks, so it refuses them all. Insertion-ordered,
+     * so the problems and violations it produces come out in the same order on every run.
+     */
+    static final Map<String, List<String>> PINNED_TESTS = pinnedTests();
+
+    private static Map<String, List<String>> pinnedTests() {
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        m.put("index-role-use-budget",
+                List.of("dev.fieldseal.core.EnvelopeProviderTest#theIndexRoleHasNoUseBudget"));
+        return Collections.unmodifiableMap(m);
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
@@ -150,6 +172,11 @@ public final class ConformanceReport {
         return List.copyOf(out);
     }
 
+    /** Runs the named tests ({@code Class#method}). */
+    static List<Outcome> runMethods(List<String> tests) {
+        return run(tests.stream().map(t -> (DiscoverySelector) selectMethod(t)).toList());
+    }
+
     private static String describe(Throwable t) {
         String m = t.getClass().getSimpleName() + ": " + t.getMessage();
         m = m.replaceAll("\\s+", " ").strip();
@@ -186,11 +213,13 @@ public final class ConformanceReport {
 
     /**
      * Builds the report from what ran. {@code harness} is every outcome of {@link #HARNESS};
-     * {@code outOfBand} maps each entry's id to its tests' outcomes.
+     * {@code outOfBand} maps each entry's id to its tests' outcomes, and {@code pinnedRuns} each
+     * {@link #PINNED_TESTS} key to its tests' outcomes.
      */
     static Assembled assemble(JsonNode manifest, List<String> expected, List<Outcome> harness,
             Map<String, List<Outcome>> outOfBand, List<OutOfBand> entries,
-            ObjectNode implementation, ObjectNode environment) {
+            Map<String, List<Outcome>> pinnedRuns, ObjectNode implementation,
+            ObjectNode environment) {
         List<String> problems = new ArrayList<>();
         Set<String> wanted = new HashSet<>(expected);
         Map<String, Outcome> byId = new LinkedHashMap<>();
@@ -219,6 +248,12 @@ public final class ConformanceReport {
         r.set("environment", environment);
         ObjectNode pinned = r.putObject("pinned_decisions");
         PINNED_DECISIONS.forEach(pinned::put);
+        PINNED_TESTS.forEach((key, named) -> {
+            String unmet = unmet(named, pinnedRuns.getOrDefault(key, List.of()));
+            if (unmet != null) {
+                problems.add("pinned_decisions." + key + " is not backed: " + unmet);
+            }
+        });
         ArrayNode notes = r.putArray("harness_notes");
         HARNESS_NOTES.forEach(notes::add);
 
@@ -254,17 +289,13 @@ public final class ConformanceReport {
         ArrayNode oob = r.putArray("out_of_band");
         boolean oobPass = true;
         for (OutOfBand entry : entries) {
-            List<Outcome> ran = outOfBand.getOrDefault(entry.id(), List.of());
-            List<Outcome> tests = ran.stream().filter(Outcome::test).toList();
-            List<String> failing = ran.stream().filter(o -> o.status() != Status.PASS)
-                    .map(o -> o.name() + ": " + o.status() + ": " + o.reason()).toList();
+            String unmet = unmet(entry.tests(), outOfBand.getOrDefault(entry.id(), List.of()));
             ObjectNode e = oob.addObject().put("id", entry.id());
-            if (tests.size() == entry.tests().size() && failing.isEmpty()) {
+            if (unmet == null) {
                 e.put("status", "pass");
             } else {
                 oobPass = false;
-                e.put("status", "fail").put("reason", tests.size() + " of "
-                        + entry.tests().size() + " named tests ran; " + failing);
+                e.put("status", "fail").put("reason", unmet);
             }
             e.put("basis", entry.basis()).put("method", entry.method());
         }
@@ -274,6 +305,18 @@ public final class ConformanceReport {
         r.putObject("summary").put("pass", pass).put("fail", fail).put("skipped", skipped)
                 .put("held_out", heldOut.size());
         return new Assembled(r, problems);
+    }
+
+    /**
+     * Null when every one of the {@code named} tests ran and passed and nothing else failed in
+     * {@code ran}; otherwise why not.
+     */
+    static String unmet(List<String> named, List<Outcome> ran) {
+        long tests = ran.stream().filter(Outcome::test).count();
+        List<String> failing = ran.stream().filter(o -> o.status() != Status.PASS)
+                .map(o -> o.name() + ": " + o.status() + ": " + o.reason()).toList();
+        return tests == named.size() && failing.isEmpty() ? null
+                : tests + " of " + named.size() + " named tests ran; " + failing;
     }
 
     /**
@@ -348,7 +391,9 @@ public final class ConformanceReport {
                 v.add("environment." + f + " is missing");
             }
         }
-        for (String k : MANDATORY_PINNED) {
+        List<String> keys = new ArrayList<>(MANDATORY_PINNED);
+        keys.addAll(PINNED_TESTS.keySet());
+        for (String k : keys) {
             if (r.path("pinned_decisions").path(k).asText("").isBlank()) {
                 v.add("pinned_decisions." + k + " is missing");
             }
@@ -435,7 +480,10 @@ public final class ConformanceReport {
 
     // --- the fixed text --------------------------------------------------------------------------
 
-    /** docs/14 §4's six keys, and one of this core's own (docs/27 §6.5). */
+    /**
+     * docs/14 §4's six keys, and two of this core's own: {@code platform-byte-buffer-max} (docs/27
+     * §6.5) and {@code index-role-use-budget}, which {@link #PINNED_TESTS} backs (#225).
+     */
     static final Map<String, String> PINNED_DECISIONS = pinned();
 
     private static Map<String, String> pinned() {
@@ -489,6 +537,15 @@ public final class ConformanceReport {
                 + " ubuntu-24.04 runner, measured by BufferMaxProbe on 2026-09-24 and not by this"
                 + " run. The platform binds before spec §3.5's bound on every JVM, since no Java"
                 + " array reaches 2^31 elements. docs/27 §6.1.");
+        m.put("index-role-use-budget", "none (docs/09 §8.3): max-uses counts DEK-role"
+                + " encryption_key returns only, and an index-role fetch spends nothing; max-age"
+                + " and the capacity LRU apply to both roles. The role is read from the cache key"
+                + " on every take (DekCache.takeForEncrypt, #224). Proven end to end by"
+                + " EnvelopeProviderTest.theIndexRoleHasNoUseBudget: under maxUses = 2, a blind"
+                + " index is derived maxUses + 1 times; then, as the positive control, the DEK is"
+                + " use-evicted after two encryptions and the third is KEY_UNAVAILABLE, while the"
+                + " index key still derives; max-age still retires it. This report runs that test"
+                + " and fails when it is missing or not passing (#225).");
         return Collections.unmodifiableMap(m);
     }
 
@@ -593,18 +650,19 @@ public final class ConformanceReport {
         PrintStream stdout = System.out;
         List<Outcome> harness;
         Map<String, List<Outcome>> oob = new LinkedHashMap<>();
+        Map<String, List<Outcome>> pins = new LinkedHashMap<>();
         System.setOut(System.err);
         try {
             harness = run(HARNESS.stream().map(c -> (DiscoverySelector) selectClass(c)).toList());
             for (OutOfBand entry : OUT_OF_BAND) {
-                oob.put(entry.id(), run(entry.tests().stream()
-                        .map(t -> (DiscoverySelector) selectMethod(t)).toList()));
+                oob.put(entry.id(), runMethods(entry.tests()));
             }
+            PINNED_TESTS.forEach((key, tests) -> pins.put(key, runMethods(tests)));
         } finally {
             System.setOut(stdout);
         }
 
-        Assembled a = assemble(manifest, expected, harness, oob, OUT_OF_BAND,
+        Assembled a = assemble(manifest, expected, harness, oob, OUT_OF_BAND, pins,
                 implementation(vectors), environment());
         List<String> problems = conclude(vectors, manifest, expected, a);
         stdout.println(JSON.writeValueAsString(a.report()));
