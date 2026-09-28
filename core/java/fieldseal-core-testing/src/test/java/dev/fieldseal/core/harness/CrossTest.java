@@ -135,6 +135,32 @@ class CrossTest {
 
     // --- the consumer's guards -----------------------------------------------------------------
 
+    /** A support file is read only once MANIFEST.support's length and SHA-256 match. */
+    @Test
+    void aSupportFileThatFailsItsHashIsNotRead() throws IOException {
+        Path copy = dir.resolve("vectors");
+        for (String f : List.of("MANIFEST.json", "keys/test-keys.json", "cross/corpus.json")) {
+            Files.createDirectories(copy.resolve(f).getParent());
+            Files.copy(VECTORS.resolve(f), copy.resolve(f));
+        }
+        assertDoesNotThrow(() -> Cross.support(copy, "cross/corpus.json"), "the unaltered copy");
+        byte[] corpus = Files.readAllBytes(copy.resolve("cross/corpus.json"));
+        corpus[corpus.length / 2] ^= 1;
+        Files.write(copy.resolve("cross/corpus.json"), corpus);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Cross.support(copy, "cross/corpus.json"));
+        assertTrue(e.getMessage().contains("MANIFEST.support says"), e.getMessage());
+    }
+
+    /** Strict mode: a value that is not an envelope is not handed back as its own plaintext. */
+    @Test
+    void aNonEnvelopeFails() throws IOException {
+        ObjectNode doc = copy();
+        ObjectNode c = envelopeCase(doc, 2);
+        c.put("envelope", c.path("plaintext").asText());
+        failsOnce(doc, "envelope", "NOT_CIPHERTEXT");
+    }
+
     @Test
     void anUnknownSchemaFails() throws IOException {
         ObjectNode doc = copy().put("schema", "fieldseal-vectors/cross/v3");

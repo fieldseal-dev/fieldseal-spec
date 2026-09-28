@@ -137,11 +137,6 @@ final class Cross {
      */
     static Fieldseal client(Key k, int suite, List<IndexDeclaration> indexes,
             Consumer<String> warn) {
-        if (k.suite() != suite) {
-            throw new IllegalArgumentException("key_ref '" + k.ref() + "' is for suite "
-                    + String.format("0x%04X", k.suite()) + ", the document is "
-                    + String.format("0x%04X", suite));
-        }
         return Fieldseal.builder()
                 .keyProvider(KeyProviders.staticKeys(k.dek(), k.indexKey(), k.keyId()))
                 .allowedSuites(Set.of(suite)).writeSuite(suite).armProvisionalSuites(true)
