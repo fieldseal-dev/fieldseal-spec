@@ -50,7 +50,7 @@ env:
   # from it and checks it against the files `cross-produce` actually uploaded.
   # A matrix cannot read `env`, so `cross-produce`'s `impl` list is the one
   # other copy, and that check is what keeps the two from drifting.
-  CROSS_PRODUCERS: "python typescript django prisma"
+  CROSS_PRODUCERS: "python typescript java django prisma"
   # The Java core's JDK (docs/27 §1): floor 21, pinned to one patch on push
   # and PR. `java-core` floats to the latest 21 on the nightly (docs/14 §5).
   JAVA_VERSION: "21.0.12"
@@ -131,7 +131,8 @@ jobs:
   # errors/ and envelope/ run through the public client; blind-index/ runs
   # both ways. Its Unicode tables are covered by the unicode-tables job's
   # --check, like the other cores'. Since S6 it emits the docs/14 §4 report and
-  # joins `cross-core-result-ids`; the cross job is S7 (docs/27 §1).
+  # joins `cross-core-result-ids`, and since S7 the cross job as a producer and
+  # a consumer (docs/27 §1).
   java-core:
     name: "Java core vs the pinned vector suite"
     runs-on: ubuntu-24.04
@@ -843,7 +844,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        impl: [python, typescript, django, prisma]
+        impl: [python, typescript, java, django, prisma]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -872,6 +873,24 @@ jobs:
         if: matrix.impl == 'typescript'
         working-directory: core/typescript
         run: npm run --silent cross:produce -- --out ../../cross-typescript.json
+
+      # The Java core (docs/27 §8, S7): production `encrypt` in a process
+      # without FIELDSEAL_TEST_MODE, which the Gradle task removes and the
+      # producer refuses (CrossProduce). The JDK floats on the nightly, as in
+      # java-core (docs/14 §5).
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: matrix.impl == 'java'
+        with:
+          distribution: temurin
+          java-version: ${{ github.event_name == 'schedule' && '21' || env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        if: matrix.impl == 'java'
+        with:
+          cache-provider: basic
+      - name: Produce (java)
+        if: matrix.impl == 'java'
+        working-directory: core/java
+        run: ./gradlew -q crossProduce --args="--out ../../cross-java.json"
 
       # The adapter as a producer. Three decisions between an application
       # value and the stored column belong to the adapter and to nothing the
@@ -950,7 +969,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        consumer: [python, typescript]
+        consumer: [python, typescript, java]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -1010,6 +1029,22 @@ jobs:
         run: |
           files=$(for p in $CROSS_PRODUCERS; do printf '../../cross-%s.json ' "$p"; done)
           npm run --silent cross:consume -- $files --verdict ../../verdict-typescript.json
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: matrix.consumer == 'java'
+        with:
+          distribution: temurin
+          java-version: ${{ github.event_name == 'schedule' && '21' || env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        if: matrix.consumer == 'java'
+        with:
+          cache-provider: basic
+      - name: Consume every producer (java)
+        if: matrix.consumer == 'java'
+        working-directory: core/java
+        run: |
+          files=$(for p in $CROSS_PRODUCERS; do printf '../../cross-%s.json ' "$p"; done)
+          ./gradlew -q crossConsume --args="$files--verdict ../../verdict-java.json"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
