@@ -114,10 +114,20 @@ public final class ConformanceReport {
     /**
      * The pinned decisions a test backs, and the tests ({@code Class#method}) behind each (#225).
      * A rule with no bytes to compare cannot be a vector (docs/08 §8), so the report runs the test
-     * that proves it, and a backing test that is missing or not passing is a problem.
+     * that proves it, and a backing test that is missing or not passing is a problem. A backing
+     * test is a single Jupiter {@code @Test} method: {@link #run} filters to the Jupiter engine,
+     * so a jqwik {@code @Property} would run no test, and a {@code @ParameterizedTest} or {@code
+     * @TestFactory} more than one ({@code ConformanceReportTest} refuses both). Insertion-ordered,
+     * so the problems and violations it produces come out in the same order on every run.
      */
-    static final Map<String, List<String>> PINNED_TESTS = Map.of("index-role-use-budget",
-            List.of("dev.fieldseal.core.EnvelopeProviderTest#theIndexRoleHasNoUseBudget"));
+    static final Map<String, List<String>> PINNED_TESTS = pinnedTests();
+
+    private static Map<String, List<String>> pinnedTests() {
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        m.put("index-role-use-budget",
+                List.of("dev.fieldseal.core.EnvelopeProviderTest#theIndexRoleHasNoUseBudget"));
+        return Collections.unmodifiableMap(m);
+    }
 
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
@@ -532,8 +542,8 @@ public final class ConformanceReport {
                 + " EnvelopeProviderTest.theIndexRoleHasNoUseBudget: under maxUses = 2, a blind"
                 + " index is derived maxUses + 1 times; then, as the positive control, the DEK is"
                 + " use-evicted after two encryptions and the third is KEY_UNAVAILABLE, while the"
-                + " index key still derives; max-age still retires it. This report runs that test and fails when it is"
-                + " missing or not passing (#225).");
+                + " index key still derives; max-age still retires it. This report runs that test"
+                + " and fails when it is missing or not passing (#225).");
         return Collections.unmodifiableMap(m);
     }
 
