@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -316,16 +315,23 @@ class TestEnvelopeKeyProvider:
         """max_age applies to both roles (docs/09 §8.3), so dropping the index
         role's use counter must not drop the TTL check with it. The clock is
         injected on the cache the provider owns because
-        EnvelopeKeyProvider takes no DekCache hooks."""
+        EnvelopeKeyProvider takes no DekCache hooks.
+
+        The clock starts at an exactly representable value, like the DekCache
+        tests above. It used to start at time.monotonic(), and for some starts
+        (x + 100.0) - x rounds to just under 100, so the key was still inside
+        its age and the test failed on some CI runs, never the core (#227)."""
         p, _ = _provider(max_uses=2, max_age=timedelta(seconds=100))
         c = _client(p, indexes=(_index_decl(),))
-        clock = [time.monotonic()]
+        clock = [1000.0]
         p.cache._now = lambda: clock[0]
         _run(c.warm([CTX]))
         ictx = CTX.for_index("exact")
         for _ in range(10):
             c.blind_index(PT, ictx)   # past max_uses; TTL is now the cause
-        clock[0] += 100.0
+        clock[0] = 1099.0
+        c.blind_index(PT, ictx)       # one second inside max_age: served
+        clock[0] = 1100.0
         with pytest.raises(KeyUnavailable):
             c.blind_index(PT, ictx)
         assert p.cache.metrics.evictions["max-age"] == 1
