@@ -18,8 +18,10 @@ import org.junit.jupiter.api.Test;
  * G14 (#43; spec §6.1; docs/27 §5.2): {@code tenant_id} and {@code row_id} are unbounded, so the
  * KDF {@code info} is too, and some platform HKDFs cap it (spec §6.1 names Node at 1,024 bytes and
  * OpenSSL 3.0–3.5 at 32 KiB). This core writes its HKDF over {@code Mac}, which caps nothing. These
- * tests use 70,000-byte fields, past both caps, and check that every byte of {@code info} reaches the
- * derivation, not only that the value path does not throw.
+ * tests use 70,000-byte fields, past both caps, and check that the end of each field reaches the
+ * derivation, not only that the value path does not throw. Only the last byte is varied, so a
+ * derivation that skipped a byte in the middle would pass them; a cap, the platform failure G14 is
+ * about, would not.
  */
 class LargeContextTest {
 

@@ -130,8 +130,8 @@ The specification requires every implementation to state these.
 - **Not released.** See the box at the top.
 - **What it protects against, and how well** (spec [§2](../../docs/02-spec-v0.1.md)):
   - Someone who obtains a backup, a stolen disk, a dump or a detached replica volume gets ciphertext without keys. This is the main protection.
-  - Someone who can read the tables gets ciphertext too, **except that a column with a blind index leaks which rows share a value**, more so the more of the index you keep (spec §7.4).
-  - Ciphertext moved to another column or tenant fails to decrypt, because both are bound into every envelope. **Ciphertext moved to another row of the same column is caught only if you bind the row id** (`withRow`), which is optional; the specification rates this protection as none unless the row is bound (conformance level L3).
+  - Someone who can read the tables gets ciphertext too, **except that a column with a blind index leaks which rows share a value**. The longer the truncation length you declare, the fewer collisions there are to blur that: in spec §7.4's example, a match at 16 bits is the same plaintext about 66% of the time, and at 14 bits about 33%.
+  - Ciphertext moved to another column fails to decrypt, because the column is bound into every envelope. **Ciphertext moved to another tenant fails only if you supply the tenant id** (`withTenant`), and **to another row of the same column only if you bind the row id** (`withRow`); both are optional. The specification rates protection against such moves as none below conformance level L3.
   - One tenant's key exposes only that tenant's data, provided each tenant has its own key.
 - **What it does not protect against:**
   - **A compromised application process.** No protection: the keys are in that process, so anything the application can read, an attacker there can read.
