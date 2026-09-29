@@ -86,7 +86,7 @@ Every row cites the tests that prove it. `scripts/coverage_report.py` reads this
 | HQL/Criteria mutations of plain columns | ✅ served | `QueryRefusalTest.aMutationOnPlainColumnsIsServed` |
 | native SQL, `@SQLRestriction`, `@Formula`, custom SQL | 🛑 **cannot be intercepted**: parameters are never encrypted, and a comparison silently matches nothing. Use the ORM paths above, or call the core yourself | `QueryRefusalTest.aNativeQueryParameterIsNotIntercepted` |
 | second-level cache | 🛑 an entity with an encrypted attribute cannot be cacheable (FS-H006) | `StartupChecksTest.fsH006` |
-| query cache | 🛑 refused at startup when any entity has an encrypted attribute (FS-H010): it stores decrypted results, where no adapter hook runs | `StartupChecksTest.fsH010`, `StartupChecksTest.aQueryCacheOverAPlainEntityIsLeftAlone` |
+| query cache | 🛑 refused at startup when any entity has an encrypted attribute (FS-H010): it stores decrypted results, where no adapter hook runs | `StartupChecksTest.fsH010`, `StartupChecksTest.withTheSettingOffACacheableQueryWritesNoRegion`, `StartupChecksTest.aQueryCacheOverAPlainEntityIsLeftAlone` |
 | the persistence context (first-level cache) | ⚠️ holds decrypted entities for the session's life (spec §10.2) | `HibernateBehaviourTest.persistThenFlushTwiceIssuesOneInsertAndNoUpdate` |
 | `FieldsealHibernate.warm` | ✅ warms every declared column and index; names the tenant-bound ones it skipped for want of a tenant | `WarmTest` |
 | mappings the adapter refuses at startup | 🛑 FS-H001 to FS-H010 (docs/29 §5) | `StartupChecksTest` |

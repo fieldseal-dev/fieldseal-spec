@@ -113,6 +113,13 @@ MUTATIONS = [
     ("startup: FS-H010, the query cache, not checked", M / "FieldsealIntegrator.java",
      "        if (sessionFactory.getSessionFactoryOptions().isQueryCacheEnabled()) {",
      "        if (false) {", [T + "*StartupChecksTest"], "red"),
+    ("startup: FS-H010 fires on a factory with no encrypted attribute",
+     M / "FieldsealIntegrator.java",
+     "        if (drafts.isEmpty()) {\n            return;\n        }",
+     "        if (sessionFactory.getSessionFactoryOptions().isQueryCacheEnabled()) {\n"
+     "            throw new FieldsealConfigurationException(\"FS-H010: unconditional\");\n"
+     "        }\n        if (drafts.isEmpty()) {\n            return;\n        }",
+     [T + "*StartupChecksTest"], "red"),
     ("startup: FS-H004, the registry, not compared", M / "FieldsealIntegrator.java",
      "        if (!client.indexes().equals(want)) {", "        if (false) {",
      [T + "*StartupChecksTest"], "red"),

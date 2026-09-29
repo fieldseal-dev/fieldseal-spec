@@ -294,7 +294,38 @@ class StartupChecksTest {
                 Patient.class);
     }
 
-    /** FS-H010 is the adapter's entities' rule: a factory without them keeps its query cache. */
+    /**
+     * FS-H010's premise (#238 review round 2): with the query cache setting off, a per-query
+     * setCacheable(true) never reaches a cache region, so refusing the setting is enough. A
+     * second-level cache and a region factory are present, so a region exists to be written; the
+     * recording factory must see nothing. If a Hibernate upgrade let such a query cache its
+     * results anyway, FS-H010 would stop being sufficient and this would go red.
+     */
+    @Test
+    void withTheSettingOffACacheableQueryWritesNoRegion() {
+        try (SessionFactory sf = TestSupport.sessionFactory(Map.of(
+                "hibernate.cache.use_second_level_cache", "true",
+                "hibernate.cache.region.factory_class", RecordingRegionFactory.class.getName()),
+                Patient.class)) {
+            sf.inTransaction(s -> s.persist(new Patient("cache-probe@example.com", "n", 1)));
+            RecordingRegionFactory.PUTS.clear();
+            for (int i = 0; i < 2; i++) {
+                sf.inTransaction(s -> {
+                    s.createSelectionQuery("select p.email from Patient p", String.class)
+                            .setCacheable(true).getResultList();
+                    s.createSelectionQuery("from Patient p", Patient.class)
+                            .setCacheable(true).getResultList();
+                });
+            }
+            assertEquals(List.of(), RecordingRegionFactory.PUTS);
+        }
+    }
+
+    /**
+     * FS-H010 is the adapter's entities' rule: a factory without them keeps its query cache. The
+     * integrator is service-loaded, so it runs here too and returns early; an FS-H010 moved
+     * above that return turns this red (bite_checks.py).
+     */
     @Test
     void aQueryCacheOverAPlainEntityIsLeftAlone() {
         TestSupport.build(withQueryCache(), Plain.class).close();
