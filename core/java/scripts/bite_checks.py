@@ -44,6 +44,11 @@ MUTATIONS = [
     ("s4a hkdf: empty salt passed through, not 64 zero bytes", I / "kdf/Hkdf.java",
      "byte[] macKey = salt.length == 0 ? new byte[HASH_LEN] : salt;", "byte[] macKey = salt;",
      [CORE + "*HkdfTest", VEC + "*CommitmentVectorsTest"], "red"),
+    # Added at S8 (G14, #43; docs/27 §5.2): a platform-style cap on info. Round trips still pass,
+    # since the AAD carries the whole context, so only the last-byte tests can see it.
+    ("s4a hkdf: info capped at 1,024 bytes, as Node's hkdfSync caps it", I / "kdf/Hkdf.java",
+     "            mac.update(info);", "            mac.update(info, 0, Math.min(info.length, 1024));",
+     [CORE + "*LargeContextTest"], "red"),
     ("s4a context: row_id presence bit wrong", I / "context/CanonicalContext.java",
      "PRESENCE_ROW = 0x02;", "PRESENCE_ROW = 0x04;",
      [VEC + "*ContextVectorsTest", CORE + "*CanonicalContextTest"], "red"),
