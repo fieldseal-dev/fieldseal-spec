@@ -52,7 +52,7 @@ public final class FieldsealSqmTranslatorFactory implements SqmTranslatorFactory
             LoadQueryInfluencers influencers, SqlAstCreationContext creationContext,
             boolean deduplicateSelectionItems) {
         WALKED.incrementAndGet();
-        statement.accept(new RefusalWalker(runtime(), FinderScope.active()));
+        statement.accept(new RefusalWalker(runtime(), FinderScope.permits(queryOptions.getComment())));
         return delegate(creationContext).createSelectTranslator(statement, queryOptions,
                 domainParameterXref, bindings, influencers, creationContext,
                 deduplicateSelectionItems);

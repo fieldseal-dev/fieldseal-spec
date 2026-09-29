@@ -176,10 +176,13 @@ public final class FieldsealQueries<T> {
         }
         q.select(root).where(ps.toArray(Predicate[]::new));
         var query = session.createSelectionQuery(q);
-        // A cached plan would skip translation, and translation is where the walker checks the
-        // scope: with no plan cached, the scope cannot leak to a query outside it.
+        // The permission is this statement's: the walker grants it to a statement whose comment
+        // is a token open on this thread, so a query that application code runs while this one
+        // materializes rows gets none (FinderScope). With no plan cached, a translation carrying
+        // it is never reused either.
         query.setQueryPlanCacheable(false);
         FinderScope scope = FinderScope.enter();
+        query.setComment(scope.token());
         try {
             return query.getResultList();
         } finally {

@@ -65,6 +65,16 @@ public final class FieldsealIntegrator implements Integrator {
                     + "(docs/29 §3.3). FieldsealSettings.apply(...) sets it");
         }
 
+        if (sessionFactory.getSessionFactoryOptions().isQueryCacheEnabled()) {
+            throw new FieldsealConfigurationException("FS-H010: entities with encrypted "
+                    + "attributes and hibernate.cache.use_query_cache = true. The query cache "
+                    + "stores query results after the type has decrypted them, so a cached "
+                    + "projection of an encrypted attribute holds its plaintext, and an entity "
+                    + "result may hold the entity's decrypted state; no UserType hook runs on "
+                    + "that path, so the adapter cannot guard it per query (docs/29 §1). Turn the "
+                    + "query cache off for this session factory");
+        }
+
         // Build the specs and the index declarations.
         Map<String, FieldsealRuntime.EntityPlan> plans = new LinkedHashMap<>();
         List<IndexDeclaration> declarations = new ArrayList<>();

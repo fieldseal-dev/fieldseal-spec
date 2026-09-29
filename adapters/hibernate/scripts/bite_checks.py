@@ -92,6 +92,12 @@ MUTATIONS = [
     ("finder: candidates are returned unverified", M / "FieldsealQueries.java",
      "        if (!verify || terms.isEmpty()) {", "        if (true) {",
      [T + "*FinderTest"], "red"),
+    # The #238 review, finding 2: the permission is the statement's, not the thread's.
+    ("finder: its query does not carry its scope's token", M / "FieldsealQueries.java",
+     "        query.setComment(scope.token());", "", [T + "*FinderTest"], "red"),
+    ("scope: any statement on a thread with an open scope is permitted", M / "FinderScope.java",
+     "        return comment != null && OPEN.get().contains(comment);",
+     "        return !OPEN.get().isEmpty();", [T + "*QueryRefusalTest"], "red"),
     # Criteria plans are not cached by default, so the finder's query is translated on every
     # run with or without the call; it is kept so that enabling that cache cannot leak the scope.
     ("finder: its query plan may be cached", M / "FieldsealQueries.java",
@@ -103,6 +109,10 @@ MUTATIONS = [
     ("startup: FS-H007, @DynamicUpdate, not checked", M / "FieldsealIntegrator.java",
      "        if (!d.indexes.isEmpty() && pc.useDynamicUpdate()) {", "        if (false) {",
      [T + "*StartupChecksTest"], "red"),
+    # The #238 review, finding 1: the query cache holds decrypted results.
+    ("startup: FS-H010, the query cache, not checked", M / "FieldsealIntegrator.java",
+     "        if (sessionFactory.getSessionFactoryOptions().isQueryCacheEnabled()) {",
+     "        if (false) {", [T + "*StartupChecksTest"], "red"),
     ("startup: FS-H004, the registry, not compared", M / "FieldsealIntegrator.java",
      "        if (!client.indexes().equals(want)) {", "        if (false) {",
      [T + "*StartupChecksTest"], "red"),

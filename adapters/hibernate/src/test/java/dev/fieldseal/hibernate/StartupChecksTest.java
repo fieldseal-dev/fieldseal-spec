@@ -282,6 +282,32 @@ class StartupChecksTest {
         refusedWith("FS-H006", Cached.class);
     }
 
+    /**
+     * The query cache stores decrypted results where no UserType hook runs (#238 review, finding
+     * 1). The map-backed region factory is what lets a query cache be switched on at all here.
+     */
+    @Test
+    void fsH010() {
+        refusedWith("FS-H010", Map.of("hibernate.cache.use_query_cache", "true",
+                "hibernate.cache.use_second_level_cache", "true",
+                "hibernate.cache.region.factory_class", RecordingRegionFactory.class.getName()),
+                Patient.class);
+    }
+
+    /** FS-H010 is the adapter's entities' rule: a factory without them keeps its query cache. */
+    @Test
+    void aQueryCacheOverAPlainEntityIsLeftAlone() {
+        TestSupport.build(withQueryCache(), Plain.class).close();
+    }
+
+    private static Map<String, Object> withQueryCache() {
+        Map<String, Object> s = new HashMap<>(TestSupport.baseSettings());
+        s.put("hibernate.cache.use_query_cache", "true");
+        s.put("hibernate.cache.use_second_level_cache", "true");
+        s.put("hibernate.cache.region.factory_class", RecordingRegionFactory.class.getName());
+        return s;
+    }
+
     @Entity @DynamicUpdate @FieldsealTable(T) public static class Dynamic {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
@@ -356,7 +382,7 @@ class StartupChecksTest {
     void everyIdIsDocumented() throws Exception {
         String doc = java.nio.file.Files.readString(TestSupport.VECTORS.resolve(
                 "../docs/29-adapter-hibernate.md"));
-        for (int i = 1; i <= 9; i++) {
+        for (int i = 1; i <= 10; i++) {
             String id = String.format("| FS-H%03d |", i);
             assertEquals(1, doc.split(java.util.regex.Pattern.quote(id), -1).length - 1, id);
         }

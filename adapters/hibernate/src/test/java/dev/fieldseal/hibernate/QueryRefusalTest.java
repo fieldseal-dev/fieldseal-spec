@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import dev.fieldseal.hibernate.fixture.Hooked;
 import dev.fieldseal.hibernate.fixture.Patient;
 import java.util.List;
 import java.util.function.Consumer;
@@ -22,7 +23,7 @@ class QueryRefusalTest {
 
     @BeforeAll
     static void start() {
-        sf = TestSupport.sessionFactory(Patient.class);
+        sf = TestSupport.sessionFactory(Patient.class, Hooked.class);
         sf.inTransaction(s -> {
             s.persist(new Patient("ada@example.com", "n1", 36));
             s.persist(new Patient("grace@example.com", "n2", 45));
@@ -176,7 +177,7 @@ class QueryRefusalTest {
         try {
             refused(s -> s.createSelectionQuery(hql, Patient.class)
                     .setParameter("v", new byte[] {1}).setQueryPlanCacheable(false)
-                    .getResultList());
+                    .setComment(scope.token()).getResultList());
         } finally {
             scope.close();
         }
@@ -189,10 +190,53 @@ class QueryRefusalTest {
             sf.inTransaction(s -> s.createSelectionQuery(
                     "from Patient p where p.emailIndex = :v", Patient.class)
                     .setParameter("v", new byte[] {1}).setQueryPlanCacheable(false)
-                    .getResultList());
+                    .setComment(scope.token()).getResultList());
         } finally {
             scope.close();
         }
+    }
+
+    /** An open scope grants nothing to a statement that does not carry its token. */
+    @Test
+    void anOpenScopeGrantsNothingToAnotherStatement() {
+        var scope = FinderScope.enter();
+        try {
+            refused(s -> s.createSelectionQuery("from Patient p where p.emailIndex = :v",
+                    Patient.class).setParameter("v", new byte[] {1})
+                    .setQueryPlanCacheable(false).getResultList());
+        } finally {
+            scope.close();
+        }
+    }
+
+    /**
+     * The finder's permission is its own statement's, not its thread's (#238 review, finding 2):
+     * a query that application code runs while the finder materializes rows (here from
+     * {@code @PostLoad}, on the same thread, inside {@code list()}) is refused like any other.
+     */
+    @Test
+    void aQueryRunDuringTheFindersLoadGetsNoPermission() {
+        sf.inTransaction(s -> s.persist(new Hooked("hooked-code")));
+        java.util.List<String> outcome = new java.util.ArrayList<>();
+        sf.inTransaction(s -> {
+            Hooked.onLoad = () -> {
+                try {
+                    s.createSelectionQuery("from Hooked h where h.codeIndex = :v", Hooked.class)
+                            .setParameter("v", new byte[] {1}).setQueryPlanCacheable(false)
+                            .getResultList();
+                    outcome.add("served");
+                } catch (FieldsealNotSupportedException e) {
+                    outcome.add("refused");
+                }
+            };
+            try {
+                assertEquals(1, FieldsealQueries.of(s, Hooked.class)
+                        .whereIndex("codeIndex", "hooked-code").list().size());
+            } finally {
+                Hooked.onLoad = null;
+            }
+        });
+        assertEquals(List.of("refused"), outcome);
     }
 
     @Test

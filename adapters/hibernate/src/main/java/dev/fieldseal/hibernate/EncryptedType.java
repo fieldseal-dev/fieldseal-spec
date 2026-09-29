@@ -173,15 +173,17 @@ public final class EncryptedType implements UserType<Object> {
     }
 
     /**
-     * Refused: a second-level or query cache entry would hold the plaintext, and there is no
-     * session here to encrypt a tenant-bound column under (docs/29 §1, FS-H006).
+     * Refused: a second-level cache entry would hold the plaintext, and there is no session here
+     * to encrypt a tenant-bound column under (docs/29 §1). FS-H006 refuses a cacheable entity at
+     * startup, so this is a backstop. It does not cover the query cache, whose results bypass
+     * this hook; FS-H010 refuses that cache at startup instead.
      */
     @Override
     public Serializable disassemble(Object value) {
-        throw new FieldsealNotSupportedException(label() + ": a second-level or query cache "
-                + "entry would hold this encrypted attribute's plaintext (spec §10.2). Do not "
-                + "cache entities with encrypted attributes, or query results that select one "
-                + "(docs/29 §1)");
+        throw new FieldsealNotSupportedException(label() + ": a second-level cache entry would "
+                + "hold this encrypted attribute's plaintext (spec §10.2). Entities with "
+                + "encrypted attributes must not be cacheable (FS-H006), and the query cache, "
+                + "which this hook cannot see, must be off (FS-H010; docs/29 §1)");
     }
 
     @Override

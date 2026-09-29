@@ -81,14 +81,15 @@ Every row cites the tests that prove it. `scripts/coverage_report.py` reads this
 | HQL/Criteria comparison of an encrypted attribute, parameter or literal | 🛑 refused | `QueryRefusalTest.aParameterOnAnEncryptedColumnIsRefused`, `QueryRefusalTest.encryptedAttributeShapesAreRefused`, `QueryRefusalTest.aCriteriaPredicateOnAnEncryptedAttributeIsRefused`, `BindingGuardTest.aPlainValueIsRefusedAndNothingIsBound` |
 | ordering, grouping, `distinct`, functions and aggregates over an encrypted attribute | 🛑 refused | `QueryRefusalTest.encryptedAttributeShapesAreRefused`, `QueryRefusalTest.aCriteriaOrderingOnAnEncryptedAttributeIsRefused`, `QueryRefusalTest.hibernatesOwnTypingRefusesStringFunctionsOverTheColumn` |
 | `is [not] null`, plain `count(x)`, `select x` | ✅ served, exactly | `QueryRefusalTest.servedShapesAreServed`, `QueryRefusalTest.countOverAnEncryptedColumnIsExact` |
-| HQL/Criteria predicate on an index attribute | 🛑 refused outside the finder, and under negation anywhere | `QueryRefusalTest.indexAttributeShapesAreRefusedOutsideTheFinder`, `QueryRefusalTest.aCriteriaPredicateOnAnIndexIsRefused`, `QueryRefusalTest.negationAndNonEqualityAreRefusedEvenInScope`, `FinderTest.theScopeDoesNotOutliveTheFindersQuery` |
+| HQL/Criteria predicate on an index attribute | 🛑 refused outside the finder's own statement, including a query run on the same thread while the finder loads rows, and under negation anywhere | `QueryRefusalTest.indexAttributeShapesAreRefusedOutsideTheFinder`, `QueryRefusalTest.aCriteriaPredicateOnAnIndexIsRefused`, `QueryRefusalTest.negationAndNonEqualityAreRefusedEvenInScope`, `QueryRefusalTest.anOpenScopeGrantsNothingToAnotherStatement`, `QueryRefusalTest.aQueryRunDuringTheFindersLoadGetsNoPermission`, `FinderTest.theScopeDoesNotOutliveTheFindersQuery` |
 | HQL/Criteria `update`, `insert`, `delete` touching an encrypted or index attribute | 🛑 refused | `QueryRefusalTest.mutationShapesAreRefused`, `QueryRefusalTest.anUpdateWithAParameterIsRefused`, `QueryRefusalTest.anInsertIsRefused` |
 | HQL/Criteria mutations of plain columns | ✅ served | `QueryRefusalTest.aMutationOnPlainColumnsIsServed` |
 | native SQL, `@SQLRestriction`, `@Formula`, custom SQL | 🛑 **cannot be intercepted**: parameters are never encrypted, and a comparison silently matches nothing. Use the ORM paths above, or call the core yourself | `QueryRefusalTest.aNativeQueryParameterIsNotIntercepted` |
 | second-level cache | 🛑 an entity with an encrypted attribute cannot be cacheable (FS-H006) | `StartupChecksTest.fsH006` |
+| query cache | 🛑 refused at startup when any entity has an encrypted attribute (FS-H010): it stores decrypted results, where no adapter hook runs | `StartupChecksTest.fsH010`, `StartupChecksTest.aQueryCacheOverAPlainEntityIsLeftAlone` |
 | the persistence context (first-level cache) | ⚠️ holds decrypted entities for the session's life (spec §10.2) | `HibernateBehaviourTest.persistThenFlushTwiceIssuesOneInsertAndNoUpdate` |
 | `FieldsealHibernate.warm` | ✅ warms every declared column and index; names the tenant-bound ones it skipped for want of a tenant | `WarmTest` |
-| mappings the adapter refuses at startup | 🛑 FS-H001 to FS-H009 (docs/29 §5) | `StartupChecksTest` |
+| mappings the adapter refuses at startup | 🛑 FS-H001 to FS-H010 (docs/29 §5) | `StartupChecksTest` |
 | rows another language can read | ✅ the cross job: every core decrypts and re-derives what this adapter wrote | `CrossProduceTest` |
 | row-id binding (L3-row) | ❌ not built (docs/29 §4) | — |
 
@@ -98,7 +99,7 @@ A value containing a character the pinned Unicode tables (17.0.0) do not define 
 
 ## Limits of this version
 
-No row-id binding; no transparent query rewriting (you name the index); no `OR`, negation or pagination in the finder; no second-level caching of entities with encrypted attributes; no encrypted attributes in embeddables, element collections or inheritance hierarchies; no `@DynamicUpdate` on an entity with a blind index; no Hibernate Reactive or Envers. **Migrating an existing plaintext column** (`docs/15` §1) needs the backfill tool's `PROCEDURE.md`, which is not written yet; until it is, write rows through ordinary `merge` and flush in batches, which encrypts. An HQL bulk `update` is refused.
+No row-id binding; no transparent query rewriting (you name the index); no `OR`, negation or pagination in the finder; no second-level caching of entities with encrypted attributes, and no query cache on a session factory that has them; no encrypted attributes in embeddables, element collections or inheritance hierarchies; no `@DynamicUpdate` on an entity with a blind index; no Hibernate Reactive or Envers. **Migrating an existing plaintext column** (`docs/15` §1) needs the backfill tool's `PROCEDURE.md`, which is not written yet; until it is, write rows through ordinary `merge` and flush in batches, which encrypts. An HQL bulk `update` is refused.
 
 And the limits no adapter removes: the application process holds the keys, so a compromise of it is out of scope; storage grows by about a hundred bytes per value; and the key service is in the read path's availability (spec §2, §3.3, §5).
 
