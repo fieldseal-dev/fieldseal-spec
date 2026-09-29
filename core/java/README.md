@@ -3,7 +3,7 @@
 Field-level encryption for JVM applications, with a format that other languages can read.
 
 > **Under construction: not released.**
-> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, passes every shared test vector, and emits the conformance report CI compares with the other cores'. CI's cross-implementation job has it decrypt what the Python and TypeScript cores and both adapters write, and has them decrypt what it writes ([`docs/27`](../../docs/27-core-java.md) §8, stage S7). The as-built record, stage S8, is still to come. Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
+> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, passes every shared test vector, and emits the conformance report CI compares with the other cores'. CI's cross-implementation job has it decrypt what the Python and TypeScript cores and both adapters write, and has them decrypt what it writes ([`docs/27`](../../docs/27-core-java.md) §8, stage S7). Its divergence report, [`docs/28`](../../docs/28-java-core-report.md), states what that agreement does and does not show, including that the same kind of AI assistant wrote all three cores. Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
 
 This library encrypts individual database values, one field at a time, into a self-describing **envelope**: bytes in, bytes out. Every envelope is bound to the table and column it belongs to, and to the tenant and row when you supply them, so a value copied to the wrong place fails to decrypt instead of decrypting silently.
 
@@ -75,7 +75,7 @@ IndexDeclaration emailIndex = IndexDeclaration.builder(tableUuid, columnUuid)
 byte[] index = fs.blindIndex("Ada@Example.com", ctx.forIndex("email-eq"));   // 2 bytes
 ```
 
-To look a value up, compute its index, query the index column, then decrypt the candidates and compare them under the index's normalizer (`IndexDeclaration.Normalizer.normalize`), not byte for byte. The index is a filter, never an answer: truncation makes collisions deliberate. See spec [§7](../../docs/02-spec-v0.1.md) for what an index does and does not hide.
+To look a value up, compute its index, query the index column, then decrypt the candidates and compare them under the index's normalizer (`IndexDeclaration.Normalizer.normalize`), not byte for byte. The index is a filter, never an answer: truncation makes collisions deliberate. For the same reason, pagination built directly on an indexed column is wrong: fetch more candidates than the page needs, decrypt, filter, then paginate. See spec [§7](../../docs/02-spec-v0.1.md) for what an index does and does not hide.
 
 The client checks each declaration when it is built, and refuses one that breaks the rules: a truncation length outside the band for its population, fewer than 2¹⁰ distinct values, or a column declared `skewed`, without a recorded, reviewed override, or an Argon2id cost below the minimum. `Fieldseal.validateIndexDeclaration` runs the same checks on its own, and `fs.indexes()` reports what the client was built with, defaults filled in.
 
@@ -128,7 +128,16 @@ Every failure is a subclass of `FieldsealError`, which is unchecked and sealed. 
 The specification requires every implementation to state these.
 
 - **Not released.** See the box at the top.
-- **No protection against a compromised application process.** The keys are in that process.
+- **What it protects against, and how well** (spec [§2](../../docs/02-spec-v0.1.md)):
+  - Someone who obtains a backup, a stolen disk, a dump or a detached replica volume gets ciphertext without keys. This is the main protection.
+  - Someone who can read the tables gets ciphertext too, **except that a column with a blind index leaks which rows share a value**. The longer the truncation length you declare, the fewer collisions there are to blur that: in spec §7.4's example, a match at 16 bits is the same plaintext about 66% of the time, and at 14 bits about 33%.
+  - Ciphertext moved to another column fails to decrypt, because the column is bound into every envelope. **Ciphertext moved to another tenant fails only if you supply the tenant id** (`withTenant`), and **to another row of the same column only if you bind the row id** (`withRow`); both are optional. The specification rates protection against such moves as none below conformance level L3.
+  - One tenant's key exposes only that tenant's data, provided each tenant has its own key.
+- **What it does not protect against:**
+  - **A compromised application process.** No protection: the keys are in that process, so anything the application can read, an attacker there can read.
+  - **Someone watching queries over time**: query logs, slow-query logs, the database's buffer cache or its replication logs. Weak protection; see the bullet on logs below.
+  - **Someone watching result sizes and access patterns** across many queries. Weak protection: this is the leakage-abuse setting the specification describes in §7.4.
+  - **Someone who can submit values and see their blind indexes**, such as through a registration or search endpoint. Degraded protection: such an endpoint is a chosen-plaintext oracle for the index (spec §7.5).
 - **Storage overhead is real.** Every envelope is 111 bytes plus the plaintext: an 11-byte SSN becomes 122 bytes.
 - **Your key service becomes a hard dependency of every read.** A KMS outage fails every query on an encrypted field once the cached keys age out. The envelope provider's degradation mode is fail-closed: what the cache cannot serve is `KEY_UNAVAILABLE`.
 - **Cached keys are exposed in memory.** The DEK cache holds plaintext keys, which memory dumps, core files and swap can capture. The core zeroes a key when it evicts it, but cannot lock memory against swapping.
@@ -148,7 +157,7 @@ The specification requires every implementation to state these.
 
 ## Contributing to this core
 
-It is built in stages (`docs/27` §8). S1–S7 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, blind indexes, the testing artifact with the conformance report, and the cross-implementation job. Next is S8: `docs/27` brought up to date with what was built, and the divergence report.
+It was built in stages (`docs/27` §8), and all eight are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, blind indexes, the testing artifact with the conformance report, the cross-implementation job, and `docs/27` brought up to date with what was built, with the divergence report ([`docs/28`](../../docs/28-java-core-report.md)). Next is the Hibernate adapter (`docs/26` §5 item 3).
 
 ```
 ./gradlew build          # compile (-Xlint:all -Werror) and run every test
