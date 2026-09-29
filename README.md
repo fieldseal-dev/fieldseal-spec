@@ -112,7 +112,7 @@ The specification is written in RFC 2119 language with the justification for eve
 |---|---|
 | The cores agree with the pinned vectors | `vectors/`: 161 vectors, 193 results per core, hashed in `MANIFEST.json`. `python-core`, `typescript-core` and `java-core` jobs; the TypeScript core also runs every vector through its async companions (364 results). |
 | Every core produces identical result ids | `cross-core-result-ids`: Python, TypeScript and Java |
-| Each core decrypts what the other core and both adapters wrote | `cross-produce` / `cross-consume`: every producer encrypts a shared 16-case corpus through its production path; every consumer decrypts every producer, self-pairs included (`docs/14` §3). |
+| Each core decrypts what the other cores and both adapters wrote | `cross-produce` / `cross-consume`: every producer encrypts a shared 16-case corpus through its production path; every consumer decrypts every producer, self-pairs included (`docs/14` §3). |
 | Adapters render logical types identically | `vectors/codec/`: 124 vectors, both directions, refusals included; run by both adapters against SQLite and PostgreSQL. |
 | Adapters contain no cryptography | A CI grep of each adapter's `src/` for crypto imports fails the build on a hit (spec §11.3). |
 | The vectors are reproducible | `vectors-reproducible` regenerates the suite from `tools/vector-gen` and diffs; `unicode-tables` regenerates the vendored UCD tables with `--check`. |

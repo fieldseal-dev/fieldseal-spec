@@ -3,11 +3,11 @@
 Field-level encryption for JVM applications, with a format that other languages can read.
 
 > **Under construction: not released.**
-> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, passes every shared test vector, and emits the conformance report CI compares with the other cores'. The cross-implementation checks are still to come ([`docs/27`](../../docs/27-core-java.md) §8, stages S7–S8). Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
+> The client encrypts, decrypts and rotates values with the three key providers, derives blind indexes, passes every shared test vector, and emits the conformance report CI compares with the other cores'. CI's cross-implementation job has it decrypt what the Python and TypeScript cores and both adapters write, and has them decrypt what it writes ([`docs/27`](../../docs/27-core-java.md) §8, stage S7). The as-built record, stage S8, is still to come. Nothing is published to Maven Central. When it ships, it will ship as an experimental pre-1.0 release under the same terms as the other cores: not independently reviewed, not for production data ([PRD §8](../../docs/01-prd.md)).
 
 This library encrypts individual database values, one field at a time, into a self-describing **envelope**: bytes in, bytes out. Every envelope is bound to the table and column it belongs to, and to the tenant and row when you supply them, so a value copied to the wrong place fails to decrypt instead of decrypting silently.
 
-It implements the [Fieldseal specification](../../docs/02-spec-v0.1.md). Envelopes it writes are meant to be readable by the Python and TypeScript cores, and theirs by it; cross-implementation CI checks that in both directions once the core is complete. Most applications will not call this core directly: they will use the Hibernate adapter, which is planned right after it.
+It implements the [Fieldseal specification](../../docs/02-spec-v0.1.md). Envelopes it writes are meant to be readable by the Python and TypeScript cores, and theirs by it; cross-implementation CI checks that in both directions. Most applications will not call this core directly: they will use the Hibernate adapter, which is planned right after it.
 
 ## Features
 
@@ -148,13 +148,15 @@ The specification requires every implementation to state these.
 
 ## Contributing to this core
 
-It is built in stages (`docs/27` §8). S1–S6 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, blind indexes, and the testing artifact with the conformance report. Next is S7, the cross-implementation job.
+It is built in stages (`docs/27` §8). S1–S7 are done: the Gradle scaffold and CI, an audit of the JDK and BouncyCastle against the test vectors, the envelope codec, registry and error types, the crypto pipeline, key providers and client, blind indexes, the testing artifact with the conformance report, and the cross-implementation job. Next is S8: `docs/27` brought up to date with what was built, and the divergence report.
 
 ```
 ./gradlew build          # compile (-Xlint:all -Werror) and run every test
 ./gradlew -q vectors     # the conformance report (docs/14 §4) on stdout; exit 1 on any failure
 ./gradlew memoryProbe    # informational: the largest byte[] this JVM allocates (~6 GiB heap)
+./gradlew -q crossProduce --args="--out <file>"                         # the cross job's producer leg
+./gradlew -q crossConsume --args="<cross-*.json …> --verdict <file>"    # its consumer leg
 python scripts/bite_checks.py   # each recorded mutation must turn its tests red (JAVA_HOME set)
 ```
 
-CI runs these in the `java-core` and `java-memory-probe` jobs of `.github/workflows/conformance.yml`. This core is built without reading the other cores' source: the reading path is at the top of `docs/27`.
+CI runs these in the `java-core` and `java-memory-probe` jobs of `.github/workflows/conformance.yml`, and the two cross legs in `cross-produce` and `cross-consume`. This core is built without reading the other cores' source: the reading path is at the top of `docs/27`.

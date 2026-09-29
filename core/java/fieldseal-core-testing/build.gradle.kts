@@ -41,6 +41,25 @@ tasks.register<JavaExec>("vectors") {
     environment.remove(armProvisional)
 }
 
+// The cross job (docs/14 §3; docs/27 §8, S7). `./gradlew -q crossProduce --args="--out <file>"`
+// and `./gradlew -q crossConsume --args="<cross-*.json …> --verdict <file>"`, with relative paths
+// taken from core/java. Both run in a process that is not armed: the task removes both
+// variables, so encrypt_with_materials is refused there (docs/08 §6), and the producer refuses to
+// start if FIELDSEAL_TEST_MODE=1 reaches it anyway (CrossProduce.refuseArmed).
+listOf("crossProduce" to "CrossProduce", "crossConsume" to "CrossConsume").forEach { (task, main) ->
+    tasks.register<JavaExec>(task) {
+        group = "verification"
+        description = "The cross job's ${main.removePrefix("Cross").lowercase()} leg (docs/14 §3)."
+        classpath = sourceSets.test.get().runtimeClasspath
+        mainClass = "dev.fieldseal.core.harness.$main"
+        workingDir = rootDir
+        systemProperty("fieldseal.vectors", rootDir.resolve("../../vectors").canonicalPath)
+        systemProperty("fieldseal.version", project.version.toString())
+        environment.remove(testMode)
+        environment.remove(armProvisional)
+    }
+}
+
 // The platform-maximum probe (docs/27 §6.4) allocates arrays of nearly 2 GiB, so it is kept
 // out of `build` and runs on its own: `./gradlew memoryProbe`. Informational, never a gate.
 tasks.test {
