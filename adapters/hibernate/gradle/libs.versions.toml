@@ -1,0 +1,23 @@
+# Versions resolved from Maven Central on 2026-09-29, not from memory.
+[versions]
+# The latest 7.x Final on 2026-09-29 (8.0 is at Beta3). docs/04 §5 was verified against 7.4.5.
+hibernate = "7.4.11.Final"
+# The version hibernate-core 7.4.11 declares (runtime scope there). Compile-only here: the
+# adapter reads an attribute's Java type through UserTypeCreationContext.getMemberDetails().
+hibernate-models = "1.1.2"
+# Test-only below this line: none of these ships in the published artifact.
+junit = "5.14.4"
+jackson = "2.22.3"
+h2 = "2.5.252"
+postgresql = "42.7.13"
+
+[libraries]
+hibernate-core = { module = "org.hibernate.orm:hibernate-core", version.ref = "hibernate" }
+hibernate-models = { module = "org.hibernate.models:hibernate-models", version.ref = "hibernate-models" }
+fieldseal-core = { module = "dev.fieldseal:fieldseal-core", version = "0.0.0-SNAPSHOT" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+h2 = { module = "com.h2database:h2", version.ref = "h2" }
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }

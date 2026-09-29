@@ -132,7 +132,8 @@ core/
   dotnet/  go/         placeholders
 adapters/
   django/  prisma/     the two released adapters
-  sqlalchemy/  hibernate/  efcore/  gorm/  typeorm/   placeholders
+  hibernate/           the Phase 2 adapter, in progress (docs/29)
+  sqlalchemy/  efcore/  gorm/  typeorm/   placeholders
 tools/
   vector-gen/          emits the vector suite; imports neither core
   ucd-gen/             regenerates the vendored Unicode 17.0.0 tables

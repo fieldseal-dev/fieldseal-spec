@@ -50,7 +50,7 @@ env:
   # from it and checks it against the files `cross-produce` actually uploaded.
   # A matrix cannot read `env`, so `cross-produce`'s `impl` list is the one
   # other copy, and that check is what keeps the two from drifting.
-  CROSS_PRODUCERS: "python typescript java django prisma"
+  CROSS_PRODUCERS: "python typescript java django prisma hibernate"
   # The Java core's JDK (docs/27 §1): floor 21, pinned to one patch on push
   # and PR. `java-core` floats to the latest 21 on the nightly (docs/14 §5).
   JAVA_VERSION: "21.0.12"
@@ -481,6 +481,82 @@ jobs:
             }
             process.exit(bad);'
 
+  # WS-N (docs/29): the Hibernate adapter over the Java core in this checkout,
+  # on H2 and Postgres. Both, as for the other adapters: the column is
+  # VARBINARY on one and bytea on the other, and a literal compared with bytea
+  # is coerced on Postgres (docs/29 §3.3).
+  hibernate-adapter:
+    name: Hibernate adapter (L1+L2+L3) on H2 and Postgres
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [h2, postgres]
+    services:
+      postgres:
+        image: postgres:17@sha256:0b657ff48d7f76a1e907f381b1693eb4f2bf54c1d2df4feb6743d7dc601768dd
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fieldseal_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    defaults:
+      run:
+        working-directory: adapters/hibernate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ github.event_name == 'schedule' && '21' || env.JAVA_VERSION }}
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+
+      # Compiles with -Xlint:all -Werror (the core is an included build, so it
+      # is compiled from this checkout), then runs the suite: the Hibernate
+      # behaviour pins, the value path, the refusals, the finder, the startup
+      # checks, the codec/ family and the cross producer's own consumer.
+      - name: Build and test
+        env:
+          FIELDSEAL_TEST_DB: ${{ matrix.db }}
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: fieldseal_test
+        run: ./gradlew build --console=plain
+
+      # docs/14 §4: the coverage matrix is parsed out of the README and each
+      # row is scored against this run's JUnit results; a row naming a test
+      # that did not run, or claiming behaviour with none, fails the step.
+      - name: Conformance report (docs/14 §4)
+        env:
+          FIELDSEAL_TEST_DB: ${{ matrix.db }}
+        run: python3 scripts/coverage_report.py > conformance-hibernate-adapter.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: conformance-hibernate-adapter-${{ matrix.db }}
+          path: adapters/hibernate/conformance-hibernate-adapter.json
+
+      # AD-1 (spec §11.3): zero cryptography in an adapter. The JVM's crypto
+      # lives in javax.crypto and java.security, BouncyCastle and Tink are the
+      # third-party routes, and the core's internal packages are not exported
+      # but are reachable on the class path. Any mention, not only an import,
+      # so a fully qualified call is caught too.
+      - name: No cryptographic code in the adapter
+        run: |
+          if grep -rnE "(javax\.crypto|java\.security|org\.bouncycastle|com\.google\.crypto|dev\.fieldseal\.core\.internal)" src/main; then
+            echo "AD-1 violation: an adapter must contain no cryptographic code (spec §11.3)."
+            exit 1
+          fi
+          echo "AD-1 holds: no cryptographic references in adapters/hibernate/src/main."
+
   demo:
     name: "M5 demo: two stacks, one Postgres"
     runs-on: ubuntu-24.04
@@ -844,7 +920,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        impl: [python, typescript, java, django, prisma]
+        impl: [python, typescript, java, django, prisma, hibernate]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -956,6 +1032,26 @@ jobs:
         if: matrix.impl == 'prisma'
         working-directory: adapters/prisma
         run: npm run --silent cross:produce -- --out ../../cross-prisma.json
+
+      # The Hibernate adapter as a producer (docs/29 §8): rows written through
+      # the real session path, the columns read back over JDBC. Its codec, its
+      # binary storage and its context (@FieldsealTable, @Encrypted, the
+      # session's tenant identifier) are the adapter's, and no core test sees
+      # them. Produced from H2; the Postgres leg of hibernate-adapter runs the
+      # same producer through CrossProduceTest.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: matrix.impl == 'hibernate'
+        with:
+          distribution: temurin
+          java-version: ${{ github.event_name == 'schedule' && '21' || env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        if: matrix.impl == 'hibernate'
+        with:
+          cache-provider: basic
+      - name: Produce (hibernate)
+        if: matrix.impl == 'hibernate'
+        working-directory: adapters/hibernate
+        run: ./gradlew -q crossProduce --args="--out ../../cross-hibernate.json"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
