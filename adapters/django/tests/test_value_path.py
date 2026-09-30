@@ -219,8 +219,10 @@ class TestBackendDivergence:
         from django.db.models.functions import Cast
 
         field = Patient._meta.get_field("note")
+        # `Value(attr, output_field=field)` is the literal `bulk_update`
+        # builds, and the only kind that encrypts (#242 review).
         field._assert_literal_expression(
-            Cast(Value("after"), output_field=TextField()))
+            Cast(Value("after", output_field=field), output_field=TextField()))
 
     def test_a_cast_wrapping_a_column_reference_is_still_refused(self):
         from django.db.models import F, TextField
