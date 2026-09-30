@@ -47,7 +47,7 @@
 | Key versions, one active version, lookup by `key_id` | In both cores (`KeyDirectory`, `EnvelopeKeyProvider`) |
 | `warm()` and the §5.5 cache | In both cores |
 | `rotate()` — one envelope to the active version | In both cores |
-| The re-encryption sweep | Not built: `tools/backfill` is a placeholder; [`docs/15-tooling.md`](15-tooling.md) §1 is its design |
+| The re-encryption sweep | Not built. [`docs/15-tooling.md`](15-tooling.md) §1 is its design and `tools/backfill/PROCEDURE.md` its procedure (2026-09-30); no frontend implements it yet |
 | Proving a version unreferenced | Not built: would be part of the sweep |
 | Key destruction | Not offered by either core; §8.2 constrains any that is added |
 

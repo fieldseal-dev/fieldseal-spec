@@ -74,7 +74,8 @@ tools/
   brand/                  generates the logo mark, favicons and touch icon in
                           www/static/ from one geometry; never hand-edit those files
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
-  backfill/               resumable migration tooling (placeholder)
+  backfill/               resumable migration tooling: PROCEDURE.md, the shared procedure
+                          every frontend implements (version 1); no frontend built yet
 bench/                    published benchmarks and migration cost model
 docs/
   00-research-memo.md     prior art and gap analysis
