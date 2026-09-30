@@ -15,11 +15,13 @@ ordinary `create()` of the same value stores.
 from __future__ import annotations
 
 import pytest
+from django.db import connection
 from django.db.models import Value
 
 from fieldseal_django.errors import FieldsealNotSupported
+from fieldseal_django.fields import index_siblings
 
-from .models import Patient
+from .models import Patient, TwoIndexColumns
 from .test_value_path import raw_column
 
 pytestmark = pytest.mark.django_db
@@ -105,12 +107,18 @@ class TestUpdate:
         assert _index(p.pk, "nickname_bidx") is None
 
     def test_an_expression_is_refused_on_an_indexed_column(self):
-        """A `Value` is a literal the column itself accepts, but the index
-        cannot be derived from an expression, and writing the column alone
-        is the defect."""
+        """Even a `Value` that would encrypt, one carrying the column as its
+        `output_field`, is refused on an indexed column: the index cannot be
+        derived from an expression, and writing the column alone is the
+        defect. A bare `Value` is refused a step earlier, for not encrypting
+        at all."""
         p = Patient.objects.create(email="a@example.com")
         before = (bytes(raw_column(p.pk, "email")), _index(p.pk))
+        field = Patient._meta.get_field("email")
         with pytest.raises(FieldsealNotSupported, match="blind index"):
+            Patient.objects.filter(pk=p.pk).update(
+                email=Value("b@example.com", output_field=field))
+        with pytest.raises(FieldsealNotSupported, match="output_field"):
             Patient.objects.filter(pk=p.pk).update(email=Value("b@example.com"))
         assert (bytes(raw_column(p.pk, "email")), _index(p.pk)) == before
 
@@ -163,3 +171,146 @@ class TestBulkCreateUpsert:
             unique_fields=["id"])
         assert _found("b@example.com") == [p.pk]
         assert _index(p.pk) == _reference_index("b@example.com")
+
+
+def _stored(p: Patient) -> tuple[bytes, bytes | None]:
+    return bytes(raw_column(p.pk, "email")), _index(p.pk)
+
+
+class TestReviewRound1:
+    """The #242 review: each finding the reviewer ran, as a test."""
+
+    # 1. An expression as the instance attribute.
+    def test_bulk_update_refuses_an_expression_attribute_on_an_indexed_column(self):
+        """It was indexed by its repr, and its literal stored as plaintext."""
+        p = Patient.objects.get(pk=Patient.objects.create(
+            email="a@example.com").pk)
+        before, attr = _stored(p), p.email_bidx
+        p.email = Value("b@example.com")
+        with pytest.raises(FieldsealNotSupported, match="expression"):
+            Patient.objects.bulk_update([p], ["email"])
+        assert _stored(p) == before
+        assert p.email_bidx == attr
+
+    def test_a_caller_built_value_is_refused_rather_than_stored_as_plaintext(self):
+        """`Value("x")` resolves to a `CharField`, so Django sent its literal
+        to the database unencrypted. Unindexed columns, both paths."""
+        p = Patient.objects.get(pk=Patient.objects.create(
+            email="a@example.com", note="before").pk)
+        before = bytes(raw_column(p.pk, "note"))
+        with pytest.raises(FieldsealNotSupported, match="output_field"):
+            Patient.objects.filter(pk=p.pk).update(note=Value("secret"))
+        p.note = Value("secret")
+        with pytest.raises(FieldsealNotSupported, match="expression"):
+            Patient.objects.bulk_update([p], ["note"])
+        # Still usable: the refusal came before `bulk_update`'s `atomic()`.
+        assert bytes(raw_column(p.pk, "note")) == before
+
+    def test_the_field_itself_refuses_a_value_without_its_output_field(self):
+        """The layer under the queryset, for a manager that is not ours."""
+        field = Patient._meta.get_field("note")
+        with pytest.raises(FieldsealNotSupported, match="output_field"):
+            field._assert_literal_expression(Value("secret"))
+        field._assert_literal_expression(Value("x", output_field=field))
+        field._assert_literal_expression(Value(None))
+
+    # 2. Positional `update_fields`.
+    def test_a_positional_update_fields_gets_the_index_too(self):
+        p = Patient.objects.create(email="a@example.com")
+        Patient.objects.bulk_create(
+            [Patient(pk=p.pk, email="b@example.com")],
+            None, False, True, ["email"], ["id"])
+        assert _found("b@example.com") == [p.pk]
+        assert _index(p.pk) == _reference_index("b@example.com")
+
+    # 3. Two index columns over one source.
+    def _two(self, pk: int) -> tuple[bytes, bytes]:
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT email_bidx, email_bidx2 FROM "
+                + connection.ops.quote_name(TwoIndexColumns._meta.db_table)
+                + " WHERE id = %s", [pk])
+            a, b = cur.fetchone()
+        return bytes(a), bytes(b)
+
+    def _two_reference(self, email: str) -> tuple[bytes, bytes]:
+        ref = TwoIndexColumns.objects.create(email=email)
+        out = self._two(ref.pk)
+        ref.delete()
+        assert out[0] == out[1]
+        return out
+
+    def test_both_index_columns_are_known(self):
+        assert [f.name for f in index_siblings(TwoIndexColumns)["email"]] == [
+            "email_bidx", "email_bidx2"]
+
+    def test_update_writes_both_index_columns(self):
+        t = TwoIndexColumns.objects.create(email="a@example.com")
+        TwoIndexColumns.objects.filter(pk=t.pk).update(email="b@example.com")
+        assert self._two(t.pk) == self._two_reference("b@example.com")
+
+    def test_bulk_update_writes_both_index_columns(self):
+        t = TwoIndexColumns.objects.create(email="a@example.com")
+        t.email = "b@example.com"
+        TwoIndexColumns.objects.bulk_update([t], ["email"])
+        assert self._two(t.pk) == self._two_reference("b@example.com")
+
+    def test_save_with_update_fields_must_name_both(self):
+        t = TwoIndexColumns.objects.create(email="a@example.com")
+        before = self._two(t.pk)
+        t.email = "b@example.com"
+        with pytest.raises(FieldsealNotSupported, match="'email_bidx2'"):
+            t.save(update_fields=["email", "email_bidx"])
+        with pytest.raises(FieldsealNotSupported, match="'email_bidx'"):
+            t.save(update_fields=["email", "email_bidx2"])
+        assert self._two(t.pk) == before
+        t.save(update_fields=["email", "email_bidx", "email_bidx2"])
+        assert self._two(t.pk) == self._two_reference("b@example.com")
+
+    # 4. `save()` after `only()` / `defer()`.
+    @pytest.mark.parametrize("load", [
+        lambda qs: qs.only("email"), lambda qs: qs.defer("email_bidx")])
+    def test_a_deferred_load_is_named_in_the_refusal(self, load):
+        """Django restricts the save to the loaded fields itself; the caller
+        wrote no `update_fields`, so the message must not say they did."""
+        pk = Patient.objects.create(email="a@example.com").pk
+        before = (bytes(raw_column(pk, "email")), _index(pk))
+        p = load(Patient.objects).get(pk=pk)
+        p.email = "b@example.com"
+        with pytest.raises(FieldsealNotSupported) as e:
+            p.save()
+        assert "only()" in str(e.value) and "defer()" in str(e.value)
+        assert "update_fields" not in str(e.value)
+        assert (bytes(raw_column(pk, "email")), _index(pk)) == before
+
+    def test_an_explicit_update_fields_keeps_its_own_message(self):
+        p = Patient.objects.create(email="a@example.com")
+        with pytest.raises(FieldsealNotSupported, match="update_fields"):
+            p.save(update_fields=["email"])
+
+    # 6. Instances are left as they were when the call fails.
+    def test_a_call_django_rejects_leaves_the_instances_alone(self):
+        good = Patient.objects.get(pk=Patient.objects.create(
+            email="a@example.com").pk)
+        attr = good.email_bidx
+        good.email = "b@example.com"
+        with pytest.raises(ValueError):
+            Patient.objects.bulk_update(
+                [good, Patient(email="c@example.com")], ["email"])
+        assert good.email_bidx == attr
+
+    def test_a_refused_value_leaves_earlier_instances_alone(self):
+        good = Patient.objects.get(pk=Patient.objects.create(
+            email="a@example.com").pk)
+        bad = Patient.objects.get(pk=Patient.objects.create(
+            email="c@example.com").pk)
+        attr = good.email_bidx
+        good.email = "b@example.com"
+        bad.email = Value("d@example.com")
+        with pytest.raises(FieldsealNotSupported):
+            Patient.objects.bulk_update([good, bad], ["email"])
+        assert good.email_bidx == attr
+
+    # 8. The mapping is built once per model.
+    def test_the_sibling_mapping_is_cached_per_model(self):
+        assert index_siblings(Patient) is index_siblings(Patient)

@@ -17,6 +17,7 @@ the instance and so can only run there.
 from __future__ import annotations
 
 import base64
+import functools
 from typing import TYPE_CHECKING, Any
 
 from django.core.exceptions import ValidationError
@@ -311,6 +312,25 @@ class Encrypted(models.Field):
         from django.db.models.functions import Cast
 
         if isinstance(expr, Value):
+            # Only a `Value` whose `output_field` is this field encrypts:
+            # `Value.as_sql` prepares its literal through its own
+            # `output_field`, and that is how Django's `bulk_update`, which
+            # builds `Value(attr, output_field=field)`, reaches
+            # `get_db_prep_value`. A `Value("x")` a caller builds resolves to
+            # a `CharField` instead and its literal went to the database as
+            # it was: plaintext in the column, and a row that then failed to
+            # read (#242 review, measured on `update()` and `bulk_update()`).
+            # `Value(None)` is SQL NULL whatever its field, and is what a
+            # `Case` with no default carries.
+            if (expr.value is not None and getattr(
+                    expr, "_output_field_or_none", None) is not self):
+                raise FieldsealNotSupported(
+                    f"{self.model.__name__}.{self.name} is encrypted, and "
+                    "this `Value(...)` does not carry the column as its "
+                    "`output_field`, so Django would send its literal to the "
+                    "database without encrypting it. Pass the value itself, "
+                    "not a `Value` wrapping it (spec §10.2)."
+                )
             return
         if isinstance(expr, Case):
             # `case.condition` is deliberately NOT inspected. A `When`
@@ -781,36 +801,64 @@ class EncryptedIn(_IndexedLookup):
 _INDEXED_LOOKUPS = {"exact": EncryptedExact, "in": EncryptedIn}
 
 
-def index_siblings(model: Any) -> dict[str, EncryptedIndex]:
-    """Each indexed encrypted column's name, mapped to its index column."""
-    return {f.source: f for f in model._meta.concrete_fields
-            if isinstance(f, EncryptedIndex)}
+@functools.cache
+def index_siblings(model: Any) -> dict[str, tuple[EncryptedIndex, ...]]:
+    """Each indexed encrypted column's name, mapped to its index columns.
+
+    A tuple, because nothing stops a model declaring two index columns over
+    one source, and each is a column that goes stale on its own. Cached per
+    model class: the fields are fixed once the class is prepared, and the
+    `pre_save` receiver asks on every `save(update_fields=...)` of every
+    model in the project.
+    """
+    out: dict[str, list[EncryptedIndex]] = {}
+    for f in model._meta.concrete_fields:
+        if isinstance(f, EncryptedIndex):
+            out.setdefault(f.source, []).append(f)
+    return {source: tuple(fields) for source, fields in out.items()}
 
 
 def refuse_unindexed_update_fields(
-        model: Any, update_fields: Any, method: str) -> None:
-    """`save(update_fields=...)` naming an indexed column must name its
-    index column too.
+        model: Any, update_fields: Any, deferred: bool) -> None:
+    """A save restricted to some fields, naming an indexed column, must name
+    every index column of it too.
 
     Django calls `pre_save` only for the fields `update_fields` names, and
     the set cannot be extended from a signal, so the adapter cannot add the
     missing half. Writing the column alone leaves an index that does not
     match its ciphertext: the row is not found by its value, and nothing
     raises (#240; spec §10.2).
+
+    `deferred` says the restriction is Django's own: `save()` on an instance
+    loaded with `only()` or `defer()` saves the loaded fields only. The
+    caller wrote no `update_fields`, so the message must not tell them to
+    remove it.
     """
     names = set(update_fields)
-    for source, sibling in index_siblings(model).items():
+    for source, siblings in index_siblings(model).items():
         if source not in names:
             continue
-        if sibling.name not in names and sibling.attname not in names:
+        for sibling in siblings:
+            if sibling.name in names or sibling.attname in names:
+                continue
+            why = (
+                "An encrypted column and its blind index are written "
+                "together: Django derives the index only for a field it is "
+                "saving, so this write would leave the index pointing at a "
+                "different value than the ciphertext holds, and an equality "
+                "lookup would silently miss the row (spec §10.2)."
+            )
+            if deferred:
+                raise FieldsealNotSupported(
+                    f"`save()` on a {model.__name__} loaded with `only()` "
+                    "or `defer()` saves only the loaded fields, and those "
+                    f"include {source!r} without {sibling.name!r}. {why} "
+                    f"Load {sibling.name!r} as well, or load the instance "
+                    "without `only()`/`defer()`."
+                )
             raise FieldsealNotSupported(
-                f"`{method}(update_fields=[...])` on {model.__name__} names "
-                f"{source!r} without {sibling.name!r}. An encrypted column "
-                "and its blind index are written together: Django derives "
-                "the index only for a field `update_fields` names, so this "
-                "write would leave the index pointing at a different value "
-                "than the ciphertext holds, and an equality lookup would "
-                "silently miss the row (spec §10.2). Add "
+                f"`save(update_fields=[...])` on {model.__name__} names "
+                f"{source!r} without {sibling.name!r}. {why} Add "
                 f"{sibling.name!r}, or call `save()` without `update_fields`."
             )
 

@@ -233,15 +233,23 @@ def _install_manager(sender: Any, **kwargs: Any) -> None:
 
 
 @receiver(pre_save)
-def _refuse_unindexed_update_fields(sender: Any, update_fields: Any = None,
+def _refuse_unindexed_update_fields(sender: Any, instance: Any = None,
+                                    update_fields: Any = None,
                                     raw: bool = False, **kwargs: Any) -> None:
-    """`save(update_fields=...)` naming an indexed column without its index
-    column is refused before the UPDATE is built (#240)."""
+    """A save restricted to some fields, naming an indexed column without its
+    index column, is refused before the UPDATE is built (#240).
+
+    Connected without a sender, so it runs for every model in the project;
+    `index_siblings` is cached per model and empty for one with no index.
+    """
     if not update_fields or raw:
         return
-    from .fields import refuse_unindexed_update_fields
+    from .fields import index_siblings, refuse_unindexed_update_fields
 
-    refuse_unindexed_update_fields(sender, update_fields, "save")
+    if not index_siblings(sender):
+        return
+    deferred = bool(instance is not None and instance.get_deferred_fields())
+    refuse_unindexed_update_fields(sender, update_fields, deferred)
 
 
 @receiver(setting_changed)

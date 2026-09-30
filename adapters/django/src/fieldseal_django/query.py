@@ -976,8 +976,31 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     def update(self, **kwargs: Any) -> int:
         if self._verifying:
             self._refuse_sql_answered("update")
+        self._refuse_unsafe_expressions(kwargs)
         updated: int = super().update(**self._with_derived_indexes(kwargs))
         return updated
+
+    def _refuse_unsafe_expressions(self, kwargs: dict[str, Any]) -> None:
+        """Run the field's expression refusal before the statement starts.
+
+        The field refuses the same expressions when the statement is
+        compiled, but `QuerySet.update` compiles inside
+        `mark_for_rollback_on_error`, so a refusal raised there leaves the
+        caller's transaction unusable. Raised here, it is an ordinary error.
+        """
+        from django.core.exceptions import FieldDoesNotExist
+
+        from .fields import Encrypted
+
+        for name, value in kwargs.items():
+            if not hasattr(value, "resolve_expression"):
+                continue
+            try:
+                field = self.model._meta.get_field(name)
+            except FieldDoesNotExist:
+                continue
+            if isinstance(field, Encrypted):
+                field._assert_literal_expression(value)
 
     def _with_derived_indexes(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Add the index value for each indexed encrypted column `update()`
@@ -997,16 +1020,17 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         if self._fieldseal_indexes_derived:
             return kwargs
         out = dict(kwargs)
-        for source, sibling in index_siblings(self.model).items():
+        for source, siblings in index_siblings(self.model).items():
             if source not in kwargs:
                 continue
-            if sibling.name in kwargs or sibling.attname in kwargs:
-                raise FieldsealNotSupported(
-                    f"`update({source}=..., {sibling.name}=...)` sets an "
-                    "encrypted column and its blind index in one call. The "
-                    f"index is derived from {source!r} and written with it; "
-                    f"drop {sibling.name!r}."
-                )
+            for sibling in siblings:
+                if sibling.name in kwargs or sibling.attname in kwargs:
+                    raise FieldsealNotSupported(
+                        f"`update({source}=..., {sibling.name}=...)` sets an "
+                        "encrypted column and its blind index in one call. "
+                        f"The index is derived from {source!r} and written "
+                        f"with it; drop {sibling.name!r}."
+                    )
             value = kwargs[source]
             if hasattr(value, "resolve_expression"):
                 raise FieldsealNotSupported(
@@ -1019,7 +1043,8 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
                     "would silently miss the row (spec §10.2). Pass the "
                     "value itself."
                 )
-            out[sibling.name] = sibling.derive(value)
+            for sibling in siblings:
+                out[sibling.name] = sibling.derive(value)
         return out
 
     def bulk_update(self, objs: Any, fields: Any,
@@ -1031,31 +1056,82 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         statement or carried the instance's stale attribute (#240). Here the
         index is derived from each instance's current value, set on the
         instance, and added to the statement.
+
+        Every index is derived before any instance is touched, and the
+        instances are put back as they were if the write raises, so a
+        derivation that refuses object N, or a call Django rejects, leaves
+        no instance carrying an index that was never stored.
         """
-        from .fields import index_siblings
+        from django.core.exceptions import FieldDoesNotExist
+
+        from .fields import Encrypted, index_siblings
 
         objs = tuple(objs)
         fields = list(fields)
         named = set(fields)
-        for source, sibling in index_siblings(self.model).items():
+        # Django passes an attribute that is already an expression straight
+        # into the statement. On an encrypted column that is refused here,
+        # before anything runs: the field refuses it too, but from inside
+        # `bulk_update`'s own `atomic()`, which would leave the caller's
+        # transaction unusable. An unknown name is Django's to report.
+        for name in fields:
+            try:
+                field = self.model._meta.get_field(name)
+            except FieldDoesNotExist:
+                continue
+            if not isinstance(field, Encrypted):
+                continue
+            for obj in objs:
+                value = getattr(obj, field.attname)
+                if hasattr(value, "resolve_expression"):
+                    raise FieldsealNotSupported(
+                        f"`bulk_update()` found a {type(value).__name__} "
+                        f"expression as {self.model.__name__}.{name} on an "
+                        "instance. The column is encrypted, and its blind "
+                        "index, where it has one, is derived from the value "
+                        "in Python; an expression would reach the database "
+                        "unencrypted and has no value to derive from "
+                        "(spec §10.2). Assign the value itself."
+                    )
+        derived: list[tuple[Any, str, Any]] = []
+        for source, siblings in index_siblings(self.model).items():
             if source not in named:
                 continue
             for obj in objs:
-                setattr(obj, sibling.attname,
-                        sibling.derive(getattr(obj, source)))
-            if sibling.name not in named:
-                fields.append(sibling.name)
+                value = getattr(obj, source)
+                for sibling in siblings:
+                    derived.append(
+                        (obj, sibling.attname, sibling.derive(value)))
+            for sibling in siblings:
+                if sibling.name not in named:
+                    fields.append(sibling.name)
+        missing = object()
+        before = [(obj, attname, obj.__dict__.get(attname, missing))
+                  for obj, attname, _ in derived]
+        for obj, attname, value in derived:
+            setattr(obj, attname, value)
         # Django's `bulk_update` ends in `update()` on a clone of this
         # queryset, which must not try to derive from the `Case` expressions.
         self._fieldseal_indexes_derived = True
         try:
             updated: int = super().bulk_update(
                 objs, fields, batch_size=batch_size)
+        except BaseException:
+            for obj, attname, old in before:
+                if old is missing:
+                    obj.__dict__.pop(attname, None)
+                else:
+                    setattr(obj, attname, old)
+            raise
         finally:
             self._fieldseal_indexes_derived = False
         return updated
 
-    def bulk_create(self, objs: Any, *args: Any, **kwargs: Any) -> Any:
+    def bulk_create(self, objs: Any, batch_size: int | None = None,
+                    ignore_conflicts: bool = False,
+                    update_conflicts: bool = False,
+                    update_fields: Any = None,
+                    unique_fields: Any = None) -> Any:
         """`bulk_create`; on an upsert, the index is updated with its column.
 
         The insert half derives every index through `pre_save`. With
@@ -1066,15 +1142,22 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         """
         from .fields import index_siblings
 
-        update_fields = kwargs.get("update_fields")
+        # The parameters are named, not `*args, **kwargs`: Django accepts
+        # them positionally, and a positional `update_fields` must not slip
+        # past this.
         if update_fields:
             update_fields = list(update_fields)
             named = set(update_fields)
-            for source, sibling in index_siblings(self.model).items():
-                if source in named and sibling.name not in named:
-                    update_fields.append(sibling.name)
-            kwargs["update_fields"] = update_fields
-        return super().bulk_create(objs, *args, **kwargs)
+            for source, siblings in index_siblings(self.model).items():
+                if source not in named:
+                    continue
+                for sibling in siblings:
+                    if sibling.name not in named:
+                        update_fields.append(sibling.name)
+        return super().bulk_create(
+            objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts,
+            update_conflicts=update_conflicts, update_fields=update_fields,
+            unique_fields=unique_fields)
 
     def delete(self) -> Any:
         if self._verifying:

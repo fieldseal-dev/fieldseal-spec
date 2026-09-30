@@ -195,3 +195,32 @@ class Referral(models.Model):
         on_delete=models.CASCADE,
         limit_choices_to=Q(email="ada@example.com"),
     )
+
+
+TABLE_TWO_INDEXES = "018f3c2e-0000-7000-8000-000000000040"
+COL_TWO_EMAIL = "018f3c2e-0000-7000-8000-000000000041"
+
+
+class TwoIndexColumns(models.Model):
+    """Two index columns over one source (#242 review).
+
+    No system check forbids it, and `pre_save` derives each column on its
+    own, so every path that writes the index outside `pre_save` has to write
+    both as well.
+    """
+
+    email = Encrypted(
+        models.EmailField(),
+        column_uuid=COL_TWO_EMAIL,
+        index=BlindIndex(
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    email_bidx = Encrypted.index_column("email")
+    email_bidx2 = Encrypted.index_column("email")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TWO_INDEXES)

@@ -267,14 +267,19 @@ class TestUpdateAndWhenConditions:
         from django.db.models.functions import Cast
 
         field = Patient._meta.get_field("note")
+        # The literals carry the column as their `output_field`, as Django's
+        # `bulk_update` builds them; a bare `Value("x")` would not encrypt
+        # and is refused (#242 review).
+        x = Value("x", output_field=field)
+        y = Value("y", output_field=field)
         field._assert_literal_expression(
-            Case(When(age__gt=F("id"), then=Value("x")), default=Value("y"),
+            Case(When(age__gt=F("id"), then=x), default=y,
                  output_field=TextField()))
         # ... while a computed *result* is still refused.
         with pytest.raises(FieldsealNotSupported):
             field._assert_literal_expression(
                 Case(When(age__gt=1, then=Cast(F("email"), TextField())),
-                     default=Value("y"), output_field=TextField()))
+                     default=y, output_field=TextField()))
 
 
 class TestClientLifecycle:
