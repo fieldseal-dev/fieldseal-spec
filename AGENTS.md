@@ -58,7 +58,10 @@ core/
 adapters/
   django/  prisma/       built and gated in CI (L1+L2, and L4 for Prisma);
                           zero cryptographic code, asserted by a CI grep
-  sqlalchemy/  hibernate/  efcore/  gorm/  typeorm/   README placeholders (Phase 1+)
+  hibernate/              the first Phase 2 adapter (WS-N, docs/29): L1+L2(a)+L3 over
+                          the Java core, on H2 and Postgres in CI; a cross producer;
+                          zero cryptographic code, asserted by a CI grep
+  sqlalchemy/  efcore/  gorm/  typeorm/   README placeholders (Phase 1+)
 tools/
   vector-gen/             the vector generator (standalone; imports neither core)
   ucd-gen/                generates the vendored Unicode tables for both cores and
@@ -71,7 +74,8 @@ tools/
   brand/                  generates the logo mark, favicons and touch icon in
                           www/static/ from one geometry; never hand-edit those files
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
-  backfill/               resumable migration tooling (placeholder)
+  backfill/               resumable migration tooling: PROCEDURE.md, the shared procedure
+                          every frontend implements (version 1); no frontend built yet
 bench/                    published benchmarks and migration cost model
 docs/
   00-research-memo.md     prior art and gap analysis
@@ -112,6 +116,8 @@ docs/
   27-core-java.md         Java core binding of the architecture, updated as built
   28-java-core-report.md  the Java core's result: isolation and single-implementer
                           statements, divergence/ambiguity list (J-01..J-20)
+  29-adapter-hibernate.md Hibernate adapter design (docs/04 §5 verified against source,
+                          refusals, coverage matrix), updated as built
 www/                      the fieldseal.dev site: Hugo, hand-written templates, no
                           theme and no third-party JavaScript. docs/ is synced in by
                           www/scripts/sync-docs.py; .github/workflows/pages.yml builds
@@ -280,6 +286,8 @@ The test-vector suite is the single source of truth for interoperability. If a v
 **Java core** (`core/java`, JDK ≥ 21, built in the eight stages of `docs/27` §8; result in `docs/28`): `./gradlew build` (compiles with `-Xlint:all -Werror`; runs the module-descriptor pin, the `docs/09` §1 dependency rules with one injected violation per rule, the harness guards, `CapabilitiesTest` (the S2 audit of the JDK and BouncyCastle against the vectors), the codec's and the crypto primitives' unit, wiring and jqwik property tests, `CodecVectorsTest` (`envelope/` parsing), `KdfVectorsTest`, `ContextVectorsTest`, `CommitmentVectorsTest` and `EnvelopeCryptoVectorsTest` (`kdf/`, `context/`, `commitment/`, and `envelope/` in both directions through the primitives), the client's tests (`FieldsealTest`, `ApiBoundaryOrderTest`, `KeyMaterialOwnershipTest`, `SeamWiringTest`, the cache and provider tests), `ClientVectorsTest` (`errors/` through the public client), `EnvelopeVectorsTest` (`envelope/` both ways through the public surface: encrypt through `encrypt_with_materials`, `#decrypt` through `decrypt`), and S5's blind-index tests: `BlindIndexVectorsTest` (`blind-index/`, every shape, stage by stage and through the client), `BlindIndexClientTest`, `NormalizersTest`, `UnicodeAgreementTest` (the vendored Unicode 17.0.0 tables against ICU4J, test-only, exhaustively) and `StrictUtf8GrepTest` (no lossy UTF-8 decode in the main sources)), and S6's: `FieldsealTestingTest` and `MaterialsSeamTest` (the testing artifact's seam and its `FIELDSEAL_TEST_MODE=1` gate) and `ConformanceReportTest` (the report's assembly and its `docs/14` §4 validation), and S7's `CrossTest` (the cross producer against its own consumer, and each consumer guard against a document broken one way), and S8's `LargeContextTest` (70,000-byte `tenant_id` and `row_id`, past the platform HKDF caps G14 names, through every value operation); `check` also runs `unarmedTest`, the unarmed gate in a process without the variable, and `freshJvmTest`, a null client in an armed process that has never built one, `./gradlew -q vectors` (the `docs/14` §4 conformance report on stdout: it walks the pinned suite, runs the vector tests again through the JUnit launcher, 193 results, three out-of-band entries and the test behind the `index-role-use-budget` pinned decision (#225), and exits 1 on a failed result, a backing test missing or red, or a report that does not validate; CI uploads it as `conformance-java`), `./gradlew -q crossProduce --args="--out <file>"` and `./gradlew -q crossConsume --args="<cross-*.json …> --verdict <file>"` (the cross job's two legs, `docs/14` §3, in a process without `FIELDSEAL_TEST_MODE`: the producer encrypts `cross/corpus.json` through production `encrypt` and derives its index cases; the consumer decrypts and re-derives every producer's cases and exits 1 on a failure; relative paths are from `core/java`; CI runs them in `cross-produce` and `cross-consume`), `./gradlew memoryProbe` (informational: the largest `byte[]` the JVM allocates; about 6 GiB of heap), and `python core/java/scripts/bite_checks.py [word …]` (the bite checks: each listed mutation must turn its tests red, after a green control run; not run in CI). The Gradle wrapper pins 9.7.1 by checksum.
 
 **Django adapter** (`adapters/django`): install the core from this checkout, not an index — `pip install -e "./core/python[argon2]"` then `pip install -e "./adapters/django[dev]"`; `python -m pytest tests -q` from `adapters/django`, with `FIELDSEAL_TEST_DB=sqlite|postgres`. CI runs both backends (`docs/12` §8), plus `ruff check src tests` and `mypy --strict src/fieldseal_django`.
+
+**Hibernate adapter** (`adapters/hibernate`, JDK 21; the Java core is an included build, compiled from this checkout): `./gradlew build` (compiles with `-Xlint:all -Werror` and runs the suite on H2; `FIELDSEAL_TEST_DB=postgres` with the `PG*` variables runs it on Postgres at `127.0.0.1`), `python scripts/coverage_report.py` after a test run (the `docs/14` §4 report, scoring the README's coverage matrix against the JUnit results), `./gradlew -q crossProduce --args="--out <file>"` (the cross job's producer leg), and `python scripts/bite_checks.py [word …]` (the mutation checks; not run in CI). CI runs H2 and Postgres legs and the AD-1 grep over `src/main`. Design: `docs/29-adapter-hibernate.md`.
 
 **Prisma adapter** (`adapters/prisma`): build the core first (`npm ci && npm run build` in `core/typescript`), then `npm ci`, `npm run build`, `node tests/fixture/build.ts && npx prisma generate && npx prisma db push`, `npm test`. `npm run report` emits the `docs/14` §4 report. CI runs SQLite and Postgres legs.
 
