@@ -22,7 +22,7 @@ from typing import Any
 from django.apps import AppConfig
 from django.conf import settings
 from django.core.signals import setting_changed
-from django.db.models.signals import class_prepared
+from django.db.models.signals import class_prepared, pre_save
 from django.dispatch import receiver
 from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclaration
 
@@ -230,6 +230,18 @@ def _install_manager(sender: Any, **kwargs: Any) -> None:
     manager.auto_created = True
     sender.add_to_class("objects", manager)
     sender._meta._expire_cache()
+
+
+@receiver(pre_save)
+def _refuse_unindexed_update_fields(sender: Any, update_fields: Any = None,
+                                    raw: bool = False, **kwargs: Any) -> None:
+    """`save(update_fields=...)` naming an indexed column without its index
+    column is refused before the UPDATE is built (#240)."""
+    if not update_fields or raw:
+        return
+    from .fields import refuse_unindexed_update_fields
+
+    refuse_unindexed_update_fields(sender, update_fields, "save")
 
 
 @receiver(setting_changed)

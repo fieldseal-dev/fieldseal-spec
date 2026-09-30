@@ -518,8 +518,19 @@ class EncryptedIndex(models.BinaryField):
         (`docs/04` §1, verified), which is why the index lives here and the
         ciphertext does not.
         """
+        return self.derive(getattr(model_instance, self.source, None))
+
+    def derive(self, value: Any) -> Any:
+        """The index for `value`, the source column's application value.
+
+        Separate from `pre_save` because Django does not call `pre_save` on
+        every write: `QuerySet.update()` and `bulk_update()` never do, and
+        `save(update_fields=...)` does only for the fields it names. Those
+        paths wrote the envelope and left this column as it was, so the row
+        could no longer be found by its new value (#240). The queryset calls
+        this for them.
+        """
         source = self.source_field
-        value = getattr(model_instance, self.source, None)
         if value is None:
             return None
         decl = source.index
@@ -768,6 +779,40 @@ class EncryptedIn(_IndexedLookup):
 
 
 _INDEXED_LOOKUPS = {"exact": EncryptedExact, "in": EncryptedIn}
+
+
+def index_siblings(model: Any) -> dict[str, EncryptedIndex]:
+    """Each indexed encrypted column's name, mapped to its index column."""
+    return {f.source: f for f in model._meta.concrete_fields
+            if isinstance(f, EncryptedIndex)}
+
+
+def refuse_unindexed_update_fields(
+        model: Any, update_fields: Any, method: str) -> None:
+    """`save(update_fields=...)` naming an indexed column must name its
+    index column too.
+
+    Django calls `pre_save` only for the fields `update_fields` names, and
+    the set cannot be extended from a signal, so the adapter cannot add the
+    missing half. Writing the column alone leaves an index that does not
+    match its ciphertext: the row is not found by its value, and nothing
+    raises (#240; spec §10.2).
+    """
+    names = set(update_fields)
+    for source, sibling in index_siblings(model).items():
+        if source not in names:
+            continue
+        if sibling.name not in names and sibling.attname not in names:
+            raise FieldsealNotSupported(
+                f"`{method}(update_fields=[...])` on {model.__name__} names "
+                f"{source!r} without {sibling.name!r}. An encrypted column "
+                "and its blind index are written together: Django derives "
+                "the index only for a field `update_fields` names, so this "
+                "write would leave the index pointing at a different value "
+                "than the ciphertext holds, and an equality lookup would "
+                "silently miss the row (spec §10.2). Add "
+                f"{sibling.name!r}, or call `save()` without `update_fields`."
+            )
 
 
 def index_column(source: str, **kwargs: Any) -> EncryptedIndex:

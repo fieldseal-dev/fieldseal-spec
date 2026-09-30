@@ -411,6 +411,13 @@ The specification requires every implementation to state these.
 - **No row binding.** A value is bound to its table, column and tenant, but
   not to its row, so someone with database write access can swap encrypted
   values between rows of the same column.
+- **An indexed column and its index are written together, and two paths need
+  your help.** `save()`, `create()`, `bulk_create()`, `update()` and
+  `bulk_update()` write the index with the value. `save(update_fields=[...])`
+  raises unless it names the index column beside the encrypted one. `update()`
+  and `bulk_update()` through `Model._base_manager`, or any manager that is
+  not `FieldsealManager`, write the value and leave the old index, and the
+  row is then not found by its new value.
 
 ## Learn more
 

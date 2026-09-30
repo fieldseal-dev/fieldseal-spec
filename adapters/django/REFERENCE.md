@@ -88,7 +88,13 @@ not the target matrix in `docs/12` §6.
 | Repeated writes of one value | ✅ fresh nonce + `msg_seed` each time (spec §4.4) | `test_two_writes_of_one_value_differ` |
 | `bulk_create()` | ✅ encrypts and indexes | `test_bulk_create_encrypts_and_indexes` |
 | `bulk_update()` | ✅ encrypts (Case/When carries literals) | `test_bulk_update_encrypts` |
+| `bulk_update()` of an indexed column | ✅ the index is derived per instance and written with it | `TestBulkUpdate::test_the_index_follows_the_column` |
 | `QuerySet.update(field=value)` | ✅ encrypts | `test_plain_update_encrypts` |
+| `QuerySet.update(field=value)` of an indexed column | ✅ the index is derived and written with it | `TestUpdate::test_the_index_follows_the_column` |
+| `update(field=Value(...))` on an indexed column; the column and its index in one `update()` | 🛑 raises `FieldsealNotSupported` | `test_an_expression_is_refused_on_an_indexed_column`, `test_the_column_and_its_index_in_one_call_are_refused` |
+| `save(update_fields=[...])` naming an indexed column without its index column | 🛑 raises `FieldsealNotSupported`; name both | `test_the_column_without_its_index_is_refused`, `test_naming_both_writes_both` |
+| `bulk_create(update_conflicts=True, update_fields=[...])` | ✅ the index column is added to `update_fields` with its column | `test_the_conflict_update_writes_the_index_with_the_column` |
+| `update()` or `bulk_update()` of an indexed column through `Model._base_manager`, or any manager that is not `FieldsealManager` | ⚠️ not covered: the ciphertext is written and the index is left stale, so the row is not found by its new value | — |
 | `update(field=F(...))`, arithmetic, DB functions | 🛑 raises `FieldsealNotSupported` | `test_expression_rhs_is_refused` |
 | Reads: `get()`, `filter()` on other columns | ✅ decrypts | `test_save_then_read_returns_the_plaintext` |
 | `.values()`, `values_list()`, `only()`, `raw()` results | ✅ decrypts | `TestReadPathsTheMatrixClaims` |

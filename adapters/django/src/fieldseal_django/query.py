@@ -252,6 +252,10 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         self._fieldseal_obligations: tuple[_Obligation, ...] = ()
         self._fieldseal_verify = True
         self._fieldseal_indexed = False
+        # True only inside `bulk_update`, which derives each index itself and
+        # then reaches `update()` through Django with `Case` expressions for
+        # the column and its index together (#240).
+        self._fieldseal_indexes_derived = False
         # Marked at birth, not only on the first clone: the lookup layer
         # reads the mark's *absence* as "no queryset of ours owns this
         # query" and refuses ([#118] door 2), so a queryset that reaches SQL
@@ -273,6 +277,7 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         clone._fieldseal_obligations = self._fieldseal_obligations
         clone._fieldseal_verify = self._fieldseal_verify
         clone._fieldseal_indexed = self._fieldseal_indexed
+        clone._fieldseal_indexes_derived = self._fieldseal_indexes_derived
         clone._mark_query()
         return clone
 
@@ -971,8 +976,105 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
     def update(self, **kwargs: Any) -> int:
         if self._verifying:
             self._refuse_sql_answered("update")
-        updated: int = super().update(**kwargs)
+        updated: int = super().update(**self._with_derived_indexes(kwargs))
         return updated
+
+    def _with_derived_indexes(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Add the index value for each indexed encrypted column `update()`
+        sets.
+
+        `update()` never calls `pre_save`, which is where the index is
+        derived on the `save()` path, so without this the statement wrote the
+        new envelope and left the old index (#240).
+
+        Setting the index column alone is left as it was: it is an explicit
+        act on a non-editable column, and not the silent case. Setting both
+        in one call is refused, because the two values can disagree and only
+        the derived one is right.
+        """
+        from .fields import index_siblings
+
+        if self._fieldseal_indexes_derived:
+            return kwargs
+        out = dict(kwargs)
+        for source, sibling in index_siblings(self.model).items():
+            if source not in kwargs:
+                continue
+            if sibling.name in kwargs or sibling.attname in kwargs:
+                raise FieldsealNotSupported(
+                    f"`update({source}=..., {sibling.name}=...)` sets an "
+                    "encrypted column and its blind index in one call. The "
+                    f"index is derived from {source!r} and written with it; "
+                    f"drop {sibling.name!r}."
+                )
+            value = kwargs[source]
+            if hasattr(value, "resolve_expression"):
+                raise FieldsealNotSupported(
+                    f"`update({source}=<{type(value).__name__}>)` is not "
+                    f"available: {self.model.__name__}.{source} carries a "
+                    "blind index, which is derived from the value in Python, "
+                    "and an expression has no value until the database "
+                    "evaluates it. The statement would write the ciphertext "
+                    "and leave the index as it was, so an equality lookup "
+                    "would silently miss the row (spec §10.2). Pass the "
+                    "value itself."
+                )
+            out[sibling.name] = sibling.derive(value)
+        return out
+
+    def bulk_update(self, objs: Any, fields: Any,
+                    batch_size: int | None = None) -> int:
+        """`bulk_update`, writing each indexed column's index with it.
+
+        Django's `bulk_update` reads each field's attribute off the instance
+        and never calls `pre_save`, so the index column was either not in the
+        statement or carried the instance's stale attribute (#240). Here the
+        index is derived from each instance's current value, set on the
+        instance, and added to the statement.
+        """
+        from .fields import index_siblings
+
+        objs = tuple(objs)
+        fields = list(fields)
+        named = set(fields)
+        for source, sibling in index_siblings(self.model).items():
+            if source not in named:
+                continue
+            for obj in objs:
+                setattr(obj, sibling.attname,
+                        sibling.derive(getattr(obj, source)))
+            if sibling.name not in named:
+                fields.append(sibling.name)
+        # Django's `bulk_update` ends in `update()` on a clone of this
+        # queryset, which must not try to derive from the `Case` expressions.
+        self._fieldseal_indexes_derived = True
+        try:
+            updated: int = super().bulk_update(
+                objs, fields, batch_size=batch_size)
+        finally:
+            self._fieldseal_indexes_derived = False
+        return updated
+
+    def bulk_create(self, objs: Any, *args: Any, **kwargs: Any) -> Any:
+        """`bulk_create`; on an upsert, the index is updated with its column.
+
+        The insert half derives every index through `pre_save`. With
+        `update_conflicts=True`, the conflict half sets only the columns
+        `update_fields` names, so an indexed column named without its index
+        would be updated alone (#240). The index column is added: its value
+        comes from the same inserted row, where `pre_save` derived it.
+        """
+        from .fields import index_siblings
+
+        update_fields = kwargs.get("update_fields")
+        if update_fields:
+            update_fields = list(update_fields)
+            named = set(update_fields)
+            for source, sibling in index_siblings(self.model).items():
+                if source in named and sibling.name not in named:
+                    update_fields.append(sibling.name)
+            kwargs["update_fields"] = update_fields
+        return super().bulk_create(objs, *args, **kwargs)
 
     def delete(self) -> Any:
         if self._verifying:
