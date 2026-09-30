@@ -284,7 +284,7 @@ The probe uses public operations only and never touches the provider, which the 
 ### 7.3 Rotating a pending value
 
 1. `out = rotate(T, c)` on the core client, with the adapter's context for that row and column.
-2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten.
+2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten. This is a process stop, not a value failure: nothing is recorded for it (§7.4). Reading `out`'s header is the parse D-1 (§11) says no core exports yet, like the rest of this job.
 3. Write `out`, in the column's storage form, to that row and column only, as a bound parameter, in the batch's transaction.
 
 `rotate` is used, rather than the adapter's read followed by the adapter's write, because spec §11.1 and `docs/09` §3.5 define the sweep that way and because it leaves the plaintext bytes exactly as they were: nothing passes through a codec. The write in step 3 stores an envelope the core just produced, and step 2 checks it. **[flag: open decision D-2, §11. `docs/26` §4 says a frontend works "through the adapter's encrypting write path", which describes `encrypt` and not this step.]**
@@ -293,7 +293,7 @@ The probe uses public operations only and never touches the provider, which the 
 
 ### 7.4 Value failures, both jobs
 
-A failure is recorded in `fieldseal_backfill_failures` and counted; the value is left as it was; the run continues. The cursor moves past a failed row, so a resumed run does not retry it and a new run does.
+A failure is recorded in `fieldseal_backfill_failures` and counted; the value is left as it was; the run continues. The one exception is §7.3 step 2's key-id mismatch, which stops the process and records nothing, because it says the run cannot converge rather than that one value is bad. The cursor moves past a failed row, so a resumed run does not retry it and a new run does.
 
 `error_code` is the core's code when the core raised: a spec §9 code (`KEY_UNAVAILABLE`, `SUITE_NOT_ALLOWED`, `AAD_MISMATCH`, `TAG_INVALID`, `COMMITMENT_INVALID`, `UNKNOWN_FORMAT_VERSION`, `NOT_CIPHERTEXT`, `LENGTH_EXCEEDED`, `SUITE_PROVISIONAL`, `MODE_VIOLATION`), or `INVALID_ARGUMENT`, which the cores raise for a value a blind index refuses (`docs/09` §7.2). Otherwise it is one of:
 
@@ -305,7 +305,7 @@ A failure is recorded in `fieldseal_backfill_failures` and counted; the value is
 
 No message text is stored, only the code. An error message can carry part of a value, and this table is not a place for one.
 
-`max_failures` (default 100) stops the process, leaving the run `running`, when the number of failures **this process has recorded since it started** reaches it. A run that is failing on every row should not walk the whole table. The count is per process, not the run row's cumulative `values_failed`, so a resume makes progress: it starts at zero and stops again only if the failures continue. `max_failures` is an operator setting like `batch_size` and `rows_per_second` (§5.3): not stored, not in the hash, and changeable on resume.
+`max_failures` (default 100) stops the process, leaving the run `running`, when the number of failures **this process has recorded since it started** reaches it. **The threshold is tested once per batch, at step 7 of §5.2, before the commit**, never between values: a stop always leaves a committed batch, its failure rows recorded and its cursor past them, so the resume starts beyond the rows that failed. Tested per value it would unwind the open batch, and at the defaults (100 against a batch of 200) every resume would replay and unwind the same batch forever. A run that is failing on every row should not walk the whole table. The count is per process, not the run row's cumulative `values_failed`, so a resume makes progress: it starts at zero and stops again only if the failures continue. `max_failures` is an operator setting like `batch_size` and `rows_per_second` (§5.3): not stored, not in the hash, and changeable on resume.
 
 ## 8. `verify`
 
@@ -397,7 +397,7 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 | BF-17 | The §4 worked example | The frontend's serializer and hash reproduce it |
 | BF-18 | A run row with `procedure_version` 2 | Refused |
 | BF-19 | Two processes start a new run on one table at once | Exactly one run row exists; the other start is refused by the unique constraint and names the run that holds the table |
-| BF-20 | A run stopped by `max_failures`, then resumed with the same setting | The stop leaves the run `running`; the resume processes at least one batch before it can stop again, and completes when the failures do not continue |
+| BF-20 | A run stopped by `max_failures` mid-way through a batch's worth of failing rows, then resumed with the same setting | The stop leaves the run `running`, with the failing batch committed: its failure rows are recorded and `cursor_value` is past every row that failed. The resume starts beyond them, and completes when the failures do not continue |
 
 A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the header accessor of D-1 (§11, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in every frontend until it lands. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
 
