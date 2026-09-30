@@ -139,7 +139,8 @@ tools/
   ucd-gen/             regenerates the vendored Unicode 17.0.0 tables
   release/             builds, checks and smoke-tests the four packages
   figures/             extracts the static SVGs in docs/figures/
-  leakage-estimator/   backfill/        placeholders (docs/15)
+  backfill/            PROCEDURE.md, the shared backfill procedure; no frontend yet
+  leakage-estimator/   placeholder (docs/15)
 examples/
   patient-directory/   Django + Prisma over one Postgres table (docs/20)
 bench/                 placeholder
