@@ -1,6 +1,6 @@
 # The backfill procedure
 
-**Procedure version:** 1 · **Date:** 2026-09-30 · **Status:** Draft 1. No frontend implements it yet, so nothing here has been run. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
+**Procedure version:** 1 · **Date:** 2026-09-30 · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). No frontend implements it yet, so nothing here has been run. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
 
 This is the one procedure every backfill frontend implements: the state tables, the cursor, the batch, the two jobs, `verify`, what the tool must print, and the scenarios a frontend's tests must pass. The design it makes concrete is [`docs/15-tooling.md`](../../docs/15-tooling.md) §1. A frontend is a thin program in one language over one adapter (`docs/26` §5 item 4). A frontend that needs this document changed files an issue and waits; it does not diverge locally (`docs/26` §6).
 
@@ -26,12 +26,14 @@ And one check, `verify` (§8), which reads and never writes.
 - **Moving data between databases.**
 - **Any DDL on the application's tables.** Adding the ciphertext and index columns (`docs/04` §11 step 1) and dropping the legacy column (step 5) are the deployment's migrations.
 - **Parallel batches.** One batch is in flight at a time (`docs/15` §1.1).
+- **Shredding a scope.** Crypto-shredding a tenant destroys both its keys (spec §5.2), and PRD SP-18 requires an inventory of every derived artifact, blind-index columns first, with a shred procedure for each. This version has no index-column job (the first item above), so it cannot gate index-key destruction; §8 says what it can gate.
 
 **Limits the tool does not remove**, and which §9 requires it to print where they apply:
 
 - Encrypting a table that already held plaintext does nothing about the copies that already exist. Crypto-shredding claims are void for every backup taken before the migration (`docs/04` §11).
 - The tool runs inside an application process that holds the keys. It protects nothing against that process (spec §2.2).
 - An `encrypt` run over an Argon2id-indexed column derives one index per value, at 10–100 ms each (spec §7.3). That cost sets the run's speed, and no setting here changes it.
+- **A batch holds locks while it derives.** The rows a batch selects are locked until it commits (§5.2 step 4), and the derivations run inside that window, so at the defaults (200 rows, 10–100 ms each) a batch over an Argon2id-indexed column blocks application writes to those rows for 2–20 seconds; on SQLite the lock is the whole database. `batch_size` bounds it proportionally, and is the setting to lower first.
 
 ## 2. Preconditions
 
@@ -58,7 +60,9 @@ CREATE TABLE fieldseal_backfill_runs (
     run_id             VARCHAR(36)   NOT NULL PRIMARY KEY,  -- UUID, lowercase, hyphenated
     procedure_version  INTEGER       NOT NULL,              -- 1
     job                VARCHAR(16)   NOT NULL,              -- 'encrypt' | 'rotate'
-    table_name         VARCHAR(255)  NOT NULL,              -- informational; the identity is table_uuid in config
+    table_uuid         CHAR(32)      NOT NULL,              -- the table's identity, lowercase hex; also in config
+    running_table_uuid CHAR(32),                            -- = table_uuid while status = 'running', else NULL
+    table_name         VARCHAR(255)  NOT NULL,              -- informational
     config_hash        CHAR(64)      NOT NULL,              -- §4, lowercase hex
     config             TEXT          NOT NULL,              -- §4, the hashed document itself
     status             VARCHAR(16)   NOT NULL,              -- 'running' | 'complete' | 'abandoned'
@@ -73,7 +77,8 @@ CREATE TABLE fieldseal_backfill_runs (
     started_at         VARCHAR(20)   NOT NULL,              -- UTC, YYYY-MM-DDTHH:MM:SSZ
     updated_at         VARCHAR(20)   NOT NULL,
     completed_at       VARCHAR(20),
-    frontend           VARCHAR(64)   NOT NULL               -- e.g. 'django/0.1.0'; informational
+    frontend           VARCHAR(64)   NOT NULL,              -- e.g. 'django/0.1.0'; informational
+    UNIQUE (running_table_uuid)                             -- one running run per table, enforced
 );
 
 CREATE TABLE fieldseal_backfill_failures (
@@ -87,13 +92,15 @@ CREATE TABLE fieldseal_backfill_failures (
 );
 ```
 
-Types may be spelled as the database requires (`TEXT` for `VARCHAR` on SQLite, for instance); names, nullability and meanings may not change. Timestamps are text so that every database and every frontend stores the same bytes.
+Types may be spelled as the database requires (`TEXT` for `VARCHAR` on SQLite, for instance); names, nullability, the unique constraint and meanings may not change. Timestamps are text so that every database and every frontend stores the same bytes.
+
+**Version 1 targets Postgres, SQLite and H2**, the databases the shipped adapters and the Hibernate adapter are tested on. MySQL is out of scope: InnoDB refuses a `TEXT` column in a key, and `row_key` is one. A frontend for it needs a sized `row_key` and an issue against this document.
 
 **Neither table ever holds a plaintext value, an envelope, an index value, or key material.** `row_key` is the row's primary key. A deployment whose primary key is itself sensitive should know that it is copied here.
 
 **The counts are per value**, not per row: a row with two encrypted columns in the run contributes two values. `rows_scanned` is per row. At every commit, `values_written + values_current + values_null + values_anomalous + values_failed` equals the number of values scanned.
 
-**One running run per table.** Starting a run when a row with the same `table_name` and status `running` exists MUST be refused. The operator resumes that run or marks it `abandoned` with an explicit subcommand. A run whose process died stays `running`; that is what makes it resumable.
+**One running run per table**, keyed on `table_uuid`, and enforced by the database rather than by a read before an insert: `running_table_uuid` holds the table's UUID while the run is `running` and NULL once it is `complete` or `abandoned`, and the unique constraint on it refuses a second running row. Every database this version targets (above: Postgres, SQLite, H2) allows any number of NULLs under a unique constraint. A start whose insert is refused reports the run that holds the table; the operator resumes that run or marks it `abandoned` with an explicit subcommand. The status change and the clearing of `running_table_uuid` are one statement. A run whose process died stays `running`; that is what makes it resumable.
 
 **A frontend reading a row whose `procedure_version` it does not implement MUST refuse to resume it.**
 
@@ -103,7 +110,7 @@ A resumed run must write what the run it resumes was writing. The case that matt
 
 The inputs are what decides the bytes a run stores, and nothing operational. Batch size and rate are not inputs; an operator may change them on resume.
 
-`config` is a JSON object with exactly these members:
+`config` is a JSON object with exactly these members. The cursor columns are recorded by name as well as type: a resumed run seeks from the stored cursor into whatever key space the table has now, so a replaced primary key that the hash did not see would skip every row ordered below the cursor, silently.
 
 | Member | Value |
 |---|---|
@@ -111,7 +118,7 @@ The inputs are what decides the bytes a run stores, and nothing operational. Bat
 | `job` | `"encrypt"` or `"rotate"` |
 | `table_uuid` | The table's UUID, 32 lowercase hex digits |
 | `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2) |
-| `cursor` | Array of the cursor columns' types in key order, each `"int"`, `"uuid"` or `"text"` (§5.1) |
+| `cursor` | Array, one object per cursor column in key order: `{"name": <the column's SQL name>, "type": <"int", "uuid" or "text">}` (§5.1). A primary key has no `column_uuid`, so its name is the identity recorded; a renamed or replaced key column refuses the resume, and a key replaced by another of the same name and type is not detected |
 | `columns` | Array, one object per encrypted column in the run, sorted by `column_uuid` |
 
 Each `columns` element:
@@ -138,16 +145,16 @@ Each `indexes` element, taken from the client's **validated** registry (`docs/09
 
 The projected population and the override records are left out: they decide whether a declaration is accepted, not what is stored.
 
-**Serialization.** Members sorted by name in ascending byte order at every level; no whitespace; integers in decimal with no sign, fraction or exponent; `null` for null. Every string MUST consist of ASCII characters `0x20`–`0x7E` other than `"` and `\`, so no escape is ever written; a frontend MUST refuse a `source` name outside that set. The result is encoded as ASCII. `config_hash` is the SHA-256 of those bytes, in lowercase hex. The hash is a change detector over public configuration. It is not a cryptographic control, and computing it is not cryptographic code in the sense of AD-1 (spec §11.3).
+**Serialization.** Members sorted by name in ascending byte order at every level; no whitespace; integers in decimal with no sign, fraction or exponent; `null` for null. Every string MUST consist of ASCII characters `0x20`–`0x7E` other than `"` and `\`, so no escape is ever written; a frontend MUST refuse a `source` or cursor column name outside that set. The result is encoded as ASCII. `config_hash` is the SHA-256 of those bytes, in lowercase hex. The hash is a change detector over public configuration. It is not a cryptographic control, and computing it is not cryptographic code in the sense of AD-1 (spec §11.3).
 
 **Worked example.** A frontend's tests MUST reproduce this hash from these inputs:
 
 ```json
-{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":["int"],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
+{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
 ```
 
 ```
-2a0a546e67bd9d3736a6e84a8f4f568fc4096a15d36f6705c06ad49245ac82a3
+8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0
 ```
 
 The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters.
@@ -178,8 +185,8 @@ One batch is one transaction. In order:
 
 1. **Wait** for the rate limiter to grant one batch of `n` rows (§5.3).
 2. **Begin** a transaction. On SQLite it MUST take the write lock at the start (`BEGIN IMMEDIATE`).
-3. **Claim the batch:** `UPDATE fieldseal_backfill_runs SET batch_seq = batch_seq + 1 WHERE run_id = ? AND batch_seq = ? AND status = 'running'`, with the `batch_seq` this process last saw. If it changes no row, another process owns the run or the run has ended: roll back and exit with an error. This statement also locks the run row until commit, so two processes cannot interleave.
-4. **Select** up to `n` rows with key greater than `cursor_value`, in key order, **locked against concurrent writers until commit** (`SELECT … FOR UPDATE` where the database has it; on SQLite, step 2's lock). The select reads the stored bytes of each target column, not the adapter's decoded value. It MUST NOT skip locked rows.
+3. **Claim the batch:** `UPDATE fieldseal_backfill_runs SET batch_seq = batch_seq + 1 WHERE run_id = ? AND batch_seq = ? AND status = 'running'`, with the `batch_seq` this process last read or wrote: the post-increment value after a batch it committed, the stored value after one it rolled back (§5.4). If it changes no row, another process owns the run or the run has ended: roll back and exit with an error. This statement also locks the run row until commit, so two processes cannot interleave.
+4. **Select** up to `n` rows with key greater than `cursor_value`, in key order, **locked against concurrent writers until commit** (`SELECT … FOR UPDATE` where the database has it; on SQLite, step 2's lock). The select reads the stored bytes of each target column, not the adapter's decoded value. It MUST NOT skip locked rows. The locks are held through steps 5 to 8, derivations included, so the hold is `n` times the per-value cost: at the defaults, 2–20 seconds over an Argon2id-indexed column, and on SQLite that is the whole database (§1). `batch_size` is the bound.
 5. **Classify** each value from its stored bytes (§6.2 or §7.1).
 6. **Act** on each `pending` value as the job says. An error raised by the core or the adapter for one value is a value failure (§7.4), and the batch continues. An error from the database aborts the batch (§5.4).
 7. **Record:** insert the batch's failure rows; update the run row's counts, `cursor_value` (the key of the last row selected) and `updated_at`. If the select returned fewer than `n` rows, also set `status = 'complete'` and `completed_at`.
@@ -200,7 +207,7 @@ There is always a limit. A frontend has no "unlimited" setting.
 | `batch_size` | 200 | Rows per batch, `n` above |
 | `rows_per_second` | 200 | Token bucket, capacity one batch, refilled continuously |
 
-**[flag: both defaults are unmeasured.** They are chosen to be slow. The first frontend's measurements replace them, by an issue against this document.]
+**[flag: both defaults are unmeasured.** They are chosen to be slow. `batch_size` is not only a throughput setting: it is the bound on how long a batch holds its locks (§5.2 step 4), and the first frontend's measurement has to settle both. The measurements replace the defaults by an issue against this document.]
 
 The measured rate a run reports (§9) MUST NOT exceed `rows_per_second` over the run, beyond one batch of burst.
 
@@ -239,7 +246,7 @@ The skip test is `is_ciphertext` alone: no decrypt and no key (`docs/15` §1.1).
 
 1. **Obtain the application value through the adapter's read path.** In place: the adapter's `permissive` read of that row and column. Two columns: the ORM's ordinary read of the source column. A frontend MUST NOT build the plaintext from the stored bytes itself.
 2. **Write it through the adapter's encrypting write path**, in the batch's transaction (`docs/15` §1.1, *Safe writes*). Never SQL that copies a column. The paths verified so far are Django's `bulk_update` (`docs/12` §2) and Prisma's `update`/`updateMany` on the extended client (`docs/13` §6).
-3. **The same statement writes the blind index** for every index declared on the column. An envelope whose index is missing is a row no equality lookup finds. **Django's `bulk_update` does not do this today** (measured 2026-09-30, Django 6.1.1, SQLite, the adapter's own test model): it never calls `pre_save`, where the adapter derives the index, so after `bulk_update([p], ["email"])` the index sibling held the old value's index and an equality lookup for the new value returned no row; naming the sibling in the field list changed nothing. `docs/12` §2 verified `bulk_update` for the ciphertext only. The Django frontend cannot use that path for an indexed column until the adapter derives or refuses there, and that is an adapter defect with its own issue ([#240](https://github.com/fieldseal-dev/fieldseal-spec/issues/240)), not a procedure change. **[flag: the same question is open for every other adapter's bulk path, and is each frontend's first thing to verify.]**
+3. **The same statement writes the blind index** for every index declared on the column. An envelope whose index is missing is a row no equality lookup finds. **Django's `bulk_update` did not do this at `51ae712`** (measured 2026-09-30, Django 6.1.1, SQLite, the adapter's own test model; fixed in [#242](https://github.com/fieldseal-dev/fieldseal-spec/pull/242), which also found `update()` and `save(update_fields=…)` behind the same cause): it never calls `pre_save`, where the adapter derives the index, so after `bulk_update([p], ["email"])` the index sibling held the old value's index and an equality lookup for the new value returned no row; naming the sibling in the field list changed nothing. `docs/12` §2 verified `bulk_update` for the ciphertext only. The Django frontend cannot use that path for an indexed column until #242 is merged; that was an adapter defect with its own issue ([#240](https://github.com/fieldseal-dev/fieldseal-spec/issues/240)), not a procedure change. **[flag: the same question is open for every other adapter's bulk path, and is each frontend's first thing to verify.]**
 
 Rule 1 is what keeps the tool out of spec §3.4's double-encryption case. A reserved-version value (`fmt_ver` `0x02`, 111 bytes or more) is not an envelope to `is_ciphertext`, so it classifies `pending`; but the adapter's read of it raises `UNKNOWN_FORMAT_VERSION` in every mode, so it becomes a failure and is left as it was. A frontend that rendered the plaintext from raw bytes would encrypt it a second time.
 
@@ -270,12 +277,14 @@ The key id a write under context `c` would carry is the header `key_id` of `encr
 
 The probe uses public operations only and never touches the provider, which the client does not expose (`docs/09` §2). It costs one encryption per distinct context per batch, and one use of the DEK against the cache's use budget (spec §5.5). The probe's output is discarded and never stored.
 
+**The probe assumes the key id does not depend on `row_id`.** Spec §5.2 makes the DEK scope the tenant, or a documented scope for deployments without one, and `key_id` is the provider's to define (spec §3.1). The probe is sound for every scope a provider can express from the context without its `row_id`; a provider whose key id depends on the row would make every envelope classify `pending` on every run, and every run rewrite the whole table. So §7.3 step 2 checks each rotated envelope against the probe, and a mismatch stops the run rather than letting it converge on nothing.
+
 **[flag: open decision D-5, §11.]**
 
 ### 7.3 Rotating a pending value
 
 1. `out = rotate(T, c)` on the core client, with the adapter's context for that row and column.
-2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written.
+2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten.
 3. Write `out`, in the column's storage form, to that row and column only, as a bound parameter, in the batch's transaction.
 
 `rotate` is used, rather than the adapter's read followed by the adapter's write, because spec §11.1 and `docs/09` §3.5 define the sweep that way and because it leaves the plaintext bytes exactly as they were: nothing passes through a codec. The write in step 3 stores an envelope the core just produced, and step 2 checks it. **[flag: open decision D-2, §11. `docs/26` §4 says a frontend works "through the adapter's encrypting write path", which describes `encrypt` and not this step.]**
@@ -296,7 +305,7 @@ A failure is recorded in `fieldseal_backfill_failures` and counted; the value is
 
 No message text is stored, only the code. An error message can carry part of a value, and this table is not a place for one.
 
-`max_failures` (default 100) stops the run, leaving it `running`, when `values_failed` reaches it. A run that is failing on every row should not walk the whole table.
+`max_failures` (default 100) stops the process, leaving the run `running`, when the number of failures **this process has recorded since it started** reaches it. A run that is failing on every row should not walk the whole table. The count is per process, not the run row's cumulative `values_failed`, so a resume makes progress: it starts at zero and stops again only if the failures continue. `max_failures` is an operator setting like `batch_size` and `rows_per_second` (§5.3): not stored, not in the hash, and changeable on resume.
 
 ## 8. `verify`
 
@@ -305,7 +314,7 @@ Reads only, under a `readonly` client (§2). It has two parts and reports both.
 **Census.** A full pass in cursor order, rate-limited as a run is, reading stored bytes and classifying without decrypting:
 
 - For every column: the number of NULL values, envelopes, and non-envelopes.
-- For every column, the number of envelopes per `(suite_id, key_id)`, both in hex.
+- For every column, the number of envelopes per `(suite_id, key_id)`, both in hex. This line needs the header accessor of D-1 (§11) and is blocked until it lands; the line above needs only `is_ciphertext`.
 
 **Sample.** `N` rows (default 1000, or every row if there are fewer), chosen uniformly at random among the rows scanned; the frontend states its method and `N` in the report. Each sampled envelope is decrypted through the adapter's read path. In the two-column shape, while the legacy column still exists, the result is compared with the legacy value. The report gives counts of decrypted, failed (by error code) and mismatched. It never prints a value.
 
@@ -319,12 +328,13 @@ The census goes further than `docs/15` §1.1, which asked for a sample only. A s
 |---|---|
 | Switch to `strict` (`docs/04` §11 step 4) | Census: zero non-envelopes in every column. Sample: zero failures and zero mismatches. And the adapter's plaintext-read count at zero over a window the operator chooses |
 | Drop the legacy column (step 5) | The above, with `strict` deployed |
-| Destroy an old key version (spec §5.8, §8.2) | Census: zero envelopes under that `key_id`, in **every** table and column that key's scope covers, not only the table just swept |
+| Retire an old DEK version after a `rotate` run (spec §5.8, §8.2) | Census: zero envelopes under that `key_id`, in **every** table and column that key's scope covers, not only the table just swept. This retires one data-key version and nothing else: index keys are siblings of the DEK (spec §5.2), a rotation leaves every index valid, and this row does not speak to them |
+| Crypto-shred a scope, a tenant (spec §5.2, PRD SP-18) | **This procedure cannot gate it.** Shredding destroys the tenant's DEK *and* its index keys, and SP-18 requires an inventory of every derived artifact with a shred procedure for each. `verify` gives one line of that inventory: the census for the DEK, as in the row above. It does not read index columns, and version 1 has no job that rebuilds or clears one (§1), so after the DEK is gone every index value in the scope still stands and still confirms that a plaintext is present to anyone holding the index key. Caches, queues, replicas, exports and backups are not visible to it either. An operator shreds on an inventory this tool does not produce |
 | Remove a retired suite from the allow-list (spec §5.9) | Census: zero envelopes under that `suite_id`, in every table and column |
 
-Destroying an old key also makes every backup that holds envelopes under it undecryptable for those values. That is the purpose when the goal is erasure, and a loss when it is not. `verify` cannot see backups.
+Destroying a key also makes every backup that holds envelopes under it undecryptable for those values. That is the purpose when the goal is erasure, and a loss when it is not. `verify` cannot see backups.
 
-**[flag: the plaintext-read count exists in the Python core (a counter) and the TypeScript core (a hook), and per model and field in the Django and Prisma adapters (`docs/12` §4, `docs/13` §3). The Java core has no metrics hook yet (`docs/27` §4), so a Hibernate deployment has the census and the sample only.]**
+**[flag: the plaintext-read count exists in the Python core (a counter) and the TypeScript core (a hook), and per model and field in the Django and Prisma adapters (`docs/12` §4, `docs/13` §3). The Java core has no metrics hook yet (`docs/27` §4), so a Hibernate deployment has the census and the sample only, which is two of the three inputs the first row needs: **until the hook lands, a Hibernate deployment has no procedure-sanctioned path to `strict` and none to dropping the legacy column.** The last two rows do not need it.]**
 
 ## 9. What the tool prints
 
@@ -377,16 +387,19 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 | BF-08 | NULL values, in both shapes | Counted `null`, left NULL, index left NULL |
 | BF-09 | A reserved-version value in an in-place column | Recorded as a failure with `UNKNOWN_FORMAT_VERSION`; bytes unchanged |
 | BF-10 | `encrypt` on a populated table without the acknowledgement flag | Text 1 printed; nothing written; no run row created |
-| BF-11 | `rotate` over current, stale-key, stale-suite, NULL and plaintext values | Stale values become current and decrypt to the same plaintext bytes; current values have bytes unchanged; the plaintext is `anomalous` and unchanged; every index column has bytes unchanged |
-| BF-12 | `rotate`, killed and resumed; then a new run | As BF-02 and BF-04 |
-| BF-13 | `rotate` with one envelope that cannot be decrypted | A failure row with the spec §9 code; the run continues and completes; the report's first line says not fully converted |
+| BF-11 ⏸ | `rotate` over current, stale-key, stale-suite, NULL and plaintext values | Stale values become current and decrypt to the same plaintext bytes; current values have bytes unchanged; the plaintext is `anomalous` and unchanged; every index column has bytes unchanged |
+| BF-12 ⏸ | `rotate`, killed and resumed; then a new run | As BF-02 and BF-04 |
+| BF-13 ⏸ | `rotate` with one envelope that cannot be decrypted | A failure row with the spec §9 code; the run continues and completes; the report's first line says not fully converted |
 | BF-14 | A run with `rows_per_second` set low enough to bind | Measured rate is at most the limit, beyond one batch of burst |
 | BF-15 | `verify` with one planted plaintext; with one planted mismatch in the two-column shape | The census counts the plaintext; the sample, taken over every row, reports the mismatch |
+| BF-15k ⏸ | `verify` over envelopes under two key versions and two suites | The census by `(suite_id, key_id)` reports each count |
 | BF-16 | Any scenario above that produced output | No plaintext value, envelope or index value appears in any output or in either state table |
 | BF-17 | The §4 worked example | The frontend's serializer and hash reproduce it |
 | BF-18 | A run row with `procedure_version` 2 | Refused |
+| BF-19 | Two processes start a new run on one table at once | Exactly one run row exists; the other start is refused by the unique constraint and names the run that holds the table |
+| BF-20 | A run stopped by `max_failures`, then resumed with the same setting | The stop leaves the run `running`; the resume processes at least one batch before it can stop again, and completes when the failures do not continue |
 
-A frontend whose adapter cannot express a scenario (an adapter with one shape only, for BF-08's other half) reports it as not applicable, with the reason, and not as passed.
+A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the header accessor of D-1 (§11, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in every frontend until it lands. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
 
 ## 11. Open decisions and what the cores owe
 
@@ -395,7 +408,7 @@ Recorded here so that a frontend is not built on an assumption.
 - **D-1. No core exports a header parse** ([#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241))**.** §7.1 and the census need `suite_id` and `key_id` from stored bytes. `docs/15` §3 says `docs/09` §4 "already provides `EnvelopeHeader`; keep it exported". The type is public in all three cores, and a function that produces one from bytes is public in none: Python's is `fieldseal.envelope.recognize`, outside the package root's `__all__`; TypeScript's `recognize` is not exported from the package entry; Java's codec is under `internal`. It needs #241 decided and an accessor in each core before the `rotate` job or the census by key can be built. The `encrypt` job and the census of envelopes against non-envelopes need only `is_ciphertext`, and are not blocked. A frontend MUST NOT parse the header bytes itself in the meantime.
 - **D-2. `rotate` writes the core's output directly** (§7.3), not through the adapter's write path. The alternative is the adapter's read followed by its write, which keeps one write path and passes every value through a codec.
 - **D-3. The census** (§8) is an addition to `docs/15` §1.1's sampled verify.
-- **D-4. The rate defaults** (§5.3) are unmeasured.
+- **D-4. The rate defaults** (§5.3) are unmeasured, and `batch_size` also bounds lock hold (§5.2 step 4).
 - **D-5. The write key id by probe** (§7.2). The alternative is a core accessor that reports the key id a write would carry; it would go in D-1's issue.
 - **The Java core's metrics hook** (§8's flag) is owed by `docs/27` §4, not by this document.
 
