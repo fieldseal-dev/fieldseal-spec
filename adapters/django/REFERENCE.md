@@ -146,6 +146,9 @@ not the target matrix in `docs/12` §6.
 | Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
 | `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
 | `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
+| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v1, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-20; two-column shape for every column, in place for `binary` storage only | `tests/test_backfill.py` (`test_bfNN_…`) |
+| `fieldseal_backfill` on a tenant-bound column | ⚠️ **not converted**: recorded as `CONTEXT_UNAVAILABLE` and left as it was ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244)) | `test_a_tenant_bound_column_is_context_unavailable` |
+| `fieldseal_backfill` `rotate`, `verify` | ❌ not built: `rotate` and BF-11, BF-12, BF-13, BF-15k are blocked on [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); `verify` (BF-15) is next | — |
 | `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
 | A row written here, read by the TypeScript core | ✅ CI cross matrix; `django` is a producer | `tests/test_cross_produce.py` |
 | A blind index written here, derived by another core | ❌ next cross-language increment | — |
