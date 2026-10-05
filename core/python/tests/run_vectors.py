@@ -88,7 +88,16 @@ PINNED_DECISIONS = {
         "side) → context validation (INVALID_ARGUMENT, non-§9); all before "
         "key acquisition. blind_index: an operand that is neither str nor "
         "bytes → INVALID_ARGUMENT, after the index declaration is resolved "
-        "and never filed by on_unindexable=bucket  [D-04; #254]"),
+        "and never filed by on_unindexable=bucket. Bytes means bytes, "
+        "bytearray, or a 1-D contiguous memoryview of format 'B'. Reading, "
+        "not spec text, revisitable at Gate 0b: §11.1's 'rotate of "
+        "non-envelope input raises NOT_CIPHERTEXT' is read as bounded by its "
+        "own bytes signature, so rotate(42) is outside the domain "
+        "(INVALID_ARGUMENT), not non-envelope input. blind_index's str rests "
+        "on docs/09 §7.1 (G16 part A); §11.1's signature types it bytes. "
+        "Not independent of the other cores: this pin was set with the #254 "
+        "thread in hand, which quotes theirs (docs/07 §7, 2026-10-05)  "
+        "[D-04; #254]"),
     "unimplemented-registered-suite": (
         "0xFF02 is registered (is_ciphertext → True) but refused at "
         "construction if allow-listed or set as write_suite "

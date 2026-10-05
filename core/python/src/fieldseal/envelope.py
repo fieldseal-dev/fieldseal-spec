@@ -15,6 +15,7 @@ to look at three bytes would have allocated already.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeGuard
 
 from .errors import UnknownFormatVersion
 from .registry import SUITES, Suite
@@ -54,6 +55,33 @@ class EnvelopeHeader:
 
 def serialize_header(suite_id: int, key_id: bytes, msg_seed: bytes) -> bytes:
     return (bytes([FMT_VER]) + suite_id.to_bytes(2, "big") + key_id + msg_seed)
+
+
+def is_byte_string(operand: object) -> TypeGuard[bytes | bytearray | memoryview]:
+    """What every operation that takes bytes accepts (spec §11.1, docs/10 §4):
+    `bytes`, `bytearray`, or a `memoryview` that is one-dimensional,
+    contiguous and of format "B" -- the view `memoryview(b)` gives over
+    either. A view of wider items, a strided view or a multi-dimensional one
+    is bytes-typed and still unusable: the AEAD refuses it with a raw error,
+    `len()` counts its items rather than its bytes, and a normalizer would
+    index its machine-endian bytes (#254)."""
+    if isinstance(operand, bytes | bytearray):
+        return True
+    if not isinstance(operand, memoryview):
+        return False
+    try:
+        return (operand.ndim == 1 and operand.format == "B"
+                and operand.c_contiguous)
+    except ValueError:  # a released view
+        return False
+
+
+def describe_operand(operand: object) -> str:
+    """The refused operand's type, for an INVALID_ARGUMENT message."""
+    if isinstance(operand, memoryview):
+        return ("a memoryview that is not a one-dimensional, contiguous view "
+                "of format 'B'")
+    return type(operand).__name__
 
 
 def _view(blob: object) -> memoryview | None:

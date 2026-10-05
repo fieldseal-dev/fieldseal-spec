@@ -44,7 +44,9 @@ from .envelope import (
     FMT_VER,
     MAX_PLAINTEXT,
     EnvelopeHeader,
+    describe_operand,
     implied_plaintext_len,
+    is_byte_string,
     is_ciphertext,
     recognize,
     serialize_header,
@@ -99,14 +101,16 @@ def _backend(suite_id: int) -> GcmBackend:
 
 def _require_bytes(operand: object,
                    op: str) -> bytes | bytearray | memoryview:
-    """Every operation but `blind_index` takes bytes (spec §11.1, docs/10 §4),
-    and anything else is refused as INVALID_ARGUMENT, never coerced: `bytes()`
-    on an int is that many zero bytes, so 42 would be encrypted, decrypted or
-    rotated as 42 NULs, and an int the size of a phone number allocates
-    gigabytes before anything refuses (#251, #254)."""
-    if not isinstance(operand, bytes | bytearray | memoryview):
+    """`encrypt`, `decrypt` and `rotate` take bytes (spec §11.1, docs/10 §4;
+    `envelope.is_byte_string`), and anything else is refused as
+    INVALID_ARGUMENT, never coerced: `bytes()` on an int is that many zero
+    bytes, so 42 would be encrypted, decrypted or rotated as 42 NULs, and an
+    int the size of a phone number allocates gigabytes before anything
+    refuses (#251, #254). Not for `is_ciphertext`, which spec §3.4 makes
+    total, nor for `blind_index`, which also takes text."""
+    if not is_byte_string(operand):
         raise InvalidArgument(
-            f"{op} takes bytes, not {type(operand).__name__}")
+            f"{op} takes bytes, not {describe_operand(operand)}")
     return operand
 
 
@@ -213,17 +217,19 @@ class Fieldseal:
 
     # -- gates ------------------------------------------------------------
     def _write_boundary(self, operand: object, ctx: FieldContext,
-                        op: str = "encrypt") -> Suite:
+                        op: str = "encrypt",
+                        max_len: int | None = MAX_PLAINTEXT) -> Suite:
         """Every refusal spec §9 places "at the API boundary, before key
         acquisition", in one order: MODE_VIOLATION, then SUITE_PROVISIONAL,
         then an operand that is not bytes, then LENGTH_EXCEEDED, then the
         operand's context. Refusals that follow from configuration come before
-        any look at the operand; the spec does not rank the three (docs/18
-        D-04), so the report declares this order
+        any look at the operand; the spec does not rank its three §9 codes
+        among themselves (docs/18 D-04), so the report declares this order
         (`pinned_decisions.api-boundary-order`).
 
-        `rotate`'s operand is an envelope, not a plaintext, so the §3.5 bound
-        on it is the decrypt side's, which `decrypt` applies."""
+        `rotate` passes `max_len=None`: its operand is an envelope, not a
+        plaintext, so the §3.5 bound on it is the decrypt side's, which
+        `decrypt` applies."""
         if self._read_mode == "readonly":
             raise ModeViolation(
                 f"operation not permitted: mode is {self._read_mode!r} and "
@@ -235,9 +241,9 @@ class Fieldseal:
                 f"independently reviewed; set {PROVISIONAL_ENV}=1 or pass "
                 "arm_provisional_suites=True to proceed anyway")
         plaintext = _require_bytes(operand, op)
-        if op == "encrypt" and len(plaintext) > MAX_PLAINTEXT:
+        if max_len is not None and len(plaintext) > max_len:
             raise LengthExceeded(f"plaintext exceeds the §3.5 bound "
-                                 f"({len(plaintext)} > {MAX_PLAINTEXT})")
+                                 f"({len(plaintext)} > {max_len})")
         if ctx.purpose != "encrypt":
             raise InvalidArgument(
                 f"encrypt requires purpose 'encrypt', got {ctx.purpose!r}; "
@@ -431,10 +437,17 @@ class Fieldseal:
         A reserved future version byte still raises `UNKNOWN_FORMAT_VERSION`
         rather than `NOT_CIPHERTEXT`: recognition (spec §3.4) runs first and
         distinguishes the two, and a v2 envelope is emphatically not
-        unmigrated plaintext. An operand that is not bytes at all is
-        `INVALID_ARGUMENT`, as it is for `encrypt` and `decrypt` (#254).
+        unmigrated plaintext.
+
+        An operand that is not bytes at all is `INVALID_ARGUMENT`, as it is
+        for `encrypt` and `decrypt` (#254). That is a reading of §11.1, whose
+        `NOT_CIPHERTEXT` sentence is about non-envelope *input*: an argument
+        outside the signature's `bytes` is taken to be outside the
+        operation's domain, not input that failed recognition. The spec does
+        not say so; the report declares it
+        (`pinned_decisions.api-boundary-order`).
         """
-        self._write_boundary(blob, ctx, "rotate")
+        self._write_boundary(blob, ctx, "rotate", max_len=None)
         if recognize(blob) is None:
             raise NotCiphertext(
                 "rotate requires an envelope; this input is not one "

@@ -10,6 +10,7 @@ the conformance report is a statement about code that is actually tested.
 
 from __future__ import annotations
 
+import array
 import mmap
 import os
 import sys
@@ -288,6 +289,82 @@ def test_normalize_refuses_an_operand_that_is_neither_text_nor_bytes(
         normalize(normalizer, operand)
 
 
+def _released_view():
+    mv = memoryview(b"secret")
+    mv.release()
+    return mv
+
+
+# Bytes-typed and unusable: the AEAD refused the first three with a raw
+# `TypeError` or `BufferError` after the provider had been consulted, `len()`
+# undercounts the 2-D one, and a normalizer indexed the wide one's
+# machine-endian bytes with no error.
+UNUSABLE_VIEWS = {
+    "wide-items": lambda: memoryview(array.array("I", [1, 2, 3])),
+    "signed-bytes": lambda: memoryview(b"secret").cast("b"),
+    "strided": lambda: memoryview(b"s_e_c_r_e_t")[::2],
+    "two-dimensional": lambda: memoryview(b"secret").cast("B", [2, 3]),
+    "released": _released_view,
+}
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive"])
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate"])
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_a_memoryview_the_operation_cannot_use_is_refused(mode, op, view):
+    fs = _client(mode, provider=_Untouchable())
+    with pytest.raises(InvalidArgument, match=f"{op} takes bytes, not a memoryview"):
+        getattr(fs, op)(UNUSABLE_VIEWS[view](), CTX)
+    assert fs.plaintext_reads == 0
+
+
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_blind_index_refuses_a_memoryview_it_cannot_use(view):
+    fs = _client(provider=_Untouchable(), indexes=[_decl()])
+    with pytest.raises(InvalidArgument,
+                       match="blind_index takes str or bytes, not a memoryview"):
+        fs.blind_index(UNUSABLE_VIEWS[view](), CTX.for_index("email-eq"))
+
+
+class _HasDunderBytes:
+    def __bytes__(self):
+        return b"secret"
+
+
+def _mmap_of_secret():
+    m = mmap.mmap(-1, 6)
+    m[:] = b"secret"
+    return m
+
+
+# Accepted on `dev` before #254 by `encrypt` (the first two) and `blind_index`
+# (all three), and refused by `decrypt` since #251. A caller holding one wraps
+# it: `memoryview(...)` over any of the first two is accepted.
+NO_LONGER_ACCEPTED = {
+    "array": lambda: array.array("B", b"secret"),
+    "mmap": _mmap_of_secret,
+    "__bytes__": _HasDunderBytes,
+}
+
+
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate", "blind_index"])
+@pytest.mark.parametrize("kind", sorted(NO_LONGER_ACCEPTED))
+def test_other_buffer_types_are_refused_and_a_memoryview_over_them_is_not(
+        op, kind):
+    fs = _client(indexes=[_decl()])
+    ctx = CTX.for_index("email-eq") if op == "blind_index" else CTX
+    with pytest.raises(InvalidArgument, match="takes"):
+        getattr(fs, op)(NO_LONGER_ACCEPTED[kind](), ctx)
+    if kind == "__bytes__":
+        return
+    if op == "blind_index":
+        assert (fs.blind_index(memoryview(NO_LONGER_ACCEPTED[kind]()), ctx)
+                == fs.blind_index(b"secret", ctx))
+    elif op == "encrypt":
+        blob = fs.encrypt(memoryview(NO_LONGER_ACCEPTED[kind]()), CTX)
+        assert fs.decrypt(blob, CTX) == b"secret"
+
+
 @pytest.mark.parametrize("wrap", [bytearray, memoryview])
 def test_encrypt_and_rotate_still_take_any_bytes_like(wrap):
     fs = _client()
@@ -549,6 +626,8 @@ def test_testing_seam_runs_the_same_boundary(monkeypatch):
     with pytest.raises(LengthExceeded):
         encrypt_with_materials(_client(), bytes(MAX_PLAINTEXT + 1), CTX,
                                seed, nonce)
+    with pytest.raises(InvalidArgument, match="encrypt takes bytes, not int"):
+        encrypt_with_materials(_client(), 42, CTX, seed, nonce)
     out = encrypt_with_materials(_client(), b"x", CTX, seed, nonce)
     assert _client().decrypt(out, CTX) == b"x"
 

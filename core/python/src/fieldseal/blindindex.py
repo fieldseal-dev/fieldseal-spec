@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import unicode
+from .envelope import describe_operand, is_byte_string
 from .errors import ConfigurationError, InvalidArgument
 from .kdf import hkdf_sha512
 
@@ -61,14 +62,14 @@ def truncate(raw: bytes, b_bits: int) -> bytes:
 # -- normalizers (docs/09 §7: a closed, versioned set; portability surface) ---
 
 def require_index_operand(value: object, op: str) -> None:
-    """An index operand is text or a bytes-like, and nothing else (docs/10
-    §4). Anything else is refused, never coerced: `bytes(42)` is 42 NUL
-    bytes, so an int would be indexed as that many NULs -- equal to the index
-    of `bytes(42)`, different from the index of `"42"`, and with no error
-    (#254)."""
-    if not isinstance(value, str | bytes | bytearray | memoryview):
+    """An index operand is text or bytes (`envelope.is_byte_string`), and
+    nothing else (docs/09 §7.1, docs/10 §4). Anything else is refused, never
+    coerced: `bytes(42)` is 42 NUL bytes, so an int would be indexed as that
+    many NULs -- equal to the index of `bytes(42)`, different from the index
+    of `"42"`, and with no error (#254)."""
+    if not (isinstance(value, str) or is_byte_string(value)):
         raise InvalidArgument(
-            f"{op} takes str or bytes, not {type(value).__name__}")
+            f"{op} takes str or bytes, not {describe_operand(value)}")
 
 
 def _as_text(value: str | bytes) -> str:
