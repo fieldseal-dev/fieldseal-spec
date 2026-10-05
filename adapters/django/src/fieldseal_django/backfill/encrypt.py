@@ -10,13 +10,15 @@ cursor. A process killed at any point leaves the whole batch or none of it.
 recorded as `CONTEXT_UNAVAILABLE` and left as they were: the adapter takes
 the tenant from a context variable, and the procedure does not yet say how a
 run records where a row's tenant comes from (#244). In place on a `base64`
-column is refused at start (#245). Replication-lag throttling is not
-implemented.
+column is refused at start (#245). In place on SQLite fails every value
+whose storage class is TEXT, which is what `AlterField` leaves (#251).
+Replication-lag throttling is not implemented.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import Callable
@@ -32,7 +34,7 @@ from .. import __version__
 from ..apps import get_client
 from ..errors import FieldsealNotSupported
 from ..fields import Encrypted
-from ..query import FieldsealManager
+from ..query import FieldsealManager, FieldsealQuerySet
 from . import PROCEDURE_VERSION, BackfillError, config, cursor, state
 from .ratelimit import TokenBucket
 
@@ -59,7 +61,10 @@ class Limits:
     def __post_init__(self) -> None:
         if self.batch_size < 1:
             raise BackfillError("--batch-size must be at least 1")
-        if not self.rows_per_second > 0:
+        # Infinity is refused with zero and NaN: the bucket would refill to
+        # full on every call, which is the unlimited setting by another name.
+        if not (self.rows_per_second > 0
+                and math.isfinite(self.rows_per_second)):
             raise BackfillError(
                 "--rows-per-second must be greater than 0. There is always "
                 "a limit (PROCEDURE §5.3).")
@@ -131,9 +136,10 @@ def plan(model: Any, columns: list[str] | None,
         raise BackfillError(
             f"{name}'s default manager is a "
             f"{type(model._default_manager).__name__}, not a FieldsealManager, "
-            f"and {', '.join(indexed)} carries a blind index. The backfill "
-            "writes through `bulk_update` on that manager, and a plain "
-            "manager leaves the index unwritten (docs/12 §6).")
+            f"and {', '.join(indexed)} carries a blind index. The "
+            "application's `update` and `bulk_update` through a plain "
+            "manager leave the index stale (docs/12 §6, system check "
+            "fieldseal.E008). Fix the manager before converting the table.")
 
     plain = {f.name: f for f in model._meta.concrete_fields
              if not isinstance(f, Encrypted)}
@@ -334,7 +340,10 @@ class Runner:
         self.resumed = resumed
         self.hooks = hooks or Hooks()
         self._connection = connections[p.alias]
-        self._manager = p.model._default_manager.using(p.alias)
+        # Not the default manager, which may filter (a soft-delete manager):
+        # `select_batch` is raw SQL and sees every row, and a row it selects
+        # that the manager hides would be neither read nor written.
+        self._queryset = FieldsealQuerySet(model=p.model, using=p.alias)
         self._client = get_client()
         self._clock = clock
         self._sleep = sleep
@@ -482,7 +491,7 @@ class Runner:
         keys = {row.key for row, i in pending if p.targets[i][1] is not None}
         if not names or not keys:
             return {}
-        found = self._manager.filter(pk__in=keys).values_list("pk", *names)
+        found = self._queryset.filter(pk__in=keys).values_list("pk", *names)
         return {record[0]: record[1:] for record in found}
 
     def _encrypt(self, row: cursor.Row, i: int, target: Any, source: Any,
@@ -515,7 +524,7 @@ class Runner:
             # the statement is compiled would mark the whole batch for
             # rollback.
             with transaction.atomic(using=p.alias):
-                updated = self._manager.bulk_update([obj], [target.name])
+                updated = self._queryset.bulk_update([obj], [target.name])
             return None if updated == 1 else "INTERNAL"
         except DatabaseError:
             raise

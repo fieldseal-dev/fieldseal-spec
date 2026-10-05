@@ -41,6 +41,7 @@ from fieldseal_django.backfill import BackfillError, config, cursor, encrypt, st
 from fieldseal_django.backfill.census import census
 from fieldseal_django.backfill.ratelimit import TokenBucket
 from fieldseal_django.backfill.report import PREEXISTING_BACKUPS
+from fieldseal_django.query import FieldsealManager
 from tests.models import (
     LegacyInPlace,
     LegacyTwoColumn,
@@ -326,6 +327,38 @@ def test_bf01_the_index_written_is_the_one_a_save_would_write(shape):
     twin = shape.model.objects.create(**{shape.field: "same@backfill.example"})
     assert raw(shape.model, pk, shape.index) == raw(
         shape.model, twin.pk, shape.index)
+
+
+def test_a_row_the_default_manager_hides_is_converted(shape, monkeypatch):
+    """A soft-delete default manager filters rows out of every queryset it
+    hands back. The batch selects with raw SQL and sees them all, so the
+    legacy read and the write must not go through that manager: a hidden
+    row was classified pending, then neither read nor written."""
+    values = emails(3)
+    keys = shape.seed(values)
+    hidden = keys[1]
+
+    class Hiding(FieldsealManager):
+        def get_queryset(self):
+            return super().get_queryset().exclude(pk=hidden)
+
+    manager = Hiding()
+    manager.model = shape.model
+    monkeypatch.setitem(
+        shape.model._meta.__dict__, "default_manager", manager)
+    assert [o.pk for o in shape.model._default_manager.all()] == [
+        keys[0], keys[2]]
+
+    outcome = go(shape)
+
+    assert outcome.run.status == "complete"
+    assert (outcome.run.values_written, outcome.run.values_failed) == (3, 0)
+    assert outcome.failures_by_code == {}
+    assert non_envelopes(shape.model, shape.field) == {
+        "null": 0, "envelope": 3, "non_envelope": 0}
+    assert getattr(shape.model.objects.get(pk=hidden), shape.field) == values[1]
+    found = shape.model.objects.filter(**{shape.field: values[1]})
+    assert [o.pk for o in found] == [hidden]
 
 
 def test_bf01_through_the_command(shape):
@@ -661,6 +694,28 @@ def test_bf09_the_report_says_the_table_is_not_fully_converted(in_place):
     assert report["failures_by_code"] == {"UNKNOWN_FORMAT_VERSION": 1}
 
 
+@pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
+def test_in_place_on_sqlite_a_text_class_value_fails_and_is_left(in_place):
+    """The limit `docs/12` §7 states. SQLite keeps a value's storage class
+    whatever the column is declared as, so a column rebuilt from a
+    `CharField` by `AlterField` holds TEXT inside a `BLOB` column. The
+    adapter's read hands the core a `str`, and the value is one failure
+    (#251)."""
+    keys = in_place.seed(emails(3))
+    plant(LegacyInPlace, keys[1], "secret", "text@backfill.example")
+    with connection.cursor() as cur:
+        cur.execute("SELECT typeof(secret) FROM tests_legacyinplace "
+                    "ORDER BY id")
+        assert [r[0] for r in cur.fetchall()] == ["blob", "text", "blob"]
+
+    outcome = go(in_place)
+
+    assert (outcome.run.values_written, outcome.run.values_failed) == (2, 1)
+    assert outcome.failures_by_code == {"INTERNAL": 1}
+    assert raw(LegacyInPlace, keys[1], "secret") == "text@backfill.example"
+    assert raw(LegacyInPlace, keys[1], "secret_bidx") is None
+
+
 def test_a_target_holding_something_else_is_anomalous_and_untouched():
     keys = TwoColumn().seed(emails(3))
     plant(LegacyTwoColumn, keys[0], "email", b"not an envelope")
@@ -810,7 +865,7 @@ def test_the_bucket_never_holds_more_than_one_batch():
 
 
 def test_there_is_no_unlimited_setting():
-    for bad in (0, -1, float("nan")):
+    for bad in (0, -1, float("nan"), float("inf")):
         with pytest.raises(BackfillError):
             encrypt.Limits(rows_per_second=bad)
     with pytest.raises(BackfillError):
