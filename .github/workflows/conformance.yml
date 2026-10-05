@@ -319,10 +319,23 @@ jobs:
       - name: No cryptographic code in the adapter
         working-directory: adapters/django
         run: |
-          if grep -rnE "^\s*(import|from)\s+(cryptography|hashlib|hmac|secrets|argon2|nacl|Crypto)\b" src/; then
+          # One file is excluded by name: backfill/confighash.py takes the
+          # SHA-256 of the backfill's configuration document, which
+          # tools/backfill/PROCEDURE.md §4 says is a change detector over
+          # public configuration and not cryptographic code in AD-1's sense.
+          # The lines after the grep keep that file to its one function, so
+          # the exclusion cannot grow into a place to put anything else.
+          if grep -rnE --exclude=confighash.py "^\s*(import|from)\s+(cryptography|hashlib|hmac|secrets|argon2|nacl|Crypto)\b" src/; then
             echo "AD-1 violation: an adapter must contain no cryptographic code (spec §11.3)."
             exit 1
           fi
+          excluded=src/fieldseal_django/backfill/confighash.py
+          test "$(find src -name confighash.py | wc -l)" -eq 1
+          test "$(grep -cE '^\s*(import|from)\s' "$excluded")" -eq 2
+          grep -qxF 'from __future__ import annotations' "$excluded"
+          grep -qxF 'import hashlib' "$excluded"
+          test "$(grep -cE '^\s*(def|class)\s' "$excluded")" -eq 1
+          grep -qxF 'def sha256_hex(data: bytes) -> str:' "$excluded"
           echo "AD-1 holds: no cryptographic imports in adapters/django/src."
 
       - name: ruff and mypy --strict
