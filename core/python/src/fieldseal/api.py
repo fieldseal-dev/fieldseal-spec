@@ -33,8 +33,10 @@ from .blindindex import (
     UNINDEXABLE_PREIMAGE,
     IndexDeclaration,
     ValidatedIndex,
+    describe_operand,
     idf,
     index_registry_key,
+    is_byte_string,
     require_index_operand,
     truncate,
     validate_index_declaration,
@@ -44,9 +46,7 @@ from .envelope import (
     FMT_VER,
     MAX_PLAINTEXT,
     EnvelopeHeader,
-    describe_operand,
     implied_plaintext_len,
-    is_byte_string,
     is_ciphertext,
     recognize,
     serialize_header,
@@ -102,7 +102,7 @@ def _backend(suite_id: int) -> GcmBackend:
 def _require_bytes(operand: object,
                    op: str) -> bytes | bytearray | memoryview:
     """`encrypt`, `decrypt` and `rotate` take bytes (spec §11.1, docs/10 §4;
-    `envelope.is_byte_string`), and anything else is refused as
+    `blindindex.is_byte_string`), and anything else is refused as
     INVALID_ARGUMENT, never coerced: `bytes()` on an int is that many zero
     bytes, so 42 would be encrypted, decrypted or rotated as 42 NULs, and an
     int the size of a phone number allocates gigabytes before anything

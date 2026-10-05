@@ -11,6 +11,7 @@ the conformance report is a statement about code that is actually tested.
 from __future__ import annotations
 
 import array
+import ctypes
 import mmap
 import os
 import sys
@@ -38,6 +39,7 @@ from fieldseal.envelope import (  # noqa: E402
     MIN_ENVELOPE_LEN,
     EnvelopeHeader,
     is_ciphertext,
+    recognize,
     serialize_header,
 )
 from fieldseal.errors import (  # noqa: E402
@@ -295,16 +297,20 @@ def _released_view():
     return mv
 
 
-# Bytes-typed and unusable: the AEAD refused the first three with a raw
+# Bytes-typed and refused. The AEAD refused the first three with a raw
 # `TypeError` or `BufferError` after the provider had been consulted, `len()`
 # undercounts the 2-D one, and a normalizer indexed the wide one's
-# machine-endian bytes with no error.
+# machine-endian bytes with no error. The last two worked on `dev` where the
+# operation could read them (the strided one too, in `decrypt`'s pass-through
+# and `blind_index`); they are refused because the rule is the format, not the
+# operation's tolerance, and `.cast("B")` or `bytes(...)` is the way through.
 UNUSABLE_VIEWS = {
     "wide-items": lambda: memoryview(array.array("I", [1, 2, 3])),
     "signed-bytes": lambda: memoryview(b"secret").cast("b"),
     "strided": lambda: memoryview(b"s_e_c_r_e_t")[::2],
     "two-dimensional": lambda: memoryview(b"secret").cast("B", [2, 3]),
-    "released": _released_view,
+    "ctypes-ubyte": lambda: memoryview((ctypes.c_ubyte * 6)(*b"secret")),
+    "char": lambda: memoryview(b"secret").cast("c"),
 }
 
 
@@ -313,7 +319,9 @@ UNUSABLE_VIEWS = {
 @pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
 def test_a_memoryview_the_operation_cannot_use_is_refused(mode, op, view):
     fs = _client(mode, provider=_Untouchable())
-    with pytest.raises(InvalidArgument, match=f"{op} takes bytes, not a memoryview"):
+    with pytest.raises(InvalidArgument, match=(
+            f"{op} takes bytes, not a memoryview that is not a "
+            "one-dimensional, contiguous view of format 'B'")):
         getattr(fs, op)(UNUSABLE_VIEWS[view](), CTX)
     assert fs.plaintext_reads == 0
 
@@ -324,6 +332,29 @@ def test_blind_index_refuses_a_memoryview_it_cannot_use(view):
     with pytest.raises(InvalidArgument,
                        match="blind_index takes str or bytes, not a memoryview"):
         fs.blind_index(UNUSABLE_VIEWS[view](), CTX.for_index("email-eq"))
+
+
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate", "blind_index"])
+def test_a_released_view_is_refused_and_named_as_released(op):
+    """A released view was one-dimensional, contiguous and of format 'B'; the
+    shape message would send its caller looking for the wrong fix."""
+    fs = _client("permissive", provider=_Untouchable(), indexes=[_decl()])
+    ctx = CTX.for_index("email-eq") if op == "blind_index" else CTX
+    with pytest.raises(InvalidArgument, match="not a released memoryview$"):
+        getattr(fs, op)(_released_view(), ctx)
+    assert fs.plaintext_reads == 0
+
+
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_a_refused_view_is_accepted_once_cast_or_copied(view):
+    """The way through for a caller whose view is refused: `.cast("B")` where
+    the view allows it, `bytes(...)` always."""
+    mv = UNUSABLE_VIEWS[view]()
+    fs = _client(indexes=[_decl()])
+    blob = fs.encrypt(bytes(mv), CTX)
+    assert fs.decrypt(blob, CTX) == bytes(mv)
+    if mv.c_contiguous and mv.ndim == 1:
+        assert fs.decrypt(fs.encrypt(mv.cast("B"), CTX), CTX) == bytes(mv)
 
 
 class _HasDunderBytes:
@@ -382,11 +413,13 @@ def test_blind_index_still_takes_any_bytes_like(wrap):
 
 
 @pytest.mark.parametrize("mode", ["strict", "permissive", "readonly"])
-@pytest.mark.parametrize("operand", NOT_BYTES + [b"", b"plain text"])
+@pytest.mark.parametrize("operand", NOT_BYTES + [b"", b"plain text",
+                                                 _released_view()])
 def test_client_is_ciphertext_stays_total(mode, operand):
     """Spec §3.4: the predicate is total, and the backfill asks it about
     exactly these values on a partially migrated column. It answers False,
-    never raises, in every mode."""
+    never raises, in every mode. A released view raised `ValueError` until
+    #256's review round 2: recognition caught only `TypeError`."""
     assert _client(mode).is_ciphertext(operand) is False
 
 
@@ -753,6 +786,13 @@ def test_every_prefix_of_a_valid_envelope_is_a_typed_error(wrap):
 
 @pytest.mark.parametrize("value", [None, 0, 1.5, "", "str", [], {}, object(),
                                    memoryview(bytearray(range(8))).cast("B"),
-                                   memoryview(b"\x01\xff\x01" * 40)[::2]])
+                                   memoryview(b"\x01\xff\x01" * 40)[::2],
+                                   _released_view()])
 def test_is_ciphertext_is_total_over_non_bytes_too(value):
     assert is_ciphertext(value) in (True, False)
+
+
+def test_recognition_is_total_over_a_released_view():
+    """`recognize` states it is total, and `is_ciphertext` inherits that; a
+    released view raised `ValueError` from both until #256's review round 2."""
+    assert recognize(_released_view()) is None
