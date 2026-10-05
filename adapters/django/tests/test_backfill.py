@@ -272,9 +272,16 @@ def state_dump():
     return "\n".join(out)
 
 
+_RUN_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
 def assert_no_leak(text, model, plaintexts, columns):
     """PROCEDURE §9 item 5, over output and both state tables."""
-    haystack = text + "\n" + state_dump()
+    # A run id is a random UUID the tool makes up, and a 15-bit index is two
+    # bytes: its four hex digits turn up inside one by chance (seen: `9be8`).
+    # A run id carries no value, so run ids are taken out before the search.
+    haystack = _RUN_ID.sub("<run>", text + "\n" + state_dump())
     for value in plaintexts:
         assert value not in haystack
     for column in columns:
@@ -902,6 +909,19 @@ def test_bf16_no_value_envelope_or_index_in_output_or_state(shape):
                      for part in result)
     assert_no_leak(text, shape.model, values + ["zebra-secret"],
                    [shape.field, shape.index])
+
+
+def test_the_leak_check_finds_an_index_but_not_inside_a_run_id(in_place):
+    """BF-16's own check: it still sees an index in the output, and the
+    same four hex digits inside a run id are not one."""
+    (pk,) = in_place.seed(["zebra-secret@backfill.example"])
+    go(in_place)
+    index = raw(LegacyInPlace, pk, "secret_bidx").hex()
+
+    with pytest.raises(AssertionError):
+        assert_no_leak(f"index {index}", LegacyInPlace, [], ["secret_bidx"])
+    assert_no_leak(f"run c74d6142-{index}-4fbd-a687-2ee885ad95ce",
+                   LegacyInPlace, [], ["secret_bidx"])
 
 
 def test_bf16_a_database_error_is_reported_by_type_only(shape, monkeypatch):
