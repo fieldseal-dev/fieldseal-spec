@@ -170,14 +170,29 @@ def test_the_value_read_saves_as_an_envelope_strict_can_read(make_inner,
 
 @sqlite_only
 @isolate_apps("tests")
-def test_text_the_inner_field_cannot_read_is_refused_not_coerced():
-    """SQLite's date parser returns None for text that is not a date; that
-    is a refusal with the adapter's error, never a NULL or a guessed date."""
-    with altered(models.TextField, "not a date",
-                 encrypted_inner=models.DateField) as (Sealed, pk, _):
-        with read_mode("permissive"), pytest.raises(
-                FieldsealNotSupported, match="DateField could not read it"):
-            Sealed.objects.get(pk=pk)
+@pytest.mark.parametrize(("inner", "text"), [
+    (models.DateField, "not a date"),
+    (models.DateTimeField, "not-a-timestamp"),
+    (models.DateTimeField, ""),
+    (models.DateTimeField, "2026-02-30 00:00:00"),
+], ids=["date-garbage", "datetime-garbage", "datetime-empty",
+        "datetime-impossible-day"])
+@pytest.mark.parametrize("mode", ["permissive", "readonly"])
+def test_text_the_inner_field_cannot_read_is_refused_and_counted(
+        mode, inner, text):
+    """Django's parsers return None for text they cannot parse (the datetime
+    converter then fails on it with `AttributeError`), and an impossible day
+    raises `ValueError`. Each is a refusal with the adapter's error, never a
+    NULL, a guessed value or `INTERNAL`. It is still a plaintext read: the
+    core's count is the cut-over gate, and these rows must show in it."""
+    name = inner.__name__
+    with altered(models.TextField, text,
+                 encrypted_inner=inner) as (Sealed, pk, _):
+        with read_mode(mode) as client:
+            with pytest.raises(FieldsealNotSupported,
+                               match=f"{name} could not read it"):
+                Sealed.objects.get(pk=pk)
+            assert client.plaintext_reads == 1
         with read_mode("strict"), pytest.raises(NotCiphertext):
             Sealed.objects.get(pk=pk)
 
@@ -191,9 +206,11 @@ def test_text_in_a_bytes_column_is_not_base64_decoded():
     with altered(models.TextField, "Zm9v",
                  encrypted_inner=models.BinaryField) as (Sealed, pk, _):
         assert storage_class(Sealed, pk) == "text"
-        with read_mode("permissive"), pytest.raises(
-                FieldsealNotSupported, match="takes bytes, not str"):
-            Sealed.objects.get(pk=pk)
+        with read_mode("permissive") as client:
+            with pytest.raises(FieldsealNotSupported,
+                               match="takes bytes, not str"):
+                Sealed.objects.get(pk=pk)
+            assert client.plaintext_reads == 1
 
 
 @sqlite_only

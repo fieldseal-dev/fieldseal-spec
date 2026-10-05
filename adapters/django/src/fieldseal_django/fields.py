@@ -370,8 +370,18 @@ class Encrypted(models.Field):
             # Not an envelope whatever it holds (`_render_legacy`). Strict
             # refuses it unread: the core's NOT_CIPHERTEXT for an empty
             # operand, so a value the inner field cannot read changes nothing.
-            blob = (b"" if client.read_mode == "strict"
-                    else self._render_legacy(value, connection))
+            if client.read_mode == "strict":
+                blob = b""
+            else:
+                try:
+                    blob = self._render_legacy(value, connection)
+                except FieldsealNotSupported:
+                    # Still a plaintext read: the core's count (spec §10.3)
+                    # is what says a backfill is done (§11.1), and these are
+                    # the rows it must not hide. An empty operand is the
+                    # core's pass-through, counted there.
+                    client.decrypt(b"", self.fieldseal_context())
+                    raise
         else:
             blob = _to_bytes_from_db(value, self.storage)
         return codec.from_bytes(self.inner, client.decrypt(
