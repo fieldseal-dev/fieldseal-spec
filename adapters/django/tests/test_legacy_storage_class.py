@@ -24,7 +24,7 @@ import pytest
 from django.conf import settings
 from django.db import connection, models
 from django.test.utils import isolate_apps, override_settings
-from fieldseal.errors import NotCiphertext
+from fieldseal.errors import NotCiphertext, UnknownFormatVersion
 
 from fieldseal_django import Encrypted, FieldsealMeta
 from fieldseal_django.apps import get_client, reset_client
@@ -53,6 +53,10 @@ CASES = [
     ("float", models.FloatField, 1.5, "real"),
     ("decimal", lambda: models.DecimalField(max_digits=10, decimal_places=2),
      decimal.Decimal("1.50"), "real"),
+    # NUMERIC affinity stores a whole-valued decimal as an INTEGER.
+    ("decimal-whole",
+     lambda: models.DecimalField(max_digits=10, decimal_places=2),
+     decimal.Decimal("2.00"), "integer"),
     ("bool", models.BooleanField, True, "integer"),
     ("date", models.DateField, dt.date(2026, 10, 5), "text"),
     ("datetime", models.DateTimeField,
@@ -189,6 +193,19 @@ def test_text_in_a_bytes_column_is_not_base64_decoded():
         assert storage_class(Sealed, pk) == "text"
         with read_mode("permissive"), pytest.raises(
                 FieldsealNotSupported, match="takes bytes, not str"):
+            Sealed.objects.get(pk=pk)
+
+
+@sqlite_only
+@isolate_apps("tests")
+def test_a_legacy_value_still_meets_the_reserved_version_rule():
+    """The rendered bytes go through the core's recognition like any other
+    operand, so spec §3.4's stated cost applies to a legacy value as it does
+    to a legacy `bytea`: 111 bytes or more starting with 0x02 is refused in
+    every mode, never passed through."""
+    with altered(models.TextField, "\x02" + "a" * 120) as (Sealed, pk, _):
+        assert storage_class(Sealed, pk) == "text"
+        with read_mode("permissive"), pytest.raises(UnknownFormatVersion):
             Sealed.objects.get(pk=pk)
 
 
