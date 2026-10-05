@@ -248,6 +248,13 @@ class Fieldseal:
                 + nonce + ct + tag + commitment(rk))
 
     def decrypt(self, blob: bytes, ctx: FieldContext) -> bytes:
+        # 0. The operand is bytes (spec §11.1, docs/10 §4), refused otherwise
+        #    in every mode. Without this the pass-through below coerced it:
+        #    `bytes(42)` is 42 zero bytes, and an int the size of a phone
+        #    number allocates gigabytes before anything refuses (#251).
+        if not isinstance(blob, bytes | bytearray | memoryview):
+            raise InvalidArgument(
+                f"decrypt takes bytes, not {type(blob).__name__}")
         # 1. Every read mode may decrypt (spec §10.3).
         # 2. Recognition (spec §3.4), before policy: an unregistered suite or
         #    an implausible length is "not one of ours", never SUITE_NOT_ALLOWED.

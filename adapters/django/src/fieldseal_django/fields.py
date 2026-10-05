@@ -364,9 +364,55 @@ class Encrypted(models.Field):
     def from_db_value(self, value: Any, expression: Any, connection: Any) -> Any:
         if value is None:
             return None
-        blob = _to_bytes_from_db(value, self.storage)
-        return codec.from_bytes(self.inner, _client().decrypt(
+        client = _client()
+        if self.storage == "binary" and not isinstance(
+                value, bytes | bytearray | memoryview):
+            # Not an envelope whatever it holds (`_render_legacy`). Strict
+            # refuses it unread: the core's NOT_CIPHERTEXT for an empty
+            # operand, so a value the inner field cannot read changes nothing.
+            blob = (b"" if client.read_mode == "strict"
+                    else self._render_legacy(value, connection))
+        else:
+            blob = _to_bytes_from_db(value, self.storage)
+        return codec.from_bytes(self.inner, client.decrypt(
             blob, self.fieldseal_context()))
+
+    def _render_legacy(self, value: Any, connection: Any) -> bytes:
+        """A `binary` column's value that is not bytes, as spec §3.6 bytes.
+
+        This adapter only ever writes bytes, so such a value is never an
+        envelope: it is a legacy value whose storage class SQLite kept when
+        `AlterField` rebuilt the column. A `CharField` changed to
+        `Encrypted(CharField)` holds TEXT inside a column declared `BLOB`, an
+        `IntegerField` INTEGER, a `FloatField` REAL (#251). Postgres `bytea`
+        only ever yields bytes, so this never runs there.
+
+        The value is read the way the inner field read it before the
+        `AlterField` -- the backend's converters for the inner field, then
+        the field's own, in the compiler's order -- and rendered by the codec,
+        as a write would render it. The core then sees the bytes an
+        encryption of the value would have started from, and passes them
+        through as spec §10.3 has it (strict never calls this). Handing it
+        the text's UTF-8 instead would be right for a string and a date only:
+        Django keeps a datetime on SQLite as `2026-10-05 12:34:56.123456`,
+        which is not §3.6's rendering, and an INTEGER or REAL is not text.
+        """
+        expression = self.inner.get_col(self.model._meta.db_table)
+        converters = (connection.ops.get_db_converters(expression)
+                      + self.inner.get_db_converters(connection))
+        stored = type(value).__name__
+        refusal = FieldsealNotSupported(
+            f"a {stored} value in binary column {self.name!r} is not an "
+            f"envelope, and {type(self.inner).__name__} could not read it")
+        try:
+            for converter in converters:
+                value = converter(value, expression, connection)
+        except Exception as e:  # noqa: BLE001 - the backend's own coercion
+            raise refusal from e
+        if value is None:
+            # SQLite's date parser returns None for text that is not a date.
+            raise refusal
+        return codec.to_bytes(self.inner, value)
 
     def value_to_string(self, obj: models.Model) -> str:
         """`dumpdata` emits base64 ciphertext (`docs/04` §1 gotcha).
