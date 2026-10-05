@@ -10,6 +10,8 @@ the conformance report is a statement about code that is actually tested.
 
 from __future__ import annotations
 
+import array
+import ctypes
 import mmap
 import os
 import sys
@@ -24,13 +26,20 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("FIELDSEAL_TEST_MODE", "1")
 
-from fieldseal import FieldContext, Fieldseal, IndexDeclaration  # noqa: E402
+from fieldseal import (  # noqa: E402
+    CardinalityOverride,
+    FieldContext,
+    Fieldseal,
+    IndexDeclaration,
+    normalize,
+)
 from fieldseal.blindindex import NORMALIZERS  # noqa: E402
 from fieldseal.envelope import (  # noqa: E402
     MAX_PLAINTEXT,
     MIN_ENVELOPE_LEN,
     EnvelopeHeader,
     is_ciphertext,
+    recognize,
     serialize_header,
 )
 from fieldseal.errors import (  # noqa: E402
@@ -184,6 +193,234 @@ def test_rotate_in_readonly_refuses_before_reading():
     non-envelope input is refused rather than passed through."""
     with pytest.raises(ModeViolation):
         _client("readonly").rotate(b"anything", CTX)
+
+
+# -- #254: an operand that is not bytes, on every operation that takes one ------
+#
+# Spec §11.1 types every operand as bytes, and `blind_index`'s as text too
+# (docs/10 §4). Before #254 one such operand got four answers across four
+# operations: INVALID_ARGUMENT from `decrypt` (#251), NOT_CIPHERTEXT from
+# `rotate`, a raw `TypeError` from `encrypt`, and from `blind_index` an index
+# of `bytes(42)` -- 42 NUL bytes -- with no error at all.
+
+NOT_BYTES = ["plain text", 42, -3, 1.5, None]
+NOT_TEXT_OR_BYTES = [42, -3, 1.5, None, ["a"]]
+
+
+class _Untouchable:
+    """Every refusal below is at the API boundary, before key acquisition
+    (spec §9), so no call may reach the provider."""
+
+    def encryption_key(self, ctx):
+        raise AssertionError("provider consulted before the boundary")
+
+    def decryption_keys(self, header):
+        raise AssertionError("provider consulted before the boundary")
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive"])
+@pytest.mark.parametrize("operand", NOT_BYTES)
+def test_encrypt_refuses_an_operand_that_is_not_bytes(mode, operand):
+    """Was a raw `TypeError` -- `len()` of an int, or the AEAD refusing a
+    str -- which is not a `FieldsealError` and carries no code."""
+    fs = _client(mode, provider=_Untouchable())
+    with pytest.raises(InvalidArgument,
+                       match=f"encrypt takes bytes, not {type(operand).__name__}"):
+        fs.encrypt(operand, CTX)
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive"])
+@pytest.mark.parametrize("operand", NOT_BYTES)
+def test_rotate_refuses_an_operand_that_is_not_bytes(mode, operand):
+    """Was NOT_CIPHERTEXT, so after #251 one operand carried two codes in
+    this core: INVALID_ARGUMENT from `decrypt`, NOT_CIPHERTEXT from
+    `rotate`. A value that is not bytes is not "not an envelope"; it is not
+    an operand."""
+    fs = _client(mode, provider=_Untouchable())
+    with pytest.raises(InvalidArgument,
+                       match=f"rotate takes bytes, not {type(operand).__name__}"):
+        fs.rotate(operand, CTX)
+
+
+@pytest.mark.parametrize("op", ["encrypt", "rotate"])
+@pytest.mark.parametrize("operand", NOT_BYTES)
+def test_readonly_refuses_a_write_before_looking_at_the_operand(op, operand):
+    """docs/09 §3.5: the mode gate runs first, so readonly's answer does not
+    depend on the operand."""
+    fs = _client("readonly", provider=_Untouchable())
+    with pytest.raises(ModeViolation):
+        getattr(fs, op)(operand, CTX)
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive", "readonly"])
+@pytest.mark.parametrize("operand", NOT_TEXT_OR_BYTES)
+def test_blind_index_refuses_an_operand_that_is_neither_text_nor_bytes(
+        mode, operand):
+    """The serious row of #254: `blind_index(42)` returned the index of 42 NUL
+    bytes, so an equality lookup computed from an int found nothing, or found
+    the rows holding that many NULs. -3 raised a raw `ValueError`; 1.5 and
+    None a raw `TypeError`."""
+    fs = _client(mode, provider=_Untouchable(), indexes=[_decl()])
+    with pytest.raises(InvalidArgument, match=(
+            f"blind_index takes str or bytes, not {type(operand).__name__}")):
+        fs.blind_index(operand, CTX.for_index("email-eq"))
+
+
+def test_bucket_does_not_file_an_operand_that_is_neither_text_nor_bytes():
+    """`on_unindexable="bucket"` catches the normalizer's INVALID_ARGUMENT and
+    derives the column's reserved marker. An int is a caller's error, not a
+    value the pin cannot define, so it must not land in the bucket."""
+    fs = _client(indexes=[_decl(
+        on_unindexable="bucket",
+        unindexable_override=CardinalityOverride(
+            reason="test", approved_by="tests", date="2026-10-05"))])
+    ctx = CTX.for_index("email-eq")
+    assert fs.blind_index("a\u0378b", ctx) == fs.unindexable_marker(ctx)
+    with pytest.raises(InvalidArgument, match="not int"):
+        fs.blind_index(42, ctx)
+
+
+@pytest.mark.parametrize("normalizer", sorted(NORMALIZERS))
+@pytest.mark.parametrize("operand", NOT_TEXT_OR_BYTES)
+def test_normalize_refuses_an_operand_that_is_neither_text_nor_bytes(
+        normalizer, operand):
+    """The public `normalize` is the function `blind_index` uses, and an
+    adapter re-verifies candidates with it (spec §7.5); it coerced with
+    `bytes()` too."""
+    with pytest.raises(InvalidArgument, match=type(operand).__name__):
+        normalize(normalizer, operand)
+
+
+def _released_view():
+    mv = memoryview(b"secret")
+    mv.release()
+    return mv
+
+
+# Bytes-typed and refused. The AEAD refused the first three with a raw
+# `TypeError` or `BufferError` after the provider had been consulted, `len()`
+# undercounts the 2-D one, and a normalizer indexed the wide one's
+# machine-endian bytes with no error. The last two worked on `dev` where the
+# operation could read them (the strided one too, in `decrypt`'s pass-through
+# and `blind_index`); they are refused because the rule is the format, not the
+# operation's tolerance, and `.cast("B")` or `bytes(...)` is the way through.
+UNUSABLE_VIEWS = {
+    "wide-items": lambda: memoryview(array.array("I", [1, 2, 3])),
+    "signed-bytes": lambda: memoryview(b"secret").cast("b"),
+    "strided": lambda: memoryview(b"s_e_c_r_e_t")[::2],
+    "two-dimensional": lambda: memoryview(b"secret").cast("B", [2, 3]),
+    "ctypes-ubyte": lambda: memoryview((ctypes.c_ubyte * 6)(*b"secret")),
+    "char": lambda: memoryview(b"secret").cast("c"),
+}
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive"])
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate"])
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_a_memoryview_the_operation_cannot_use_is_refused(mode, op, view):
+    fs = _client(mode, provider=_Untouchable())
+    with pytest.raises(InvalidArgument, match=(
+            f"{op} takes bytes, not a memoryview that is not a "
+            "one-dimensional, contiguous view of format 'B'")):
+        getattr(fs, op)(UNUSABLE_VIEWS[view](), CTX)
+    assert fs.plaintext_reads == 0
+
+
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_blind_index_refuses_a_memoryview_it_cannot_use(view):
+    fs = _client(provider=_Untouchable(), indexes=[_decl()])
+    with pytest.raises(InvalidArgument,
+                       match="blind_index takes str or bytes, not a memoryview"):
+        fs.blind_index(UNUSABLE_VIEWS[view](), CTX.for_index("email-eq"))
+
+
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate", "blind_index"])
+def test_a_released_view_is_refused_and_named_as_released(op):
+    """A released view was one-dimensional, contiguous and of format 'B'; the
+    shape message would send its caller looking for the wrong fix."""
+    fs = _client("permissive", provider=_Untouchable(), indexes=[_decl()])
+    ctx = CTX.for_index("email-eq") if op == "blind_index" else CTX
+    with pytest.raises(InvalidArgument, match="not a released memoryview$"):
+        getattr(fs, op)(_released_view(), ctx)
+    assert fs.plaintext_reads == 0
+
+
+@pytest.mark.parametrize("view", sorted(UNUSABLE_VIEWS))
+def test_a_refused_view_is_accepted_once_cast_or_copied(view):
+    """The way through for a caller whose view is refused: `.cast("B")` where
+    the view allows it, `bytes(...)` always."""
+    mv = UNUSABLE_VIEWS[view]()
+    fs = _client(indexes=[_decl()])
+    blob = fs.encrypt(bytes(mv), CTX)
+    assert fs.decrypt(blob, CTX) == bytes(mv)
+    if mv.c_contiguous and mv.ndim == 1:
+        assert fs.decrypt(fs.encrypt(mv.cast("B"), CTX), CTX) == bytes(mv)
+
+
+class _HasDunderBytes:
+    def __bytes__(self):
+        return b"secret"
+
+
+def _mmap_of_secret():
+    m = mmap.mmap(-1, 6)
+    m[:] = b"secret"
+    return m
+
+
+# Accepted on `dev` before #254 by `encrypt` (the first two) and `blind_index`
+# (all three), and refused by `decrypt` since #251. A caller holding one wraps
+# it: `memoryview(...)` over any of the first two is accepted.
+NO_LONGER_ACCEPTED = {
+    "array": lambda: array.array("B", b"secret"),
+    "mmap": _mmap_of_secret,
+    "__bytes__": _HasDunderBytes,
+}
+
+
+@pytest.mark.parametrize("op", ["encrypt", "decrypt", "rotate", "blind_index"])
+@pytest.mark.parametrize("kind", sorted(NO_LONGER_ACCEPTED))
+def test_other_buffer_types_are_refused_and_a_memoryview_over_them_is_not(
+        op, kind):
+    fs = _client(indexes=[_decl()])
+    ctx = CTX.for_index("email-eq") if op == "blind_index" else CTX
+    with pytest.raises(InvalidArgument, match="takes"):
+        getattr(fs, op)(NO_LONGER_ACCEPTED[kind](), ctx)
+    if kind == "__bytes__":
+        return
+    if op == "blind_index":
+        assert (fs.blind_index(memoryview(NO_LONGER_ACCEPTED[kind]()), ctx)
+                == fs.blind_index(b"secret", ctx))
+    elif op == "encrypt":
+        blob = fs.encrypt(memoryview(NO_LONGER_ACCEPTED[kind]()), CTX)
+        assert fs.decrypt(blob, CTX) == b"secret"
+
+
+@pytest.mark.parametrize("wrap", [bytearray, memoryview])
+def test_encrypt_and_rotate_still_take_any_bytes_like(wrap):
+    fs = _client()
+    blob = fs.encrypt(wrap(b"secret"), CTX)
+    assert fs.decrypt(blob, CTX) == b"secret"
+    assert fs.decrypt(fs.rotate(wrap(blob), CTX), CTX) == b"secret"
+
+
+@pytest.mark.parametrize("wrap", [bytearray, memoryview])
+def test_blind_index_still_takes_any_bytes_like(wrap):
+    fs = _client(indexes=[_decl()])
+    ctx = CTX.for_index("email-eq")
+    assert (fs.blind_index(wrap(b"Ada@Example.COM"), ctx)
+            == fs.blind_index("Ada@Example.COM", ctx))
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive", "readonly"])
+@pytest.mark.parametrize("operand", NOT_BYTES + [b"", b"plain text",
+                                                 _released_view()])
+def test_client_is_ciphertext_stays_total(mode, operand):
+    """Spec §3.4: the predicate is total, and the backfill asks it about
+    exactly these values on a partially migrated column. It answers False,
+    never raises, in every mode. A released view raised `ValueError` until
+    #256's review round 2: recognition caught only `TypeError`."""
+    assert _client(mode).is_ciphertext(operand) is False
 
 
 # -- spec §3.4 / docs/09 §3.2: recognition precedes policy ----------------------
@@ -378,8 +615,34 @@ def test_boundary_order_mode_then_provisional_then_length_then_context():
         _client("strict", arm_provisional_suites=False).encrypt(big, index_ctx)
     with pytest.raises(LengthExceeded):
         _client("strict").encrypt(big, index_ctx)
-    with pytest.raises(InvalidArgument):
+    with pytest.raises(InvalidArgument, match="purpose"):
         _client("strict").encrypt(b"x", index_ctx)
+
+
+@pytest.mark.parametrize("op", ["encrypt", "rotate"])
+def test_boundary_order_puts_the_operand_after_the_configuration(op):
+    """#254: an operand that is not bytes is refused after the two refusals
+    that follow from configuration and before anything that reads the
+    operand's length or its context."""
+    index_ctx = CTX.for_index("email-eq")
+    call = lambda fs: getattr(fs, op)(42, index_ctx)  # noqa: E731
+    with pytest.raises(ModeViolation):
+        call(_client("readonly", arm_provisional_suites=False))
+    with pytest.raises(SuiteProvisional):
+        call(_client("strict", arm_provisional_suites=False))
+    with pytest.raises(InvalidArgument, match=f"{op} takes bytes"):
+        call(_client("strict"))
+
+
+def test_rotate_checks_the_context_before_recognition():
+    """`rotate` runs the same boundary as `encrypt`, so a non-envelope
+    operand under an index context is the context's refusal, not
+    NOT_CIPHERTEXT. Not new in #254; pinned because the boundary now takes
+    the operand."""
+    with pytest.raises(InvalidArgument, match="purpose"):
+        _client().rotate(b"x", CTX.for_index("email-eq"))
+    with pytest.raises(NotCiphertext):
+        _client().rotate(b"x", CTX)
 
 
 def test_testing_seam_runs_the_same_boundary(monkeypatch):
@@ -396,6 +659,8 @@ def test_testing_seam_runs_the_same_boundary(monkeypatch):
     with pytest.raises(LengthExceeded):
         encrypt_with_materials(_client(), bytes(MAX_PLAINTEXT + 1), CTX,
                                seed, nonce)
+    with pytest.raises(InvalidArgument, match="encrypt takes bytes, not int"):
+        encrypt_with_materials(_client(), 42, CTX, seed, nonce)
     out = encrypt_with_materials(_client(), b"x", CTX, seed, nonce)
     assert _client().decrypt(out, CTX) == b"x"
 
@@ -521,6 +786,13 @@ def test_every_prefix_of_a_valid_envelope_is_a_typed_error(wrap):
 
 @pytest.mark.parametrize("value", [None, 0, 1.5, "", "str", [], {}, object(),
                                    memoryview(bytearray(range(8))).cast("B"),
-                                   memoryview(b"\x01\xff\x01" * 40)[::2]])
+                                   memoryview(b"\x01\xff\x01" * 40)[::2],
+                                   _released_view()])
 def test_is_ciphertext_is_total_over_non_bytes_too(value):
     assert is_ciphertext(value) in (True, False)
+
+
+def test_recognition_is_total_over_a_released_view():
+    """`recognize` states it is total, and `is_ciphertext` inherits that; a
+    released view raised `ValueError` from both until #256's review round 2."""
+    assert recognize(_released_view()) is None

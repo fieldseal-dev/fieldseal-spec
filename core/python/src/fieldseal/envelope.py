@@ -66,7 +66,7 @@ def _view(blob: object) -> memoryview | None:
         return None
     try:
         return mv.cast("B") if mv.format != "B" or mv.ndim != 1 else mv
-    except TypeError:
+    except (TypeError, ValueError):  # not castable; or a released view
         return None
 
 
