@@ -65,9 +65,10 @@ H = bytes.fromhex
 # diffed key by key. Each key names the docs/18 entry that records the gap.
 PINNED_DECISIONS = {
     "decrypt-order": (
-        "recognition (len<1 | fmt_ver≠0x01 | len<51 | suite unregistered | "
-        "len<suite minimum → NOT_CIPHERTEXT in strict, pass-through in "
-        "permissive/readonly; fmt_ver=0x02 with len≥111 → "
+        "an operand that is not bytes → INVALID_ARGUMENT (non-§9) in every "
+        "mode → recognition (len<1 | fmt_ver≠0x01 | len<51 | "
+        "suite unregistered | len<suite minimum → NOT_CIPHERTEXT in strict, "
+        "pass-through in permissive/readonly; fmt_ver=0x02 with len≥111 → "
         "UNKNOWN_FORMAT_VERSION in every mode) → LENGTH_EXCEEDED (§3.5 "
         "decrypt side) → SUITE_NOT_ALLOWED → KEY_UNAVAILABLE (provider "
         "returned no candidate) → per candidate: HKDF record key, "
@@ -81,9 +82,13 @@ PINNED_DECISIONS = {
         "The optional diagnostic re-derivation docs/09 §3.2 describes is not "
         "implemented.  [D-02]"),
     "api-boundary-order": (
-        "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → LENGTH_EXCEEDED "
-        "→ context validation (INVALID_ARGUMENT, non-§9); all before key "
-        "acquisition  [D-04]"),
+        "encrypt/rotate: MODE_VIOLATION → SUITE_PROVISIONAL → an operand "
+        "that is not bytes (INVALID_ARGUMENT, non-§9) → LENGTH_EXCEEDED "
+        "(encrypt; rotate's operand is an envelope, bounded on the decrypt "
+        "side) → context validation (INVALID_ARGUMENT, non-§9); all before "
+        "key acquisition. blind_index: an operand that is neither str nor "
+        "bytes → INVALID_ARGUMENT, after the index declaration is resolved "
+        "and never filed by on_unindexable=bucket  [D-04; #254]"),
     "unimplemented-registered-suite": (
         "0xFF02 is registered (is_ciphertext → True) but refused at "
         "construction if allow-listed or set as write_suite "

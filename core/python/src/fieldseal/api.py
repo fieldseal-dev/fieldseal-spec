@@ -35,6 +35,7 @@ from .blindindex import (
     ValidatedIndex,
     idf,
     index_registry_key,
+    require_index_operand,
     truncate,
     validate_index_declaration,
 )
@@ -94,6 +95,19 @@ def _backend(suite_id: int) -> GcmBackend:
         raise SuiteNotAllowed(
             f"suite {suite_id:#06x} is registered but this build has no "
             "backend for it") from None
+
+
+def _require_bytes(operand: object,
+                   op: str) -> bytes | bytearray | memoryview:
+    """Every operation but `blind_index` takes bytes (spec §11.1, docs/10 §4),
+    and anything else is refused as INVALID_ARGUMENT, never coerced: `bytes()`
+    on an int is that many zero bytes, so 42 would be encrypted, decrypted or
+    rotated as 42 NULs, and an int the size of a phone number allocates
+    gigabytes before anything refuses (#251, #254)."""
+    if not isinstance(operand, bytes | bytearray | memoryview):
+        raise InvalidArgument(
+            f"{op} takes bytes, not {type(operand).__name__}")
+    return operand
 
 
 class Fieldseal:
@@ -198,13 +212,18 @@ class Fieldseal:
         return MappingProxyType(self._indexes)
 
     # -- gates ------------------------------------------------------------
-    def _write_boundary(self, plaintext: bytes, ctx: FieldContext) -> Suite:
+    def _write_boundary(self, operand: object, ctx: FieldContext,
+                        op: str = "encrypt") -> Suite:
         """Every refusal spec §9 places "at the API boundary, before key
         acquisition", in one order: MODE_VIOLATION, then SUITE_PROVISIONAL,
-        then LENGTH_EXCEEDED, then the operand's context. Refusals that follow
-        from configuration come before any look at the operand; the spec does
-        not rank the three (docs/18 D-04), so the report declares this order
-        (`pinned_decisions.api-boundary-order`)."""
+        then an operand that is not bytes, then LENGTH_EXCEEDED, then the
+        operand's context. Refusals that follow from configuration come before
+        any look at the operand; the spec does not rank the three (docs/18
+        D-04), so the report declares this order
+        (`pinned_decisions.api-boundary-order`).
+
+        `rotate`'s operand is an envelope, not a plaintext, so the §3.5 bound
+        on it is the decrypt side's, which `decrypt` applies."""
         if self._read_mode == "readonly":
             raise ModeViolation(
                 f"operation not permitted: mode is {self._read_mode!r} and "
@@ -215,7 +234,8 @@ class Fieldseal:
                 "(spec §4.8) and its constructions have not been "
                 f"independently reviewed; set {PROVISIONAL_ENV}=1 or pass "
                 "arm_provisional_suites=True to proceed anyway")
-        if len(plaintext) > MAX_PLAINTEXT:
+        plaintext = _require_bytes(operand, op)
+        if op == "encrypt" and len(plaintext) > MAX_PLAINTEXT:
             raise LengthExceeded(f"plaintext exceeds the §3.5 bound "
                                  f"({len(plaintext)} > {MAX_PLAINTEXT})")
         if ctx.purpose != "encrypt":
@@ -248,13 +268,9 @@ class Fieldseal:
                 + nonce + ct + tag + commitment(rk))
 
     def decrypt(self, blob: bytes, ctx: FieldContext) -> bytes:
-        # 0. The operand is bytes (spec §11.1, docs/10 §4), refused otherwise
-        #    in every mode. Without this the pass-through below coerced it:
-        #    `bytes(42)` is 42 zero bytes, and an int the size of a phone
-        #    number allocates gigabytes before anything refuses (#251).
-        if not isinstance(blob, bytes | bytearray | memoryview):
-            raise InvalidArgument(
-                f"decrypt takes bytes, not {type(blob).__name__}")
+        # 0. The operand is bytes, refused otherwise in every mode. Without
+        #    this the pass-through below coerced it with `bytes()` (#251).
+        _require_bytes(blob, "decrypt")
         # 1. Every read mode may decrypt (spec §10.3).
         # 2. Recognition (spec §3.4), before policy: an unregistered suite or
         #    an implausible length is "not one of ours", never SUITE_NOT_ALLOWED.
@@ -351,6 +367,10 @@ class Fieldseal:
         # permits it (spec §10.3, per G6) and the provisional gate does not
         # apply either -- no ciphertext is produced.
         decl = self._declaration(ctx)
+        # Outside the `try`: a value that is neither text nor bytes is a
+        # caller's error, not a value the pin cannot define, and `bucket`
+        # would otherwise file it with those rows (#254).
+        require_index_operand(value, "blind_index")
         try:
             normalized = NORMALIZERS[decl.normalize](value)
         except InvalidArgument:
@@ -411,9 +431,10 @@ class Fieldseal:
         A reserved future version byte still raises `UNKNOWN_FORMAT_VERSION`
         rather than `NOT_CIPHERTEXT`: recognition (spec §3.4) runs first and
         distinguishes the two, and a v2 envelope is emphatically not
-        unmigrated plaintext.
+        unmigrated plaintext. An operand that is not bytes at all is
+        `INVALID_ARGUMENT`, as it is for `encrypt` and `decrypt` (#254).
         """
-        self._write_boundary(b"", ctx)
+        self._write_boundary(blob, ctx, "rotate")
         if recognize(blob) is None:
             raise NotCiphertext(
                 "rotate requires an envelope; this input is not one "

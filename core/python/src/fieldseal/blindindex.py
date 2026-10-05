@@ -60,12 +60,24 @@ def truncate(raw: bytes, b_bits: int) -> bytes:
 
 # -- normalizers (docs/09 §7: a closed, versioned set; portability surface) ---
 
+def require_index_operand(value: object, op: str) -> None:
+    """An index operand is text or a bytes-like, and nothing else (docs/10
+    §4). Anything else is refused, never coerced: `bytes(42)` is 42 NUL
+    bytes, so an int would be indexed as that many NULs -- equal to the index
+    of `bytes(42)`, different from the index of `"42"`, and with no error
+    (#254)."""
+    if not isinstance(value, str | bytes | bytearray | memoryview):
+        raise InvalidArgument(
+            f"{op} takes str or bytes, not {type(value).__name__}")
+
+
 def _as_text(value: str | bytes) -> str:
     """A text normalizer over bytes decodes them as UTF-8, strictly. Decoding
     with replacement characters would map distinct invalid inputs onto one
     index value, so invalid UTF-8 is refused instead (docs/18 D-10(d))."""
     if isinstance(value, str):
         return value
+    require_index_operand(value, "a normalizer")
     try:
         return bytes(value).decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
@@ -86,6 +98,7 @@ def _as_bytes(value: str | bytes) -> bytes:
     input with the same error code.
     """
     if not isinstance(value, str):
+        require_index_operand(value, "a normalizer")
         return bytes(value)
     try:
         return value.encode("utf-8")
