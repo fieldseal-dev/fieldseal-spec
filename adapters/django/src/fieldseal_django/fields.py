@@ -365,6 +365,9 @@ class Encrypted(models.Field):
         if value is None:
             return None
         client = _client()
+        # Built once, before anything can be refused, so a context failure
+        # never takes the place of the refusal below.
+        ctx = self.fieldseal_context()
         if self.storage == "binary" and not isinstance(
                 value, bytes | bytearray | memoryview):
             # Not an envelope whatever it holds (`_render_legacy`). Strict
@@ -377,15 +380,15 @@ class Encrypted(models.Field):
                     blob = self._render_legacy(value, connection)
                 except FieldsealNotSupported:
                     # Still a plaintext read: the core's count (spec §10.3)
-                    # is what says a backfill is done (§11.1), and these are
-                    # the rows it must not hide. An empty operand is the
-                    # core's pass-through, counted there.
-                    client.decrypt(b"", self.fieldseal_context())
+                    # is what says a backfill is done (spec §11.1, `docs/15`
+                    # §1.1, `PROCEDURE.md` §8), and these are the rows it
+                    # must not hide. An empty operand is the core's
+                    # pass-through, counted there.
+                    client.decrypt(b"", ctx)
                     raise
         else:
             blob = _to_bytes_from_db(value, self.storage)
-        return codec.from_bytes(self.inner, client.decrypt(
-            blob, self.fieldseal_context()))
+        return codec.from_bytes(self.inner, client.decrypt(blob, ctx))
 
     def _render_legacy(self, value: Any, connection: Any) -> bytes:
         """A `binary` column's value that is not bytes, as spec §3.6 bytes.
