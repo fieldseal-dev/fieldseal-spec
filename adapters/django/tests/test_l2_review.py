@@ -220,8 +220,15 @@ class TestBeyondTheFetchWindow:
         _forge_collision(onto=other, like=kept)
 
         async def collect():
+            from asgiref.sync import sync_to_async
+            from django.db import connection
+
             qs = Patient.objects.filter(email="async@example.com")
-            return [p async for p in qs.aiterator()]
+            got = [p async for p in qs.aiterator()]
+            # That thread's connection would otherwise stay open and keep
+            # the SQLite test database's file from being removed.
+            await sync_to_async(lambda: connection.close())()
+            return got
 
         got = asyncio.run(collect())
         assert [p.pk for p in got] == [kept.pk]

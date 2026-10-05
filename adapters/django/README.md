@@ -309,7 +309,7 @@ most columns.
 | `ALLOWED_SUITES` | yes | The cipher suites this deployment accepts. `{0xFF01}` is the only one implemented. |
 | `WRITE_SUITE` | yes | The suite new values are written under: `0xFF01`. |
 | `ARM_PROVISIONAL_SUITES` | to write | `True` to allow writing under a provisional suite. Setting `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment does the same. Reading never needs it. |
-| `READ_MODE` | no | `"strict"` (default), `"permissive"` or `"readonly"`. The last two are for migrating existing plaintext columns and warn while active. |
+| `READ_MODE` | no | `"strict"` (default), `"permissive"` or `"readonly"`. The last two are for migrating existing plaintext columns and warn while active. `python manage.py fieldseal_backfill` encrypts an existing table's plaintext in resumable, rate-limited batches; see `REFERENCE.md` and `tools/backfill/PROCEDURE.md` for what it does and does not cover. |
 | `WARM_ON_READY` | no | Load keys at startup; see *Keys* below. |
 | `WARM_TENANTS` | no | The tenants to load keys for when warming. |
 | `CLIENT` | no | A `fieldseal.Fieldseal` client you built yourself, instead of the one the adapter builds from your models. |
