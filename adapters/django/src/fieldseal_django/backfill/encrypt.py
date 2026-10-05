@@ -10,9 +10,8 @@ cursor. A process killed at any point leaves the whole batch or none of it.
 recorded as `CONTEXT_UNAVAILABLE` and left as they were: the adapter takes
 the tenant from a context variable, and the procedure does not yet say how a
 run records where a row's tenant comes from (#244). In place on a `base64`
-column is refused at start (#245). In place on SQLite fails every value
-whose storage class is TEXT, which is what `AlterField` leaves (#251).
-Replication-lag throttling is not implemented.
+column is refused at start (#245). Replication-lag throttling is not
+implemented.
 """
 
 from __future__ import annotations

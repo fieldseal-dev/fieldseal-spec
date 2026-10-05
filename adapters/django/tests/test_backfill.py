@@ -702,12 +702,11 @@ def test_bf09_the_report_says_the_table_is_not_fully_converted(in_place):
 
 
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
-def test_in_place_on_sqlite_a_text_class_value_fails_and_is_left(in_place):
-    """The limit `docs/12` §7 states. SQLite keeps a value's storage class
-    whatever the column is declared as, so a column rebuilt from a
-    `CharField` by `AlterField` holds TEXT inside a `BLOB` column. The
-    adapter's read hands the core a `str`, and the value is one failure
-    (#251)."""
+def test_in_place_on_sqlite_a_text_class_value_is_converted(in_place):
+    """SQLite keeps a value's storage class whatever the column is declared
+    as, so a column rebuilt from a `CharField` by `AlterField` holds TEXT
+    inside a `BLOB` column. The adapter's read handed the core a `str`, and
+    every such value was an `INTERNAL` failure, left as it was (#251)."""
     keys = in_place.seed(emails(3))
     plant(LegacyInPlace, keys[1], "secret", "text@backfill.example")
     with connection.cursor() as cur:
@@ -717,10 +716,12 @@ def test_in_place_on_sqlite_a_text_class_value_fails_and_is_left(in_place):
 
     outcome = go(in_place)
 
-    assert (outcome.run.values_written, outcome.run.values_failed) == (2, 1)
-    assert outcome.failures_by_code == {"INTERNAL": 1}
-    assert raw(LegacyInPlace, keys[1], "secret") == "text@backfill.example"
-    assert raw(LegacyInPlace, keys[1], "secret_bidx") is None
+    assert (outcome.run.values_written, outcome.run.values_failed) == (3, 0)
+    assert get_client().is_ciphertext(raw(LegacyInPlace, keys[1], "secret"))
+    assert LegacyInPlace.objects.get(
+        pk=keys[1]).secret == "text@backfill.example"
+    assert [o.pk for o in LegacyInPlace.objects.filter(
+        secret="text@backfill.example")] == [keys[1]]
 
 
 def test_a_target_holding_something_else_is_anomalous_and_untouched():

@@ -112,6 +112,29 @@ def test_pass_through_modes_return_non_envelope_as_is(mode, junk):
 
 
 @pytest.mark.parametrize("mode", ["permissive", "readonly"])
+@pytest.mark.parametrize("junk", [bytearray(b"plain text"),
+                                  memoryview(b"plain text")])
+def test_pass_through_modes_return_other_bytes_likes_as_bytes(mode, junk):
+    fs = _client(mode)
+    assert fs.decrypt(junk, CTX) == b"plain text"
+    assert fs.plaintext_reads == 1
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive", "readonly"])
+@pytest.mark.parametrize("operand", ["plain text", 42, -3, 1.5, None])
+def test_decrypt_refuses_an_operand_that_is_not_bytes_in_every_mode(
+        mode, operand):
+    """#251: the pass-through coerced its operand with `bytes()`, so a str
+    raised `TypeError`, -3 raised `ValueError`, and 42 came back as 42 zero
+    bytes -- an int the size of a phone number allocates gigabytes. The
+    refusal is the same in every mode, as `rotate`'s domain is (below)."""
+    fs = _client(mode)
+    with pytest.raises(InvalidArgument, match=type(operand).__name__):
+        fs.decrypt(operand, CTX)
+    assert fs.plaintext_reads == 0
+
+
+@pytest.mark.parametrize("mode", ["permissive", "readonly"])
 def test_pass_through_modes_still_decrypt_real_envelopes(mode):
     blob = _client().encrypt(b"secret", CTX)
     fs = _client(mode)
