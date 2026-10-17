@@ -44,12 +44,10 @@ Dependabot is enabled for **security updates only**: there is no `dependabot.yml
 A security-update PR arrives against the repository's **default branch**, `main`. This project merges it on the integration branch instead:
 
 1. **Retarget it to `dev`** — `gh pr edit <n> --base dev`.
-2. **Squash-merge** it once its checks are green — `gh pr merge <n> --squash --delete-branch`. A work PR into `dev` is merged as a merge commit, while a Dependabot PR has been squashed (#234, #258). GitHub does not delete the branch for us (`deleteBranchOnMerge` is off), so it is deleted by hand.
-3. The change reaches `main` with the next `dev → main` promotion PR, which is itself merged as a merge commit.
+2. **Squash-merge** it once its checks are green, and delete the branch — `gh pr merge <n> --squash --delete-branch`. GitHub does not delete the branch for us.
+3. The change reaches `main` with the next `dev → main` promotion PR.
 
-**Do not add `target-branch: dev` to a `dependabot.yml` to avoid step 1.** `target-branch` is a version-updates option; GitHub documents that with it defined, "options defined for this `package-ecosystem` no longer apply to security updates because security updates always use the default branch for the repository" ([Dependabot options reference](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#target-branch-)). It would leave security PRs on `main` anyway *and* stop the rest of that ecosystem's configuration from applying to them. Only changing the repository's default branch changes the branch Dependabot itself opens against. If the annoyance is the number of PRs rather than the base branch, the repository-level **Grouped security updates** setting (Settings → Advanced security) combines them without a config file, and likewise does not change the base branch.
-
-An advisory is per manifest, so one vulnerable package reachable from two lockfiles is two alerts and up to one PR per directory (the `source-map-js` advisory of 2026-10-17 was open in `core/typescript/package-lock.json` and `adapters/prisma/package-lock.json`). Read the alert's **scope** before setting urgency: a `development`-scope alert lives in the toolchain rather than in an artifact this repository publishes — the TypeScript core declares no runtime dependencies — while an alert whose scope reaches a published package is a different question.
+**Do not add `target-branch: dev` to a `dependabot.yml` to avoid step 1.** `target-branch` is a version-updates option; GitHub documents that with it defined, "options defined for this `package-ecosystem` no longer apply to security updates because security updates always use the default branch for the repository" ([Dependabot options reference](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#target-branch-)). It would leave security PRs on `main` anyway *and* stop the rest of that ecosystem's configuration from applying to them. Only changing the repository's default branch changes the branch Dependabot opens against.
 
 ## Licensing of contributions
 
