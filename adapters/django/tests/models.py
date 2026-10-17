@@ -224,3 +224,87 @@ class TwoIndexColumns(models.Model):
     email_bidx2 = Encrypted.index_column("email")
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_TWO_INDEXES)
+
+
+# -- backfill fixtures (tools/backfill/PROCEDURE.md §6.1) ----------------------
+
+TABLE_LEGACY_IN_PLACE = "018f3c2e-0000-7000-8000-000000000050"
+COL_LEGACY_SECRET = "018f3c2e-0000-7000-8000-000000000051"
+COL_LEGACY_MEMO = "018f3c2e-0000-7000-8000-000000000052"
+
+
+class LegacyInPlace(models.Model):
+    """The in-place shape: the encrypted column itself holds legacy bytes.
+
+    Only a `binary` column can be in this state, and only when the legacy
+    bytes are already spec §3.6's rendering of the value. The tests put them
+    there with raw SQL, since every ORM write encrypts.
+    """
+
+    secret = Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=COL_LEGACY_SECRET,
+        null=True,
+        index=BlindIndex(
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    secret_bidx = Encrypted.index_column("secret")
+    memo = Encrypted(models.TextField(), column_uuid=COL_LEGACY_MEMO,
+                     null=True)
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_LEGACY_IN_PLACE)
+
+
+TABLE_LEGACY_TWO_COLUMN = "018f3c2e-0000-7000-8000-000000000060"
+COL_LEGACY_EMAIL = "018f3c2e-0000-7000-8000-000000000061"
+COL_LEGACY_AGE = "018f3c2e-0000-7000-8000-000000000062"
+
+
+class LegacyTwoColumn(models.Model):
+    """The two-column shape (`docs/04` §11): a legacy plaintext column
+    beside each encrypted one.
+
+    `age_legacy` is text on purpose: a legacy value that is not an integer
+    is refused by the codec while the write is compiled, which is the
+    failure that has to stay one value's failure.
+    """
+
+    email_legacy = models.CharField(max_length=200, null=True)
+    email = Encrypted(
+        models.EmailField(),
+        column_uuid=COL_LEGACY_EMAIL,
+        null=True,
+        index=BlindIndex(
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    email_bidx = Encrypted.index_column("email")
+    age_legacy = models.CharField(max_length=20, null=True)
+    age = Encrypted(models.IntegerField(), column_uuid=COL_LEGACY_AGE,
+                    null=True)
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_LEGACY_TWO_COLUMN)
+
+
+TABLE_LEGACY_UUID_KEY = "018f3c2e-0000-7000-8000-000000000070"
+COL_LEGACY_UUID_NAME = "018f3c2e-0000-7000-8000-000000000071"
+
+
+class LegacyUuidKey(models.Model):
+    """A UUID primary key, for the cursor's second key type."""
+
+    id = models.UUIDField(primary_key=True)
+    name_legacy = models.CharField(max_length=100, null=True)
+    name = Encrypted(models.CharField(max_length=100),
+                     column_uuid=COL_LEGACY_UUID_NAME, null=True)
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_LEGACY_UUID_KEY)

@@ -242,6 +242,7 @@ the target matrix in `docs/13` §6.
 | Path | Behaviour | Test |
 |---|---|---|
 | `create`, `createMany`, `update`, `updateMany` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
+| The index sibling on each top-level write path: `update`, `updateMany`, `updateManyAndReturn`, `upsert`, `createMany`, `createManyAndReturn`, and `update` / `updateMany` inside an interactive transaction | ✅ the stored sibling holds the new value's index; a lookup finds the row by the new value and not by the old | `update writes it`, `update with { set } writes it`, `updateMany writes it`, `updateManyAndReturn writes it`, `upsert writes it on the update branch`, `upsert writes it on the create branch`, `createMany writes it…`, `createManyAndReturn writes it…`, `update inside an interactive transaction…`, `updateMany inside an interactive transaction…` |
 | Nested relation writes (`create`, `connectOrCreate`, `upsert`, nested `update`) | ✅ reached through the relation graph, not path patterns | `encrypts a nested relation write…` |
 | **Filters inside nested writes** (`updateMany.where`, `deleteMany`, `upsert.where`, unique inputs) | 🛑 refused when they name an encrypted column — same walk as the top-level `where` | `refuses a nested updateMany.where…`, `refuses a nested deleteMany…` |
 | Nested `deleteMany`/`connect`/`disconnect`/`delete`/`set` off encrypted columns | ✅ served — they write no ciphertext | `serves a nested deleteMany over plaintext columns…` |

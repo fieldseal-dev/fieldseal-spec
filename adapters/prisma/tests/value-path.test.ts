@@ -457,16 +457,28 @@ describe("NULL", () => {
 
 describe("base64 storage (spec §3.3)", () => {
   it("round-trips through a String column holding ASCII", async () => {
-    const row = await lp["patient"]!["create"]!({ data: patient({ nickname: "Ada" }) });
+    // Written with createMany, which returns a count: `create` decrypts the row
+    // it returns, so a column holding anything but an envelope would fail there
+    // and the assertions on the stored text below would never run.
+    const row = { id: "base64-row" };
+    await lp["patient"]!["createMany"]!({
+      data: [patient({ id: row.id, nickname: "Ada Lovelace" })],
+    });
     const stored = await rawColumn(base, "Patient", "nickname", row.id);
 
     expect(typeof stored).toBe("string");
     // Base64 alphabet only -- if this were raw envelope bytes it would not be.
     expect(stored as string).toMatch(/^[A-Za-z0-9+/]+=*$/);
-    expect(stored as string).not.toContain("Ada");
+    // The plaintext is absent from the bytes the text decodes to. Asserting on
+    // the text itself was a flake and not a check: base64 of a random envelope
+    // spells a three-letter name by chance now and then, and base64 of the
+    // plaintext ("QWRh...") never contains it. Twelve bytes, so that chance in
+    // the decoded envelope is not worth naming.
+    const decoded = Buffer.from(stored as string, "base64");
+    expect(decoded.includes(Buffer.from("Ada Lovelace", "utf8"))).toBe(false);
 
     const back = await prisma.patient.findUnique({ where: { id: row.id } });
-    expect(back?.nickname).toBe("Ada");
+    expect(back?.nickname).toBe("Ada Lovelace");
   });
 
   it("costs about a third more than binary, as documented", async () => {

@@ -8,6 +8,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeGuard
 
 from . import unicode
 from .errors import ConfigurationError, InvalidArgument
@@ -60,12 +61,64 @@ def truncate(raw: bytes, b_bits: int) -> bytes:
 
 # -- normalizers (docs/09 §7: a closed, versioned set; portability surface) ---
 
+def is_byte_string(operand: object) -> TypeGuard[bytes | bytearray | memoryview]:
+    """What every operation that takes bytes accepts (spec §11.1, docs/10 §4):
+    `bytes`, `bytearray`, or a `memoryview` that is one-dimensional,
+    contiguous and of format "B" -- the view `memoryview(b)` gives over
+    either. A view of wider items, a strided view or a multi-dimensional one
+    is bytes-typed and still unusable: the AEAD refuses it with a raw error,
+    `len()` counts its items rather than its bytes, and a normalizer would
+    index its machine-endian bytes (#254).
+
+    The guard narrows to the three types, not to the shape: a `memoryview`
+    that narrowing admits may still be one this function refused, so a
+    caller must use the boolean, not the static type.
+
+    Here rather than in `envelope` because docs/09 §1 lets `blindindex`
+    import `registry` and `errors` only; `api` imports it from here."""
+    if isinstance(operand, bytes | bytearray):
+        return True
+    if not isinstance(operand, memoryview):
+        return False
+    try:
+        return (operand.ndim == 1 and operand.format == "B"
+                and operand.c_contiguous)
+    except ValueError:  # a released view
+        return False
+
+
+def describe_operand(operand: object) -> str:
+    """The refused operand, for an INVALID_ARGUMENT message. A released view
+    is named as such: its fix (do not release what you pass) is not the fix
+    for a view of the wrong shape."""
+    if isinstance(operand, memoryview):
+        try:
+            _ = operand.format
+        except ValueError:
+            return "a released memoryview"
+        return ("a memoryview that is not a one-dimensional, contiguous view "
+                "of format 'B'")
+    return type(operand).__name__
+
+
+def require_index_operand(value: object, op: str) -> None:
+    """An index operand is text or bytes (`is_byte_string`), and
+    nothing else (docs/09 §7.1, docs/10 §4). Anything else is refused, never
+    coerced: `bytes(42)` is 42 NUL bytes, so an int would be indexed as that
+    many NULs -- equal to the index of `bytes(42)`, different from the index
+    of `"42"`, and with no error (#254)."""
+    if not (isinstance(value, str) or is_byte_string(value)):
+        raise InvalidArgument(
+            f"{op} takes str or bytes, not {describe_operand(value)}")
+
+
 def _as_text(value: str | bytes) -> str:
     """A text normalizer over bytes decodes them as UTF-8, strictly. Decoding
     with replacement characters would map distinct invalid inputs onto one
     index value, so invalid UTF-8 is refused instead (docs/18 D-10(d))."""
     if isinstance(value, str):
         return value
+    require_index_operand(value, "a normalizer")
     try:
         return bytes(value).decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
@@ -86,6 +139,7 @@ def _as_bytes(value: str | bytes) -> bytes:
     input with the same error code.
     """
     if not isinstance(value, str):
+        require_index_operand(value, "a normalizer")
         return bytes(value)
     try:
         return value.encode("utf-8")

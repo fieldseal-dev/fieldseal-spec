@@ -10,6 +10,7 @@ run against Postgres.
 from __future__ import annotations
 
 import os
+import tempfile
 
 from fieldseal.keyprovider import StaticKeyProvider
 
@@ -35,8 +36,18 @@ if os.environ.get("FIELDSEAL_TEST_DB") == "postgres":
         }
     }
 else:
+    # A file, not `:memory:`: the backfill scenarios run two connections
+    # against one database, and an in-memory test database shares one cache
+    # between them, whose locking is not a deployed SQLite's. `IMMEDIATE` is
+    # what the backfill requires of SQLite (PROCEDURE §5.2 step 2).
     DATABASES = {
-        "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+            "OPTIONS": {"transaction_mode": "IMMEDIATE"},
+            "TEST": {"NAME": os.path.join(
+                tempfile.gettempdir(), f"fieldseal-django-{os.getpid()}.sqlite3")},
+        }
     }
 
 DEK = bytes(range(32))

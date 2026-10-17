@@ -46,7 +46,8 @@ def encrypt_with_materials(client: Fieldseal, plaintext: bytes, ctx: FieldContex
     docs/09 §3.1: this "replaces exactly [the two entropy draws] and nothing
     else". In particular it does not bypass the API boundary: a readonly
     client refuses with MODE_VIOLATION, an unarmed one with SUITE_PROVISIONAL,
-    an over-bound plaintext with LENGTH_EXCEEDED -- exactly as `encrypt` would.
+    a plaintext that is not bytes with INVALID_ARGUMENT, an over-bound one
+    with LENGTH_EXCEEDED -- exactly as `encrypt` would.
     A seam that skipped the gates would let a harness certify an
     implementation whose gates do not work.
     """
