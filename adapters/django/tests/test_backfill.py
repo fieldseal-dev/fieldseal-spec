@@ -1185,7 +1185,16 @@ def test_a_run_inside_a_transaction_is_refused():
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
 def test_sqlite_without_begin_immediate_is_refused(monkeypatch):
     p, run = begin(TwoColumn())
-    monkeypatch.setattr(connection, "transaction_mode", None)
+    # Patch the wrapper, not `connection`. `django.db.connection` is a
+    # `ConnectionProxy`: it resolves `transaction_mode` through `__getattr__`,
+    # and forwards `setattr`/`delattr` to the wrapper. pytest 9.2 (pytest#10644)
+    # records the old value from `target.__dict__`, where the proxy has no such
+    # key, so its undo *deletes* the name -- through the proxy, deleting it from
+    # the wrapper for the rest of the session, after which every `atomic()`,
+    # `schema_editor()` and flush on this connection raises `AttributeError`.
+    # The wrapper carries the attribute from `get_connection_params()`, so
+    # targeting it records and restores the real value.
+    monkeypatch.setattr(connections[connection.alias], "transaction_mode", None)
     with pytest.raises(BackfillError, match="IMMEDIATE"):
         drive(p, run)
 
