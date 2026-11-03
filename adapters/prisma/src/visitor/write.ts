@@ -13,11 +13,21 @@
  * Every value written to a declared column is encrypted with a fresh nonce and
  * a fresh `msg_seed` (spec §4.4), on every write including an UPDATE. Nothing
  * here caches, derives from row identity, or reuses.
+ *
+ * **One shape where "per row" does not hold, refused by default.** A multi-row
+ * statement (`updateMany`, `updateManyAndReturn`, and a nested `updateMany`
+ * beneath any operation) carries one payload for every row it matches, so
+ * encrypting there stores one envelope on all of them and the fresh draw above
+ * is one draw for the statement. That shape is refused unless the caller opens
+ * `sharedEnvelopeScope()` (`multiwrite.ts`, `#250`), which is an explicit
+ * statement that the same value on every matched row is intended and the
+ * equality it stores is accepted.
  */
 
 import type { Fieldseal } from "@fieldseal/core";
 
 import { toBytes, toColumn } from "../codec.ts";
+import { inSharedEnvelopeScope } from "../multiwrite.ts";
 import { buildContext, type ContextOptions, indexContext } from "../context.ts";
 import { FieldsealNotSupported } from "../errors.ts";
 import type { Journal } from "../journal.ts";
@@ -45,10 +55,21 @@ const DATA_KEYS = ["data", "create", "update"] as const;
 
 export function applyWrites(model: ResolvedModel, args: unknown, ctx: WriteCtx): void {
   if (!isRecord(args)) return;
+  // `updateMany` and `updateManyAndReturn` apply one `data` payload to every row
+  // their `where` matches. That is #250's shape, and the walk below refuses it
+  // unless the caller opened `sharedEnvelopeScope()`. `createMany` is not one:
+  // it carries an array of rows, each with its own payload, so each draw is
+  // already its own. The value is the shape's name for the refusal message --
+  // a nested `updateMany` is the same defect one level in, and naming the
+  // top-level operation there would point the caller at the wrong statement.
+  const multiRowShape =
+    ctx.operation === "updateMany" || ctx.operation === "updateManyAndReturn"
+      ? `\`${ctx.operation}\``
+      : null;
   for (const key of DATA_KEYS) {
     const node = args[key];
     if (node === undefined) continue;
-    for (const row of asArray(node)) encryptRow(model, row, ctx);
+    for (const row of asArray(node)) encryptRow(model, row, ctx, multiRowShape);
   }
 }
 
@@ -59,8 +80,17 @@ export function applyWrites(model: ResolvedModel, args: unknown, ctx: WriteCtx):
  * rebuilding the tree would mean reconstructing every shape faithfully --
  * including the ones this visitor does not understand. Mutating only the leaves
  * it recognises leaves everything else exactly as the caller wrote it.
+ *
+ * `multiRowShape` is carried down the relation graph because a nested
+ * `updateMany` under a `create` or an `update` is the same defect one level in:
+ * the payload still applies to every row the nested `where` matches.
  */
-function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
+function encryptRow(
+  model: ResolvedModel,
+  row: unknown,
+  ctx: WriteCtx,
+  multiRowShape: string | null,
+): void {
   if (!isRecord(row)) return;
 
   // An index sibling the caller set by hand is refused: those bytes are
@@ -96,6 +126,31 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
       const idx = model.indexBySource.get(enc.field);
       if (idx !== undefined) ctx.journal.set(row, idx.field, null);
       continue;
+    }
+
+    // #250. The statement encrypts here once, before the engine ever sees it,
+    // and applies the result to every row its `where` matches: one `msg_seed`,
+    // one nonce, one envelope stored byte for byte on all of them. The bytes
+    // are not a nonce reuse -- the key, nonce, plaintext and context are all
+    // the same -- but on a column with no blind index they make the matched
+    // rows visibly equal, which is the one thing randomized encryption was
+    // bought to prevent. Prisma offers no per-row payload for this shape, so
+    // there is nothing to encrypt against: refuse (spec §10.2), unless the
+    // caller opened `sharedEnvelopeScope()` to say the shared value is the
+    // intent.
+    if (multiRowShape !== null && !inSharedEnvelopeScope()) {
+      throw new FieldsealNotSupported(
+        `${label}: ${multiRowShape} applies one payload to every row its ` +
+          `\`where\` matches, so this value would be encrypted once and stored ` +
+          `byte for byte on all of them. Spec §3.1 and §4.4 draw a fresh nonce ` +
+          `and \`msg_seed\` per write, and a shared envelope is a single draw: ` +
+          `every matched row holding this value becomes visibly equal, which is ` +
+          `what randomized encryption exists to prevent on a column with no ` +
+          `blind index (#250). Write the rows one at a time (\`update\` with a ` +
+          `unique \`where\`), or -- if the same plaintext on every matched row ` +
+          `is exactly the intent -- open \`sharedEnvelopeScope(() => ...)\` ` +
+          `around the statement and accept the equality it stores.`,
+      );
     }
 
     const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
@@ -136,32 +191,40 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
       }
       if (nestedOp === "connectOrCreate") {
         for (const item of asArray(payload)) {
-          if (isRecord(item)) encryptRow(target, item["create"], ctx);
+          // A new row, with its own payload: not a shared envelope even when
+          // the statement above is multi-row.
+          if (isRecord(item)) encryptRow(target, item["create"], ctx, null);
         }
         continue;
       }
       if (nestedOp === "upsert") {
         for (const item of asArray(payload)) {
           if (!isRecord(item)) continue;
-          encryptRow(target, item["create"], ctx);
-          encryptRow(target, item["update"], ctx);
+          encryptRow(target, item["create"], ctx, null);
+          encryptRow(target, item["update"], ctx, multiRowShape);
         }
         continue;
       }
       if (nestedOp === "update" || nestedOp === "updateMany") {
+        // A nested `updateMany` is the multi-row shape whatever the operation
+        // above it was; a nested `update` inside an `updateMany` still is.
+        const nestedShape =
+          multiRowShape ?? (nestedOp === "updateMany" ? "the nested `updateMany`" : null);
         for (const item of asArray(payload)) {
           if (!isRecord(item)) continue;
           // Both `{ where, data }` and the bare-payload form.
-          encryptRow(target, item["data"] ?? item, ctx);
+          encryptRow(target, item["data"] ?? item, ctx, nestedShape);
         }
         continue;
       }
       if (nestedOp === "create" || nestedOp === "createMany") {
+        // One payload per new row (`createMany`'s explicit array, or a nested
+        // `create`'s single payload), so each draw is already its own.
         for (const item of asArray(payload)) {
           if (isRecord(item) && Array.isArray(item["data"])) {
-            for (const r of item["data"]) encryptRow(target, r, ctx);
+            for (const r of item["data"]) encryptRow(target, r, ctx, null);
           } else {
-            encryptRow(target, item, ctx);
+            encryptRow(target, item, ctx, null);
           }
         }
         continue;

@@ -9,6 +9,7 @@ import {
   FieldsealNotSupported,
   FieldsealUnindexable,
   fieldsealExtension,
+  sharedEnvelopeScope,
   tenantScope,
 } from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
@@ -115,7 +116,11 @@ describe("write then read", () => {
     const rows = await prisma.patient.findMany({ orderBy: { plainName: "asc" } });
     expect(rows.map((r) => r.email)).toEqual(["ada@example.com", "ada@example.com"]);
 
-    await lp["patient"]!["updateMany"]!({ where: { plainName: "A" }, data: { note: "bulk" } });
+    // #250: a multi-row payload is one envelope for every matched row, so the
+    // statement is refused unless the caller says that is the intent.
+    await sharedEnvelopeScope(() =>
+      lp["patient"]!["updateMany"]!({ where: { plainName: "A" }, data: { note: "bulk" } }),
+    );
     const a = await prisma.patient.findFirst({ where: { plainName: "A" } });
     expect(a?.note).toBe("bulk");
   });

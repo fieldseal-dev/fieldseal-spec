@@ -234,6 +234,42 @@ Three caveats:
   Equality on a column with no declared index and `findUnique` on an encrypted
   column stay refused too.
 
+### `sharedEnvelopeScope` — the multi-row opt-in
+
+`updateMany` and `updateManyAndReturn` carry one `data` payload for every row
+their `where` matches, and the extension sees it before the statement does.
+Encrypting there produces **one** envelope — one `msg_seed`, one nonce, one
+ciphertext — stored byte for byte on all matched rows. Spec §3.1 and §4.4 draw
+a fresh nonce and `msg_seed` per write; the statement is one write, so this is
+not a nonce reuse, but on a column with no blind index the matched rows become
+visibly equal, which randomized encryption exists to prevent. Prisma offers no
+per-row payload for the shape, so it is refused (#250).
+
+When the same value on every matched row is the intent, open the scope:
+
+```ts
+import { sharedEnvelopeScope } from "@fieldseal/prisma";
+
+await sharedEnvelopeScope(() =>
+  prisma.patient.updateMany({
+    where: { id: { in: [1, 2] } },
+    data: { email: "moved@example.com" },
+  }),
+);
+```
+
+It lifts the refusal and nothing else: the payload is still encrypted once with
+a fresh nonce, and index siblings are still derived for every declared index.
+There is no second write path, no re-verification to discharge, and no way back
+— the stored equality is the acknowledgement. A `null` payload, a payload that
+touches no encrypted column, and `createMany` (one payload per row) are served
+without it.
+
+The dispatch boundary is the same measurement as `candidateScope`'s:
+`sharedEnvelopeScope` awaits inside, so a promise the callback merely constructs
+and does not return would dispatch after the scope closed and be refused.
+Construct and await the operation in the callback.
+
 ## Coverage matrix
 
 What the code does **today**, each row verified by the test named in it — not
@@ -241,8 +277,9 @@ the target matrix in `docs/13` §6.
 
 | Path | Behaviour | Test |
 |---|---|---|
-| `create`, `createMany`, `update`, `updateMany` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
-| The index sibling on each top-level write path: `update`, `updateMany`, `updateManyAndReturn`, `upsert`, `createMany`, `createManyAndReturn`, and `update` / `updateMany` inside an interactive transaction | ✅ the stored sibling holds the new value's index; a lookup finds the row by the new value and not by the old | `update writes it`, `update with { set } writes it`, `updateMany writes it`, `updateManyAndReturn writes it`, `upsert writes it on the update branch`, `upsert writes it on the create branch`, `createMany writes it…`, `createManyAndReturn writes it…`, `update inside an interactive transaction…`, `updateMany inside an interactive transaction…` |
+| `create`, `createMany`, `update` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
+| The index sibling on each top-level write path: `update`, `updateMany`, `updateManyAndReturn`, `upsert`, `createMany`, `createManyAndReturn`, and `update` / `updateMany` inside an interactive transaction | ✅ the stored sibling holds the new value's index; a lookup finds the row by the new value and not by the old. The `updateMany` cases run inside `sharedEnvelopeScope()` (#250), because there the payload is deliberately shared | `update writes it`, `update with { set } writes it`, `updateMany writes it`, `updateManyAndReturn writes it`, `upsert writes it on the update branch`, `upsert writes it on the create branch`, `createMany writes it…`, `createManyAndReturn writes it…`, `update inside an interactive transaction…`, `updateMany inside an interactive transaction…` |
+| **`updateMany` / `updateManyAndReturn` writing a declared encrypted column**, and a nested `updateMany` under any operation | 🛑 refused by default (#250) — one payload, so one envelope byte for byte on every matched row, and on a column with no blind index the rows become visibly equal. `sharedEnvelopeScope(fn)` lifts the refusal and nothing else; the payload is still encrypted once and index siblings still derived. `null`, a payload touching no encrypted column, and `createMany` (one payload per row) are served without it | `refuses updateMany that would write an indexed encrypted column`, `refuses updateMany on a column with no blind index`, `refuses updateManyAndReturn`, `refuses a nested updateMany`, `refuses inside an interactive transaction and writes nothing`, `allows a payload that touches no encrypted column`, `allows null, which duplicates no envelope`, `allows createMany, which gives every row its own payload`, `stores one envelope on every matched row…`, `does not leak out of the callback`, `does NOT cover a statement constructed inside but awaited after the callback` |
 | Nested relation writes (`create`, `connectOrCreate`, `upsert`, nested `update`) | ✅ reached through the relation graph, not path patterns | `encrypts a nested relation write…` |
 | **Filters inside nested writes** (`updateMany.where`, `deleteMany`, `upsert.where`, unique inputs) | 🛑 refused when they name an encrypted column — same walk as the top-level `where` | `refuses a nested updateMany.where…`, `refuses a nested deleteMany…` |
 | Nested `deleteMany`/`connect`/`disconnect`/`delete`/`set` off encrypted columns | ✅ served — they write no ciphertext | `serves a nested deleteMany over plaintext columns…` |

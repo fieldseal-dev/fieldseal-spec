@@ -27,8 +27,10 @@ conformant implementation can read, including the
 - **Declared in the schema.** Mark fields with `/// @fieldseal(...)` comments;
   a Prisma generator turns them into a field map at `prisma generate`, and a
   malformed declaration fails the generate, not the first request.
-- **Transparent.** `create`, `createMany`, `update`, `updateMany` and nested
-  relation writes encrypt; reads decrypt, including `include` and `select`.
+- **Transparent.** `create`, `createMany`, `update` and nested relation writes
+  encrypt; reads decrypt, including `include` and `select`. A multi-row statement
+  (`updateMany`, `updateManyAndReturn`) is refused by default and written
+  deliberately through `sharedEnvelopeScope()` — see *Multi-row writes* below.
 - **Equality search on encrypted columns.** `findMany` with equality or `in`
   goes through a blind index. The index is deliberately lossy, so every
   candidate row is decrypted and re-checked before you get it: you never see a
@@ -338,6 +340,36 @@ operation inside the callback.
 as given, which means plaintext in an encrypted column. By default they pass
 through and call `onRawOperation`; `strictRaw: true` makes them throw.
 
+## Multi-row writes
+
+`updateMany` and `updateManyAndReturn` apply one `data` payload to every row
+their `where` matches. The extension sees that payload before the statement
+runs, so the value would be encrypted once and the same envelope — byte for
+byte — stored on every matched row. The bytes are not a nonce reuse, but on a
+column with no blind index the matched rows become visibly equal, which is what
+randomized encryption is for. So the shape is refused by default with
+`FieldsealNotSupported`. Write the rows one at a time (`update` with a unique
+`where`), or say that the shared value is what you mean:
+
+```ts
+import { sharedEnvelopeScope } from "@fieldseal/prisma";
+
+await sharedEnvelopeScope(() =>
+  prisma.patient.updateMany({
+    where: { id: { in: [1, 2] } },
+    data: { email: "moved@example.com" as never },
+  }),
+);
+```
+
+The scope lifts the refusal and nothing else: the payload is still encrypted
+once, with a fresh nonce, and blind indexes are still derived. It stores the
+equality the refusal exists to prevent — opening it is the acknowledgement,
+and no later read undoes it. A `null` payload, a payload that touches no
+encrypted column, and `createMany` (one payload per row) need no scope.
+Construct and await the operation inside the callback: a Prisma promise is
+lazy, and one awaited after the callback returns runs outside the scope.
+
 ## Limitations
 
 The specification requires every implementation to state these.
@@ -369,6 +401,11 @@ The specification requires every implementation to state these.
 - **Equality is the normalizer's.** A lookup matches values that are equal
   after the index's normalization, such as a different case, not only
   identical strings.
+- **A multi-row write cannot randomize per row.** `updateMany` and
+  `updateManyAndReturn` encrypt their one payload once, so inside
+  `sharedEnvelopeScope()` every matched row stores the identical envelope.
+  That is refused by default; opening the scope accepts the equality it
+  stores, and no later read recovers per-row randomization.
 - **Writes to `Bytes` columns need a cast**, because Prisma types them by
   storage. For text, `String` with `storage: "base64"` avoids it, at a third
   more space.
