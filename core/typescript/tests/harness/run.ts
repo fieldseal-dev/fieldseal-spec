@@ -9,8 +9,12 @@
  * recorded in the M2 divergence report, not tuned away.
  */
 
+import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
 import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
@@ -1240,6 +1244,13 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       skipped: results.filter((r) => r.status === "skipped").length,
       held_out: heldOut.length,
     };
+    // docs/14 §4: a test-backed pinned decision whose tests did not run or did
+    // not pass withholds the level on the same terms as a failed result. It is
+    // not folded into `summary`, which keeps counting results and out-of-band
+    // entries; `run_vectors.ts` exits 1 on L0 false as well.
+    const pins = await runPinnedTests();
+    const backed = Object.values(pins).every((p) => p.status === "pass");
+    const pinNotes = Object.entries(pins).map(([key, p]) => pinnedNote(key, p));
     const suitesSupported = ["0xFF01"];
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf-8")) as { version: string };
     return {
@@ -1250,7 +1261,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       // L0 requires every family the supported suite reaches, with fail = 0.
       // A green run against a provisional suite is L0 conformance to the
       // PROVISIONAL suite 0xFF01 -- not to any frozen format (PRD §8, Gate 0b).
-      claimed_levels: { L0: summary.fail === 0, L1: false, L2: false, L3: false, L4: false },
+      claimed_levels: { L0: summary.fail === 0 && backed, L1: false, L2: false, L3: false, L4: false },
       suites_supported: suitesSupported,
       provisional_suites: suitesSupported.some((s) => isProvisionalId(parseSuiteId(s))),
       environment: {
@@ -1265,7 +1276,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
         unicode_tables: `vendored UCD ${UNICODE_VERSION} (NFC + CaseFolding C+F)`,
       },
       pinned_decisions: PINNED_DECISIONS,
-      harness_notes: [...HARNESS_NOTES, asyncSplit],
+      harness_notes: [...HARNESS_NOTES, asyncSplit, ...pinNotes],
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
@@ -1292,7 +1303,153 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "key-material-ownership":
     "provider-owned (docs/09 §8.1): the core never mutates or erases what `encryptionKey` or `decryptionKeys` returned. `#encryptionKey` validates and copies (api.ts:196), so the encrypt and blind-index paths erase their own copy; the decrypt candidate loop borrows and erases nothing. Erasure steps performed: docs/09 §3.1 step 13 and §3.2 record_key (both, Uint8Array), the intermediate plaintext buffer, the untruncated IDF output, the Argon2id salt (spec §7.3 makes it key-equivalent for the column), and §8.3 cache eviction. None skipped. Candidate reads do not count against max_uses. " +
     "In the §11.1 asynchronous companions both index keys are erased as soon as `idfAsync` returns -- the Argon2id salt is derived from them synchronously, so nothing the in-flight derivation holds reads them; the threadpool job is already queued by then, and captured the salt and the copy rather than the key -- and the normalized value is copied rather than borrowed across the await, because under `identity` it is the caller's own array and on the marker path it is the process-wide reserved preimage; neither original is ever zeroed. The copy is what makes erasing the buffer handed to the backend safe: on the shipped backend node copies it synchronously, so the caller is not relying on the copy for that.",
+  "index-role-use-budget":
+    "none (docs/09 §8.3): the index role has no use budget. maxUses is spent only by DEK-role `encryptionKey` returns; an index key is never AEAD key material and draws no nonce, so the SP 800-38D ceiling spec §5.5 sets maxUses for does not reach it. Max-age and the capacity LRU still apply to both roles. " +
+    "This core decides it once, where the role is known: `EnvelopeKeyProvider` puts its index-role cache slots with `{ counted: false }` (keyprovider.ts), and `DekCache.get` spends no budget on an uncounted slot (cache.ts). " +
+    "Test-backed (docs/14 §4): docs/08 §8 keeps provider behaviour out of the vector suite, so this harness runs " +
+    "tests/index-role-budget.test.ts > index-role use budget (docs/09 §8.3, #225) > index-role slot lookups never spend maxUses; a DEK slot in the same cache still does " +
+    "(an index-role slot read past maxUses 1, with a counted DEK slot as the control) and " +
+    "tests/providers.test.ts > EnvelopeKeyProvider (docs/09 §8.2) > index-role returns do not deplete max-uses; the index role has no use budget (docs/09 §8.3) " +
+    "(the same end to end through blindIndex), and claims no level if either did not run or did not pass [#212, #225]",
 };
+
+/** One test a test-backed pinned decision cites: its file (relative to core/typescript), its `describe` chain, and its title. */
+export interface PinnedTest {
+  readonly file: string;
+  readonly ancestors: readonly string[];
+  readonly title: string;
+}
+
+export type PinnedTestStatus = "pass" | "fail" | "missing";
+
+export interface PinnedOutcome {
+  status: PinnedTestStatus;
+  tests: { name: string; status: PinnedTestStatus }[];
+  reason: string;
+}
+
+/** `file > describe > … > title`, the form the pinned decision's text quotes. */
+export function pinnedTestName(t: PinnedTest): string {
+  return [t.file, ...t.ancestors, t.title].join(" > ");
+}
+
+/**
+ * docs/14 §4: a **test-backed pinned decision** cites the tests that prove it,
+ * and the report generator runs them; if any did not run or did not pass, the
+ * report claims no level (the key's text still states the decision). Every
+ * entry's `pinnedTestName` is quoted verbatim in the key's text --
+ * `vectors.test.ts` asserts that, so the text and the run cannot drift.
+ */
+export const PINNED_TESTS: Record<string, readonly PinnedTest[]> = {
+  "index-role-use-budget": [
+    {
+      file: "tests/index-role-budget.test.ts",
+      ancestors: ["index-role use budget (docs/09 §8.3, #225)"],
+      title: "index-role slot lookups never spend maxUses; a DEK slot in the same cache still does",
+    },
+    {
+      file: "tests/providers.test.ts",
+      ancestors: ["EnvelopeKeyProvider (docs/09 §8.2)"],
+      title: "index-role returns do not deplete max-uses; the index role has no use budget (docs/09 §8.3)",
+    },
+  ],
+};
+
+const CORE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface VitestJson {
+  testResults?: { name?: string; assertionResults?: { ancestorTitles?: string[]; title?: string; status?: string }[] }[];
+}
+
+function runVitest(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; output: string; error?: string }> {
+  return new Promise((resolve) => {
+    let output = "";
+    const child = spawn(process.execPath, args, { cwd: CORE_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => child.kill(), 600_000);
+    child.stdout.on("data", (d: Buffer) => (output = (output + d.toString()).slice(-4096)));
+    child.stderr.on("data", (d: Buffer) => (output = (output + d.toString()).slice(-4096)));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: null, output, error: e.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
+/**
+ * Runs the tests behind each test-backed pinned decision (docs/14 §4) and
+ * classifies each as `pass`, `fail` or `missing`.
+ *
+ * Only the cited tests run, in a child vitest filtered by file and title --
+ * never the whole suite, which includes `vectors.test.ts` and would recurse
+ * into this harness. Fail closed: no vitest, no JSON, or a cited test the run
+ * did not report is `missing`, never a pass; a skipped one is `fail`.
+ */
+export async function runPinnedTests(pinned: Record<string, readonly PinnedTest[]> = PINNED_TESTS): Promise<Record<string, PinnedOutcome>> {
+  const out: Record<string, PinnedOutcome> = {};
+  const entry = join(CORE_ROOT, "node_modules", "vitest", "vitest.mjs");
+  // The child must not think it is a vitest worker, and needs no arming: the
+  // cited tests do not use the testing seam.
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("VITEST") && k !== TEST_MODE_ENV) env[k] = v;
+  }
+  for (const [key, tests] of Object.entries(pinned)) {
+    const statuses = tests.map((t) => ({ name: pinnedTestName(t), status: "missing" as PinnedTestStatus }));
+    let reason = "";
+    if (!existsSync(entry)) {
+      reason = `vitest is not installed at ${entry}`;
+    } else {
+      const dir = mkdtempSync(join(tmpdir(), "fieldseal-pinned-"));
+      try {
+        const file = join(dir, "pinned.json");
+        const files = [...new Set(tests.map((t) => t.file))];
+        const pattern = tests.map((t) => escapeRegExp(t.title)).join("|");
+        const run = await runVitest([entry, "run", ...files, "-t", pattern, "--reporter=json", `--outputFile=${file}`], env);
+        if (run.error !== undefined) reason = `vitest could not be run: ${run.error}`;
+        else if (existsSync(file)) {
+          const json = JSON.parse(readFileSync(file, "utf-8")) as VitestJson;
+          tests.forEach((t, i) => {
+            for (const fr of json.testResults ?? []) {
+              if (!(fr.name ?? "").replaceAll("\\", "/").endsWith(t.file)) continue;
+              for (const a of fr.assertionResults ?? []) {
+                const anc = a.ancestorTitles ?? [];
+                if (a.title === t.title && anc.length === t.ancestors.length && anc.every((x, j) => x === t.ancestors[j])) {
+                  (statuses[i] as { status: PinnedTestStatus }).status = a.status === "passed" ? "pass" : "fail";
+                }
+              }
+            }
+          });
+        }
+        if (reason === "" && statuses.some((s) => s.status !== "pass")) {
+          reason = `vitest exit ${run.code}: ${run.output.trim().split("\n").slice(-3).join(" | ")}`;
+        }
+      } catch (e) {
+        reason = `vitest output could not be read: ${(e as Error).message}`;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const status: PinnedTestStatus = statuses.every((s) => s.status === "pass") ? "pass" : statuses.some((s) => s.status === "fail") ? "fail" : "missing";
+    out[key] = { status, tests: statuses, reason };
+  }
+  return out;
+}
+
+function pinnedNote(key: string, p: PinnedOutcome): string {
+  const listed = p.tests.map((t) => `${t.name}: ${t.status}`).join("; ");
+  const verdict = p.status === "pass" ? "backed" : "NOT backed, so no level is claimed";
+  let note = `pinned_decisions.${key} is test-backed (docs/14 §4); this run: ${listed}. ${verdict}`;
+  if (p.status !== "pass" && p.reason !== "") note += ` (${p.reason})`;
+  return note;
+}
 // Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 // these over: `unknown-format-version-set` -> spec §3.1/§3.4/§9/§10.3,
 // `rotate-in-permissive` -> §11.1, `provisional-arming` -> §4.8,
