@@ -79,9 +79,12 @@ These pipelines are the reference sequence every implementation follows. Steps m
 
 ```
 1. mode check: readonly → MODE_VIOLATION                   // §9, §10.3 (G6 resolved)
-1b. len(plaintext) > 2^31−1 → LENGTH_EXCEEDED              // §3.5 (G10 resolved); API boundary, like step 1.
-                                                           // Order against step 1 is unobservable: no vector
-                                                           // pairs the two (§3.5 has no vector at all, §12)
+1a. write suite provisional (§4.8) and unarmed → SUITE_PROVISIONAL   // §9, §4.8; docs/18 D-04
+1b. operand not bytes (the binding's byte type, §12) → INVALID_ARGUMENT, never coerced   // #254
+    then len(plaintext) > 2^31−1 → LENGTH_EXCEEDED         // §3.5 (G10 resolved); API boundary, like step 1.
+                                                           // Order of the length guard against steps 1 and 1a
+                                                           // is unobservable: no vector pairs them (§3.5 has
+                                                           // no vector at all, §12)
 2. validate ctx (purpose = "encrypt"; table/column UUIDs present, 16 B)
 3. suite = registry[config.write_suite]
 4. (dek, key_id) = key_provider.encryption_key(ctx)        // cache hit expected; MUST NOT do network I/O (§11.1)
@@ -99,12 +102,16 @@ These pipelines are the reference sequence every implementation follows. Steps m
 
 Steps 5–6 are the only entropy draws; `testing.encrypt_with_materials` replaces exactly these two steps and nothing else (docs/08 §6).
 
+**Steps 1–1b: configuration first, then the operand (normative, [#254](https://github.com/fieldseal-dev/fieldseal-spec/issues/254) to-do 3).** Refusals that follow from the client's configuration come before any look at the operand (docs/18 D-04): `MODE_VIOLATION`, then `SUITE_PROVISIONAL`, then the operand check, then `LENGTH_EXCEEDED`, then the context, then key acquisition. That is why `readonly`'s answer never depends on the operand. An operand that is not the binding's byte type (§12, "Wrong-typed operand") is refused with `INVALID_ARGUMENT` in every core and every read mode, and is never coerced: an int is not "that many zero bytes", and an object with a byte conversion is not its conversion. `INVALID_ARGUMENT` is the implementation-local argument code of §9 and §7.1, not a spec §9 code. A bytes-typed operand of the wrong *shape* (a view of wider items, a strided view) is a separate question, [#257](https://github.com/fieldseal-dev/fieldseal-spec/issues/257), not decided here. No vector can carry a typed operand (the suite is hex bytes, docs/08), so the rule is pinned by `pinned_decisions.wrong-typed-operand` (docs/14 §4) and the tests behind it, not by an `errors/` vector.
+
 ### 3.2 `decrypt(envelope, ctx) → plaintext`
 
 Proposed check order — **this order is an engineering proposal that must be pinned normatively by the G5 spec issue before error vectors freeze**, because each step's failure maps to a §9 error code and implementations must agree:
 
 ```
-1.  mode: all read modes may decrypt
+1.  mode: all read modes may decrypt (no mode gate)
+    operand not bytes (§12)                       → INVALID_ARGUMENT in every mode, never coerced,
+                                                    before recognition (#254; see below)
 2.  structural parse:
       len < min registered envelope length        → NOT_CIPHERTEXT (strict) / pass-through (permissive
                                                     and readonly — §10.3 gives readonly permissive's
@@ -139,6 +146,8 @@ The step-7 ambiguity is real and worth stating plainly: under dual binding (§6.
 
 The spec §3.5 length bound (G10) is deliberately *not* placed in this ordering. Its decrypt-side form reads the received byte count against the suite's fixed overhead, so it is available anywhere between step 2's structural parse and the step-6 allocation, needs neither key nor context, and cannot change which code any other step produces. Implementations apply it before allocating the plaintext buffer; G5 does not have to adjudicate it.
 
+**The operand step is pinned by #254, not by G5.** `decrypt` has no configuration-derived refusal, so under the §3.1 rule the operand check is its first step: a non-bytes operand is `INVALID_ARGUMENT` in `strict`, `permissive` and `readonly` alike, and is never passed through as "not ciphertext", because it is not a value the column could hold. Recognition is then stated by spec §3.4's outcomes and its floors as the spec names them ("min registered envelope length", the §3.1 reserved-version floor), never by an implementation's internal length thresholds; docs/14 §4 asks the same of the `decrypt-order` key. **Not decided here: where `decrypt` validates the context.** The three cores differ (TypeScript first, Java after the allow-list, Python not at all on this path), and that question belongs to G5 ([#5](https://github.com/fieldseal-dev/fieldseal-spec/issues/5)) and a follow-up issue of its own (not yet filed), not to the operand rule. The pipeline above deliberately has no context step.
+
 Timing note: commitment verification and tag comparison MUST be constant-time compares. The candidate-key loop's early exit on commitment success is acceptable — commitment values are public envelope content, not secrets — but per-candidate work should be identical in structure.
 
 ### 3.3 `blind_index(plaintext, ctx) → bytes`
@@ -160,13 +169,19 @@ Timing note: commitment verification and tag comparison MUST be constant-time co
 
 The return value is the stored form: spec §7.11 makes those exact `⌈b/8⌉` bytes what goes in the column. The core returns bytes and MUST NOT encode them — the hexadecimal alternative §7.11 permits for text-only columns is applied by the adapter's storage layer, which is also where the binary-collation requirement is enforced through DDL. This keeps the bytes-in/bytes-out rule of §5 intact and keeps one representation decision out of five language cores.
 
+**A wrong-typed operand ([#254](https://github.com/fieldseal-dev/fieldseal-spec/issues/254) to-do 3).** `blind_index` takes text or bytes (§7.1, "where the refusal has to live"), so for it *wrong-typed* means neither. Such an operand is `INVALID_ARGUMENT` in every core and every read mode, is never coerced, and is never filed in the bucket by `on_unindexable = bucket` (§7.2): an int is a caller's error, not a value the Unicode pin cannot define. Its position relative to steps 2–3 (context and declaration lookup) is **not** pinned, because the cores differ and no decision has chosen between them; each core states its position under `pinned_decisions.wrong-typed-operand` (docs/14 §4). In all three cores as built it precedes key acquisition (Python after the declaration is resolved, `docs/10` §4; Java and TypeScript on the value first, `docs/27` §4, `docs/11` §4).
+
 ### 3.4 `is_ciphertext(bytes) → bool`
 
 Pure function of the registry (spec §3.4): length ≥ min registered envelope, recognized `fmt_ver`, **registered** suite (not allow-listed — recognition ≠ authorization). Never decrypts, never trial-decrypts. Operates on raw bytes only; base64-stored deployments decode at the adapter/storage layer before calling the core (the core is bytes-in/bytes-out everywhere — see §5).
 
+**Total (normative, [#254](https://github.com/fieldseal-dev/fieldseal-spec/issues/254) to-do 3).** `is_ciphertext` never raises. An operand that is not the binding's byte type (§12), including a null where the language has one, answers `false`; it is not refused with `INVALID_ARGUMENT` the way the operations refuse it. Spec §3.4 says the predicate "MUST return true only for the first row", and a predicate that throws gives a caller deciding *whether* to decrypt nothing to branch on. The principle, stated so it can be applied beyond this case: **the predicate never raises, and it never answers `true` for an operand the operations refuse.** [#257](https://github.com/fieldseal-dev/fieldseal-spec/issues/257) (a bytes-typed operand of the wrong shape, for which one core's predicate answers `true` while its `decrypt` refuses) is where the second half applies next. The type guard therefore belongs at the operations' boundary, not inside recognition. §4's property tests run over arbitrary *bytes* and do not reach a non-bytes operand; each core's `wrong-typed-operand` tests do.
+
 ### 3.5 `rotate(envelope, ctx) → envelope`
 
-Mode check first: `rotate` produces ciphertext for storage, so `readonly` raises `MODE_VIOLATION` before any of the below runs (§10.3). Then `decrypt` (full §3.2 pipeline, including allow-list — a retired suite is *not* decryptable even for rotation; un-retiring it for a migration sweep is an explicit, temporary allow-list change, which is the §4.3 model working as intended) followed by `encrypt` under `config.write_suite` and the provider's active-for-write key version. Always produces a fresh envelope (fresh seed, fresh nonce) even when the input is already current — a deterministic "already current, skip" fast path would require comparing key versions, which callers (backfill tooling) can do themselves from the envelope header via the provider; the core stays simple.
+Mode check first: `rotate` produces ciphertext for storage, so `readonly` raises `MODE_VIOLATION` before any of the below runs (§10.3). Then the §4.8 gate (`SUITE_PROVISIONAL`, as §3.1 step 1a), then the operand as `decrypt` reads it (§3.2 step 1: not bytes → `INVALID_ARGUMENT`), then `decrypt` (full §3.2 pipeline, including allow-list — a retired suite is *not* decryptable even for rotation; un-retiring it for a migration sweep is an explicit, temporary allow-list change, which is the §4.3 model working as intended) followed by `encrypt` under `config.write_suite` and the provider's active-for-write key version. Always produces a fresh envelope (fresh seed, fresh nonce) even when the input is already current — a deterministic "already current, skip" fast path would require comparing key versions, which callers (backfill tooling) can do themselves from the envelope header via the provider; the core stays simple.
+
+**A reading, not spec text, revisitable at Gate 0b ([#254](https://github.com/fieldseal-dev/fieldseal-spec/issues/254)).** Spec §11.1 says, normatively, that "`rotate` of non-envelope input raises `NOT_CIPHERTEXT`". Every core reads that sentence as bounded by §11.1's own signature, which types the operand as bytes: an argument outside the byte type is outside the operation's domain, not non-envelope input, so `rotate(42)` (or `rotate(null)`) is `INVALID_ARGUMENT`, while bytes that are not an envelope remain `NOT_CIPHERTEXT` in every mode. The reading was first made in the Python core ([#256](https://github.com/fieldseal-dev/fieldseal-spec/pull/256), `docs/07` §7, 2026-10-05) and is recorded here so that every binding takes it from the architecture rather than from another core's tree. If Gate 0b's spec review reads §11.1 the other way, this paragraph and `pinned_decisions.wrong-typed-operand` change together.
 
 ### 3.6 `warm(contexts)` (async where the language has async)
 
@@ -402,7 +417,8 @@ On async: the five operations are synchronous in every core, and that is not neg
 | Asynchronous companions | Optional, per binding (spec §11.1, G9). Where a binding ships one it is named in that binding's own convention — the TypeScript core spells them `blindIndexAsync` and `unindexableMarkerAsync` — and these are **not** portable names: no cross-implementation test can observe a companion's shape, because only an L4 adapter written against one core in one language ever calls it. The obligations that *are* portable are §11.1's: byte-identical output, the same §9 error for the same condition, and a synchronous form that is not a blocking wait on the companion |
 | Index parameters | supplied by the `IndexDeclaration` given at construction (§7), never as arguments to `blind_index`. The §7.4 band and the §7.6 cardinality gate are properties of a column, so they are checked once, where the column is declared, and a declaration that fails never reaches a key derivation |
 | Argon2id cost | `t` and `m` come from that declaration and default to the spec §7.3 minima; below either minimum, or present at all on an `hmac-sha512` index, is refused at construction. `version`, `p`, `output_len` and the salt derivation are fixed by §7.3 and are fields on nothing |
-| Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · future cores: idiomatic byte type |
+| Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · Java `byte[]` · future cores: idiomatic byte type |
+| Wrong-typed operand | What counts as bytes on input: Python `bytes`, `bytearray`, or a one-dimensional contiguous `memoryview` of format `'B'` (`blindindex.is_byte_string`) · TypeScript `Uint8Array`, `Buffer` included · Java a non-null `byte[]` · future cores state theirs. Anything else is `INVALID_ARGUMENT` from `encrypt`, `decrypt` and `rotate` in every read mode, never coerced; `blind_index` refuses what is neither text nor bytes; `is_ciphertext` answers `false` and never raises. Order: §3.1 steps 1–1b, §3.2 step 1, §3.3 note, §3.4, §3.5; declared under `pinned_decisions.wrong-typed-operand` (docs/14 §4). Wrong *shape* is [#257](https://github.com/fieldseal-dev/fieldseal-spec/issues/257) |
 | FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
 | Assigned-code-point check | `first_unassigned` / `firstUnassigned` (§7.1's MUST), returning the code point **and its offset in code points** under one shared type name, `Unassigned` — a NamedTuple in Python, an interface in TypeScript. The unit is part of the contract: UTF-16 offsets are an artifact of one binding's string type, and `docs/12` §10.2 renders the position to a person as "the Nth character". `UNICODE_VERSION` / `unicode_version` is exported beside it, so no caller keeps its own copy of the pin to drift. (Row added by G22, [#88](https://github.com/fieldseal-dev/fieldseal-spec/issues/88); the two cores had shipped the same concept under two type names, which is what this table exists to catch.) |
 | Error codes | identical strings to §9, exposed as a machine-readable `code` property |
