@@ -348,8 +348,10 @@ runs, so the value would be encrypted once and the same envelope — byte for
 byte — stored on every matched row. The bytes are not a nonce reuse, but on a
 column with no blind index the matched rows become visibly equal, which is what
 randomized encryption is for. So the shape is refused by default with
-`FieldsealNotSupported`. Write the rows one at a time (`update` with a unique
-`where`), or say that the shared value is what you mean:
+`FieldsealNotSupported`. A `where` that pins a unique key, such as
+`updateMany({ where: { id } })`, matches at most one row and is served as
+usual. Otherwise write the rows one at a time (`update` with a unique `where`),
+or say that the shared value is what you mean:
 
 ```ts
 import { sharedEnvelopeScope } from "@fieldseal/prisma";

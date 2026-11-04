@@ -22,7 +22,10 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
+import type { FieldMap, ResolvedModel } from "../src/fieldmap.ts";
 import { FieldsealNotSupported, sharedEnvelopeScope } from "../src/index.ts";
+import { pinsOneRow } from "../src/visitor/write.ts";
+import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
 import { clearDb, loose, makeClient, rawColumn } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -125,7 +128,8 @@ describe("the refusal", () => {
       where: { id: id! },
       data: {
         visits: {
-          updateMany: { where: { id: "v-1" }, data: { reason: "changed" } },
+          // Not `{ id }`: a unique key pins one row and is served (below).
+          updateMany: { where: { patientId: id! }, data: { reason: "changed" } },
         },
       },
     }).then(
@@ -187,6 +191,97 @@ describe("what is not a shared envelope", () => {
     const a = await rawColumn(base, "Patient", "note", "many-1");
     const b = await rawColumn(base, "Patient", "note", "many-2");
     expect(hex(a)).not.toBe(hex(b));
+  });
+});
+
+describe("a `where` that pins a unique key: one row, so no shared envelope", () => {
+  const pinning: Array<[string, (id: string) => Record<string, unknown>]> = [
+    ["the shorthand", (id) => ({ id })],
+    ["`equals`", (id) => ({ id: { equals: id } })],
+    ["`AND`", (id) => ({ AND: [{ plainName: "row-0" }, { id }] })],
+    ["a pin beside other terms", (id) => ({ id, plainName: { startsWith: "row-" } })],
+  ];
+
+  for (const [name, where] of pinning) {
+    it(`serves updateMany pinned by ${name}, with a fresh envelope`, async () => {
+      const [id, other] = await seed();
+      const before = await rawColumn(base, "Patient", "email", id!);
+      const otherBefore = await rawColumn(base, "Patient", "email", other!);
+      const result = await lp["patient"]!["updateMany"]!({
+        where: where(id!),
+        data: { email: "ada@example.com" },
+      });
+      expect(result["count"]).toBe(1);
+      expect(hex(await rawColumn(base, "Patient", "email", id!))).not.toBe(hex(before));
+      const back = await lp["patient"]!["findUnique"]!({ where: { id: id! } });
+      expect(back["email"]).toBe("ada@example.com");
+      expect(await rawColumn(base, "Patient", "email", other!)).toEqual(otherBefore);
+    });
+  }
+
+  it("serves updateManyAndReturn pinned by its primary key", async () => {
+    const [id] = await seed();
+    const rows = await lp["patient"]!["updateManyAndReturn"]!({
+      where: { id: id! },
+      data: { note: "only me" },
+    });
+    expect((rows as unknown as Array<{ note: string }>).map((r) => r.note)).toEqual(["only me"]);
+  });
+
+  it("serves a nested updateMany pinned by the target's primary key", async () => {
+    const [id] = await seed();
+    await lp["visit"]!["create"]!({ data: { id: "v-1", patientId: id!, reason: "checkup" } });
+    await lp["patient"]!["update"]!({
+      where: { id: id! },
+      data: { visits: { updateMany: { where: { id: "v-1" }, data: { reason: "changed" } } } },
+    });
+    const visit = await lp["visit"]!["findUnique"]!({ where: { id: "v-1" } });
+    expect(visit["reason"]).toBe("changed");
+  });
+
+  const notPinning: Array<[string, (a: string, b: string) => Record<string, unknown>]> = [
+    ["`in`", (a, b) => ({ id: { in: [a, b] } })],
+    ["`OR`", (a, b) => ({ OR: [{ id: a }, { id: b }] })],
+    ["`NOT`", (a) => ({ NOT: { id: a } })],
+    ["the scalar `not`", (a) => ({ id: { not: a } })],
+    ["`mode: \"insensitive\"`", (a) => ({ id: { equals: a, mode: "insensitive" } })],
+  ];
+
+  for (const [name, where] of notPinning) {
+    it(`still refuses a where that only looks pinned: ${name}`, async () => {
+      const [a, b] = await seed();
+      await expect(
+        lp["patient"]!["updateMany"]!({ where: where(a!, b!), data: { note: "shared" } }),
+      ).rejects.toThrow(/`updateMany` applies one payload/);
+    });
+  }
+
+  it("still refuses on a map generated before unique keys were emitted", async () => {
+    // The field is optional so an older map loads without a version bump; with
+    // no keys to read, every updateMany is multi-row -- the refusal's side.
+    const stale: FieldMap = {
+      ...fieldsealFieldMap,
+      models: fieldsealFieldMap.models.map(({ uniqueKeys: _, ...m }) => m),
+    };
+    const { base: staleBase, prisma: stalePrisma } = makeClient({ fieldMap: stale });
+    try {
+      const [id] = await seed();
+      await expect(
+        loose(stalePrisma)["patient"]!["updateMany"]!({ where: { id: id! }, data: { note: "x" } }),
+      ).rejects.toThrow(/`updateMany` applies one payload/);
+    } finally {
+      await staleBase.$disconnect();
+    }
+  });
+
+  it("needs every column of a compound key", () => {
+    const model = { uniqueKeys: [["org", "email"]] } as unknown as ResolvedModel;
+    expect(pinsOneRow(model, { org: "a", email: "b" })).toBe(true);
+    expect(pinsOneRow(model, { org: "a", AND: { email: { equals: "b" } } })).toBe(true);
+    expect(pinsOneRow(model, { org: "a" })).toBe(false);
+    expect(pinsOneRow(model, { org: "a", email: null })).toBe(false);
+    expect(pinsOneRow(model, { org: "a", OR: [{ email: "b" }] })).toBe(false);
+    expect(pinsOneRow({ uniqueKeys: [] } as unknown as ResolvedModel, { org: "a" })).toBe(false);
   });
 });
 

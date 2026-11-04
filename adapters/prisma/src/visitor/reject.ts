@@ -128,6 +128,8 @@ const NO_ROWS = new Set([
 interface Answered {
   readonly why: string;
   readonly fallback: string;
+  /** What candidateScope() alone does not lift for this shape, if anything. */
+  readonly scopeRider?: string;
 }
 
 /**
@@ -493,7 +495,8 @@ function record(
         `requires rejecting a filter path the interception surface does not ` +
         `reach rather than serving it approximately. ${site.answered.fallback} ` +
         `If bucket semantics are what you want, say so explicitly with ` +
-        `candidateScope(() => …) and take on §7.5 yourself. (At ${path}.)`,
+        `candidateScope(() => …) and take on §7.5 yourself.` +
+        `${site.answered.scopeRider ?? ""} (At ${path}.)`,
     );
   }
   // Only `OR` reaches this: `NOT` is refused above, on every scope. The
@@ -623,6 +626,26 @@ function topLevelAnswered(operation: string): Answered {
         fallback: `Fetch the verified rows with findMany and aggregate in application code.`,
       };
     case "updateMany":
+      // The generic remedy below, followed literally for an `updateMany`, is
+      // `updateMany({ where: { id: { in: pks } } })` -- which #250 refuses in
+      // the write pass as soon as the payload writes an encrypted column, and
+      // so does this statement under candidateScope(). Both are named here, so
+      // the caller is not refused a second time for following the first.
+      return {
+        why:
+          `\`updateMany\` acts on the rows the database selects, and none of ` +
+          `them come back for spec §7.5 to check.`,
+        fallback:
+          `The statement would write to rows that do not hold the value. Fetch ` +
+          `the verified rows with findMany first and act on their primary keys: ` +
+          `one \`update\` per row when the payload writes an encrypted column, ` +
+          `because a single \`updateMany\` over \`{ in: [...] }\` would store ` +
+          `one envelope on every row and is refused for that (#250).`,
+        scopeRider:
+          ` If the payload writes an encrypted column, that is not enough on its ` +
+          `own: the statement also needs sharedEnvelopeScope(() => …), because ` +
+          `it would store one envelope on every matched row (#250).`,
+      };
     case "deleteMany":
     case "update":
     case "delete":

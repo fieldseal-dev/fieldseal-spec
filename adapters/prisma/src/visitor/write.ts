@@ -62,8 +62,13 @@ export function applyWrites(model: ResolvedModel, args: unknown, ctx: WriteCtx):
   // already its own. The value is the shape's name for the refusal message --
   // a nested `updateMany` is the same defect one level in, and naming the
   // top-level operation there would point the caller at the wrong statement.
+  // A `where` that pins a unique key matches at most one row, so it shares
+  // nothing: `updateMany({ where: { id } })` is the usual "update if it
+  // exists" without P2025, and refusing it would push the caller into the
+  // scope for a statement that never needed it.
   const multiRowShape =
-    ctx.operation === "updateMany" || ctx.operation === "updateManyAndReturn"
+    (ctx.operation === "updateMany" || ctx.operation === "updateManyAndReturn") &&
+    !pinsOneRow(model, args["where"])
       ? `\`${ctx.operation}\``
       : null;
   for (const key of DATA_KEYS) {
@@ -147,7 +152,8 @@ function encryptRow(
           `every matched row holding this value becomes visibly equal, which is ` +
           `what randomized encryption exists to prevent on a column with no ` +
           `blind index (#250). Write the rows one at a time (\`update\` with a ` +
-          `unique \`where\`), or -- if the same plaintext on every matched row ` +
+          `unique \`where\`, or a \`where\` that pins every column of one unique ` +
+          `key to a value), or -- if the same plaintext on every matched row ` +
           `is exactly the intent -- open \`sharedEnvelopeScope(() => ...)\` ` +
           `around the statement and accept the equality it stores.`,
       );
@@ -207,11 +213,15 @@ function encryptRow(
       }
       if (nestedOp === "update" || nestedOp === "updateMany") {
         // A nested `updateMany` is the multi-row shape whatever the operation
-        // above it was; a nested `update` inside an `updateMany` still is.
-        const nestedShape =
-          multiRowShape ?? (nestedOp === "updateMany" ? "the nested `updateMany`" : null);
+        // above it was, unless its own `where` pins a unique key of the target;
+        // a nested `update` inside an `updateMany` still is.
         for (const item of asArray(payload)) {
           if (!isRecord(item)) continue;
+          const nestedShape =
+            multiRowShape ??
+            (nestedOp === "updateMany" && !pinsOneRow(target, item["where"])
+              ? "the nested `updateMany`"
+              : null);
           // Both `{ where, data }` and the bare-payload form.
           encryptRow(target, item["data"] ?? item, ctx, nestedShape);
         }
@@ -277,6 +287,46 @@ function deriveIndex(
  * caller's value class -- is a value, and if it is the wrong value the codec
  * refuses it with the type it actually saw, which is the honest error.
  */
+/**
+ * Whether `where` can match at most one row of `model`: every column of one of
+ * its unique keys is pinned to a value by an equality that must hold.
+ *
+ * Only conjunctive positions count -- the `where` itself and `AND`, at any
+ * depth -- because an equality under `OR` or `NOT` need not hold for a row to
+ * match. Only a scalar value counts (shorthand, or `equals` without
+ * `mode: "insensitive"`, which can match two values a case-sensitive key holds
+ * apart); `null`, a field reference or a Decimal object is not read as a pin.
+ * Anything this does not recognise answers "might match many", so a mistake
+ * here costs a refusal and never a shared envelope.
+ */
+export function pinsOneRow(model: ResolvedModel, where: unknown): boolean {
+  const keys = model.uniqueKeys;
+  if (keys === undefined || keys.length === 0) return false;
+  const pinned = new Set<string>();
+  collectPins(where, pinned);
+  return keys.some((key) => key.length > 0 && key.every((col) => pinned.has(col)));
+}
+
+function collectPins(where: unknown, pinned: Set<string>): void {
+  if (!isPlainRecord(where)) return;
+  for (const [key, value] of Object.entries(where)) {
+    if (key === "AND") {
+      for (const conjunct of asArray(value)) collectPins(conjunct, pinned);
+    } else if (key !== "OR" && key !== "NOT") {
+      const pins =
+        isPinValue(value) ||
+        (isPlainRecord(value) && value["mode"] !== "insensitive" && isPinValue(value["equals"]));
+      if (pins) pinned.add(key);
+    }
+  }
+}
+
+function isPinValue(v: unknown): boolean {
+  if (typeof v === "string" || typeof v === "bigint" || typeof v === "boolean") return true;
+  if (typeof v === "number") return Number.isFinite(v);
+  return v instanceof Date && !Number.isNaN(v.getTime());
+}
+
 function unwrapSet(value: unknown, label: string): unknown {
   if (!isPlainRecord(value)) return value;
   const keys = Object.keys(value);

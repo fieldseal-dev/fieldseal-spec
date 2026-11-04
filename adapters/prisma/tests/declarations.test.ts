@@ -95,6 +95,31 @@ describe("resolution", () => {
     expect(m.relations).toEqual([{ field: "visits", model: "Visit", isList: true }]);
   });
 
+  it("records every unique key, which tells a one-row updateMany from a shared one (#250)", () => {
+    const fields = [
+      field({ name: "id", type: "String", isId: true }),
+      field({ name: "handle", type: "String", isUnique: true }),
+      field({ name: "org", type: "String" }),
+      field({ name: "slug", type: "String" }),
+    ];
+    const declared = resolve(
+      model({ name: "P", fields: [...fields, encField()], uniqueFields: [["org", "slug"]] }),
+    )!;
+    expect(declared.uniqueKeys).toEqual([["id"], ["handle"], ["org", "slug"]]);
+
+    // An undeclared model is walked through, and can be the target of a nested
+    // updateMany, so it carries its keys too -- here a compound primary key.
+    const plain = resolve(
+      model({
+        name: "Plain",
+        documentation: null,
+        fields: fields.slice(1),
+        primaryKey: { fields: ["org", "slug"] },
+      }),
+    )!;
+    expect(plain.uniqueKeys).toEqual([["handle"], ["org", "slug"]]);
+  });
+
   it("defaults `as` to string, so a text column does not round-trip as a Buffer", () => {
     const m = resolve(model({ name: "P", fields: [encField()] }))!;
     expect(m.encrypted[0]?.valueType).toBe("string");
