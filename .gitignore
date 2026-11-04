@@ -58,3 +58,6 @@ verdict-*.json
 tools/vector-gen/.venv/
 *.egg-info/
 __pycache__/
+
+# Tequio board (cards, runs, worktrees, agent sessions)
+.board/
