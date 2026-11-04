@@ -9,9 +9,8 @@ cursor. A process killed at any point leaves the whole batch or none of it.
 **What this frontend does not do.** A tenant-bound column's values are
 recorded as `CONTEXT_UNAVAILABLE` and left as they were: the adapter takes
 the tenant from a context variable, and the procedure does not yet say how a
-run records where a row's tenant comes from (#244). In place on a `base64`
-column is refused at start (#245). Replication-lag throttling is not
-implemented.
+run records where a row's tenant comes from (#244). Replication-lag
+throttling is not implemented.
 """
 
 from __future__ import annotations
@@ -152,14 +151,6 @@ def plan(model: Any, columns: list[str] | None,
                 raise BackfillError(
                     f"--source {column}={sources[column]}: {sources[column]} "
                     f"is not a plaintext column of {name}.")
-        elif target.storage == "base64":
-            raise BackfillError(
-                f"{name}.{column} is stored as base64, and this run would "
-                "encrypt it in place. The adapter's permissive read of a "
-                "base64 column decodes legacy text as base64 before the core "
-                "sees it, so the value read back is not the value stored "
-                "(#245). Use the two-column shape: --source "
-                f"{column}=<legacy column>.")
         targets.append((target, source))
 
     client = get_client()

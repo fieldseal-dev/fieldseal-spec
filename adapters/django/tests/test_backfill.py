@@ -724,6 +724,61 @@ def test_in_place_on_sqlite_a_text_class_value_is_converted(in_place):
         secret="text@backfill.example")] == [keys[1]]
 
 
+@isolate_apps("tests")
+def test_in_place_on_a_base64_column_legacy_text_is_converted(permissive):
+    """#245: refused at start until the adapter's read stopped decoding
+    legacy text. The column itself holds the legacy text, and the read now
+    passes it through as stored, so the in-place shape converts it like
+    `binary` does. No blind index here: the client's index registry is built
+    from the project's models, which an `isolate_apps` model is not one of;
+    the in-place index derivation is the same path `LegacyInPlace` covers."""
+    from django.db import models
+
+    class Text(models.Model):
+        name = Encrypted(
+            models.CharField(max_length=50),
+            storage="base64",
+            null=True,
+            column_uuid="018f3c2e-0000-7000-8000-0000000000b1",
+        )
+        fieldseal = FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-0000000000b0")
+
+        class Meta:
+            db_table = "tests_legacy245_base64_in_place"
+
+    literals = ["Zm9v", "abcdabcd", "Anna", "ada@example.com",
+                "Ada Lovelace"]
+    with connection.schema_editor() as editor:
+        editor.create_model(Text)
+    try:
+        keys = [Text.objects.create().pk for _ in literals]
+        null_key = Text.objects.create().pk
+        for key, literal in zip(keys, literals, strict=True):
+            plant(Text, key, "name", literal)
+
+        outcome = go(Text)
+
+        assert (outcome.run.values_written, outcome.run.values_failed) == (
+            5, 0)
+        assert outcome.run.values_null == 1
+        for key in keys:
+            converted = raw(Text, key, "name")
+            assert isinstance(converted, str)
+            assert get_client().is_ciphertext(
+                base64.b64decode(converted, validate=True))
+        assert raw(Text, null_key, "name") is None
+        cfg = dict(settings.FIELDSEAL)
+        cfg["READ_MODE"] = "strict"
+        with override_settings(FIELDSEAL=cfg):
+            reset_client()
+            assert [Text.objects.get(pk=key).name for key in keys] == literals
+    finally:
+        reset_client()
+        with connection.schema_editor() as editor:
+            editor.delete_model(Text)
+
+
 def test_a_target_holding_something_else_is_anomalous_and_untouched():
     keys = TwoColumn().seed(emails(3))
     plant(LegacyTwoColumn, keys[0], "email", b"not an envelope")
@@ -1133,7 +1188,9 @@ def test_a_key_of_another_type_is_refused():
 # -- refusals at start ---------------------------------------------------------
 
 @isolate_apps("tests")
-def test_in_place_on_a_base64_column_is_refused(permissive):
+def test_plan_accepts_in_place_on_a_base64_column(permissive):
+    """#245: refused at start until the adapter's read stopped decoding
+    legacy text. In place is the same shape as `binary` now."""
     from django.db import models
 
     class Text(models.Model):
@@ -1143,8 +1200,15 @@ def test_in_place_on_a_base64_column_is_refused(permissive):
         fieldseal = FieldsealMeta(
             table_uuid="018f3c2e-0000-7000-8000-0000000000a0")
 
-    with pytest.raises(BackfillError, match="#245"):
-        encrypt.plan(Text, None, {})
+    p = encrypt.plan(Text, None, {})
+    assert p.targets == [(Text._meta.get_field("name"), None)]
+
+    cfg = dict(settings.FIELDSEAL)
+    cfg["READ_MODE"] = "strict"
+    with override_settings(FIELDSEAL=cfg):
+        reset_client()
+        with pytest.raises(BackfillError, match="permissive"):
+            encrypt.plan(Text, None, {})
 
 
 def test_in_place_needs_a_permissive_client():

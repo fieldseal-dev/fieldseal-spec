@@ -236,9 +236,11 @@ COL_LEGACY_MEMO = "018f3c2e-0000-7000-8000-000000000052"
 class LegacyInPlace(models.Model):
     """The in-place shape: the encrypted column itself holds legacy bytes.
 
-    Only a `binary` column can be in this state, and only when the legacy
-    bytes are already spec §3.6's rendering of the value. The tests put them
-    there with raw SQL, since every ORM write encrypts.
+    These columns are `binary`, so the legacy bytes must already be spec
+    §3.6's rendering of the value. (A `base64` column holds legacy text
+    instead, read back as stored since #245; its in-place test declares its
+    own model, since one here would raise `fieldseal.W003`.) The tests put
+    the legacy values there with raw SQL, since every ORM write encrypts.
     """
 
     secret = Encrypted(
