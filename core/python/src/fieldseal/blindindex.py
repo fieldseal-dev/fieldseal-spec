@@ -8,11 +8,11 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeGuard
 
 from . import unicode
 from .errors import ConfigurationError, InvalidArgument
 from .kdf import hkdf_sha512
+from .registry import is_byte_string
 
 # Spec §7.3's Argon2id invocation. `version`, `p`, `output_len` and the salt
 # derivation MUST NOT vary; `t` and `m` are stated there as *minima* a
@@ -60,32 +60,6 @@ def truncate(raw: bytes, b_bits: int) -> bytes:
 
 
 # -- normalizers (docs/09 §7: a closed, versioned set; portability surface) ---
-
-def is_byte_string(operand: object) -> TypeGuard[bytes | bytearray | memoryview]:
-    """What every operation that takes bytes accepts (spec §11.1, docs/10 §4):
-    `bytes`, `bytearray`, or a `memoryview` that is one-dimensional,
-    contiguous and of format "B" -- the view `memoryview(b)` gives over
-    either. A view of wider items, a strided view or a multi-dimensional one
-    is bytes-typed and still unusable: the AEAD refuses it with a raw error,
-    `len()` counts its items rather than its bytes, and a normalizer would
-    index its machine-endian bytes (#254).
-
-    The guard narrows to the three types, not to the shape: a `memoryview`
-    that narrowing admits may still be one this function refused, so a
-    caller must use the boolean, not the static type.
-
-    Here rather than in `envelope` because docs/09 §1 lets `blindindex`
-    import `registry` and `errors` only; `api` imports it from here."""
-    if isinstance(operand, bytes | bytearray):
-        return True
-    if not isinstance(operand, memoryview):
-        return False
-    try:
-        return (operand.ndim == 1 and operand.format == "B"
-                and operand.c_contiguous)
-    except ValueError:  # a released view
-        return False
-
 
 def describe_operand(operand: object) -> str:
     """The refused operand, for an INVALID_ARGUMENT message. A released view
