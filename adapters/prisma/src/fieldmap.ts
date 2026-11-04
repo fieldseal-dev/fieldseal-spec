@@ -122,6 +122,20 @@ export interface ModelMap {
   readonly encrypted: readonly EncryptedFieldDecl[];
   readonly indexes: readonly IndexFieldDecl[];
   readonly relations: readonly RelationDecl[];
+  /**
+   * The model's unique keys -- `@id`, `@unique`, `@@id` and `@@unique` -- each
+   * as the columns it spans. A `where` that pins every column of one to a value
+   * matches at most one row, which is how the write pass tells an `updateMany`
+   * that cannot share an envelope from one that can (#250).
+   *
+   * None of these columns is encrypted or an index sibling: declarations
+   * refuses both inside a uniqueness constraint (spec §7.10).
+   *
+   * Optional, so a map emitted before it existed still loads without a version
+   * bump. Such a map carries no keys, and every `updateMany` on it is then
+   * treated as multi-row -- the refusal's side, not plaintext's.
+   */
+  readonly uniqueKeys?: readonly (readonly string[])[];
 }
 
 /**

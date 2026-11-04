@@ -88,6 +88,11 @@ export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap {
   const encrypted: EncryptedFieldDecl[] = [];
   const rawIndexes: Array<{ decl: IndexFieldDecl; site: Site }> = [];
   const relations: RelationDecl[] = [];
+  const uniqueKeys: string[][] = [
+    ...model.fields.filter((f) => f.isId === true || f.isUnique === true).map((f) => [f.name]),
+    ...(model.primaryKey != null ? [[...model.primaryKey.fields]] : []),
+    ...(model.uniqueFields ?? []).map((g) => [...g]),
+  ];
   // Whether any @fieldseal declaration was *seen*, as opposed to successfully
   // resolved. These are different questions, and conflating them means a model
   // whose declarations all fail to parse looks like a model with none -- so it
@@ -125,7 +130,14 @@ export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap {
   // touches. Everything else about it is left alone.
   if (!sawDeclaration) {
     if (problems.length > 0) throw new FieldsealConfigurationError(problems.join("\n"));
-    return { model: model.name, tableUuid: null, encrypted: [], indexes: [], relations };
+    return {
+      model: model.name,
+      tableUuid: null,
+      encrypted: [],
+      indexes: [],
+      relations,
+      uniqueKeys,
+    };
   }
 
   const tableUuid = collect(() => requiredUuid(modelAnns, "table_uuid", site()));
@@ -180,7 +192,7 @@ export function resolveModel(model: ModelInput, parse: ParseFn): ModelMap {
   }
 
   if (problems.length > 0) throw new FieldsealConfigurationError(problems.join("\n"));
-  return { model: model.name, tableUuid: tableUuid!, encrypted, indexes, relations };
+  return { model: model.name, tableUuid: tableUuid!, encrypted, indexes, relations, uniqueKeys };
 }
 
 type ParseFn = (doc: string | null | undefined, site: Site) => Annotation[];
