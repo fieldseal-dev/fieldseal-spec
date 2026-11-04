@@ -217,15 +217,19 @@ function encryptRow(
         }
         continue;
       }
-      if (nestedOp === "create" || nestedOp === "createMany") {
-        // One payload per new row (`createMany`'s explicit array, or a nested
-        // `create`'s single payload), so each draw is already its own.
+      if (nestedOp === "create") {
+        // One payload per new row, so each draw is already its own.
+        for (const item of asArray(payload)) encryptRow(target, item, ctx, null);
+        continue;
+      }
+      if (nestedOp === "createMany") {
+        // The payload is an envelope, `{ data, skipDuplicates? }`, and Prisma
+        // types its `data` as one row *or* an array of rows. Unwrapping only the
+        // array encrypted the envelope itself for the single-row form, found no
+        // declared field on it, and let the row through as written: plaintext.
         for (const item of asArray(payload)) {
-          if (isRecord(item) && Array.isArray(item["data"])) {
-            for (const r of item["data"]) encryptRow(target, r, ctx, null);
-          } else {
-            encryptRow(target, item, ctx, null);
-          }
+          if (!isRecord(item)) continue;
+          for (const r of asArray(item["data"])) encryptRow(target, r, ctx, null);
         }
         continue;
       }
