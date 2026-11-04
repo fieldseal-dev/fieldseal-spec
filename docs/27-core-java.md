@@ -315,8 +315,8 @@ The result is a fact for §6.1 ("on JDK X / HotSpot, the largest `byte[]` is 2³
 - **`docs/09/7.1/lone-surrogate-refusal`:** `status: "pass"`, `basis: "direct"`. Two distinct unpaired surrogates (`"a\uD800b"`, `"a\uDC00b"`) must be refused, and refused distinguishably (`docs/08` §5 item 9).
 - **The `blind-index/` `refuse` vectors** are ordinary results, not out-of-band. They pass through `blindIndex(byte[])` (§4).
 - **Every out-of-band entry carries `basis`.** A level claim quoted outside the report names the two `seam` entries (`docs/14` §4).
-- **`pinned_decisions`:** all six mandatory keys (`docs/14` §4). This core may add a `platform-byte-buffer-max` key carrying the probe's figure.
-- **A backed pinned decision** (#225): `index-role-use-budget` states `docs/09` §8.3's "the index role has no use budget", a rule with no bytes to compare and so no vector (`docs/08` §8). The key's text cites `EnvelopeProviderTest.theIndexRoleHasNoUseBudget`, which the report runs through the launcher. That test derives a blind index `maxUses + 1` times under `maxUses = 2`, then use-evicts the DEK beside it as the positive control. A backing test that is missing, or does not pass, is a report problem: the L0 claim is withdrawn and the run exits 1. The key is this core's own until `docs/14` §4 makes it mandatory, which needs the other cores' halves.
+- **`pinned_decisions`:** all seven mandatory keys (`docs/14` §4; six until #225 made `index-role-use-budget`, below, the seventh). This core may add a `platform-byte-buffer-max` key carrying the probe's figure.
+- **A backed pinned decision** (#225): `index-role-use-budget` states `docs/09` §8.3's "the index role has no use budget", a rule with no bytes to compare and so no vector (`docs/08` §8). The key's text cites `EnvelopeProviderTest.theIndexRoleHasNoUseBudget`, which the report runs through the launcher. That test derives a blind index `maxUses + 1` times under `maxUses = 2`, then use-evicts the DEK beside it as the positive control. A backing test that is missing, or does not pass, is a report problem: the L0 claim is withdrawn and the run exits 1. The key was this core's own until the Python and TypeScript halves landed; `docs/14` §4 has made it mandatory for every core since #225.
 - **`harness_notes`:** the near-maximum envelope asymmetry from §6.1.
 
 ## 7. Testing plan
@@ -465,7 +465,7 @@ Relative sizing only; `docs/07` §3 rejects invented week numbers. These are sta
 **D. Report integrity.** The report validates against `docs/14` §4:
 - `held_out` mirrors the manifest;
 - `provisional_suites: true` and `async_companions: false`;
-- all six `pinned_decisions` keys are present;
+- every mandatory `pinned_decisions` key is present (six at S6; seven since #225);
 - a vector-suite version bump fails loudly.
 
 ## 10. Risks and non-goals

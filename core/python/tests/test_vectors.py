@@ -187,8 +187,39 @@ def test_carries_every_pinned_decision_key_docs14_requires():
     noticing (G17, issue #67)."""
     for key in ("decrypt-order", "aad-mismatch", "api-boundary-order",
                 "unimplemented-registered-suite", "commitment-construction",
-                "key-material-ownership"):
+                "key-material-ownership", "index-role-use-budget"):
         assert REPORT["pinned_decisions"].get(key), key
+
+
+def test_index_role_use_budget_is_backed_and_cites_its_tests():
+    """docs/14 §4 (#225): `index-role-use-budget` is a test-backed pinned
+    decision. Its text must quote every test the generator runs for it, so
+    the text and the run cannot drift apart, and on this green run every one
+    of them must have run and passed -- which is what lets L0 stand."""
+    from run_vectors import PINNED_TESTS
+    text = REPORT["pinned_decisions"]["index-role-use-budget"]
+    cited = PINNED_TESTS["index-role-use-budget"]
+    assert cited
+    for nodeid in cited:
+        assert nodeid in text, nodeid
+    notes = [n for n in REPORT["harness_notes"]
+             if n.startswith("pinned_decisions.index-role-use-budget ")]
+    assert len(notes) == 1, notes
+    assert notes[0].endswith(". backed"), notes[0]
+    assert REPORT["claimed_levels"]["L0"] is True
+
+
+def test_a_missing_backing_test_withholds_the_level():
+    """docs/14 §4's "did not run" branch, without mutating source: a cited
+    node id that does not exist is `missing`, never a pass. `run()` turns any
+    non-pass into L0 false, and `main()` exits 1 on L0 false."""
+    from run_vectors import run_pinned_tests
+    pins = run_pinned_tests({"index-role-use-budget": (
+        "tests/test_index_role_budget.py::TestIndexRoleUseBudget::"
+        "test_does_not_exist",)})
+    pin = pins["index-role-use-budget"]
+    assert pin["status"] == "missing", pin
+    assert set(pin["tests"].values()) == {"missing"}
 
 
 def test_does_not_declare_decisions_the_spec_has_taken_over():
