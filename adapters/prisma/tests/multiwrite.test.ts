@@ -15,9 +15,12 @@
  * halves: the refusal (and that it writes nothing), and what the scope does and
  * does not lift.
  *
- * The refusal is at the encryption point, not in the analyzer, so the cases
- * below cover what is *not* refused too -- a payload touching only plaintext,
- * `null`, and `createMany`, which carries one payload per row.
+ * The refusal lives in the write walk, beside the `undefined`/`null` rules it
+ * depends on, and the extension runs that walk once in check mode at its
+ * refusal step -- so it is raised before any column is encrypted or any key
+ * fetched. The cases below cover what is *not* refused too -- a payload
+ * touching only plaintext, `null`, `createMany`, which carries one payload per
+ * row, and a `where` that pins one row by a unique key.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
