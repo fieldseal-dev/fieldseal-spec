@@ -10,7 +10,8 @@
  *
  *   1. model === undefined (raw ops) -> passthrough + warning, or throw
  *   2. no encrypted column on this model            -> passthrough
- *   3. ANALYSE  walk args: refuse forbidden shapes (§4), plan the rewrites
+ *   3. ANALYSE  walk args: refuse forbidden shapes (§4), plan the rewrites;
+ *               walk the write payloads in check mode for their refusals
  *   4. WRITE    encrypt declared columns, derive index siblings
  *   5. WHERE    rewrite equality/`in` onto the sibling index, record the
  *               spec §7.5 obligations the rewrite incurs
@@ -198,9 +199,6 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
             verify: !inCandidateScope(),
           });
 
-          // 4 + 5, under one journal and one retry. Together, because step 5
-          // can miss a key after step 4 has already encrypted the payload: two
-          // separate retries would re-run step 4 over its own ciphertext.
           const writePass = passScope();
           const argsJournal = new Journal();
           const writeCtx: WriteCtx = {
@@ -211,6 +209,17 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
             context: writePass.context,
             journal: argsJournal,
           };
+          //    The write walk's own refusals belong here too: the #250 shared
+          //    envelope, a hand-written index sibling, an `increment` on an
+          //    encrypted column, an unknown nested write. None needs a key, and
+          //    raised from step 4 they came after every column walked before
+          //    the refused one was encrypted -- and, under L4, after a KMS
+          //    fetch for a statement that was never going to run.
+          applyWrites(resolved, args, { ...writeCtx, check: true });
+
+          // 4 + 5, under one journal and one retry. Together, because step 5
+          // can miss a key after step 4 has already encrypted the payload: two
+          // separate retries would re-run step 4 over its own ciphertext.
           let obligations: Obligation[] = [];
           await runPass(
             () => {
