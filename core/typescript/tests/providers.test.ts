@@ -308,6 +308,70 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
     d.encrypt(PT, CTX); // DEK use 3 → evicted on return
     expect(codeOf(() => d.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
   });
+
+  // Clients sharing one provider (docs/09 §8.3, "What sharing one provider
+  // means"; #215). Written from that text alone.
+
+  it("clients sharing a provider share its cache: the second client never unwraps (docs/09 §8.3)", async () => {
+    // A key is unwrapped once per residency, whichever client first needs it.
+    // The second client is not warmed: it is served from the cache the first
+    // client's warm filled.
+    const p = provider();
+    const a = makeClient({ keyProvider: p });
+    const b = makeClient({ keyProvider: p });
+    unwraps.length = 0;
+    await a.warm([CTX]);
+    expect(unwraps.length).toBe(2); // dek + index key, once each
+    const envB = b.encrypt(PT, CTX); // b never warmed
+    expect(Buffer.from(a.decrypt(envB, CTX)).equals(Buffer.from(PT))).toBe(true);
+    expect(Buffer.from(b.decrypt(a.encrypt(PT, CTX), CTX)).equals(Buffer.from(PT))).toBe(true);
+    expect(unwraps.length).toBe(2); // no client unwrapped again
+    expect(p.cache.size).toBe(2); // one entry per role, not per client
+  });
+
+  it("clients sharing a provider spend one max-uses budget: N encryptions across both exhaust maxUses = N (docs/09 §8.3)", async () => {
+    // Every client's returns of a DEK spend one budget, not one each.
+    const n = 4;
+    const p = new EnvelopeKeyProvider({ wrapper, directory, cache: { maxAgeMs: 60_000, maxUses: n, capacity: 16 } });
+    const a = makeClient({ keyProvider: p });
+    const b = makeClient({ keyProvider: p });
+    await a.warm([CTX]);
+    for (let i = 0; i < n; i++) {
+      expect((i % 2 === 0 ? a : b).encrypt(PT, CTX)).toBeDefined(); // a, b, a, b
+    }
+    expect(codeOf(() => a.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
+    expect(codeOf(() => b.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
+    expect(p.cache.metrics.evictions["max-uses"]).toBe(1); // one budget, spent once
+  });
+
+  it("one capacity covers every tenant: one client's warms evict another's key, which fails closed with KEY_UNAVAILABLE (docs/09 §8.3)", async () => {
+    // The evicted key fails closed until it is warmed again. capacity = 2 and
+    // a warm puts two entries (dek + index key), so B's warm must evict both
+    // of A's whatever their LRU order.
+    const scopeB = bytes("tenant-0002");
+    const keyIdB = new Uint8Array(16).fill(0x0b); // differs from KEY_ID: the directory refuses duplicates
+    const dekB = new Uint8Array(32).fill(0x33);
+    const ikB = new Uint8Array(32).fill(0x44);
+    const twoTenants = new InMemoryKeyDirectory([
+      { scope, activeVersion: 1, versions: [{ version: 1, keyId: KEY_ID, wrappedDek: wrap(dekPlain), wrappedIndexKey: wrap(ikPlain) }] },
+      { scope: scopeB, activeVersion: 1, versions: [{ version: 1, keyId: keyIdB, wrappedDek: wrap(dekB), wrappedIndexKey: wrap(ikB) }] },
+    ]);
+    const p = new EnvelopeKeyProvider({ wrapper, directory: twoTenants, cache: { maxAgeMs: 60_000, maxUses: 1000, capacity: 2 } });
+    const a = makeClient({ keyProvider: p }); // serves tenant A (CTX)
+    const b = makeClient({ keyProvider: p }); // serves tenant B (ctxB)
+    const ctxB = { ...CTX, tenantId: scopeB };
+    await a.warm([CTX]);
+    expect(a.encrypt(PT, CTX)).toBeDefined();
+    await b.warm([ctxB]);
+    expect(b.encrypt(PT, ctxB)).toBeDefined();
+    expect(p.cache.metrics.evictions.capacity).toBe(2);
+    expect(p.cache.size).toBe(2);
+    expect(codeOf(() => a.encrypt(PT, CTX))).toBe("KEY_UNAVAILABLE");
+    // "until it is warmed again": re-warming A restores it, and evicts B.
+    await a.warm([CTX]);
+    expect(a.encrypt(PT, CTX)).toBeDefined();
+    expect(codeOf(() => b.encrypt(PT, ctxB))).toBe("KEY_UNAVAILABLE");
+  });
 });
 
 describe("construction-time configuration gates (docs/09 §2, §7)", () => {
