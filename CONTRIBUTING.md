@@ -25,7 +25,7 @@ An implementation may claim a conformance level only if it passes every vector f
 
 Adapters must:
 
-- contain **zero cryptographic code** — their only permitted calls into the core are the five synchronous functions plus `warm`
+- contain **zero cryptographic code** — their only permitted calls into the core are the five synchronous functions plus `warm` (and, from tooling outside the value path, the header accessor: spec §11.3)
 - publish a coverage matrix stating exactly which write, read, and query paths they intercept
 - **throw** rather than degrade on any path that would silently write plaintext or silently return wrong results (spec §10.2)
 

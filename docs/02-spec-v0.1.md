@@ -886,6 +886,12 @@ All KMS interaction happens here or in a background refresh task. Never in the v
 
 The core MUST NOT know about rows, columns, SQL, or ORMs beyond the opaque identifiers in `FieldContext`. Adapters MUST NOT contain cryptographic code. An adapter's only permitted calls into the core are the five functions in §11.1 plus `warm`.
 
+Tooling an adapter package ships outside its value path, such as a backfill frontend (`docs/15`, `tools/backfill/PROCEDURE.md`), MAY also call the core's header accessor (`docs/09` §4, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)). The accessor returns an envelope's `suite_id` and `key_id` exactly when `is_ciphertext` is true. It reads public header bytes by their layout (§3.1): it derives no key, decrypts nothing and calls no key provider, so calling it is not cryptographic code under this section. What it returns is unauthenticated until a `decrypt` of the same bytes succeeds.
+
+*Justification.* The rotation sweep §11.1 describes ("parses the header and calls `rotate` only on envelopes whose `key_id` or `suite_id` is stale") cannot be written within the sentence above, and a frontend parsing the bytes itself would be a second recognition rule beside §3.4's. The accessor is no value-path operation and adds no conformance level; no vector observes it.
+
+**[flag: the last sentence of this section's first paragraph is already narrower than the shipped adapters.** The Django, Prisma and Hibernate adapters also call the configuration-reflection accessors (`docs/09` §2, G18) and the assigned-code-point check (`docs/09` §7.1, G22), as `.indexes`, `first_unassigned` and `firstUnassigned` in `adapters/*/src` show. Reconciling the sentence with them is a separate issue, not made here.**]**
+
 ---
 
 ## 12. Test vectors
