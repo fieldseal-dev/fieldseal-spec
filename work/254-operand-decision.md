@@ -63,7 +63,7 @@ This card changes docs only. The code below is owed by the core cards. This card
   - Behaviour already conforms.
   - Add `wrong-typed-operand`, backed by the #256 tests in `tests/test_parity.py`.
   - Reword `decrypt-order` so it does not name `len<1` and `len<51`.
-  - **No card is named for this.**
+  - **A Python card of its own**, opened at the owner's direction on 2026-11-04 (opening it is the person's step, not this card's). It stays separate from PR #271 (#257), which is a different question and gated on its own Step 0 answer. PR #256 named the operand step inside the existing declarations but added no key, so this report is owed the key like the other two.
 - Each core's PR adds its own `docs/07` entry, as #256 did, and replaces the "owed" text in its binding doc with as-built text.
 
 ## 7. Choices this card made where the owner left the point open
@@ -77,9 +77,17 @@ This card changes docs only. The code below is owed by the core cards. This card
 | docs/09 step numbering | Steps extended (1a new, 1b widened, §3.2 step 1 widened), not renumbered | Java code and `docs/27` cite "step 1b" as the length guard, and this card cannot change code. |
 | `decrypt-order` length wording | State recognition by spec §3.4's outcomes, with floors named as the spec names them, not internal thresholds | This is how the Java report words it (`docs/27` §4). The wording rule goes in docs/14 §4's `decrypt-order` row. |
 
-## 8. On "the report generator checks it"
+## 8. On "the report generator checks it" (owner's answer, 2026-11-04: the split)
 
-The card's criterion asks that the report generator check the pin. This card makes that check a docs/14 §4 MUST: the generator runs the key's backing tests, and if they are missing or red the report claims no level. The generator code that enforces it is core code (`run_vectors.py`, `tests/harness/run.ts`, `ConformanceReport.java`). It lands with the core changes in §6, not in this card, which may not change core code.
+The owner chose the split, and reworded the criterion to: *"docs/14 §4 requires each core's report to carry the key, backed by a test that fails without the behaviour, and fails the report when that test is missing or red. The check itself lands with each core: cards 0011 and 0013, and a Python card."*
+
+Why: one card editing three report generators means one worker reading `core/python`, `core/typescript` and `core/java` together, which the independence rule forbids (AGENTS.md, docs/26 §2.2). The TypeScript and Java `isCiphertext` fixes are core behaviour changes and belong to those cores' cards for the same reason.
+
+This follows #225's shape exactly. `index-role-use-budget` was stated once, the Java report picked it up in PR #230 with a backing test, and #225 stays open until the other cores carry it. Here:
+- docs/14 §4 states the key and what backs it, and its row names which cores carry it as of today (none). That way a drift check (docs/26 §6) sees the gap instead of reading silence as agreement.
+- docs/14 §4 says a report that lacks the key is **non-conformant to the row, not differently configured**. That wording is what makes the three per-core cards mandatory rather than optional.
+- Each core's report gains the key in its own PR. The generator code that enforces it (`run_vectors.py`, `tests/harness/run.ts`, `ConformanceReport.java`) lands there.
+- **#254 stays open** until all three reports carry the key.
 
 ## 9. Independence
 
