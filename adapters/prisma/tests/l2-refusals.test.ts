@@ -23,7 +23,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { candidateScope, FieldsealNotSupported } from "../src/index.ts";
+import { candidateScope, FieldsealNotSupported, sharedEnvelopeScope } from "../src/index.ts";
 import { clearDb, loose, makeClient, rawColumn, setColumn } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -630,5 +630,70 @@ describe("a refusal does not invent a bucket the column does not have", () => {
     expect(err!.message).toMatch(/Spec §7\.4 mandates that the index bucket/);
     expect(err!.message).not.toMatch(NO_INDEX);
     expect(err!.message).toMatch(/which counts verified rows/);
+  });
+});
+
+// ---- the remedy an updateMany refusal names must not be refused itself ----
+
+describe("updateMany over an encrypted equality: the way out is served (#250)", () => {
+  const refusal = (where: Record<string, unknown>, data: Record<string, unknown>) =>
+    lp["patient"]!["updateMany"]!({ where, data }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+  it("names one `update` per row, not an updateMany over the primary keys", async () => {
+    const err = await refusal({ email: ADA }, { note: "x" });
+    expect(err).toBeInstanceOf(FieldsealNotSupported);
+    expect(err!.message).toMatch(/act on their primary keys/);
+    expect(err!.message).toMatch(/one `update` per row when the payload writes an encrypted column/);
+    expect(err!.message).toMatch(/is refused for that \(#250\)/);
+  });
+
+  it("says candidateScope alone does not lift the shared envelope", async () => {
+    const err = await refusal({ email: ADA }, { note: "x" });
+    expect(err!.message).toMatch(/candidateScope\(\(\) => …\)/);
+    expect(err!.message).toMatch(/also needs sharedEnvelopeScope\(\(\) => …\)/);
+  });
+
+  it("keeps the rider off operations it does not apply to", async () => {
+    const err = await lp["patient"]!["deleteMany"]!({ where: { email: ADA } }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err!.message).toMatch(/act on their primary keys/);
+    expect(err!.message).not.toMatch(/sharedEnvelopeScope/);
+  });
+
+  it("serves the remedy it names: verified rows, then one write per primary key", async () => {
+    const a = await lp["patient"]!["create"]!({
+      data: { email: ADA, note: "n", age: 1, plainName: "a" },
+    });
+    const b = await lp["patient"]!["create"]!({
+      data: { email: ADA, note: "n", age: 1, plainName: "b" },
+    });
+    const rows = await lp["patient"]!["findMany"]!({ where: { email: ADA } });
+    const ids = (rows as unknown as Array<{ id: string }>).map((r) => r.id);
+    expect(ids.sort()).toEqual([a.id, b.id].sort());
+
+    // `update`, or an `updateMany` pinned by the key: one row each, one draw each.
+    await lp["patient"]!["update"]!({ where: { id: a.id }, data: { note: "moved" } });
+    await lp["patient"]!["updateMany"]!({ where: { id: b.id }, data: { note: "moved" } });
+    const na = await rawColumn(base, "Patient", "note", a.id);
+    const nb = await rawColumn(base, "Patient", "note", b.id);
+    expect(Buffer.from(na as Uint8Array).equals(Buffer.from(nb as Uint8Array))).toBe(false);
+    for (const id of ids) {
+      expect((await lp["patient"]!["findUnique"]!({ where: { id } }))["note"]).toBe("moved");
+    }
+  });
+
+  it("serves the bucket route with both scopes, and refuses it with candidateScope alone", async () => {
+    await lp["patient"]!["create"]!({ data: { email: ADA, note: "n", age: 1, plainName: "a" } });
+    const run = () =>
+      candidateScope(() =>
+        lp["patient"]!["updateMany"]!({ where: { email: ADA }, data: { note: "bucket" } }),
+      );
+    await expect(run()).rejects.toThrow(/`updateMany` applies one payload/);
+    expect(await sharedEnvelopeScope(run)).toMatchObject({ count: 1 });
   });
 });

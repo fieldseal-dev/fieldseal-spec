@@ -13,11 +13,21 @@
  * Every value written to a declared column is encrypted with a fresh nonce and
  * a fresh `msg_seed` (spec §4.4), on every write including an UPDATE. Nothing
  * here caches, derives from row identity, or reuses.
+ *
+ * **One shape where "per row" does not hold, refused by default.** A multi-row
+ * statement (`updateMany`, `updateManyAndReturn`, and a nested `updateMany`
+ * beneath any operation) carries one payload for every row it matches, so
+ * encrypting there stores one envelope on all of them and the fresh draw above
+ * is one draw for the statement. That shape is refused unless the caller opens
+ * `sharedEnvelopeScope()` (`multiwrite.ts`, `#250`), which is an explicit
+ * statement that the same value on every matched row is intended and the
+ * equality it stores is accepted.
  */
 
 import type { Fieldseal } from "@fieldseal/core";
 
 import { toBytes, toColumn } from "../codec.ts";
+import { inSharedEnvelopeScope } from "../multiwrite.ts";
 import { buildContext, type ContextOptions, indexContext } from "../context.ts";
 import { FieldsealNotSupported } from "../errors.ts";
 import type { Journal } from "../journal.ts";
@@ -45,10 +55,26 @@ const DATA_KEYS = ["data", "create", "update"] as const;
 
 export function applyWrites(model: ResolvedModel, args: unknown, ctx: WriteCtx): void {
   if (!isRecord(args)) return;
+  // `updateMany` and `updateManyAndReturn` apply one `data` payload to every row
+  // their `where` matches. That is #250's shape, and the walk below refuses it
+  // unless the caller opened `sharedEnvelopeScope()`. `createMany` is not one:
+  // it carries an array of rows, each with its own payload, so each draw is
+  // already its own. The value is the shape's name for the refusal message --
+  // a nested `updateMany` is the same defect one level in, and naming the
+  // top-level operation there would point the caller at the wrong statement.
+  // A `where` that pins a unique key matches at most one row, so it shares
+  // nothing: `updateMany({ where: { id } })` is the usual "update if it
+  // exists" without P2025, and refusing it would push the caller into the
+  // scope for a statement that never needed it.
+  const multiRowShape =
+    (ctx.operation === "updateMany" || ctx.operation === "updateManyAndReturn") &&
+    !pinsOneRow(model, args["where"])
+      ? `\`${ctx.operation}\``
+      : null;
   for (const key of DATA_KEYS) {
     const node = args[key];
     if (node === undefined) continue;
-    for (const row of asArray(node)) encryptRow(model, row, ctx);
+    for (const row of asArray(node)) encryptRow(model, row, ctx, multiRowShape);
   }
 }
 
@@ -59,8 +85,17 @@ export function applyWrites(model: ResolvedModel, args: unknown, ctx: WriteCtx):
  * rebuilding the tree would mean reconstructing every shape faithfully --
  * including the ones this visitor does not understand. Mutating only the leaves
  * it recognises leaves everything else exactly as the caller wrote it.
+ *
+ * `multiRowShape` is carried down the relation graph because a nested
+ * `updateMany` under a `create` or an `update` is the same defect one level in:
+ * the payload still applies to every row the nested `where` matches.
  */
-function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
+function encryptRow(
+  model: ResolvedModel,
+  row: unknown,
+  ctx: WriteCtx,
+  multiRowShape: string | null,
+): void {
   if (!isRecord(row)) return;
 
   // An index sibling the caller set by hand is refused: those bytes are
@@ -96,6 +131,32 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
       const idx = model.indexBySource.get(enc.field);
       if (idx !== undefined) ctx.journal.set(row, idx.field, null);
       continue;
+    }
+
+    // #250. The statement encrypts here once, before the engine ever sees it,
+    // and applies the result to every row its `where` matches: one `msg_seed`,
+    // one nonce, one envelope stored byte for byte on all of them. The bytes
+    // are not a nonce reuse -- the key, nonce, plaintext and context are all
+    // the same -- but on a column with no blind index they make the matched
+    // rows visibly equal, which is the one thing randomized encryption was
+    // bought to prevent. Prisma offers no per-row payload for this shape, so
+    // there is nothing to encrypt against: refuse (spec §10.2), unless the
+    // caller opened `sharedEnvelopeScope()` to say the shared value is the
+    // intent.
+    if (multiRowShape !== null && !inSharedEnvelopeScope()) {
+      throw new FieldsealNotSupported(
+        `${label}: ${multiRowShape} applies one payload to every row its ` +
+          `\`where\` matches, so this value would be encrypted once and stored ` +
+          `byte for byte on all of them. Spec §3.1 and §4.4 draw a fresh nonce ` +
+          `and \`msg_seed\` per write, and a shared envelope is a single draw: ` +
+          `every matched row holding this value becomes visibly equal, which is ` +
+          `what randomized encryption exists to prevent on a column with no ` +
+          `blind index (#250). Write the rows one at a time (\`update\` with a ` +
+          `unique \`where\`, or a \`where\` that pins every column of one unique ` +
+          `key to a value), or -- if the same plaintext on every matched row ` +
+          `is exactly the intent -- open \`sharedEnvelopeScope(() => ...)\` ` +
+          `around the statement and accept the equality it stores.`,
+      );
     }
 
     const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
@@ -136,33 +197,49 @@ function encryptRow(model: ResolvedModel, row: unknown, ctx: WriteCtx): void {
       }
       if (nestedOp === "connectOrCreate") {
         for (const item of asArray(payload)) {
-          if (isRecord(item)) encryptRow(target, item["create"], ctx);
+          // A new row, with its own payload: not a shared envelope even when
+          // the statement above is multi-row.
+          if (isRecord(item)) encryptRow(target, item["create"], ctx, null);
         }
         continue;
       }
       if (nestedOp === "upsert") {
         for (const item of asArray(payload)) {
           if (!isRecord(item)) continue;
-          encryptRow(target, item["create"], ctx);
-          encryptRow(target, item["update"], ctx);
+          encryptRow(target, item["create"], ctx, null);
+          encryptRow(target, item["update"], ctx, multiRowShape);
         }
         continue;
       }
       if (nestedOp === "update" || nestedOp === "updateMany") {
+        // A nested `updateMany` is the multi-row shape whatever the operation
+        // above it was, unless its own `where` pins a unique key of the target;
+        // a nested `update` inside an `updateMany` still is.
         for (const item of asArray(payload)) {
           if (!isRecord(item)) continue;
+          const nestedShape =
+            multiRowShape ??
+            (nestedOp === "updateMany" && !pinsOneRow(target, item["where"])
+              ? "the nested `updateMany`"
+              : null);
           // Both `{ where, data }` and the bare-payload form.
-          encryptRow(target, item["data"] ?? item, ctx);
+          encryptRow(target, item["data"] ?? item, ctx, nestedShape);
         }
         continue;
       }
-      if (nestedOp === "create" || nestedOp === "createMany") {
+      if (nestedOp === "create") {
+        // One payload per new row, so each draw is already its own.
+        for (const item of asArray(payload)) encryptRow(target, item, ctx, null);
+        continue;
+      }
+      if (nestedOp === "createMany") {
+        // The payload is an envelope, `{ data, skipDuplicates? }`, and Prisma
+        // types its `data` as one row *or* an array of rows. Unwrapping only the
+        // array encrypted the envelope itself for the single-row form, found no
+        // declared field on it, and let the row through as written: plaintext.
         for (const item of asArray(payload)) {
-          if (isRecord(item) && Array.isArray(item["data"])) {
-            for (const r of item["data"]) encryptRow(target, r, ctx);
-          } else {
-            encryptRow(target, item, ctx);
-          }
+          if (!isRecord(item)) continue;
+          for (const r of asArray(item["data"])) encryptRow(target, r, ctx, null);
         }
         continue;
       }
@@ -210,6 +287,46 @@ function deriveIndex(
  * caller's value class -- is a value, and if it is the wrong value the codec
  * refuses it with the type it actually saw, which is the honest error.
  */
+/**
+ * Whether `where` can match at most one row of `model`: every column of one of
+ * its unique keys is pinned to a value by an equality that must hold.
+ *
+ * Only conjunctive positions count -- the `where` itself and `AND`, at any
+ * depth -- because an equality under `OR` or `NOT` need not hold for a row to
+ * match. Only a scalar value counts (shorthand, or `equals` without
+ * `mode: "insensitive"`, which can match two values a case-sensitive key holds
+ * apart); `null`, a field reference or a Decimal object is not read as a pin.
+ * Anything this does not recognise answers "might match many", so a mistake
+ * here costs a refusal and never a shared envelope.
+ */
+export function pinsOneRow(model: ResolvedModel, where: unknown): boolean {
+  const keys = model.uniqueKeys;
+  if (keys === undefined || keys.length === 0) return false;
+  const pinned = new Set<string>();
+  collectPins(where, pinned);
+  return keys.some((key) => key.length > 0 && key.every((col) => pinned.has(col)));
+}
+
+function collectPins(where: unknown, pinned: Set<string>): void {
+  if (!isPlainRecord(where)) return;
+  for (const [key, value] of Object.entries(where)) {
+    if (key === "AND") {
+      for (const conjunct of asArray(value)) collectPins(conjunct, pinned);
+    } else if (key !== "OR" && key !== "NOT") {
+      const pins =
+        isPinValue(value) ||
+        (isPlainRecord(value) && value["mode"] !== "insensitive" && isPinValue(value["equals"]));
+      if (pins) pinned.add(key);
+    }
+  }
+}
+
+function isPinValue(v: unknown): boolean {
+  if (typeof v === "string" || typeof v === "bigint" || typeof v === "boolean") return true;
+  if (typeof v === "number") return Number.isFinite(v);
+  return v instanceof Date && !Number.isNaN(v.getTime());
+}
+
 function unwrapSet(value: unknown, label: string): unknown {
   if (!isPlainRecord(value)) return value;
   const keys = Object.keys(value);

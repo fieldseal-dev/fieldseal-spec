@@ -15,15 +15,18 @@
  * re-verification that makes the rewrite correct -- but only where the rows
  * come back to be checked. Everywhere the database answers instead, the shape
  * is refused rather than approximated, and `candidateScope()` is the explicit
- * opt-out. Nothing here is frozen: the suite identifier is provisional (spec
- * §4.8), Gate 0b is open, and the project does not invite production
- * adoption (PRD §8).
+ * opt-out. A multi-row write is refused for a different reason -- one payload
+ * is one envelope on every matched row (#250) -- and `sharedEnvelopeScope()` is
+ * its explicit opt-in. Nothing here is frozen: the suite identifier is
+ * provisional (spec §4.8), Gate 0b is open, and the project does not invite
+ * production adoption (PRD §8).
  */
 
 export { fieldsealExtension } from "./extension.ts";
 export type { FieldsealExtensionOptions, QueryExtension } from "./extension.ts";
 
 export { candidateScope } from "./candidates.ts";
+export { sharedEnvelopeScope } from "./multiwrite.ts";
 export { getTenant, tenantScope } from "./context.ts";
 
 export {

@@ -9,6 +9,7 @@ import {
   FieldsealNotSupported,
   FieldsealUnindexable,
   fieldsealExtension,
+  sharedEnvelopeScope,
   tenantScope,
 } from "../src/index.ts";
 import { fieldsealFieldMap } from "./fixture/generated/fieldseal-map.ts";
@@ -115,7 +116,11 @@ describe("write then read", () => {
     const rows = await prisma.patient.findMany({ orderBy: { plainName: "asc" } });
     expect(rows.map((r) => r.email)).toEqual(["ada@example.com", "ada@example.com"]);
 
-    await lp["patient"]!["updateMany"]!({ where: { plainName: "A" }, data: { note: "bulk" } });
+    // #250: a multi-row payload is one envelope for every matched row, so the
+    // statement is refused unless the caller says that is the intent.
+    await sharedEnvelopeScope(() =>
+      lp["patient"]!["updateMany"]!({ where: { plainName: "A" }, data: { note: "bulk" } }),
+    );
     const a = await prisma.patient.findFirst({ where: { plainName: "A" } });
     expect(a?.note).toBe("bulk");
   });
@@ -132,6 +137,35 @@ describe("write then read", () => {
 
     const raw = await rawColumn(base, "Visit", "reason", withVisits!.visits[0]!.id);
     expect(Buffer.from(raw as Uint8Array).toString("utf8")).not.toContain("checkup");
+  });
+
+  // A nested createMany's `data` is one row or an array of rows. Only the array
+  // was unwrapped, so the single-row form was written as given: a string was
+  // caught by Prisma's own type check on a Bytes column, but a Uint8Array went
+  // straight into Visit.reason as the plaintext bytes.
+  it.each([
+    ["one row", (r: Record<string, unknown>) => r],
+    ["an array of rows", (r: Record<string, unknown>) => [r]],
+  ])("encrypts a nested createMany whose data is %s", async (_, shape) => {
+    const row = await lp["patient"]!["create"]!({ data: patient() });
+    await lp["patient"]!["update"]!({
+      where: { id: row.id },
+      data: { visits: { createMany: { data: shape({ id: "v1", reason: "checkup" }) } } },
+    });
+
+    const visit = await prisma.visit.findUnique({ where: { id: "v1" } });
+    expect(visit?.reason).toBe("checkup");
+    const raw = await rawColumn(base, "Visit", "reason", "v1");
+    expect(Buffer.from(raw as Uint8Array).toString("utf8")).not.toContain("checkup");
+
+    const secret = new TextEncoder().encode("secret");
+    await expect(
+      lp["patient"]!["update"]!({
+        where: { id: row.id },
+        data: { visits: { createMany: { data: shape({ id: "v2", reason: secret }) } } },
+      }),
+    ).rejects.toThrow(FieldsealNotSupported);
+    expect(await rawColumn(base, "Visit", "reason", "v2")).toBeNull();
   });
 });
 

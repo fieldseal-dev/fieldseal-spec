@@ -30,6 +30,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
+import { sharedEnvelopeScope } from "../src/index.ts";
 import { clearDb, loose, makeClient, rawColumn, type LooseClient } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -130,32 +131,41 @@ describe.each(COLUMNS)("the index sibling of $field ($storage)", (col) => {
     await expectIndexWritten(col, [s.id], s);
   });
 
+  // Multi-row statements are refused by default (#250): one payload, one
+  // envelope, every matched row. These tests ask the index question, so they
+  // open the scope deliberately; `multiwrite.test.ts` pins the refusal itself.
   it("updateMany writes it", async () => {
     const s = await seed(col);
-    const result = await lp["patient"]!["updateMany"]!({
-      where: { id: s.id },
-      data: { [col.field]: NEW },
-    });
+    const result = await sharedEnvelopeScope(() =>
+      lp["patient"]!["updateMany"]!({
+        where: { id: s.id },
+        data: { [col.field]: NEW },
+      }),
+    );
     expect(result["count"]).toBe(1);
     await expectIndexWritten(col, [s.id], s);
   });
 
   it("updateMany writes it on every row the statement matches", async () => {
     const s = await seed(col, 3);
-    const result = await lp["patient"]!["updateMany"]!({
-      where: { plainName: "target" },
-      data: { [col.field]: NEW },
-    });
+    const result = await sharedEnvelopeScope(() =>
+      lp["patient"]!["updateMany"]!({
+        where: { plainName: "target" },
+        data: { [col.field]: NEW },
+      }),
+    );
     expect(result["count"]).toBe(3);
     await expectIndexWritten(col, s.ids, s);
   });
 
   it("updateManyAndReturn writes it", async () => {
     const s = await seed(col);
-    await lp["patient"]!["updateManyAndReturn"]!({
-      where: { id: s.id },
-      data: { [col.field]: NEW },
-    });
+    await sharedEnvelopeScope(() =>
+      lp["patient"]!["updateManyAndReturn"]!({
+        where: { id: s.id },
+        data: { [col.field]: NEW },
+      }),
+    );
     await expectIndexWritten(col, [s.id], s);
   });
 
@@ -219,10 +229,12 @@ describe.each(COLUMNS)("the index sibling of $field ($storage)", (col) => {
     await (
       prisma as unknown as { $transaction: (fn: (tx: unknown) => Promise<void>) => Promise<void> }
     ).$transaction(async (tx) => {
-      await (tx as LooseClient)["patient"]!["updateMany"]!({
-        where: { id: s.id },
-        data: { [col.field]: NEW },
-      });
+      await sharedEnvelopeScope(() =>
+        (tx as LooseClient)["patient"]!["updateMany"]!({
+          where: { id: s.id },
+          data: { [col.field]: NEW },
+        }),
+      );
     });
     await expectIndexWritten(col, [s.id], s);
   });
