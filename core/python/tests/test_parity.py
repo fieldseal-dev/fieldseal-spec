@@ -31,7 +31,9 @@ from fieldseal import (  # noqa: E402
     FieldContext,
     Fieldseal,
     IndexDeclaration,
+    blindindex,
     normalize,
+    registry,
 )
 from fieldseal.blindindex import NORMALIZERS  # noqa: E402
 from fieldseal.envelope import (  # noqa: E402
@@ -304,6 +306,9 @@ def _released_view():
 # operation could read them (the strided one too, in `decrypt`'s pass-through
 # and `blind_index`); they are refused because the rule is the format, not the
 # operation's tolerance, and `.cast("B")` or `bytes(...)` is the way through.
+# Since #257 recognition refuses every one of these too, so `is_ciphertext`
+# agrees with the operations rather than answering True for a value `decrypt`
+# refuses.
 UNUSABLE_VIEWS = {
     "wide-items": lambda: memoryview(array.array("I", [1, 2, 3])),
     "signed-bytes": lambda: memoryview(b"secret").cast("b"),
@@ -355,6 +360,72 @@ def test_a_refused_view_is_accepted_once_cast_or_copied(view):
     assert fs.decrypt(blob, CTX) == bytes(mv)
     if mv.c_contiguous and mv.ndim == 1:
         assert fs.decrypt(fs.encrypt(mv.cast("B"), CTX), CTX) == bytes(mv)
+
+
+# The issue's three views (ctypes' '<B', a strided view, and a wide `array`),
+# plus the other three shapes in UNUSABLE_VIEWS, each carrying a *real*
+# envelope's bytes. `bytes(...)` of each is still an envelope, so a False
+# answer below is about the view's shape, not its content.
+ENVELOPE_VIEWS = ("ctypes-ubyte", "strided", "wide-items", "signed-bytes",
+                  "char", "two-dimensional")
+
+
+def _envelope_in(view: str, blob: bytes) -> memoryview:
+    if view == "ctypes-ubyte":
+        return memoryview((ctypes.c_ubyte * len(blob))(*blob))
+    if view == "strided":
+        interleaved = bytes(x for b in blob for x in (b, 0))
+        return memoryview(interleaved)[::2]
+    if view == "wide-items":
+        wide = array.array("I")
+        wide.frombytes(blob + b"\0" * (-len(blob) % 4))
+        return memoryview(wide)
+    if view == "signed-bytes":
+        return memoryview(blob).cast("b")
+    if view == "char":
+        return memoryview(blob).cast("c")
+    if view == "two-dimensional":
+        padded = blob + b"\0" * (len(blob) % 2)
+        return memoryview(padded).cast("B", [2, len(padded) // 2])
+    raise AssertionError(view)
+
+
+@pytest.mark.parametrize("mode", ["strict", "permissive", "readonly"])
+@pytest.mark.parametrize("view", ENVELOPE_VIEWS)
+def test_an_envelope_in_a_view_the_operations_refuse_is_not_ciphertext(
+        mode, view):
+    """#257: `is_ciphertext` used to answer True for the first three views
+    while `decrypt` refused them. Recognition now shares the operations'
+    predicate, and stays total."""
+    blob = _client().encrypt(b"secret", CTX)
+    refused = _envelope_in(view, blob)
+    assert is_ciphertext(bytes(refused)) is True  # positive control
+    assert recognize(refused) is None
+    assert is_ciphertext(refused) is False
+    assert _client(mode).is_ciphertext(refused) is False
+    if mode != "readonly":
+        with pytest.raises(InvalidArgument):
+            _client(mode).decrypt(refused, CTX)
+
+
+def test_recognition_and_the_operations_share_one_byte_predicate():
+    """One definition of a usable byte view, so the split #257 found cannot
+    silently return: the predicate is one function object, and every answer
+    recognition gives is the predicate's own."""
+    assert registry.is_byte_string is blindindex.is_byte_string
+    blob = _client().encrypt(b"secret", CTX)
+    fs = _client()
+    operands: list[object] = [blob, bytearray(blob), memoryview(blob),
+                              _released_view()]
+    operands.extend(_envelope_in(view, blob) for view in ENVELOPE_VIEWS)
+    for operand in operands:
+        usable = registry.is_byte_string(operand)
+        assert is_ciphertext(operand) is usable
+        if usable:
+            assert fs.decrypt(operand, CTX) == b"secret"
+        else:
+            with pytest.raises(InvalidArgument):
+                fs.decrypt(operand, CTX)
 
 
 class _HasDunderBytes:
