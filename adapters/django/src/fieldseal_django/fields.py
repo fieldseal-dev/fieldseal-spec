@@ -17,6 +17,7 @@ the instance and so can only run there.
 from __future__ import annotations
 
 import base64
+import binascii
 import functools
 from typing import TYPE_CHECKING, Any
 
@@ -368,7 +369,50 @@ class Encrypted(models.Field):
         # Built once, before anything can be refused, so a context failure
         # never takes the place of the refusal below.
         ctx = self.fieldseal_context()
-        if self.storage == "binary" and not isinstance(
+        if self.storage == "base64":
+            # A `base64` column holds text (spec §3.3): an envelope is its
+            # base64, and anything else is a legacy plaintext (#245).
+            #
+            # Decode strictly -- a non-validating `b64decode` silently
+            # swallows legacy text (`Zm9v` became `foo`) and raised a raw
+            # `binascii.Error` for what it could not decode, which is not a
+            # `FieldsealError` at all. Only a decode the core recognizes as
+            # an envelope is decrypted; every other stored text goes to the
+            # core as its own UTF-8, so spec §10.3's answer is the stored
+            # text's: `NOT_CIPHERTEXT` in strict, passed through and counted
+            # in permissive and readonly. Recognition applies to what is
+            # handed to the core (spec §3.4), never to an unrecognized
+            # decode, so a decode that happens to be a reserved-version blob
+            # is passed over rather than raised on.
+            if not isinstance(value, str):
+                # Not text, whatever it holds: not an envelope (SQLite can
+                # leave a BLOB in a TEXT column). Strict refuses it unread,
+                # with the core's `NOT_CIPHERTEXT` for an empty operand.
+                if client.read_mode == "strict":
+                    blob = b""
+                else:
+                    # Still a plaintext read: the core's count (spec §10.3)
+                    # is the cut-over gate (spec §11.1, `docs/15` §1.1,
+                    # `PROCEDURE.md` §8), and this row must show in it.
+                    client.decrypt(b"", ctx)
+                    raise FieldsealNotSupported(
+                        f"a {type(value).__name__} value in base64 column "
+                        f"{self.name!r} is not text, so it is not an "
+                        "envelope (#245). Convert the column with the "
+                        "two-column shape, naming the legacy column with "
+                        "`--source`, rather than in place.")
+            else:
+                try:
+                    decoded: bytes | None = base64.b64decode(
+                        value, validate=True)
+                except (binascii.Error, ValueError):
+                    # `binascii.Error` is a `ValueError`; a non-ASCII `str`
+                    # raises one too.
+                    decoded = None
+                blob = (decoded if decoded is not None
+                        and client.is_ciphertext(decoded)
+                        else value.encode("utf-8"))
+        elif self.storage == "binary" and not isinstance(
                 value, bytes | bytearray | memoryview):
             # Not an envelope whatever it holds (`_render_legacy`). Strict
             # refuses it unread: the core's NOT_CIPHERTEXT for an empty
@@ -387,7 +431,7 @@ class Encrypted(models.Field):
                     client.decrypt(b"", ctx)
                     raise
         else:
-            blob = _to_bytes_from_db(value, self.storage)
+            blob = _to_bytes_from_db(value)
         return codec.from_bytes(self.inner, client.decrypt(blob, ctx))
 
     def _render_legacy(self, value: Any, connection: Any) -> bytes:
@@ -931,9 +975,7 @@ def index_column(source: str, **kwargs: Any) -> EncryptedIndex:
 Encrypted.index_column = staticmethod(index_column)
 
 
-def _to_bytes_from_db(value: Any, storage: str) -> bytes:
-    if storage == "base64":
-        return base64.b64decode(value)
+def _to_bytes_from_db(value: Any) -> bytes:
     if isinstance(value, memoryview):
         return value.tobytes()
     if isinstance(value, bytearray):
