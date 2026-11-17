@@ -26,6 +26,14 @@ public @interface BlindIndex {
     /** The spec §6.1 {@code index-id}. */
     String id() default "exact";
 
+    /**
+     * The suite this index is derived under, such as {@code 0xFF01} (spec §7.2, #213). Required,
+     * with no default: it is never taken from the client's write suite or allow-list, and the
+     * adapter does not fill it. It is fixed for the life of the index (spec §7.8). The core
+     * refuses an unregistered id at startup (FS-H003).
+     */
+    int suiteId();
+
     /** Spec §7.3: {@code ARGON2ID} for an enumerable domain, {@code HMAC_SHA512} for a high-entropy one. */
     Idf idf();
 

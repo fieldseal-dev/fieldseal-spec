@@ -19,7 +19,7 @@ public class Patient {
     @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-000000000002")
     public String email;
 
-    @BlindIndex(source = "email", id = "exact", idf = Idf.HMAC_SHA512,
+    @BlindIndex(source = "email", suiteId = 0xFF01, id = "exact", idf = Idf.HMAC_SHA512,
             normalize = Normalizer.NFC_CASEFOLD_V1, truncateBits = 15,
             projectedPopulation = 100_000)
     public byte[] emailIndex;

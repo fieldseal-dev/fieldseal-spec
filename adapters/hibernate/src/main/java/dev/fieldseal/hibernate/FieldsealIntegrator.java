@@ -328,6 +328,7 @@ public final class FieldsealIntegrator implements Integrator {
     private static IndexDeclaration declaration(BlindIndex a, ColumnSpec source, String label) {
         IndexDeclaration.Builder b = IndexDeclaration.builder(source.tableUuid(),
                         source.columnUuid())
+                .suiteId(a.suiteId())
                 .indexId(a.id())
                 .idf(a.idf())
                 .normalize(a.normalize())

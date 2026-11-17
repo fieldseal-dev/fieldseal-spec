@@ -88,6 +88,14 @@ MUTATIONS = [
      M / "RefusalWalker.java",
      "        return depth == 0 && !distinctSelect ? Position.SELECT : Position.OTHER;",
      "        return Position.SELECT;", [T + "*QueryRefusalTest"], "red"),
+    # ---- the declared suite (spec §7.2, #213) -----------------------------------------------
+    # The adapter has no write suite of its own; the nearest mutation is a declaration that names
+    # 0xFF01, the client's write suite, whatever the annotation says. The 0xFF02 index must then
+    # be derived under the wrong suite.
+    ("index suite: the declaration takes the write suite, not the annotation's",
+     M / "FieldsealIntegrator.java",
+     "                .suiteId(a.suiteId())", "                .suiteId(0xFF01)",
+     [T + "*DeclaredSuiteTest", T + "*CrossProduceTest"], "red"),
     # ---- the finder (docs/29 §3.1) ----------------------------------------------------------
     ("finder: candidates are returned unverified", M / "FieldsealQueries.java",
      "        if (!verify || terms.isEmpty()) {", "        if (true) {",

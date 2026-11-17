@@ -15,7 +15,7 @@ public class Patient {
     @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-000000000002")
     String email;
 
-    @BlindIndex(source = "email", idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
+    @BlindIndex(source = "email", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
                 truncateBits = 15, projectedPopulation = 100_000)
     byte[] emailIndex;
 
@@ -28,6 +28,8 @@ public class Patient {
 - **The Java type decides the plaintext encoding** (spec §3.6): `String`, `byte[]`, `long`/`int`/`short` and their boxes, `BigInteger`, `BigDecimal`, `double`, `boolean`, `LocalDate`, `Instant` and `OffsetDateTime`. Anything else is refused when the session factory starts. A `BigDecimal` is stored canonically (`1.50` reads back as `1.5`); an `OffsetDateTime` reads back at UTC; an `Instant` with a digit below the microsecond is refused, never truncated.
 - **Columns are `VARBINARY`** (`bytea` on Postgres), 32,600 bytes by default. An envelope adds about a hundred bytes to the value; `@Column(length = …)` sets another size.
 - **A blind index is its own `byte[]` attribute**, which the adapter writes. Do not assign it: the adapter restores it on the next flush.
+- **Every `@BlindIndex` names its suite**: `suiteId` is required (spec §7.2, #213), has no default, and is the suite the index is derived under. It is never taken from the client's `writeSuite` or allow-list, so changing the write suite no longer affects a blind index. It is fixed for the life of the index (spec §7.8): changing it re-keys every stored value, so it is a re-index. The core refuses a suite it does not register when the session factory starts (FS-H003, naming `Entity.attribute`).
+- **Upgrading:** add `suiteId` to every `@BlindIndex` (the code does not compile without it). Stored index bytes do not change when the declared suite equals the write suite that was in use, so `suiteId = 0xFF01` with a `0xFF01` write suite needs no re-index.
 
 ## Configuring the session factory
 
@@ -41,7 +43,7 @@ FieldsealSettings.apply(settings, (FieldsealConfigurer) b -> b
         .armProvisionalSuites(true));          // spec §4.8: 0xFF01 is provisional
 ```
 
-`FieldsealSettings.apply` sets two things: the client configuration (`dev.fieldseal.hibernate.client`), and this adapter's query translator (`hibernate.query.sqm.translator`), which the adapter's query refusals need. The adapter builds the client itself, with every index your entities declare, so that the core checks each declaration's truncation and cardinality when the session factory starts. A prebuilt `Fieldseal` is accepted instead, if its indexes match the declared ones exactly.
+`FieldsealSettings.apply` sets two things: the client configuration (`dev.fieldseal.hibernate.client`), and this adapter's query translator (`hibernate.query.sqm.translator`), which the adapter's query refusals need. The adapter builds the client itself, with every index your entities declare, so that the core checks each declaration's truncation and cardinality when the session factory starts. A prebuilt `Fieldseal` is accepted instead, if its indexes match the declared ones exactly, including each index's declared suite.
 
 **Warm the key cache before the first request** under an envelope key provider: nothing in a flush may call the KMS (spec §11.2). `FieldsealHibernate.warm(sessionFactory, tenants)` warms every declared column and index, and lists the tenant-bound ones it skipped because you named no tenants.
 
@@ -90,7 +92,8 @@ Every row cites the tests that prove it. `scripts/coverage_report.py` reads this
 | the persistence context (first-level cache) | ⚠️ holds decrypted entities for the session's life (spec §10.2) | `HibernateBehaviourTest.persistThenFlushTwiceIssuesOneInsertAndNoUpdate` |
 | `FieldsealHibernate.warm` | ✅ warms every declared column and index; names the tenant-bound ones it skipped for want of a tenant | `WarmTest` |
 | mappings the adapter refuses at startup | 🛑 FS-H001 to FS-H010 (docs/29 §5) | `StartupChecksTest` |
-| rows another language can read | ✅ the cross job: every core decrypts and re-derives what this adapter wrote | `CrossProduceTest` |
+| an index's declared suite (`suiteId`, spec §7.2, #213) | ✅ the index is derived under the declared suite, not the write suite; 🛑 an unregistered suite, or a prebuilt client whose same-parameter index declares another suite, is refused at startup | `DeclaredSuiteTest.persistLookupAndStoredBytesUseTheDeclaredSuite`, `DeclaredSuiteTest.theAdapterCarriesTheDeclaredSuiteNotTheWriteSuite`, `StartupChecksTest.fsH003UnregisteredSuiteNamesTheAttribute`, `StartupChecksTest.fsH004SameParametersDifferentDeclaredSuite` |
+| rows another language can read | ✅ the cross job (`cross/v3`, one index case under `0xFF02`): every core decrypts and re-derives what this adapter wrote | `CrossProduceTest` |
 | row-id binding (L3-row) | ❌ not built (docs/29 §4) | — |
 
 ## Unindexable values
