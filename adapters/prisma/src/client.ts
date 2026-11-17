@@ -77,9 +77,24 @@ export function buildIndexRegistry(map: ResolvedMap, opts: ClientOptions): Index
             `stale or was edited -- re-run \`prisma generate\`.`,
         );
       }
+      // Spec §7.2 (#213): the declared suite has no default. The generator
+      // refuses a declaration without one, so a miss here is a map generated
+      // before the suite existed, or edited. It is refused, naming the column,
+      // and never completed from `opts.writeSuite`.
+      if ((idx.suiteId as number | undefined) === undefined) {
+        throw new FieldsealConfigurationError(
+          `fieldseal: ${model.model}.${idx.source} (index "${idx.indexId}", sibling ` +
+            `${model.model}.${idx.field}) declares no suite_id. State the suite ` +
+            `explicitly -- @fieldseal(index: ..., suite_id: "0xFF01", ...) -- and ` +
+            `re-run \`prisma generate\`. It is required with no default: spec §7.2 ` +
+            `derives the index under its declared suite, fixed for the life of the ` +
+            `index (§7.8), and it is never taken from writeSuite.`,
+        );
+      }
       out.push({
         tableUuid: uuidBytes(model.tableUuid),
         columnUuid: uuidBytes(source.columnUuid),
+        suiteId: idx.suiteId,
         indexId: idx.indexId,
         idf: idx.idf,
         normalize: idx.normalize,

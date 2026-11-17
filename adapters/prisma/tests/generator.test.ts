@@ -54,7 +54,7 @@ model Patient {
   id        String  @id @default(uuid())
   /// @fieldseal(encrypted, column_uuid: "018f3c2e-0000-7000-8000-000000000001")
   email     Bytes
-  /// @fieldseal(index: "email", idf: "hmac-sha512",
+  /// @fieldseal(index: "email", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000)
   emailBidx Bytes?

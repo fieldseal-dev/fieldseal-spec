@@ -50,6 +50,7 @@ interface IndexCase {
   key_ref: string;
   declaration: {
     index_id: string;
+    suite_id: string;
     idf: string;
     normalize: string;
     truncate_bits: number;
@@ -128,14 +129,15 @@ describe("cross-language producer (docs/14 §3)", () => {
     doc = produce();
   });
 
-  it("is a well-formed cross/v2 document", () => {
+  it("is a well-formed cross/v3 document", () => {
     // The schema is the point: every existing consumer reads this file
     // unmodified, so the adapter joins the N x N matrix as one more producer
     // rather than needing a bespoke checker.
-    // v2 because it carries the index half. A producer emitting index cases
-    // MUST say so in the schema: a v1-era consumer handed a v2 document would
-    // decrypt every envelope, report `fail: 0`, and never touch the indexes.
-    expect(doc.schema).toBe("fieldseal-vectors/cross/v2");
+    // v3 because every index case's declaration names its suite (spec §7.2,
+    // #213). A member became required, so the schema value changed: a consumer
+    // that predates it fails on the new value instead of building a declaration
+    // without a suite. v2 is no longer produced.
+    expect(doc.schema).toBe("fieldseal-vectors/cross/v3");
     expect(doc.producer.implementation).toBe("prisma");
     expect(doc.suite_id).toBe("0xFF01");
     expect(doc.cases.length).toBeGreaterThan(0);
@@ -195,6 +197,7 @@ describe("cross-language producer (docs/14 §3)", () => {
               tableUuid: H(c.context.table_uuid),
               columnUuid: H(c.context.column_uuid),
               indexId: d.index_id,
+              suiteId: parseInt(d.suite_id.slice(2), 16),
               idf: d.idf as "hmac-sha512",
               normalize: d.normalize as "nfc-casefold-v1",
               truncateBits: d.truncate_bits,
@@ -241,6 +244,70 @@ describe("cross-language producer (docs/14 §3)", () => {
       ).toString("hex");
       expect(got, c.id).toBe(c.index);
     }
+  });
+
+  it("names the declared suite on every index case, taken from the core's report", () => {
+    // docs/08 §4.7: `declaration.suite_id` is required in cross/v3 and is the
+    // string form of §3. The fixture declares 0xFF01 everywhere but one column.
+    for (const c of doc.index_cases) {
+      expect(c.declaration.suite_id, c.id).toMatch(/^0x[0-9A-F]{4}$/);
+    }
+    const suites = doc.index_cases.map((c) => c.declaration.suite_id);
+    expect(suites.filter((s) => s === "0xFF02")).toHaveLength(1);
+    expect(suites.filter((s) => s === "0xFF01")).toHaveLength(suites.length - 1);
+  });
+
+  it("carries one index case declared under 0xFF02, derived under that suite and no other", () => {
+    // The write suite and allow-list are 0xFF01 only (`doc.suite_id`); the index
+    // is declared under 0xFF02 (spec §7.2, #213). Re-derived here under the
+    // declared suite it matches; re-derived as if the write suite were the
+    // declared one, it does not -- which is the silent miss a consumer that
+    // substituted its own suite would get.
+    const c = doc.index_cases.find((x) => x.id.endsWith("/alias-suite-ff02"))!;
+    expect(c, "no 0xFF02 index case").toBeDefined();
+    expect(c.declaration.suite_id).toBe("0xFF02");
+    expect(doc.suite_id).toBe("0xFF01");
+    const k = keys()[c.key_ref]!;
+    const write = parseInt(k.suite_id.slice(2), 16);
+    const derive = (declared: number): string => {
+      const d = c.declaration;
+      const client = new Fieldseal(
+        {
+          keyProvider: new StaticKeyProvider({
+            dek: H(k.tenant_dek),
+            indexKey: H(k.tenant_index_key),
+            keyId: H(k.key_id),
+          }),
+          allowedSuites: [write],
+          writeSuite: write,
+          indexes: [
+            {
+              tableUuid: H(c.context.table_uuid),
+              columnUuid: H(c.context.column_uuid),
+              indexId: d.index_id,
+              suiteId: declared,
+              idf: d.idf as "hmac-sha512",
+              normalize: d.normalize as "nfc-casefold-v1",
+              truncateBits: d.truncate_bits,
+              projectedPopulation: d.projected_population,
+              onUnindexable: d.on_unindexable as "refuse" | "bucket",
+            },
+          ],
+          onWarning: () => {},
+        },
+        { armProvisionalSuites: true },
+      );
+      const ctx: FieldContext = {
+        tableUuid: H(c.context.table_uuid),
+        columnUuid: H(c.context.column_uuid),
+        tenantId: null,
+        rowId: null,
+        purpose: c.context.purpose,
+      };
+      return Buffer.from(client.blindIndex(c.value_text!, ctx)).toString("hex");
+    };
+    expect(derive(0xff02)).toBe(c.index);
+    expect(derive(write)).not.toBe(c.index);
   });
 
   it("stores the §7.2 marker for a value the normalizer refuses, unasked", () => {
@@ -307,6 +374,7 @@ describe("cross-language producer (docs/14 §3)", () => {
             tableUuid: H(c.context.table_uuid),
             columnUuid: H(c.context.column_uuid),
             indexId: d.index_id,
+            suiteId: parseInt(d.suite_id.slice(2), 16),
             idf: d.idf as "hmac-sha512",
             normalize: d.normalize as "nfc-casefold-v1",
             truncateBits: d.truncate_bits,

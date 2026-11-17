@@ -91,6 +91,15 @@ export interface IndexFieldDecl {
   /** The encrypted field it indexes, e.g. `email`. */
   readonly source: string;
   readonly indexId: string;
+  /**
+   * The suite this index is DECLARED under (spec §7.2, #213): the `suite_id`
+   * inside the index-key context, e.g. `0xFF01`. Required, with no default --
+   * never filled from the client's `writeSuite`, because a default taken from
+   * the write suite recreates the coupling the spec removed. Fixed for the life
+   * of the index (spec §7.8). Whether it names a registered suite is the
+   * core's question, asked at client construction.
+   */
+  readonly suiteId: number;
   readonly idf: IdfId;
   readonly normalize: NormalizerId;
   readonly truncateBits: number;

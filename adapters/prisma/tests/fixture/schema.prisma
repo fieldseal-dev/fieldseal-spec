@@ -22,7 +22,7 @@ model Patient {
   id        String  @id @default(uuid())
   /// @fieldseal(encrypted, column_uuid: "018f3c2e-0000-7000-8000-000000000001")
   email     Bytes
-  /// @fieldseal(index: "email", index_id: "exact", idf: "hmac-sha512",
+  /// @fieldseal(index: "email", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000)
   emailBidx Bytes?
@@ -35,7 +35,7 @@ model Patient {
   /// The nullable indexed column: `not: null` beside an equality is only a
   /// legal Prisma filter on a nullable column, and this is also the one index
   /// whose source is stored as base64 text rather than raw bytes.
-  /// @fieldseal(index: "nickname", index_id: "exact", idf: "hmac-sha512",
+  /// @fieldseal(index: "nickname", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000)
   nicknameBidx Bytes?
@@ -47,12 +47,22 @@ model Patient {
   score     Bytes?
   /// @fieldseal(encrypted, as: "bytes", column_uuid: "018f3c2e-0000-7000-8000-00000000000b")
   blob      Bytes?
+  /// The one column whose index is declared under 0xFF02 while the client's
+  /// write suite and allow-list stay 0xFF01 (spec §7.2, #213): the declared
+  /// suite is the index's own, and the write suite does not reach it.
+  /// @fieldseal(encrypted, column_uuid: "018f3c2e-0000-7000-8000-00000000000d")
+  alias     Bytes?
+  /// @fieldseal(index: "alias", index_id: "exact", suite_id: "0xFF02", idf: "hmac-sha512",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
+  aliasBidx Bytes?
   plainName String
   visits    Visit[]
   referrals Referral[]
 
   @@index([emailBidx])
   @@index([nicknameBidx])
+  @@index([aliasBidx])
 }
 
 // Deliberately NO @fieldseal declarations: this model exists so the tests can
@@ -75,7 +85,7 @@ model Visit {
   /// The indexed encrypted column on the far side of a to-many relation: the
   /// second of the two `where` sites §7.5 re-verification can reach, since an
   /// `include`d relation's rows come back nested in their parents.
-  /// @fieldseal(index: "reason", index_id: "exact", idf: "hmac-sha512",
+  /// @fieldseal(index: "reason", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000)
   reasonBidx Bytes?
@@ -94,7 +104,7 @@ model TenantDoc {
   /// the other tenant tests write need not carry one.
   /// @fieldseal(encrypted, tenant_bound, column_uuid: "018f3c2e-0000-7000-8000-00000000000c")
   handle     Bytes?
-  /// @fieldseal(index: "handle", index_id: "exact", idf: "hmac-sha512",
+  /// @fieldseal(index: "handle", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000)
   handleBidx Bytes?
@@ -107,7 +117,7 @@ model Person {
   id            String @id @default(uuid())
   /// @fieldseal(encrypted, column_uuid: "018f3c2e-0000-7000-8000-000000000006", noun: "name")
   legalName     Bytes
-  /// @fieldseal(index: "legalName", index_id: "exact", idf: "hmac-sha512",
+  /// @fieldseal(index: "legalName", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",
   ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
   ///            projected_population: 100000, on_unindexable: "bucket")
   legalNameBidx Bytes?

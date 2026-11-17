@@ -250,6 +250,14 @@ function main(): number {
         "them is retried rather than misread as an unproductive warm); a miss " +
         "on a just-warmed context is raised. Off when the provider has no warm, or " +
         "warmOnKeyMiss: false.",
+      "index-declared-suite":
+        "spec §7.2, #213: an index declaration names its own suite (suite_id in the @fieldseal(index: ...) " +
+        "annotation, e.g. \"0xFF01\"), required with no default, and the index-key context's suite_id is that " +
+        "declared suite, never the client's writeSuite. It is passed to the core's IndexDeclaration.suiteId " +
+        "untouched; whether it is registered is the core's gate. Fixed for the life of the index (§7.8). " +
+        "Pinned by tests/index-suite.test.ts, which declares one index (Patient.alias) under 0xFF02 while the " +
+        "write suite and allow-list stay 0xFF01, and by the cross/v3 producer (declaration.suite_id from the " +
+        "core client's validated declaration).",
       "adapter-error-codes":
         "FieldsealNotSupported reports code INVALID_ARGUMENT and FieldsealConfigurationError " +
         "reports CONFIGURATION_ERROR, because the TypeScript core's ErrorCode is a closed union " +
