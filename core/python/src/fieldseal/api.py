@@ -410,7 +410,9 @@ class Fieldseal:
         # Spec §7.2: the index context is the field's with purpose retargeted
         # and row_id dropped; spec §8: a provider handed that purpose returns
         # the tenant INDEX key, never the DEK.
-        bound = ctx.for_index(decl.index_id).with_suite(self._write_suite)
+        # Spec §7.2 (#213): the context's suite is the index's DECLARED suite.
+        # The write suite is not read anywhere on this path.
+        bound = ctx.for_index(decl.index_id).with_suite(decl.suite_id)
         tenant_index_key, _ = self._provider.encryption_key(bound)
         ik = index_key(tenant_index_key, bound, decl.index_id)
         # Every IDF parameter comes from the declaration, the Argon2id cost

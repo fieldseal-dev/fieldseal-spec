@@ -87,9 +87,18 @@ def decl_of(case: dict) -> IndexDeclaration:
     """
     d, ctx = case["declaration"], case["context"]
     override = d.get("unindexable_override")
+    if "suite_id" not in d:
+        # docs/08 §4.7 (`cross/v3`): the declared suite is required. Never
+        # defaulted from the write suite (spec §7.2, #213).
+        raise ValueError(
+            f"{case['case']}: declaration has no suite_id (docs/08 §4.7, "
+            "cross/v3)")
     return IndexDeclaration(
         table_uuid=H(ctx["table_uuid"]),
         column_uuid=H(ctx["column_uuid"]),
+        # The index's DECLARED suite, from the corpus: it is the suite inside
+        # the index context (spec §7.2), not the client's write suite.
+        suite_id=int(d["suite_id"], 16),
         index_id=d["index_id"],
         idf=d["idf"],
         normalize=d["normalize"],
@@ -169,6 +178,7 @@ def produce() -> dict:
         entry = {
             "id": f"cross/python/index/{c['case']}",
             "key_ref": c["key_ref"],
+            # Carries `suite_id`: decl_of refused a case without one.
             "declaration": c["declaration"],
             "context": c["context"],
         }
@@ -190,7 +200,7 @@ def produce() -> dict:
             "envelope": env.hex(),
         })
     return {
-        "schema": ("fieldseal-vectors/cross/v2" if index_cases
+        "schema": ("fieldseal-vectors/cross/v3" if index_cases
                    else "fieldseal-vectors/cross/v1"),
         "producer": {
             "implementation": "python", "version": fieldseal.__version__,
