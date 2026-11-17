@@ -118,6 +118,11 @@ either stack uses it. What it buys is that a drift fails with a message naming
 the drifted parameter, instead of surfacing as `COMMITMENT_INVALID` forty lines
 into the narration, or — for an index parameter — as nothing at all.
 
+Each index declaration also names the suite it is derived under (`suite_id=0xFF01` on
+the Django `BlindIndex`, `suite_id: "0xFF01"` in the Prisma annotation; spec
+§7.2). It is required by both adapters, is distinct from the write suite, and is
+compared by the checker as `declared_suite_id`.
+
 ## Honest limitations
 
 - **Three logical types, not eight.** The shared model uses `string`, `int`

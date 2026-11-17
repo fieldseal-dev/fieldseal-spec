@@ -21,6 +21,10 @@ import java.util.HexFormat;
  *
  * @param tableUuid 16 bytes: the column's table, as in its {@link FieldContext}
  * @param columnUuid 16 bytes: the column
+ * @param suiteId the index's declared suite (spec §7.2, #213): the {@code suite_id} in the index
+ *     context, and the suite whose KDF derives the index key. Required, with no default: null (the
+ *     caller named none) and an unregistered id are both refused at validation. It need not be the
+ *     client's write suite nor on its allow-list; it is never taken from either
  * @param indexId the spec §6.1 {@code index-id}, {@code [a-z0-9-]{1,32}}; null means {@code "exact"}
  * @param idf spec §7.3: {@link Idf#ARGON2ID} for an enumerable domain, {@link Idf#HMAC_SHA512}
  *     only for a high-entropy one
@@ -36,8 +40,8 @@ import java.util.HexFormat;
  * @param onUnindexable docs/09 §7.2; null means {@link OnUnindexable#REFUSE}
  * @param unindexableOverride required for {@link OnUnindexable#BUCKET} (docs/09 §7.2)
  */
-public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String indexId, Idf idf,
-        Argon2Params argon2, Normalizer normalize, int truncateBits, long projectedPopulation,
+public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, Integer suiteId,
+        String indexId, Idf idf, Argon2Params argon2, Normalizer normalize, int truncateBits, long projectedPopulation,
         boolean skewed, ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
         ReviewedOverride unindexableOverride) {
 
@@ -65,6 +69,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
     public boolean equals(Object o) {
         return o instanceof IndexDeclaration d && Arrays.equals(tableUuid, d.tableUuid)
                 && Arrays.equals(columnUuid, d.columnUuid)
+                && java.util.Objects.equals(suiteId, d.suiteId)
                 && java.util.Objects.equals(indexId, d.indexId) && idf == d.idf
                 && java.util.Objects.equals(argon2, d.argon2) && normalize == d.normalize
                 && truncateBits == d.truncateBits && projectedPopulation == d.projectedPopulation
@@ -77,7 +82,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
     @Override
     public int hashCode() {
         return java.util.Objects.hash(Arrays.hashCode(tableUuid), Arrays.hashCode(columnUuid),
-                indexId, idf, argon2, normalize, truncateBits, projectedPopulation,
+                suiteId, indexId, idf, argon2, normalize, truncateBits, projectedPopulation,
                 skewed, cardinalityOverride, onUnindexable, unindexableOverride);
     }
 
@@ -86,6 +91,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
         HexFormat h = HexFormat.of();
         return "IndexDeclaration[table=" + (tableUuid == null ? null : h.formatHex(tableUuid))
                 + ", column=" + (columnUuid == null ? null : h.formatHex(columnUuid))
+                + ", suiteId=" + (suiteId == null ? null : String.format("0x%04X", suiteId))
                 + ", indexId=" + indexId + ", idf=" + idf + ", argon2=" + argon2 + ", normalize="
                 + normalize + ", truncateBits=" + truncateBits + ", projectedPopulation="
                 + projectedPopulation + ", skewed=" + skewed + ", cardinalityOverride=" + cardinalityOverride
@@ -221,6 +227,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
     public static final class Builder {
         private final byte[] tableUuid;
         private final byte[] columnUuid;
+        private Integer suiteId;
         private String indexId;
         private Idf idf;
         private Argon2Params argon2;
@@ -235,6 +242,17 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
         private Builder(byte[] tableUuid, byte[] columnUuid) {
             this.tableUuid = tableUuid;
             this.columnUuid = columnUuid;
+        }
+
+        /**
+         * Required, with no default (spec §7.2, #213): the index's declared suite, a registered
+         * {@code suite_id} such as {@code 0xFF01}. Not defaulted from the client's write suite,
+         * which would restore the coupling the rule removes. Left unset, {@link #build} still
+         * returns, and validation refuses the declaration.
+         */
+        public Builder suiteId(int suiteId) {
+            this.suiteId = suiteId;
+            return this;
         }
 
         /** Default {@code "exact"}. */
@@ -296,7 +314,7 @@ public record IndexDeclaration(byte[] tableUuid, byte[] columnUuid, String index
         }
 
         public IndexDeclaration build() {
-            return new IndexDeclaration(tableUuid, columnUuid, indexId, idf, argon2, normalize,
+            return new IndexDeclaration(tableUuid, columnUuid, suiteId, indexId, idf, argon2, normalize,
                     truncateBits, projectedPopulation, skewed, cardinalityOverride,
                     onUnindexable, unindexableOverride);
         }

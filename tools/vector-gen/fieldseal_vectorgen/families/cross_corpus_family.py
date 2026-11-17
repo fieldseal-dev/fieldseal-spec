@@ -57,9 +57,14 @@ def _idx_ctx(index_id: str, column: bytes, tenant: bytes | None) -> dict:
 
 
 def _decl(index_id: str, normalize: str, bits: int, population: int,
-          on_unindexable: str = "refuse") -> dict:
+          on_unindexable: str = "refuse", suite: int = SUITE) -> dict:
     d = {
         "index_id": index_id,
+        # The declared suite (spec §7.2, #213; cross/v3). Required. A consumer
+        # builds the declaration with it and MUST NOT substitute its own write
+        # suite -- which is 0xFF01 for every case, so only the 0xFF02 case can
+        # tell a core that does so from one that does not.
+        "suite_id": suite_str(suite),
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": normalize,
@@ -93,6 +98,11 @@ def _index_cases() -> list[tuple]:
     C, CB = I.COLUMN_UUID, I.COLUMN_UUID_B
 
     exact = _decl("exact", "nfc-casefold-v1", 15, 100_000)
+    # `exact`, declared under suite 0xFF02. A distinct index_id, so the
+    # registry key (table_uuid, column_uuid, index_id) does not collide with
+    # `exact`'s and the two declarations may differ in suite.
+    exact_ff02 = _decl("exact-ff02", "nfc-casefold-v1", 15, 100_000,
+                       suite=0xFF02)
     # A wider truncation, so a divergence has more than two bytes to show
     # itself in. §7.4's band (2 <= P*2^-b < sqrt(P)) forces the population up
     # with the width: at b=30 it needs P >= 2^31.
@@ -105,6 +115,12 @@ def _index_cases() -> list[tuple]:
         # The workhorse, and a non-ASCII value: a core whose UTF-8 handling
         # differed would pass the ASCII case and fail this one.
         ("exact-ascii", a, exact, _idx_ctx("exact", C, t), {"value_text": "alice@example.com"}),
+        # Same value and context shape as `exact-ascii`, under an index
+        # declared with suite 0xFF02 while every producer's client writes
+        # under 0xFF01 (spec §7.2, #213). Producers and consumers must agree
+        # on bytes that differ from `exact-ascii`'s only because the declared
+        # suite is inside canonical_context.
+        ("exact-ascii-suite-ff02", a, exact_ff02, _idx_ctx("exact-ff02", C, t), {"value_text": "alice@example.com"}),
         ("exact-non-ascii", a, exact, _idx_ctx("exact", C, t), {"value_text": "grüße@example.com"}),
         # The fold pair. `nfc-casefold-v1` MUST land these on one index value,
         # and spec §7.5's re-verification rule is built on their doing so.
@@ -202,7 +218,11 @@ def generate() -> dict:
             "`declaration` on its client and derives the index through its "
             "production path, and every consumer re-derives and compares "
             "byte-exact -- a mismatched index is a silent lookup miss, not an "
-            "error, so nothing else in the matrix would notice."
+            "error, so nothing else in the matrix would notice. Every "
+            "`declaration` carries the index's declared `suite_id` (spec "
+            "§7.2, #213; the `cross/v3` document format): a consumer builds "
+            "the declaration with it and MUST NOT substitute its own write "
+            "suite."
         ),
         "cases": [
             {"case": slug, "key_ref": ref, "context": ctx,

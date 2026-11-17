@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
+import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId, type IndexDeclaration } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { INDEX_KEY_SALT, deriveIndexKey, deriveRecordKey } from "../../src/kdf.ts";
@@ -374,6 +374,10 @@ function runDeclaration(v: Record<string, unknown>): Result {
   const d = (v.inputs as Record<string, unknown>).declaration as Record<string, unknown>;
   const want = (v.expected as Record<string, unknown>).declaration;
   const o = d.cardinality_override as { reason: string; approved_by: string; date: string } | null;
+  // `suite_id` is a required declaration member with no default (spec §7.2, #213), and a
+  // vector that omits it must reach the client without one: an absent member stays
+  // absent (declared-suite-missing-refused), never completed from the client's suite.
+  const declared: { suiteId?: number } = "suite_id" in d ? { suiteId: parseSuiteId(d.suite_id as string) } : {};
   if (d.idf !== "hmac-sha512" || Object.keys(d.idf_params as object).length !== 0) {
     return { id, status: "fail", reason: "declaration vector with an IDF this runner does not build" };
   }
@@ -381,8 +385,11 @@ function runDeclaration(v: Record<string, unknown>): Result {
     new Fieldseal(
       {
         keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: new Uint8Array(32).fill(0xbb) }),
-        allowedSuites: [parseSuiteId(v.suite_id as string)],
-        writeSuite: parseSuiteId(v.suite_id as string),
+        // Suite 0.11.0 (docs/08 §3): every declaration vector runs on a client whose write
+        // suite and allow-list are 0xFF01 only; the declared suite travels inside the
+        // declaration and is never the client's.
+        allowedSuites: [SUITE_FF01],
+        writeSuite: SUITE_FF01,
         indexes: [
           {
             tableUuid: hex(d.table_uuid as string),
@@ -395,7 +402,8 @@ function runDeclaration(v: Record<string, unknown>): Result {
             skewed: d.skewed as boolean,
             ...(o === null ? {} : { cardinalityOverride: { reason: o.reason, approvedBy: o.approved_by, date: o.date } }),
             onUnindexable: d.on_unindexable as "refuse" | "bucket",
-          },
+            ...declared,
+          } as IndexDeclaration,
         ],
       },
       { armProvisionalSuites: true },
@@ -665,6 +673,9 @@ function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse"
           tableUuid: c.tableUuid,
           columnUuid: c.columnUuid,
           indexId: inp.index_id as string,
+          // The declared suite is the vector's `inputs.suite_id`; the client's write suite
+          // and allow-list stay 0xFF01 only (suite 0.11.0, docs/08 §3).
+          suiteId: parseSuiteId(inp.suite_id as string),
           idf: inp.idf as IdfId,
           ...(argon2Of(inp) ? { argon2: argon2Of(inp) as Argon2Params } : {}),
           normalize: inp.normalize as NormalizerId,
@@ -753,17 +764,22 @@ function blindIndexProblems(v: Record<string, unknown>, i: BlindIndexInputs, raw
  */
 function pipelineClient(v: Record<string, unknown>, i: BlindIndexInputs, ctx: FieldContext): Fieldseal {
   const P = 2 ** (i.b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
-  const suiteId = parseSuiteId(v.suite_id as string);
+  // Suite 0.11.0 (docs/08 §3, spec §7.2): the primitive shape's top-level `suite_id` is
+  // the index's DECLARED suite. The client's write suite and allow-list stay 0xFF01
+  // only, so a vector declared under 0xFF02 is derived by a client that is not
+  // configured for it -- which is the case the vector exists to pin.
+  const declaredSuite = parseSuiteId(v.suite_id as string);
   return new Fieldseal(
     {
       keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: hex(v.tenant_index_key as string) }),
-      allowedSuites: [suiteId],
-      writeSuite: suiteId,
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
       indexes: [
         {
           tableUuid: ctx.tableUuid,
           columnUuid: ctx.columnUuid,
           indexId: v.index_id as string,
+          suiteId: declaredSuite,
           idf: i.which,
           ...(i.argon2 ? { argon2: i.argon2 } : {}),
           normalize: i.normId as NormalizerId,
@@ -863,6 +879,10 @@ function errorsClient(v: Record<string, unknown>, ctx: FieldContext | undefined)
                 tableUuid: ctx.tableUuid,
                 columnUuid: ctx.columnUuid,
                 indexId: decl.index_id as string,
+                // errors/ declarations carry no `suite_id` member (docs/08 §4.6 lists
+                // index_id, idf, normalize, truncate_bits). The vector's own top-level
+                // `suite_id` stands in, and a declared one wins if a vector ever adds it.
+                suiteId: parseSuiteId((decl.suite_id ?? v.suite_id) as string),
                 idf: decl.idf as IdfId,
                 normalize: NORMALIZERS[decl.normalize as string]!,
                 truncateBits: decl.truncate_bits as number,
@@ -1024,6 +1044,7 @@ function indexBoundaryClient(): { fs: Fieldseal; ctx: FieldContext } {
         {
           tableUuid: new Uint8Array(16),
           columnUuid: new Uint8Array(16),
+          suiteId: SUITE_FF01,
           idf: "hmac-sha512",
           normalize: "nfc-casefold-v1",
           truncateBits: 15,
@@ -1464,6 +1485,7 @@ export const HARNESS_NOTES: string[] = [
   "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex preimage to Fieldseal.blindIndex() as bytes under on_unindexable=\"refuse\" and match the raised code against expected.refuse; the bytes are never decoded by the harness.",
   "Every out_of_band entry carries basis \"direct\" (docs/14 §4): this harness allocates the length-bound operands and holds the lone-surrogate operand in a string, so it uses neither the seam route nor the representability route.",
   "'declaration' vectors (suite 0.10.0, #210 context/ and #211 blind-index/) build the vector's index declaration into a Fieldseal client at construction. 'refused' passes only on a ConfigurationError -- no §9 code is matched, because none exists for a configuration refusal (docs/08 §4.3); anything else is a failure. 'accepted' passes only if construction succeeds. Construction has no asynchronous companion, so their #async twins are sync re-runs.",
+  "Suite 0.11.0-provisional (#213, spec §7.2): a blind-index declaration names its own suite, and the index context's suite_id is that declared suite, never the client's write suite. Every blind-index vector is run through a client whose write suite and decrypt allow-list are 0xFF01 only; the declaration takes the vector's declared suite (top-level suite_id for the primitive shape, inputs.suite_id for the shapes that carry inputs, inputs.declaration.suite_id for 'declaration' vectors), so the 0xFF02-declared vectors are derived by a client that is not configured for 0xFF02. A declaration vector with no suite_id member reaches the client without one and is passed only if refused (declared-suite-missing-refused); nothing completes it. errors/ vectors' index_declaration carries no suite_id member, so the harness declares the vector's own top-level suite_id (0xFF01 in every such vector) and would prefer a declared one.",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
   "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the blind-index/ refuse vectors, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",

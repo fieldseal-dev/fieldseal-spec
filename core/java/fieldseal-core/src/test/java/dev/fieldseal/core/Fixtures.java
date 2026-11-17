@@ -30,7 +30,7 @@ final class Fixtures {
 
     /** The {@code email-eq} index the api tests declare: HMAC-SHA-512, nfc-casefold-v1, 15 bits. */
     static IndexDeclaration.Builder emailIndex() {
-        return IndexDeclaration.builder(TABLE, COLUMN).indexId("email-eq")
+        return IndexDeclaration.builder(TABLE, COLUMN).suiteId(0xFF01).indexId("email-eq")
                 .idf(IndexDeclaration.Idf.HMAC_SHA512)
                 .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
                 .projectedPopulation(100_000);

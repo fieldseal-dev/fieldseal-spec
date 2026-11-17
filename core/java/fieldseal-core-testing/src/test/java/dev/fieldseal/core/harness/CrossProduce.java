@@ -24,7 +24,7 @@ import java.util.function.Consumer;
  * crossProduce --args="--out <file>"}. It encrypts every {@code cases} entry of {@code
  * cross/corpus.json} through production {@link Fieldseal#encrypt}, so {@code msg_seed} and the
  * nonce come from the client's own {@code SecureRandom}, and derives every {@code index_cases}
- * entry through a client built with the case's declaration. The document is {@code cross/v2}.
+ * entry through a client built with the case's declaration. The document is {@code cross/v3}: each index case carries the corpus's {@code declaration.suite_id}.
  *
  * <p>Two checks keep "the production path" from being a claim only. The producer refuses to run
  * in a process armed with {@code FIELDSEAL_TEST_MODE=1}, where the testing artifact's seam would
@@ -47,7 +47,7 @@ public final class CrossProduce {
         int suite = Cross.suite(suiteId);
 
         ObjectNode doc = Cross.JSON.createObjectNode();
-        doc.put("schema", Cross.V2);
+        doc.put("schema", Cross.V3);
         ObjectNode producer = doc.putObject("producer");
         producer.put("implementation", IMPLEMENTATION);
         producer.put("version", System.getProperty("fieldseal.version", "unknown"));

@@ -22,7 +22,7 @@ const PT = bytes("123456789");
 const SEED = new Uint8Array(32).fill(0x41);
 const NONCE = new Uint8Array(12).fill(0x02);
 const IDX_CTX = { ...CTX, purpose: "index:exact" };
-const INDEX = { tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
+const INDEX = { tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid, suiteId: SUITE_FF01, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
 const INDEX_CASEFOLD = { ...INDEX, normalize: "nfc-casefold-v1" as const };
 
 describe("spec §4.8 provisional-suite gate", () => {
@@ -319,6 +319,7 @@ describe("docs/09 §2 configuration reflection (G18)", () => {
   const ARGON = {
     tableUuid: CTX.tableUuid,
     columnUuid: CTX.columnUuid,
+    suiteId: SUITE_FF01,
     idf: "argon2id" as const,
     normalize: "nfc-casefold-v1" as const,
     truncateBits: 15,

@@ -26,7 +26,8 @@ class DeclarationVectorsTest {
         ObjectNode d = v.putObject("inputs").putObject("declaration")
                 .put("table_uuid", "3f2504e04f8911d39a0c0305e82c3301")
                 .put("column_uuid", "7d4448409dc011d1b2455ffdce74fad2")
-                .put("index_id", "email-eq").put("idf", "hmac-sha512")
+                .put("suite_id", "0xFF01").put("index_id", "email-eq")
+                .put("idf", "hmac-sha512")
                 .put("normalize", "identity").put("truncate_bits", 16)
                 .put("projected_population", 1048576).put("skewed", false)
                 .put("on_unindexable", "refuse");
@@ -51,6 +52,25 @@ class DeclarationVectorsTest {
             d.putObject("idf_params").put("version", 19).put("time_cost", 3)
                     .put("memory_kib", 32768).put("parallelism", 1).put("output_len", 64);
         })));
+    }
+
+    /** #213: no suite is a refusal; it is never completed from the write suite. */
+    @Test
+    void aDeclarationWithoutASuiteIsRefusedNotDefaulted() {
+        ObjectNode refused = vector(d -> d.remove("suite_id"));
+        ((ObjectNode) refused.path("expected")).put("declaration", "refused");
+        assertDoesNotThrow(() -> DeclarationVectors.run(refused));
+        assertThrows(AssertionFailedError.class,
+                () -> DeclarationVectors.run(vector(d -> d.remove("suite_id"))));
+    }
+
+    @Test
+    void anUnregisteredSuiteIsRefusedAndFf02IsAcceptedOnAnFf01Client() {
+        for (String bad : new String[] {"0x0001", "0x0002", "0x0000", "0xFFFF"}) {
+            assertThrows(AssertionFailedError.class,
+                    () -> DeclarationVectors.run(vector(d -> d.put("suite_id", bad))), bad);
+        }
+        assertDoesNotThrow(() -> DeclarationVectors.run(vector(d -> d.put("suite_id", "0xFF02"))));
     }
 
     @Test

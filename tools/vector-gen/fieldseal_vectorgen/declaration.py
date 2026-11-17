@@ -25,6 +25,9 @@ from . import inputs as I
 INDEX_ID_RE = re.compile(r"\A[a-z0-9-]{1,32}\Z")  # spec §6.1, ASCII only
 CARDINALITY_GATE = 1 << 10                          # spec §7.6
 RAW_BITS = 64 * 8                                   # both IDFs emit 64 bytes
+# Spec §4.2's registry: 0xFF01 and 0xFF02. 0x0001 and 0x0002 are reserved and
+# unassigned, so they are not registered.
+REGISTERED_SUITES = (0xFF01, 0xFF02)
 
 # A recorded override (spec §7.6): all three fields present and non-empty.
 OVERRIDE = {"reason": "vector: reviewed low-cardinality column",
@@ -40,6 +43,10 @@ class Declaration:
     truncate_bits: int
     skewed: bool = False
     cardinality_override: dict | None = None
+    # Spec §7.2 (#213): the declared suite, required, no default in a core.
+    # The default here is a generator convenience for the existing cases;
+    # `None` omits the member, which is the "names no suite" case.
+    suite_id: int | None = 0xFF01
     idf: str = "hmac-sha512"
     normalize: str = "identity"
     on_unindexable: str = "refuse"
@@ -47,7 +54,7 @@ class Declaration:
     column_uuid: bytes = field(default=I.COLUMN_UUID)
 
     def to_json(self) -> dict:
-        return {
+        out = {
             "table_uuid": self.table_uuid.hex(),
             "column_uuid": self.column_uuid.hex(),
             "index_id": self.index_id,
@@ -60,6 +67,10 @@ class Declaration:
             "cardinality_override": self.cardinality_override,
             "on_unindexable": self.on_unindexable,
         }
+        if self.suite_id is not None:
+            # Same string form as every other suite_id in the suite (docs/08 §3).
+            out["suite_id"] = f"0x{self.suite_id:04X}"
+        return out
 
 
 def _recorded(o: dict | None) -> bool:
@@ -70,6 +81,8 @@ def _recorded(o: dict | None) -> bool:
 def violations(d: Declaration) -> list[str]:
     """Every rule `d` breaks, by name. Empty means the declaration is valid."""
     out = []
+    if d.suite_id is None or d.suite_id not in REGISTERED_SUITES:
+        out.append("§7.2 declared suite")
     if not INDEX_ID_RE.match(d.index_id):
         out.append("§6.1 index-id")
     p, b = d.projected_population, d.truncate_bits
@@ -97,6 +110,9 @@ def vector(vid: str, description: str, spec_ref: str, d: Declaration,
         "description": description,
         "spec_ref": spec_ref,
         "assertion": "declaration",
+        # The client the declaration is built on: its write suite and decrypt
+        # allow-list are both 0xFF01 only. This is NOT the declared suite,
+        # which is `inputs.declaration.suite_id` (spec §7.2, #213).
         "suite_id": "0xFF01",
         "inputs": {"declaration": d.to_json()},
         "expected": {"declaration": expect},

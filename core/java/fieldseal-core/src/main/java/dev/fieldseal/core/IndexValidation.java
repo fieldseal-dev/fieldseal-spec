@@ -7,6 +7,7 @@ import dev.fieldseal.core.IndexDeclaration.ReviewedOverride;
 import dev.fieldseal.core.errors.ConfigurationError;
 import dev.fieldseal.core.internal.blindindex.Idf.Params;
 import dev.fieldseal.core.internal.context.Purpose;
+import dev.fieldseal.core.internal.registry.Registry;
 
 /**
  * The checks an index declaration passes before any derivation uses it (docs/09 §2, §7, §12).
@@ -51,6 +52,7 @@ final class IndexValidation {
         if (d.normalize() == null) {
             throw new ConfigurationError(where + ": normalize is required (spec §7.2)");
         }
+        int suite = suite(where, d.suiteId());
         Argon2Params cost = argon2(where, d.idf(), d.argon2());
         band(where, d.truncateBits(), d.projectedPopulation());
         // spec §7.6's two halves: too few distinct values, or declared heavily skewed.
@@ -84,7 +86,7 @@ final class IndexValidation {
         if (d.unindexableOverride() != null) {
             override(where, "unindexableOverride", d.unindexableOverride());
         }
-        return new ValidatedIndex(d.tableUuid(), d.columnUuid(), id, d.idf(), cost,
+        return new ValidatedIndex(d.tableUuid(), d.columnUuid(), suite, id, d.idf(), cost,
                 d.normalize(), d.truncateBits(), d.projectedPopulation(), d.skewed(),
                 d.cardinalityOverride(), policy, d.unindexableOverride());
     }
@@ -93,6 +95,31 @@ final class IndexValidation {
     static Params params(ValidatedIndex v) {
         return v.idf() == Idf.HMAC_SHA512 ? new Params.HmacSha512()
                 : new Params.Argon2id(v.argon2().timeCost(), v.argon2().memoryKib());
+    }
+
+    /**
+     * spec §7.2 (#213): the declared suite is required, has no default, and must be registered
+     * (spec §4.2). It is checked against the registry, not against the client's allow-list or
+     * write suite, and not against what this core can seal: an index derivation uses the suite's
+     * KDF and no AEAD, so a registered suite whose AEAD is unbuilt ({@code 0xFF02}) is accepted.
+     *
+     * <p>The KDF is the other half of the spec's rule ("an implementation that cannot perform the
+     * declared suite's KDF MUST refuse the declaration"). Every registered suite names
+     * HKDF-SHA-512 (spec §4.2), which is the only KDF this core has, so registered and performable
+     * coincide today. A suite registered with another KDF would have to be refused here until
+     * {@code internal.kdf} could perform it, and never derived under {@code Hkdf} instead.
+     */
+    private static int suite(String where, Integer suiteId) {
+        if (suiteId == null) {
+            throw new ConfigurationError(where + ": suiteId is required: a declaration names the"
+                    + " suite its index is derived under, and it has no default, in particular not"
+                    + " the write suite (spec §7.2, #213)");
+        }
+        if (Registry.lookup(suiteId).isEmpty()) {
+            throw new ConfigurationError(where + ": suiteId " + String.format("0x%04X", suiteId)
+                    + " is not a registered suite (spec §4.2, §7.2)");
+        }
+        return suiteId;
     }
 
     /**

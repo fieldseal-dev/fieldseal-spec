@@ -271,6 +271,7 @@ def _index_decl() -> IndexDeclaration:
     value a function of the index key alone."""
     return IndexDeclaration(
         table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+        suite_id=0xFF01,
         index_id="exact", idf="hmac-sha512", normalize="identity",
         truncate_bits=15, projected_population=65536)
 
@@ -594,6 +595,7 @@ class TestKeyMaterialOwnership:
         p = self.Borrowing()
         decl = IndexDeclaration(
             table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
+            suite_id=0xFF01,
             index_id="exact", idf="hmac-sha512", normalize="identity",
             truncate_bits=15, projected_population=65536)
         c = _client(p, indexes=(decl,))

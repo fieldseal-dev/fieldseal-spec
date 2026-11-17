@@ -39,7 +39,7 @@ public class Patient {
     @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-000000000002")
     String email;                                            // the logical type comes from the Java type (§2.2)
 
-    @BlindIndex(source = "email", id = "exact", idf = Idf.HMAC_SHA512,
+    @BlindIndex(source = "email", id = "exact", suiteId = 0xFF01, idf = Idf.HMAC_SHA512,
                 normalize = Normalizer.NFC_CASEFOLD_V1, truncateBits = 15, projectedPopulation = 100_000)
     byte[] emailIndex;                                       // the sibling column, declared explicitly
 
@@ -51,6 +51,7 @@ public class Patient {
 - **Surrogates in code** (spec §6.1), as in `docs/12` §1.1: the table and column UUIDs are literals in the source, never derived from entity or column names, so a rename changes nothing.
 - **`@Encrypted` is a Hibernate `@Type` meta-annotation**, so the attribute is mapped by the adapter's `UserType`, constructed with the annotation and Hibernate's `UserTypeCreationContext`. The type reads the attribute's Java type from the creation context, and the integrator refuses an unmapped one when the session factory is built (FS-H009; spec §3.6: at declaration).
 - **The index sibling is a `byte[]` attribute** holding spec §7.11's raw index bytes, `ceil(b/8)` long. Explicit, for `docs/12` §1.2's reasons: the DDL is visible, and a query names it.
+- **`suiteId` is required, and has no default** (spec §7.2, #213; `docs/09` §7 "The declared suite"). It is an `int` such as `0xFF01`, and it is the `suite_id` in the index context and the suite whose KDF derives the index key. It is never the client's write suite or anything the adapter infers: omitting it is a compile error, and the adapter hands the value to the core's `IndexDeclaration.Builder.suiteId` unchanged. The adapter does not check it (AD-1): a suite the core does not register is refused when the session factory starts, as FS-H003 naming the entity and attribute (§5). The suite is fixed for the life of the index (spec §7.8): changing it re-keys every stored index value, so it is a re-index, never an edit. Conversely, changing the client's write suite no longer affects any blind index.
 
 ### 2.1 Where encryption happens, and why not in the type
 
@@ -155,7 +156,7 @@ settings.put(FieldsealSettings.CLIENT, (FieldsealConfigurer) b -> b
 settings.put(QuerySettings.SEMANTIC_QUERY_TRANSLATOR, FieldsealSqmTranslatorFactory.class.getName());
 ```
 
-The adapter hands the configurer a builder that already carries the declared indexes and builds it. A prebuilt `Fieldseal` is accepted under the same key for a deployment that must own its wiring, and its `indexes()` must then equal the declared set **exactly** (`FS-H004`): `docs/12` §5's E006 argument, that only one direction of a mismatch is loud.
+The adapter hands the configurer a builder that already carries the declared indexes and builds it. A prebuilt `Fieldseal` is accepted under the same key for a deployment that must own its wiring, and its `indexes()` must then equal the declared set **exactly**, each index's declared suite included (`FS-H004`): `docs/12` §5's E006 argument, that only one direction of a mismatch is loud.
 
 ## 5. Startup checks
 
@@ -165,8 +166,8 @@ Run by the adapter's `Integrator` when the session factory is built; a failure i
 |---|---|
 | FS-H001 | An encrypted attribute on an entity with no `@FieldsealTable`, or a table or column UUID that is not a UUID, or two columns of one table with the same UUID |
 | FS-H002 | An encrypted or index attribute that is the id, the version, a natural id, `unique`, or part of a unique constraint (spec §7.10, G12) |
-| FS-H003 | `@BlindIndex` whose `source` is not an encrypted attribute of the same entity, or an index attribute that is not `byte[]`, or an index declaration the core refuses (spec §7.4, §7.6, `docs/09` §7.2); the core's reason is carried |
-| FS-H004 | No `FieldsealSettings.CLIENT`, a value of the wrong type, or a prebuilt client whose index registry differs from the declared one |
+| FS-H003 | `@BlindIndex` whose `source` is not an encrypted attribute of the same entity, or an index attribute that is not `byte[]`, or an index declaration the core refuses (spec §7.4, §7.6, `docs/09` §7.2, and a `suiteId` that is not a registered suite, spec §7.2); the core's reason is carried, after `Entity.attribute` |
+| FS-H004 | No `FieldsealSettings.CLIENT`, a value of the wrong type, or a prebuilt client whose index registry differs from the declared one (the comparison is the core's whole `ValidatedIndex`, the declared `suiteId` included: the same parameters under another suite are a mismatch) |
 | FS-H005 | `hibernate.query.sqm.translator` is not this adapter's factory: without it every §3.3 query refusal but the binding guard is absent, silently |
 | FS-H006 | An entity with an encrypted attribute is second-level cacheable (§1: the cache would hold plaintext, or could not decrypt a tenant-bound column) |
 | FS-H007 | An entity with a blind index uses `@DynamicUpdate`: the `UPDATE` would name only the columns Hibernate found dirty, and the index sibling is written by the listener after that decision, so the index would go stale — a silent lookup miss |
@@ -191,6 +192,7 @@ Published in the package README, with each row citing the tests that prove it; `
 | HQL/Criteria `update`/`insert` targeting an encrypted or index attribute | 🛑 refused |
 | `is [not] null` on an encrypted attribute | ✅ served exactly |
 | native SQL, `@SQLRestriction`, `@Formula`, custom SQL | 🛑 **cannot intercept**: documented hazard |
+| an index's declared suite (`suiteId`) | ✅ derived under the declared suite, not the write suite; 🛑 unregistered, or a registry mismatch, refused at startup |
 | second-level cache | 🛑 refused at startup (FS-H006) |
 | query cache | 🛑 refused at startup (FS-H010) |
 | persistence context (first-level cache) | ⚠️ holds plaintext entities for the session's life (spec §10.2), documented |
@@ -205,11 +207,12 @@ The type and the listener call the core synchronously, inside the flush, while a
 - **Path matrix:** one test per §6 row, on **H2 and Postgres** (`FIELDSEAL_TEST_DB=h2|postgres`); CI runs both.
 - **Refusals:** every 🛑 row asserts `FieldsealNotSupportedException` (or the startup exception) by type, not a generic error.
 - **Hibernate behaviour pins:** the §2.1 measurements, so an upgrade that changes one goes red.
+- **The declared suite (#213):** `DeclaredSuiteTest` persists and finds a row through an index declared under `0xFF02` with the write suite and allow-list at `0xFF01`, and compares the stored bytes with a core client's derivation under `0xFF02` and under `0xFF01`. `StartupChecksTest` pins the refusal of an unregistered suite (FS-H003) and of a prebuilt client with the same index under another suite (FS-H004). `scripts/bite_checks.py` carries a mutation that passes `0xFF01` whatever the annotation says.
 - **Re-verification:** two plaintexts that collide at a small `b`, found by brute force in the test; the finder drops the collision and `.candidates()` returns it.
 - **Codec:** the whole `codec/` family (`MANIFEST.adapter_files`) through the adapter's codec, hash- and status-checked, with the skip count asserted.
-- **Cross-language:** `CrossProduce` writes rows through the real session path (runtime CSPRNG, no test mode), reads the columns back over JDBC, and emits a `cross/v2` document with envelope and index cases. The local test decrypts it with a client built independently from `vectors/keys/`; CI adds `hibernate` to `CROSS_PRODUCERS`, so every core consumes it. *As built:* 13 envelope and 6 index cases; before the first push, the Python, TypeScript and Java consumers each passed all 19 locally.
+- **Cross-language:** `CrossProduce` writes rows through the real session path (runtime CSPRNG, no test mode), reads the columns back over JDBC, and emits a `fieldseal-vectors/cross/v3` document with envelope and index cases; every index case's `declaration.suite_id` is the suite the core client reports for the validated declaration, and one case (`Archive.refIndex`) is declared under `0xFF02` while the write suite stays `0xFF01`. The local test decrypts it with a client built independently from `vectors/keys/`; CI adds `hibernate` to `CROSS_PRODUCERS`, so every core consumes it. *As built:* 13 envelope and 6 index cases before #213, 13 and 7 after; before the first push, the Python, TypeScript and Java consumers each passed all 19 locally, and the #213 document was consumed by the Java and Python consumers (the TypeScript consumer was not run for #213).
 - **Coverage report:** `scripts/coverage_report.py` parses §6's table from the package README and scores each row against the JUnit results; a row naming a test that did not run, or claiming behaviour with none, fails it. Both failure modes were seen to fire before it was committed.
-- **Bite checks:** `scripts/bite_checks.py`, the Java core's runner with this adapter's list, not run in CI. After the #238 review rounds: 24 mutations, 22 turn their named tests red, and 2 change nothing as stated: re-deriving an unchanged source's index (the same bytes; only Argon2id's cost would show it), and letting the finder's query plan be cached (Criteria plans are not cached by default, so the finder's query is translated on every run either way; the call is kept so that enabling that cache cannot carry the scope to another query).
+- **Bite checks:** `scripts/bite_checks.py`, the Java core's runner with this adapter's list, not run in CI. After the #238 review rounds: 24 mutations, 22 turn their named tests red, and 2 change nothing as stated: re-deriving an unchanged source's index (the same bytes; only Argon2id's cost would show it), and letting the finder's query plan be cached (Criteria plans are not cached by default, so the finder's query is translated on every run either way; the call is kept so that enabling that cache cannot carry the scope to another query). #213 added a 25th, which turns `DeclaredSuiteTest` and `CrossProduceTest` red (run by hand in a container, not through the script, for want of a host JDK).
 
 ## 9. Deliberate non-goals (v0)
 

@@ -46,7 +46,9 @@ import java.util.regex.Pattern;
 final class Cross {
 
     static final String V1 = "fieldseal-vectors/cross/v1";
+    /** No longer produced (#213), and refused by the consumer: its index cases name no suite. */
     static final String V2 = "fieldseal-vectors/cross/v2";
+    static final String V3 = "fieldseal-vectors/cross/v3";
 
     /** Spec §3.1: {@code msg_seed} follows the 1 + 2 + 16 header bytes, then the nonce. */
     static final int SEED_AT = 19;
@@ -61,8 +63,8 @@ final class Cross {
     private static final Pattern SUITE = Pattern.compile("0x[0-9A-Fa-f]{4}");
     private static final Set<String> CONTEXT = Set.of("table_uuid", "column_uuid", "tenant_id",
             "row_id", "purpose");
-    private static final Set<String> DECLARATION_REQUIRED = Set.of("index_id", "idf",
-            "idf_params", "normalize", "truncate_bits", "projected_population", "on_unindexable");
+    private static final Set<String> DECLARATION_REQUIRED = Set.of("suite_id", "index_id",
+            "idf", "idf_params", "normalize", "truncate_bits", "projected_population", "on_unindexable");
     private static final Set<String> DECLARATION_OPTIONAL = Set.of("skewed",
             "cardinality_override", "unindexable_override");
 
@@ -188,7 +190,10 @@ final class Cross {
                     + unknown);
         }
         String idf = text(d, "idf");
+        // The declared suite is the document's, never this client's write suite (spec §7.2, #213).
+        // A malformed one is refused here; an unregistered one by the client's validation.
         IndexDeclaration.Builder b = IndexDeclaration.builder(ctx.tableUuid(), ctx.columnUuid())
+                .suiteId(suite(text(d, "suite_id")))
                 .indexId(text(d, "index_id"))
                 .idf(byId(Idf.values(), Idf::id, idf))
                 .normalize(byId(Normalizer.values(), Normalizer::id, text(d, "normalize")))

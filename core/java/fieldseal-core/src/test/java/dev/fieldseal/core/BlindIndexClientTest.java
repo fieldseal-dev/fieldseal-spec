@@ -62,7 +62,7 @@ class BlindIndexClientTest {
     @Test
     void defaultsAreResolvedInTheValidatedForm() {
         ValidatedIndex v = Fieldseal.validateIndexDeclaration(IndexDeclaration.builder(TABLE,
-                COLUMN).idf(Idf.ARGON2ID).normalize(Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
+                COLUMN).suiteId(0xFF01).idf(Idf.ARGON2ID).normalize(Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
                 .projectedPopulation(100_000).build());
         assertEquals("exact", v.indexId());
         assertEquals(new Argon2Params(3, 32768), v.argon2(), "spec §7.3's minima, filled in");
@@ -177,7 +177,7 @@ class BlindIndexClientTest {
         refusedDeclaration(b -> b.idf(null));
         refusedDeclaration(b -> b.normalize(null));
         assertThrows(ConfigurationError.class, () -> Fieldseal.validateIndexDeclaration(
-                IndexDeclaration.builder(new byte[15], COLUMN).idf(Idf.HMAC_SHA512)
+                IndexDeclaration.builder(new byte[15], COLUMN).suiteId(0xFF01).idf(Idf.HMAC_SHA512)
                         .normalize(Normalizer.IDENTITY).truncateBits(15)
                         .projectedPopulation(100_000).build()));
         assertThrows(ConfigurationError.class, () -> client(new Fixtures.SpyProvider(),
@@ -336,7 +336,7 @@ class BlindIndexClientTest {
         };
         Fieldseal fs = client(p, email().build(), email().indexId("raw")
                 .normalize(Normalizer.IDENTITY).build(),
-                IndexDeclaration.builder(TABLE, Fixtures.bytes(16, 0x33)).idf(Idf.HMAC_SHA512)
+                IndexDeclaration.builder(TABLE, Fixtures.bytes(16, 0x33)).suiteId(0xFF01).idf(Idf.HMAC_SHA512)
                         .normalize(Normalizer.IDENTITY).truncateBits(15)
                         .projectedPopulation(100_000).build());
         fs.warm(List.of(ctx())).join();

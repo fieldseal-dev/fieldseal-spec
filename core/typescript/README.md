@@ -73,7 +73,7 @@ const fs = new Fieldseal(
     allowedSuites: [0xff01],
     writeSuite: 0xff01,
     indexes: [{
-      tableUuid: USERS, columnUuid: EMAIL,
+      tableUuid: USERS, columnUuid: EMAIL, suiteId: 0xff01,
       idf: "argon2id", normalize: "nfc-casefold-v1",
       truncateBits: 15, projectedPopulation: 100_000,
     }],
@@ -109,13 +109,14 @@ what makes the answer correct. The ORM adapters do this for you.
 
 Each index is declared up front in `indexes: [...]`. An invalid declaration is
 refused when the `Fieldseal` client is constructed, not at the first lookup.
-Choose the options before the first write: changing `idf`, `argon2`,
+Choose the options before the first write: changing `suiteId`, `idf`, `argon2`,
 `normalize`, `truncateBits` or `indexId` later changes every stored hash, so
 the index has to be rebuilt.
 
 | Field | Default | Accepted values |
 |---|---|---|
 | `tableUuid`, `columnUuid` | **required** | The column the index belongs to, 16 bytes each. |
+| `suiteId` | **required** | The suite the index is derived under: `0xff01` or `0xff02`, written as a number. There is no default, so a declaration that names none is refused. It need not be your `writeSuite` and need not be in `allowedSuites`, because an index uses only the suite's key derivation, not its cipher. It is part of what the stored hashes are derived from, so it is fixed once you have stored any (see above). |
 | `projectedPopulation` | **required** | How many *distinct* values the column will hold, at least 16. |
 | `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
 | `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |

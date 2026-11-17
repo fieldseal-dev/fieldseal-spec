@@ -66,7 +66,7 @@ class KeyMaterialOwnershipTest {
     void providerArraysAreNeverWrittenOnTheIndexPath() {
         Fixtures.SpyProvider p = new Fixtures.SpyProvider();
         Fieldseal fs = builder(p).indexes(List.of(IndexDeclaration.builder(Fixtures.TABLE,
-                        Fixtures.COLUMN).idf(IndexDeclaration.Idf.ARGON2ID)
+                        Fixtures.COLUMN).suiteId(0xFF01).idf(IndexDeclaration.Idf.ARGON2ID)
                 .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1).truncateBits(15)
                 .projectedPopulation(100_000).build())).build();
         FieldContext ix = ctx().forIndex("exact");

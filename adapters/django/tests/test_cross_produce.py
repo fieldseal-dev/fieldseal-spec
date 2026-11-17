@@ -49,10 +49,11 @@ def test_it_is_a_wellformed_cross_document(produced):
     """The schema is the point: every existing consumer reads this file
     unmodified, so the adapter joins the N x N matrix as one more producer
     rather than needing a bespoke checker."""
-    # v2 because it carries the index half. A producer emitting index cases
-    # MUST say so: a v1-era consumer handed a v2 document would decrypt every
-    # envelope, report `fail: 0`, and never touch the indexes.
-    assert produced["schema"] == "fieldseal-vectors/cross/v2"
+    # v3 because every index declaration carries its declared suite (spec
+    # §7.2, #213; docs/08 `cross/v3`). A producer emitting index cases MUST
+    # say so: a v2-era consumer handed this document would derive every index
+    # under its own write suite, which is the coupling #213 removed.
+    assert produced["schema"] == "fieldseal-vectors/cross/v3"
     assert produced["producer"]["implementation"] == "django"
     assert produced["cases"]
 
@@ -116,6 +117,7 @@ def test_every_index_case_derives_from_the_shared_key_material_alone(produced):
         decl = IndexDeclaration(
             table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
             index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
+            suite_id=int(d["suite_id"], 16),
             truncate_bits=d["truncate_bits"],
             projected_population=d["projected_population"],
             on_unindexable=d["on_unindexable"],
@@ -201,6 +203,7 @@ def test_the_tenant_bound_index_case_carries_its_tenant(produced):
     decl = IndexDeclaration(
         table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
         index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
+        suite_id=int(d["suite_id"], 16),
         truncate_bits=d["truncate_bits"],
         projected_population=d["projected_population"],
         on_unindexable=d["on_unindexable"])
@@ -217,6 +220,27 @@ def test_the_tenant_bound_index_case_carries_its_tenant(produced):
         table_uuid=H(c["table_uuid"]), column_uuid=H(c["column_uuid"]),
         purpose=c["purpose"], tenant_id=None, row_id=None)
     assert client.blind_index(case["value_text"], tenantless).hex() != case["index"]
+
+
+def test_every_index_declaration_states_its_declared_suite(produced):
+    """Spec §7.2 (#213): `declaration.suite_id` is the suite the index is
+    declared under, as a `0x`-prefixed string like the corpus's, and is not
+    the document's write suite by construction -- the `suite-ff02` case
+    declares 0xFF02 while the document, the key and every envelope are
+    0xFF01. A producer that copied the write suite (or a constant) into the
+    declaration would emit 0xFF01 there."""
+    for case in produced["index_cases"]:
+        s = case["declaration"]["suite_id"]
+        assert isinstance(s, str) and s.startswith("0x"), case["id"]
+        assert int(s, 16) in (0xFF01, 0xFF02), case["id"]
+    by_id = {c["id"].rsplit("/", 1)[-1]: c for c in produced["index_cases"]}
+    assert produced["suite_id"] == "0xFF01"
+    assert by_id["email-exact"]["declaration"]["suite_id"] == "0xFF01"
+    assert by_id["suite-ff02"]["declaration"]["suite_id"] == "0xFF02"
+    # Same value, different bytes. (The column differs too, so this is not the
+    # isolation of the suite -- `test_declared_suite.py` does that.)
+    assert by_id["suite-ff02"]["value_text"] == by_id["email-exact"]["value_text"]
+    assert by_id["suite-ff02"]["index"] != by_id["email-exact"]["index"]
 
 
 def test_it_declares_the_context_shapes_it_cannot_produce(produced):

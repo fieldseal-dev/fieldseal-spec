@@ -24,7 +24,7 @@ public class Collide {
     @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-000000000032")
     public String code;
 
-    @BlindIndex(source = "code", idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
+    @BlindIndex(source = "code", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
             truncateBits = 4, projectedPopulation = 100,
             cardinalityOverride = @ReviewedOverride(reason = "collision fixture",
                     approvedBy = "fixture", date = "2026-09-29"))

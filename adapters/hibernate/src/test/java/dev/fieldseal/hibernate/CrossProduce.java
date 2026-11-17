@@ -3,7 +3,9 @@ package dev.fieldseal.hibernate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.fieldseal.core.Fieldseal;
 import dev.fieldseal.hibernate.fixture.AllTypes;
+import dev.fieldseal.hibernate.fixture.Archive;
 import dev.fieldseal.hibernate.fixture.Patient;
 import dev.fieldseal.hibernate.fixture.Person;
 import dev.fieldseal.hibernate.fixture.TenantDoc;
@@ -32,7 +34,7 @@ import org.hibernate.SessionFactory;
  * (spec §3.6), the storage form (raw {@code bytea}/{@code varbinary}), and the context, assembled
  * from {@code @FieldsealTable}, {@code @Encrypted} and the session's tenant identifier. So this
  * writes rows through the real session path, with the core's runtime CSPRNG and no test mode,
- * reads the columns back over JDBC, and emits a standard {@code fieldseal-vectors/cross/v2}
+ * reads the columns back over JDBC, and emits a standard {@code fieldseal-vectors/cross/v3}
  * document, which every core consumer reads unmodified.
  *
  * <p>The index half is the more valuable assertion: an index this adapter wrote that a core
@@ -70,7 +72,7 @@ public final class CrossProduce {
 
     static ObjectNode produce() {
         try (SessionFactory sf = TestSupport.sessionFactory(Patient.class, Person.class,
-                TenantDoc.class, AllTypes.class)) {
+                TenantDoc.class, AllTypes.class, Archive.class)) {
             return produce(sf);
         }
     }
@@ -155,12 +157,17 @@ public final class CrossProduce {
         persist(sf, null, bucketed);
         indexCases.add(index(sf, rt, "bucket-marker", "Person", "legalNameIndex", bucketed.id,
                 null, null));
+        // Declared under 0xFF02 while the write suite stays 0xFF01 (spec 7.2, #213).
+        Archive archive = new Archive("Case-0001");
+        persist(sf, null, archive);
+        indexCases.add(index(sf, rt, "declared-suite-ff02", "Archive", "refIndex", archive.id,
+                "Case-0001", null));
         indexCases.add(index(sf, rt, "tenant-bound", "TenantDoc", "handleIndex", doc.id,
                 "ada@example.com", utf8("tenant-0001")));
 
         JsonNode key = TestSupport.key();
         ObjectNode root = TestSupport.JSON.createObjectNode();
-        root.put("schema", "fieldseal-vectors/cross/v2");
+        root.put("schema", "fieldseal-vectors/cross/v3");
         ObjectNode producer = root.putObject("producer");
         producer.put("implementation", "hibernate");
         producer.put("version", "0.0.0-SNAPSHOT");
@@ -218,6 +225,11 @@ public final class CrossProduce {
         n.put("id", "cross/hibernate/index/" + id);
         n.put("key_ref", KEY_REF);
         ObjectNode decl = n.putObject("declaration");
+        // The suite the core client reports for the validated declaration (spec 7.2, #213): not
+        // a constant, and not the write suite.
+        decl.put("suite_id", String.format("0x%04X", rt.client.indexes().get(
+                Fieldseal.indexRegistryKey(d.tableUuid(), d.columnUuid(), d.indexId()))
+                .suiteId()));
         decl.put("index_id", d.indexId());
         decl.put("idf", d.idf().id());
         decl.putObject("idf_params");
@@ -252,6 +264,7 @@ public final class CrossProduce {
             case "Person" -> Person.class;
             case "TenantDoc" -> TenantDoc.class;
             case "AllTypes" -> AllTypes.class;
+            case "Archive" -> Archive.class;
             default -> throw new IllegalArgumentException(simple);
         };
         return sf.unwrap(org.hibernate.engine.spi.SessionFactoryImplementor.class)

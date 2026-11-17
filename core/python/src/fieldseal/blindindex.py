@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from . import unicode
 from .errors import ConfigurationError, InvalidArgument
 from .kdf import hkdf_sha512
-from .registry import is_byte_string
+from .registry import SUITES, is_byte_string
 
 # Spec §7.3's Argon2id invocation. `version`, `p`, `output_len` and the salt
 # derivation MUST NOT vary; `t` and `m` are stated there as *minima* a
@@ -246,6 +246,12 @@ class IndexDeclaration:
     #: Projected number of DISTINCT values (spec §7.4), >= 16; >= 2^10 unless
     #: overridden (§7.6).
     projected_population: int
+    #: The index's DECLARED suite (spec §7.2, #213): the `suite_id` inside the
+    #: index context's `canonical_context`, and the suite whose KDF the
+    #: derivation uses. Required, with no default -- a default filled in from
+    #: the write suite would restore the coupling the clause removes. It need
+    #: not be the client's write suite nor be on its allow-list.
+    suite_id: int
     index_id: str = "exact"
     #: Argon2id cost for this column, for `idf="argon2id"` only. Absent means
     #: the spec §7.3 minima. It is per-column and not a module constant
@@ -275,6 +281,8 @@ class IndexDeclaration:
 class ValidatedIndex:
     key: str
     index_id: str
+    #: The declared suite (spec §7.2); the index context's `suite_id`.
+    suite_id: int
     idf: str
     #: Resolved, never absent for `argon2id` (the minima are filled in at
     #: validation, so no derivation path has to know a default); always
@@ -329,6 +337,24 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
         raise ConfigurationError(
             f"index declaration: index-id {index_id!r} violates the spec "
             "§6.1 grammar [a-z0-9-]{1,32}")
+    # Spec §7.2 (#213): the declared suite is required and registered. Checked
+    # as an int that is not a bool, because `True == 1` and a flag is never a
+    # suite identifier; an absent member is `None` and refused the same way.
+    suite_id = d.suite_id
+    if not _int(suite_id):
+        raise ConfigurationError(
+            f"index declaration {index_id}: suite_id is required and must be "
+            f"a registered suite identifier, not {suite_id!r}; it has no "
+            "default and is never taken from the write suite (spec §7.2)")
+    if suite_id not in SUITES:
+        raise ConfigurationError(
+            f"index declaration {index_id}: suite {suite_id:#06x} is not "
+            "registered (spec §4.2, §7.2)")
+    # An index derivation uses the suite's KDF and no AEAD (spec §7.2). Every
+    # registered suite's KDF is HKDF-SHA-512 (spec §4.2), which this core
+    # performs, so there is nothing further to refuse today; a registered
+    # suite with another KDF would be refused here, never derived under
+    # HKDF-SHA-512 instead.
     if d.idf not in IDFS:
         raise ConfigurationError(
             f"index declaration {index_id}: unknown idf {d.idf!r}; must be "
@@ -424,6 +450,7 @@ def validate_index_declaration(d: IndexDeclaration) -> ValidatedIndex:
     return ValidatedIndex(
         key=index_registry_key(d.table_uuid, d.column_uuid, index_id),
         index_id=index_id,
+        suite_id=suite_id,
         idf=d.idf,
         argon2=argon2,
         normalize=d.normalize,

@@ -80,6 +80,7 @@ fs = Fieldseal(
     write_suite=0xFF01,
     indexes=[IndexDeclaration(
         table_uuid=USERS, column_uuid=EMAIL,
+        suite_id=0xFF01,   # the index's own suite, required; see "Blind indexes"
         idf="argon2id", normalize="nfc-casefold-v1",
         truncate_bits=15, projected_population=100_000,
     )],
@@ -114,13 +115,14 @@ what makes the answer correct. The ORM adapters do this for you.
 Each index is declared up front in `indexes=[IndexDeclaration(...)]`. An
 invalid declaration is refused when the `Fieldseal` client is built, not at
 the first lookup. Choose the options before the first write: changing `idf`,
-`argon2`, `normalize`, `truncate_bits` or `index_id` later changes every
-stored hash, so the index has to be rebuilt.
+`argon2`, `normalize`, `truncate_bits`, `index_id` or `suite_id` later changes
+every stored hash, so the index has to be rebuilt.
 
 | Field | Default | Accepted values |
 |---|---|---|
 | `table_uuid`, `column_uuid` | **required** | The column the index belongs to, 16 bytes each. |
 | `projected_population` | **required** | How many *distinct* values the column will hold, at least 16. |
+| `suite_id` | **required, no default** | The cipher suite the index is derived under: `0xFF01` or `0xFF02`, the registered suites. It is the `suite_id` inside the index's key-derivation context, and it is **not** the client's `write_suite`: changing the write suite never changes a stored index value, because an index value carries no header to say which suite made it. It need not be in `allowed_suites`, and it needs no AEAD backend, since an index uses the suite's key derivation (HKDF-SHA-512 for both) and nothing else, so a client that writes under `0xFF01` can declare an index under `0xFF02`. A declaration with no suite, a `None`, or an unregistered one (`0x0001`, `0x0002`) is a `ConfigurationError` when the client is built. Spec §7.2. |
 | `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
 | `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |
 | `truncate_bits` | **required** | Bits of each hash kept. Must satisfy 2 ≤ P / 2<sup>b</sup> < √P, where P is `projected_population`: 7–11 for 5,000 distinct values, 9–15 for 100,000, 10–18 for 1,000,000. |

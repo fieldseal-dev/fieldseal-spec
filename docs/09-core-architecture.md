@@ -58,7 +58,7 @@ Design rules:
 
 *Justification.* The immutability rule states that it "makes 'which config produced this ciphertext' answerable"; immutability is necessary for that and not sufficient, and the sufficient half is being able to ask. Configuration a caller cannot read back is configuration a caller cannot check — the same argument spec §7.4 makes for recording both `b` and the projected population, and §7.6 for the logged override ceremony: a validated decision that leaves no inspectable trace cannot be audited afterwards.
 
-The rule is stated as a principle rather than a field list so that it does not have to be re-litigated as the configuration grows, and the `KeyProvider` carve-out is why it must be a principle at all: "expose the configuration" would otherwise put a handle to the object holding key material on the public surface of every client, which is a strictly larger attack surface than any consumer needs. An index declaration contains no key material — table and column UUIDs, an index id, an IDF name, cost parameters, a normalizer id, a truncation length, a projected population, and two override flags.
+The rule is stated as a principle rather than a field list so that it does not have to be re-litigated as the configuration grows, and the `KeyProvider` carve-out is why it must be a principle at all: "expose the configuration" would otherwise put a handle to the object holding key material on the public surface of every client, which is a strictly larger attack surface than any consumer needs. An index declaration contains no key material — table and column UUIDs, an index id, a suite id, an IDF name, cost parameters, a normalizer id, a truncation length, a projected population, and two override flags.
 
 **Resolved, not as-declared**, because the two differ in the direction that matters: validation fills in the §7.3 Argon2 minima, the `"exact"` `index_id` default and the §7.2 `refuse` default, so reporting the as-supplied form would let two declarations that agree textually and differ operationally register as a match. That is not hypothetical — it is [#62](https://github.com/fieldseal-dev/fieldseal-spec/issues/62), where one core read the Argon2 cost from a module constant and the other took it per column, agreeing on every shipped vector and diverging the first time an operator raised the cost.
 
@@ -161,7 +161,10 @@ Timing note: commitment verification and tag comparison MUST be constant-time co
 4. (index_key_material, _) = key_provider.encryption_key(ctx)   // provider MUST return the tenant
       index key, never the DEK, when purpose is "index:…" (§8 / spec §8)
 5. index_key = HKDF(ikm=index_key_material, salt="fieldseal-index-v1",
-                    info=canonical_context(ctx with row_id=null), len=32)     // §7.2
+                    info=canonical_context(ctx with row_id=null,
+                                           suite_id=declaration.suite_id), len=32)
+                    // §7.2: the suite the index was declared with — NEVER config.write_suite
+                    // and never an envelope's (#213)
 6. normalized = normalizer[declaration.normalize](plaintext)
 7. raw = IDF(index_key, normalized)          // Argon2id or HMAC-SHA-512 per declaration [G2]
 8. return truncate(raw, declaration.b)       // §7.2: leading ⌈b/8⌉ bytes, trailing bits of final byte zeroed, MSB-first
@@ -233,6 +236,9 @@ Index configuration is **declared to the client at construction**, not passed pe
 ```
 IndexDeclaration {
     table_uuid, column_uuid, index_id           // "exact" default; [a-z0-9-]{1,32} per spec §6.1 (G11)
+    suite_id         : suite_id                 // required, no default; a registered suite whose KDF
+                                                // this core performs. Fills the index context's
+                                                // suite_id (spec §7.2, #213)
     idf              : argon2id | hmac-sha512   // per §7.3 domain classes
     argon2           : { time_cost, memory_kib } | absent
                                                 // argon2id only; absent = the §7.3 minima
@@ -246,6 +252,8 @@ IndexDeclaration {
     unindexable_override : { reason, approved_by, date } | absent   // required for `bucket`
 }
 ```
+
+**The declared suite (spec §7.2, [#213](https://github.com/fieldseal-dev/fieldseal-spec/issues/213)).** `suite_id` is required and has no default, for the reason `allowed_suites` has none (§2): a default resolved from `write_suite` would make the index key follow the write suite again. Construction refuses a declaration whose suite is missing, unregistered, or one whose KDF this core cannot perform. It does **not** require the suite to be `write_suite` or a member of `allowed_suites`, and it does not require the suite's AEAD: an index derivation uses none. Because the suite is a member of the validated declaration, §2's reflection reports it and a registry comparison over declarations covers it; comparing `write_suite` adds nothing to an index check. Until this clause the shipped cores filled the index context from `write_suite` (`docs/27` §4 records it for Java), so two clients with equal `indexes()` and different write suites would have derived different bytes.
 
 The validated form of these declarations is what §2's *Configuration reflection* clause requires a client to report back, keyed by `(table_uuid, column_uuid, index_id)`. A core MUST also expose the validation entry point and the registry-key construction publicly: a caller comparing its own declarations against a client's registry needs both to build the same keys and resolve the same defaults, and reconstructing either by hand is exactly the coupling the accessor exists to remove.
 
@@ -430,7 +438,7 @@ On async: the five operations are synchronous in every core, and that is not neg
 | Argon2id cost | `t` and `m` come from that declaration and default to the spec §7.3 minima; below either minimum, or present at all on an `hmac-sha512` index, is refused at construction. `version`, `p`, `output_len` and the salt derivation are fixed by §7.3 and are fields on nothing |
 | Bytes type | Python `bytes` in/out · TypeScript `Uint8Array` in, `Buffer` out (Buffer is a Uint8Array) · Java `byte[]` · future cores: idiomatic byte type |
 | Wrong-typed operand | What counts as bytes on input: Python `bytes`, `bytearray`, or a one-dimensional contiguous `memoryview` of format `'B'` (`blindindex.is_byte_string`) · TypeScript `Uint8Array`, `Buffer` included · Java a non-null `byte[]` · future cores state theirs. Anything else is `INVALID_ARGUMENT` from `encrypt`, `decrypt` and `rotate` in every read mode, never coerced; `blind_index` refuses what is neither text nor bytes; `is_ciphertext` answers `false` and never raises. Order: §3.1 steps 1–1b, §3.2 step 1, §3.3 note, §3.4, §3.5; declared under `pinned_decisions.wrong-typed-operand` (docs/14 §4). Wrong *shape* is [#257](https://github.com/fieldseal-dev/fieldseal-spec/issues/257) |
-| FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4) |
+| FieldContext | identical field names as spec §6.1; constructed once per column by adapters, not per call. The `suite_id` member is filled by the **core**, never the adapter: `config.write_suite` on encrypt, the parsed header on decrypt (§3.2 step 4), and the index declaration's `suite_id` on `blind_index` and `unindexable_marker` (§3.3 step 5; spec §7.2) |
 | Assigned-code-point check | `first_unassigned` / `firstUnassigned` (§7.1's MUST), returning the code point **and its offset in code points** under one shared type name, `Unassigned` — a NamedTuple in Python, an interface in TypeScript. The unit is part of the contract: UTF-16 offsets are an artifact of one binding's string type, and `docs/12` §10.2 renders the position to a person as "the Nth character". `UNICODE_VERSION` / `unicode_version` is exported beside it, so no caller keeps its own copy of the pin to drift. (Row added by G22, [#88](https://github.com/fieldseal-dev/fieldseal-spec/issues/88); the two cores had shipped the same concept under two type names, which is what this table exists to catch.) |
 | Header accessor | `read_header` / `readHeader` (§4), returning `HeaderFields { suite_id, key_id }` under that one shared type name — a NamedTuple in Python, a frozen interface object in TypeScript, a record in Java — or the language's absent value (`None`, `null`, `Optional.empty()`) for not-an-envelope. A package-level function (a static on `Fieldseal` in Java), not a client method, because it needs neither a client nor a key. Not each core's internal `EnvelopeHeader`, whose three shapes differ (§4). (Row added by [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); not yet built in any core as of 2026-11-04.) |
 | Error codes | identical strings to §9, exposed as a machine-readable `code` property |

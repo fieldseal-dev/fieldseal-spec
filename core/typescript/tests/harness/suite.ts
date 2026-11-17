@@ -160,9 +160,21 @@ function validateShape(path: string, doc: VectorFile): void {
         for (const k of ["truncate_bits", "projected_population"]) req(path, id, d, k, Number.isInteger, "an integer");
         req(path, id, d, "skewed", (x) => typeof x === "boolean", "a boolean");
         req(path, id, d, "cardinality_override", (x) => x === null || (isObj(x) && ["reason", "approved_by", "date"].every((k) => typeof x[k] === "string")), "null or {reason, approved_by, date}");
+        // Suite 0.11.0 (#213): the declared suite is a member of the declaration,
+        // and its absence is a vector in its own right (declared-suite-missing-
+        // refused). So the member is optional here -- a missing one must reach
+        // the client as a missing one -- but a present one must be well formed.
+        // 0x0001 is well formed and unregistered; that is the client's to refuse.
+        if ("suite_id" in d) req(path, id, d, "suite_id", isSuiteId, "a 0xXXXX suite id");
         // No code, by design: a configuration refusal is outside §9.
         req(path, id, ex, "declaration", (x) => x === "refused" || x === "accepted", '"refused" or "accepted"');
         if (Object.keys(ex).length !== 1) throw new SuiteIntegrityError(`${path} ${id}: a declaration vector's expected carries only "declaration"`);
+      } else if (doc.group === "blind-index" && !isSuiteId((v.inputs as Record<string, unknown>).suite_id)) {
+        // Suite 0.11.0 (#213, docs/08 §3): every blind-index shape that carries
+        // `inputs` carries the index's declared suite there, beside `idf`. A
+        // harness that fell back to anything else would be filling in a
+        // declaration the vector did not make.
+        throw new SuiteIntegrityError(`${path} ${id}: inputs.suite_id (the declared suite, suite 0.11.0) is not a 0xXXXX suite id`);
       } else if (v.assertion === "distinct" || v.assertion === "equal") {
         req(path, id, ex, "must_be_equal", (x) => typeof x === "boolean", "a boolean");
       } else if (v.assertion === "refuse") {

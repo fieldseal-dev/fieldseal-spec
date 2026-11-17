@@ -27,7 +27,7 @@ describe("parsing", () => {
     // multi-line declaration -- which docs/13 §1's own example is -- arrives as
     // one string containing newlines. Measured against Prisma 7.10.0.
     const doc =
-      '@fieldseal(index: "email", index_id: "exact", idf: "hmac-sha512",\n' +
+      '@fieldseal(index: "email", index_id: "exact", suite_id: "0xFF01", idf: "hmac-sha512",\n' +
       'normalize: "nfc-casefold-v1", truncate_bits: 15,\n' +
       "projected_population: 100000)";
     const a = one(doc);

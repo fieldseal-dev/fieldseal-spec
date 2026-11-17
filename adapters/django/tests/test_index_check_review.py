@@ -36,6 +36,7 @@ def _mti_models():
                 models.EmailField(),
                 column_uuid=COL_MTI_EMAIL,
                 index=BlindIndex(
+                    suite_id=0xFF01,
                     index_id="exact",
                     idf="hmac-sha512",
                     normalize="nfc-casefold-v1",

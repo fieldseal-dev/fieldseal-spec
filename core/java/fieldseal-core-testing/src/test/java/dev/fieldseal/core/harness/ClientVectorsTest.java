@@ -134,7 +134,11 @@ class ClientVectorsTest {
         IndexDeclaration.Normalizer n = Arrays.stream(IndexDeclaration.Normalizer.values())
                 .filter(x -> x.id().equals(d.path("normalize").asText())).findFirst()
                 .orElseThrow();
+        // The errors/ family's index_declaration carries no suite (docs/08 §4.6, #213), so the
+        // index is declared under the vector's top-level suite_id, which is what the vectors'
+        // index keys were derived under. A declaration needs one; this is the vector's.
         return IndexDeclaration.builder(hex(c.path("table_uuid")), hex(c.path("column_uuid")))
+                .suiteId(Integer.decode(v.path("suite_id").asText()))
                 .indexId(d.path("index_id").asText()).idf(idf).normalize(n).truncateBits(bits)
                 .projectedPopulation(1L << (bits + 1)).build();
     }

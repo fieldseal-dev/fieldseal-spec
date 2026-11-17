@@ -72,7 +72,7 @@ CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
 def _decl(index_id: str = "email-eq", normalize: str = "nfc-casefold-v1",
           truncate_bits: int = 15, **kw) -> IndexDeclaration:
     d = dict(table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
-             index_id=index_id, idf="hmac-sha512", normalize=normalize,
+             suite_id=0xFF01, index_id=index_id, idf="hmac-sha512", normalize=normalize,
              truncate_bits=truncate_bits,
              projected_population=2 ** (truncate_bits + 1))
     d.update(kw)

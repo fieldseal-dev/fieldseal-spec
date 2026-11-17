@@ -184,6 +184,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             "assertion": "equal",
             "suite_id": suite_str(SUITE),
             "inputs": {
+                "suite_id": suite_str(SUITE),
                 "idf": idf_name,
                 "idf_params": declared_cost(idf_name, salt_hex),
                 "index_key": ik.hex(),
@@ -210,6 +211,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "assertion": "unindexable-marker",
         "suite_id": suite_str(SUITE),
         "inputs": {
+            "suite_id": suite_str(SUITE),
             "idf": idf_name,
             "idf_params": declared_cost(idf_name, salt_hex),
             "index_key": ik.hex(),
@@ -239,6 +241,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
         "assertion": "unindexable-bucket",
         "suite_id": suite_str(SUITE),
         "inputs": {
+            "suite_id": suite_str(SUITE),
             "idf": idf_name,
             "idf_params": declared_cost(idf_name, salt_hex),
             "index_key": ik.hex(),
@@ -282,6 +285,7 @@ def _vectors(index_id: str, idf_name: str, idf) -> list[dict]:
             "assertion": "refuse",
             "suite_id": suite_str(SUITE),
             "inputs": {
+                "suite_id": suite_str(SUITE),
                 "idf": idf_name,
                 "idf_params": declared_cost(idf_name, salt_hex),
                 "index_key": ik.hex(),
@@ -364,6 +368,7 @@ def _raised_cost_vectors(index_id: str, ctx: FieldContext, ik: bytes,
             "assertion": "unindexable-marker",
             "suite_id": suite_str(SUITE),
             "inputs": {
+                "suite_id": suite_str(SUITE),
                 "idf": "argon2id",
                 "idf_params": cost,
                 "index_key": ik.hex(),
@@ -382,9 +387,74 @@ def _raised_cost_vectors(index_id: str, ctx: FieldContext, ik: bytes,
     ]
 
 
+SUITE_FF02 = 0xFF02   # registered (spec §4.2); its KDF is HKDF-SHA-512 too
+
+
+def declared_suite_vector() -> dict:
+    """spec §7.2 (#213): the index context carries the index's DECLARED suite.
+
+    The inputs of `ascii-email-b15` with the declared suite moved to 0xFF02.
+    Everything a write-suite-filled core would use is unchanged (the client
+    writes under 0xFF01), so a core that fills the index context from the
+    write suite derives the `ascii-email-b15` bytes and fails here. Index
+    derivation uses only the suite's KDF, so this is derivable today although
+    0xFF02's AEAD is not built.
+    """
+    from .kdf_family import generate_index_key
+    ctx = FieldContext(suite_id=SUITE_FF02, table_uuid=I.TABLE_UUID,
+                       column_uuid=I.COLUMN_UUID, purpose="encrypt",
+                       tenant_id=I.TENANT_ID)
+    index_id = "email-eq"
+    ik = index_key(I.TENANT_INDEX_KEY, ctx, index_id)
+    preimage, b_bits = "alice@example.com", 15
+    normalized = normalize_nfc_casefold_v1(preimage)
+    raw = idf_hmac(ik, normalized)
+    idx = truncate(raw, b_bits)
+    # Same index key as the kdf/ vector that pins the derivation context, and
+    # a different index from the 0xFF01 one: the suite is the only variable.
+    kdf = {v["id"]: v for v in generate_index_key()["vectors"]}
+    assert ik.hex() == kdf["kdf/index-key/email-eq-suite-ff02"]["expected"]["index_key"]
+    base_ik = index_key(I.TENANT_INDEX_KEY, FieldContext(
+        suite_id=SUITE, table_uuid=I.TABLE_UUID, column_uuid=I.COLUMN_UUID,
+        purpose="encrypt", tenant_id=I.TENANT_ID), index_id)
+    assert ik != base_ik
+    assert idx != truncate(idf_hmac(base_ik, normalized), b_bits), (
+        "the 0xFF02 vector would not tell the two suites apart")
+    return {
+        "id": f"blind-index/hmac-sha512/ascii-email-suite-ff02-b{b_bits}",
+        "description": "hmac-sha512 index over 'alice@example.com' truncated "
+                       "to 15 bits, the inputs of ascii-email-b15 with the "
+                       "index declared under suite 0xFF02 (spec §7.2, #213). "
+                       "A core run through a client whose write suite is "
+                       "0xFF01 and whose index is declared with suite 0xFF02 "
+                       "MUST produce these bytes. A core that fills the index "
+                       "context's suite_id from the write suite produces the "
+                       "ascii-email-b15 bytes instead and fails",
+        "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+        "suite_id": suite_str(SUITE_FF02),
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "index_key": ik.hex(),
+        "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
+        "index_id": index_id,
+        "context": ctx_json(ctx.for_index(index_id)),
+        "normalize": NORMALIZER,
+        "plaintext": normalized.hex(),
+        "plaintext_preimage": preimage,
+        "truncate_bits": b_bits,
+        "expected": {
+            "raw": raw.hex(),
+            "index": idx.hex(),
+            "stored": {"binary": idx.hex(), "hex": idx.hex(),
+                       "octets": len(idx)},
+        },
+    }
+
+
 def generate_hmac() -> dict:
     return wrapper("blind-index", _vectors("email-eq", "hmac-sha512", idf_hmac)
-                   + gate_vectors())
+                   + [declared_suite_vector()] + gate_vectors()
+                   + declared_suite_declaration_vectors())
 
 
 # Spec §7.6's default-deny gate (#211), as `"declaration"` vectors: the gate
@@ -425,6 +495,46 @@ _GATE_CASES = [
      "gate is relieved, accepted",
      _GATE_HIGH, 16, True, declaration.OVERRIDE, "accepted"),
 ]
+
+
+# Spec §7.2's declared-suite rule (#213), as `"declaration"` vectors. Each is
+# otherwise valid (P = 2^20, b = 16: inside the §7.4 band, clear of the §7.6
+# gate), so the suite is the only thing wrong. The client under test has
+# write suite and allow-list 0xFF01 only (the shape's top-level `suite_id`).
+_DECLARED_SUITE_CASES = [
+    # (slug, description, declared suite, expect)
+    ("declared-suite-missing-refused",
+     "the declaration names no suite_id, and the declared suite has no "
+     "default (spec §7.2): refused, not filled in from the write suite",
+     None, "refused"),
+    ("declared-suite-unregistered-refused",
+     "the declaration names suite 0x0001, reserved and unassigned in §4.2 and "
+     "so not registered: refused",
+     0x0001, "refused"),
+    ("declared-suite-ff02-accepted",
+     "the declaration names suite 0xFF02 on a client whose write suite and "
+     "allow-list are 0xFF01 only: accepted, because the declared suite need "
+     "not be the write suite nor on the allow-list (spec §7.2, §4.3). It "
+     "fails a core that refuses a declared suite its client is not "
+     "configured for",
+     SUITE_FF02, "accepted"),
+]
+
+
+def declared_suite_declaration_vectors() -> list[dict]:
+    return [
+        declaration.vector(
+            f"blind-index/hmac-sha512/{slug}",
+            f"index declaration: {description} (configuration outcome, no §9 "
+            "code)",
+            "§7.2, §4.2, §4.3",
+            declaration.Declaration(index_id="email-eq",
+                                    projected_population=1 << 20,
+                                    truncate_bits=16, suite_id=suite),
+            expect,
+            "§7.2 declared suite" if expect == "refused" else None)
+        for slug, description, suite, expect in _DECLARED_SUITE_CASES
+    ]
 
 
 def gate_vectors() -> list[dict]:

@@ -24,7 +24,12 @@ from django.conf import settings
 from django.core.signals import setting_changed
 from django.db.models.signals import class_prepared, pre_save
 from django.dispatch import receiver
-from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclaration
+from fieldseal import (
+    Argon2Params,
+    CardinalityOverride,
+    Fieldseal,
+    IndexDeclaration,
+)
 
 from .errors import FieldsealConfigurationError
 
@@ -82,9 +87,18 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
     enforce, and it does, at construction. `docs/12` §5's E003 exists to turn
     that refusal into a startup check rather than to duplicate the rule.
     """
+    return [decl for _, _, decl in index_declarations(registry)]
+
+
+def index_declarations(
+        registry: Any = None) -> list[tuple[Any, Any, IndexDeclaration]]:
+    """`build_index_registry`, with the model and field each declaration came
+    from. The system checks use the pairing to name the model field when the
+    core refuses a declaration; the core's own message names the index id.
+    """
     from .declarations import Override
 
-    decls: list[IndexDeclaration] = []
+    decls: list[tuple[Any, Any, IndexDeclaration]] = []
     for model, field in iter_encrypted_fields(registry):
         idx = field.index
         if idx is None:
@@ -95,6 +109,19 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
                 "projected_population. Spec §7.4 sizes the truncation band "
                 "from the number of DISTINCT values the column will hold, so "
                 "there is no defensible default (system check fieldseal.E003)."
+            )
+
+        if idx.suite_id is None:
+            # `None` is "not stated" (the dataclass default, kept so that old
+            # migration files import). The core refuses it too, but its
+            # message cannot name the model field.
+            raise FieldsealConfigurationError(
+                f"{model.__name__}.{field.name} declares a BlindIndex with no "
+                "suite_id. State the suite explicitly, e.g. "
+                "BlindIndex(suite_id=0xFF01, ...): spec §7.2 derives the "
+                "index under the suite its declaration names, which is fixed "
+                "for the life of the index (§7.8) and is never taken from "
+                "FIELDSEAL['WRITE_SUITE'] (system check fieldseal.E003)."
             )
 
         def _override(o: Override | None) -> CardinalityOverride | None:
@@ -121,9 +148,10 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
                 "`fieldseal = FieldsealMeta(table_uuid=...)` "
                 "(system check fieldseal.E004)"
             )
-        decls.append(IndexDeclaration(
+        decl = IndexDeclaration(
             table_uuid=meta.table_uuid_bytes,
             column_uuid=field.column_uuid,
+            suite_id=idx.suite_id,
             index_id=idx.index_id,
             idf=idx.idf,
             normalize=idx.normalize,
@@ -134,7 +162,8 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
             skewed=idx.skewed,
             on_unindexable=idx.on_unindexable,
             unindexable_override=_override(idx.unindexable_override),
-        ))
+        )
+        decls.append((model, field, decl))
     return decls
 
 

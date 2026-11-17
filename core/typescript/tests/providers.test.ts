@@ -123,7 +123,7 @@ describe("StaticKeyProvider (spec §8)", () => {
   it("blindIndex without an index key → KEY_UNAVAILABLE", () => {
     const c = makeClient({
       keyProvider: new StaticKeyProvider({ dek: DEK, keyId: KEY_ID }),
-      indexes: [{ tableUuid: TABLE, columnUuid: COLUMN, idf: "hmac-sha512", normalize: "identity", truncateBits: 15, projectedPopulation: 65536 }],
+      indexes: [{ tableUuid: TABLE, columnUuid: COLUMN, suiteId: SUITE_FF01, idf: "hmac-sha512", normalize: "identity", truncateBits: 15, projectedPopulation: 65536 }],
     });
     expect(codeOf(() => c.blindIndex(PT, { ...CTX, purpose: "index:exact" }))).toBe("KEY_UNAVAILABLE");
   });
@@ -197,7 +197,7 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
   // An `hmac-sha512` equality index on CTX's column: cheap enough that the
   // index-role tests stay fast, and identity normalization keeps the derived
   // value a function of the index key alone.
-  const idxDecl = { tableUuid: TABLE, columnUuid: COLUMN, indexId: "exact", idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
+  const idxDecl = { tableUuid: TABLE, columnUuid: COLUMN, indexId: "exact", suiteId: SUITE_FF01, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
 
   it("value path is cache-only: KEY_UNAVAILABLE before warm(), works after, never unwraps on the value path", async () => {
     const p = provider();
@@ -376,7 +376,7 @@ describe("EnvelopeKeyProvider (docs/09 §8.2)", () => {
 
 describe("construction-time configuration gates (docs/09 §2, §7)", () => {
   const base = { keyProvider: new StaticKeyProvider({ dek: DEK, keyId: KEY_ID, indexKey: INDEX_KEY }) };
-  const idx = { tableUuid: TABLE, columnUuid: COLUMN, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
+  const idx = { tableUuid: TABLE, columnUuid: COLUMN, suiteId: SUITE_FF01, idf: "hmac-sha512" as const, normalize: "identity" as const, truncateBits: 15, projectedPopulation: 65536 };
 
   it("allow-list: required, non-empty, registered, implemented; writeSuite in allow-list", () => {
     expect(messageOf(() => new Fieldseal({ ...base, allowedSuites: [], writeSuite: SUITE_FF01 }))).toMatch(/non-empty/);
@@ -482,7 +482,7 @@ describe("construction-time configuration gates (docs/09 §2, §7)", () => {
   it("returned Buffers do not alias Node's shared Buffer pool either (docs/11 §5)", () => {
     const c = makeClient({
       readMode: "permissive",
-      indexes: [{ tableUuid: TABLE, columnUuid: COLUMN, idf: "hmac-sha512", normalize: "identity", truncateBits: 15, projectedPopulation: 65536 }],
+      indexes: [{ tableUuid: TABLE, columnUuid: COLUMN, suiteId: SUITE_FF01, idf: "hmac-sha512", normalize: "identity", truncateBits: 15, projectedPopulation: 65536 }],
     });
     const env = c.encrypt(PT, CTX);
     const outputs = [env, c.decrypt(env, CTX), c.decrypt(bytes("plain pass-through"), CTX), c.blindIndex(PT, { ...CTX, purpose: "index:exact" })];
@@ -499,7 +499,7 @@ describe("key-material ownership (docs/09 §8.1; G17, issue #67)", () => {
   const IDX_CTX = { ...CTX, purpose: "index:exact" };
   const INDEX = {
     tableUuid: CTX.tableUuid, columnUuid: CTX.columnUuid,
-    idf: "hmac-sha512" as const, normalize: "identity" as const,
+    suiteId: SUITE_FF01, idf: "hmac-sha512" as const, normalize: "identity" as const,
     truncateBits: 15, projectedPopulation: 65536,
   };
 

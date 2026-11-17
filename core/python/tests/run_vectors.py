@@ -243,6 +243,12 @@ def _index_decl(inp: dict, ctx: FieldContext,
                 on_unindexable: str = "refuse") -> IndexDeclaration:
     return IndexDeclaration(
         table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+        # The DECLARED suite (spec §7.2, #213): `inp["suite_id"]` is it in
+        # every shape -- under `inputs` beside `idf`, or at the top level of a
+        # primitive vector. The client below is built on 0xFF01 only, so a
+        # vector declared under 0xFF02 also checks that the declaration is not
+        # tied to the write suite.
+        suite_id=_suite_id(inp),
         index_id=inp["index_id"], idf=inp["idf"],
         argon2=_argon2_params(inp),
         normalize=inp["normalize"], truncate_bits=inp["truncate_bits"],
@@ -303,8 +309,16 @@ def _run_declaration(v: dict, results: list[dict]) -> None:
     try:
         # Built inside the boundary: a malformed vector is its own recorded
         # failure, never an abort with no report (the #108 lesson).
+        # A declaration vector names the declared suite as
+        # `inputs.declaration.suite_id` (docs/08 §3); its top-level suite_id
+        # names the CLIENT, which `_client` builds on 0xFF01 only (docs/08
+        # §4.4). `IndexDeclaration.suite_id` has no default, so a member the
+        # vector omits is passed as `None` -- the Python constructor cannot be
+        # called without it, and it is the validator's refusal of a missing
+        # suite that `declared-suite-missing-refused` pins.
         decl = IndexDeclaration(
             table_uuid=H(d["table_uuid"]), column_uuid=H(d["column_uuid"]),
+            suite_id=_suite_id(d) if "suite_id" in d else None,  # type: ignore[arg-type]
             index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
             truncate_bits=d["truncate_bits"],
             projected_population=d["projected_population"],
@@ -657,8 +671,12 @@ def _errors_client(v: dict) -> Fieldseal:
     if "index_declaration" in v:
         d = v["index_declaration"]
         ctx = _ctx(v, _suite_id(v))
+        # This family's `index_declaration` has no suite member (docs/08
+        # §4.6) and its vectors assert an outcome, not bytes, so the index is
+        # declared under the vector's own top-level suite.
         indexes = (IndexDeclaration(
             table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            suite_id=_suite_id(v),
             index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
             truncate_bits=d["truncate_bits"],
             projected_population=_population_for(d["truncate_bits"])),)
@@ -804,7 +822,8 @@ def run_out_of_band() -> list[dict]:
     # carrying the operand's bytes form (suite 0.8.0, G26); `not-run` until
     # then. Python's `str` holds the operand, so this entry is "direct".
     idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32, (IndexDeclaration(
-        table_uuid=bytes(16), column_uuid=bytes(16), index_id="exact",
+        table_uuid=bytes(16), column_uuid=bytes(16), suite_id=0xFF01,
+        index_id="exact",
         idf="hmac-sha512", normalize="nfc-casefold-v1", truncate_bits=15,
         projected_population=_population_for(15)),))
     idx_ctx = FieldContext(table_uuid=bytes(16), column_uuid=bytes(16),
@@ -1045,6 +1064,17 @@ def run() -> dict:
             "exists for a configuration refusal (docs/08 §4.3); any other "
             "exception is a failure. 'accepted' passes only if construction "
             "succeeds.",
+            "Declared suite (suite 0.11.0, #213; spec §7.2): every blind-index "
+            "vector's index is declared under the vector's declared suite "
+            "(inputs.suite_id, or the top-level suite_id of a primitive "
+            "vector) on a client whose write suite and decrypt allow-list are "
+            "0xFF01 only, and every 'declaration' vector is run on such a "
+            "client. A declaration vector without a suite_id member is "
+            "built with suite_id=None, because the Python constructor "
+            "cannot be called without the member; the validator's "
+            "ConfigurationError is what the vector pins. The errors/ "
+            "family's index_declaration carries no suite and is declared "
+            "under the vector's top-level suite_id.",
             "Every out_of_band entry carries basis 'direct' (docs/14 §4): the "
             "length-bound operands are allocated or mapped and the "
             "lone-surrogate operand is held in a str, so this harness uses "

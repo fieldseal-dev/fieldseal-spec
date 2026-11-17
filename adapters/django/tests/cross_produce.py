@@ -26,7 +26,7 @@ That schema is deliberate: **every existing consumer reads this file
 unmodified**, so the Django adapter joins the N×N matrix as one more producer
 rather than needing a bespoke checker.
 
-**The index half (`cross/v2`)** is the same argument one step further, and
+**The index half (`cross/v3`)** is the same argument one step further, and
 `docs/07` §7 calls it the more valuable assertion. A blind index the *adapter*
 wrote must be derivable by a core in another language, because a mismatched
 index is a **silent lookup miss** rather than an error -- the row is stored,
@@ -179,8 +179,20 @@ def _index_case(case_id: str, model: object, field_name: str, pk: int,
             f"{type(raw).__name__}, not bytes (spec §7.11)")
     ctx = field.fieldseal_context()  # type: ignore[attr-defined]
 
+    # The declared suite is read off the *validated* declaration the client
+    # reports (`Fieldseal.indexes`), keyed the way the core keys it -- not off
+    # a constant, the write suite, or the field's own `BlindIndex` (spec §7.2,
+    # #213): the artifact then states what the client actually derives under.
+    from fieldseal import index_registry_key
+
+    from fieldseal_django.apps import get_client
+
+    validated = get_client().indexes[index_registry_key(
+        ctx.table_uuid, ctx.column_uuid, idx.index_id)]
+
     decl: dict = {
         "index_id": idx.index_id,
+        "suite_id": f"0x{validated.suite_id:04X}",
         "idf": idx.idf,
         "idf_params": {},
         "normalize": idx.normalize,
@@ -222,7 +234,12 @@ def produce() -> dict:
     _configure(key)
 
     from fieldseal_django import tenant_scope
-    from tests.models import Patient, Person, TenantDoc  # noqa: PLC0415
+    from tests.models import (  # noqa: PLC0415
+        Patient,
+        Person,
+        SuiteTwoDoc,
+        TenantDoc,
+    )
 
     cases: list[dict] = []
 
@@ -320,10 +337,19 @@ def produce() -> dict:
                                        doc.pk, "ada@example.com",
                                        b"tenant-0001"))
 
+    # An index declared under a suite other than the write suite (spec §7.2,
+    # #213). The document's `suite_id` and every envelope are 0xFF01; this
+    # case's declaration says 0xFF02, read off the validated declaration, so a
+    # consumer that fell back to its own write suite derives a different
+    # index here and fails -- which no 0xFF01 case can show.
+    two = SuiteTwoDoc.objects.create(handle="ada@example.com")
+    index_cases.append(_index_case("suite-ff02", SuiteTwoDoc, "handle",
+                                   two.pk, "ada@example.com", None))
+
     import fieldseal_django
 
     return {
-        "schema": "fieldseal-vectors/cross/v2",
+        "schema": "fieldseal-vectors/cross/v3",
         "producer": {
             "implementation": "django",
             "version": fieldseal_django.__version__,

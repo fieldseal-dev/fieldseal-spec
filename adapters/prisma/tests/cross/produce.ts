@@ -31,7 +31,7 @@
  * file unmodified**, so this adapter joins the N x N matrix as one more
  * producer rather than needing a bespoke checker.
  *
- * **The index half (`cross/v2`)** carries the same argument one step further,
+ * **The index half (`cross/v3`)** carries the same argument one step further,
  * and `docs/07` §7 calls it the more valuable assertion: a blind index the
  * *adapter* wrote must be derivable by a core in another language, because a
  * mismatched index is a **silent lookup miss** rather than an error. The row
@@ -43,6 +43,14 @@
  * Key material is resolved by `key_ref` against `vectors/keys/test-keys.json`,
  * the same public file the core producers use, so no key is embedded here.
  *
+ * **Each index case names its declared suite** (`declaration.suite_id`, spec
+ * §7.2, #213). It is read from the validated declaration the *core client*
+ * reports (`Fieldseal.indexes`), never from a constant or from the write suite,
+ * so the document says what the core derived under. One case (`Patient.alias`)
+ * is declared under `0xFF02` while the write suite and allow-list stay
+ * `0xFF01`: the case on which a consumer that substitutes its own write suite
+ * derives different bytes.
+ *
  * Usage: node tests/cross/produce.ts --out <file>
  */
 
@@ -53,8 +61,11 @@ import { fileURLToPath } from "node:url";
 
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { StaticKeyProvider } from "@fieldseal/core";
+import { indexRegistryKey, StaticKeyProvider } from "@fieldseal/core";
 
+import { buildClient } from "../../src/client.ts";
+import { uuidBytes } from "../../src/context.ts";
+import { resolveMap } from "../../src/fieldmap.ts";
 import { fieldsealExtension, tenantScope } from "../../src/index.ts";
 import { fieldsealFieldMap } from "../fixture/generated/fieldseal-map.ts";
 import { PrismaClient } from "../fixture/generated/prisma/client.ts";
@@ -182,21 +193,36 @@ async function main(): Promise<number> {
     adapter: postgres ? new PrismaPg({ connectionString: url }) : new PrismaBetterSqlite3({ url }),
   } as never) as unknown as PrismaClient;
 
+  const keyProvider = new StaticKeyProvider({
+    dek: hex(key.tenant_dek),
+    indexKey: hex(key.tenant_index_key),
+    keyId: hex(key.key_id),
+  });
+  const unindexableOverride = [{ model: "Person", field: "legalName", ...BUCKET_CEREMONY }];
+
+  // The core client the adapter builds from this field map, constructed again
+  // here with the same options so its validated registry (`indexes`) can be
+  // read: the declared suite in the document comes from the core's report.
+  const coreClient = buildClient(resolveMap(fieldsealFieldMap), {
+    keyProvider,
+    allowedSuites: [suiteId],
+    writeSuite: suiteId,
+    armProvisionalSuites: true,
+    unindexableOverride,
+    onWarning: () => {},
+  });
+
   const prisma = base.$extends(
     fieldsealExtension({
       fieldMap: fieldsealFieldMap,
-      keyProvider: new StaticKeyProvider({
-        dek: hex(key.tenant_dek),
-        indexKey: hex(key.tenant_index_key),
-        keyId: hex(key.key_id),
-      }),
+      keyProvider,
       allowedSuites: [suiteId],
       writeSuite: suiteId,
       readMode: "strict",
       // Spec §4.8: writing under a provisional suite is an affirmative act here
       // as everywhere.
       armProvisionalSuites: true,
-      unindexableOverride: [{ model: "Person", field: "legalName", ...BUCKET_CEREMONY }],
+      unindexableOverride,
       onWarning: () => {},
     }),
   ) as unknown as Record<string, { create(a: unknown): Promise<Record<string, unknown>> }>;
@@ -373,8 +399,16 @@ async function main(): Promise<number> {
     if (!(stored instanceof Uint8Array)) {
       throw new Error(`cross/produce: ${model}.${idx.field} is not bytes (spec §7.11)`);
     }
+    const validated = coreClient.indexes.get(
+      indexRegistryKey(uuidBytes(m.tableUuid!), uuidBytes(enc.columnUuid), idx.indexId),
+    );
+    if (validated === undefined) {
+      throw new Error(`cross/produce: the core client reports no index for ${model}.${field}`);
+    }
     const declaration: Record<string, unknown> = {
       index_id: idx.indexId,
+      // The string form of docs/08 §3, from the core's validated declaration.
+      suite_id: `0x${validated.suiteId.toString(16).toUpperCase().padStart(4, "0")}`,
       idf: idx.idf,
       idf_params: {},
       normalize: idx.normalize,
@@ -426,6 +460,15 @@ async function main(): Promise<number> {
   // an adapter can get that pairing wrong.
   await indexCase("nickname-base64-source", "Patient", "Patient", "nickname", p1id, "Ada");
 
+  // An index declared under 0xFF02 on a client whose write suite and allow-list
+  // are 0xFF01 only (spec §7.2, #213). The index context carries the declared
+  // suite, so a consumer that derived it under its own write suite would
+  // compute different bytes -- a silent lookup miss, like every index miss.
+  const aliased = await prisma["patient"]!.create({
+    data: { email: "alias-owner@example.com", note: "n", age: 9, plainName: "Alias", alias: "ada@example.com" },
+  });
+  await indexCase("alias-suite-ff02", "Patient", "Patient", "alias", aliased["id"] as string, "ada@example.com");
+
   // An ordinary value on the bucketed column, and then the case only an
   // adapter produces: a value the normalizer refuses, where the extension
   // stored the §7.2 reserved marker by itself, with no caller asking for it.
@@ -455,7 +498,7 @@ async function main(): Promise<number> {
     version: string;
   };
   const out = {
-    schema: "fieldseal-vectors/cross/v2",
+    schema: "fieldseal-vectors/cross/v3",
     producer: {
       implementation: "prisma",
       version: pkg.version,
