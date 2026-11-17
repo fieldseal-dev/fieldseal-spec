@@ -1,6 +1,6 @@
 # The backfill procedure
 
-**Procedure version:** 1 · **Date:** 2026-09-30 · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). No frontend implements it yet, so nothing here has been run. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
+**Procedure version:** 1 · **Date:** 2026-09-30, corrected in place 2026-11-17 ([#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281); §12 says why the version did not change) · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). One frontend implements it: the Django adapter's `fieldseal_backfill`. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
 
 This is the one procedure every backfill frontend implements: the state tables, the cursor, the batch, the two jobs, `verify`, what the tool must print, and the scenarios a frontend's tests must pass. The design it makes concrete is [`docs/15-tooling.md`](../../docs/15-tooling.md) §1. A frontend is a thin program in one language over one adapter (`docs/26` §5 item 4). A frontend that needs this document changed files an issue and waits; it does not diverge locally (`docs/26` §6).
 
@@ -117,7 +117,7 @@ The inputs are what decides the bytes a run stores, and nothing operational. Bat
 | `procedure_version` | `1` |
 | `job` | `"encrypt"` or `"rotate"` |
 | `table_uuid` | The table's UUID, 32 lowercase hex digits |
-| `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2) |
+| `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2). It decides the envelopes a run writes and no index: each index records its own declared suite (below; spec §7.2) |
 | `cursor` | Array, one object per cursor column in key order: `{"name": <the column's SQL name>, "type": <"int", "uuid" or "text">}` (§5.1). A primary key has no `column_uuid`, so its name is the identity recorded; a renamed or replaced key column refuses the resume, and a key replaced by another of the same name and type is not detected |
 | `columns` | Array, one object per encrypted column in the run, sorted by `column_uuid` |
 
@@ -142,6 +142,9 @@ Each `indexes` element, taken from the client's **validated** registry (`docs/09
 | `truncate_bits` | `b` |
 | `on_unindexable` | `"refuse"` or `"bucket"` |
 | `storage` | `"binary"` or `"hex"` (spec §7.11) |
+| `suite_id` | The index's declared suite as an integer (spec §7.2), as the validated registry reports it |
+
+`suite_id` is recorded per index because, since [#213](https://github.com/fieldseal-dev/fieldseal-spec/issues/213), it no longer follows `write_suite`: an index is derived under the suite its declaration names, which keys every index value the run writes. Changing it makes a new index (spec §7.8), as a changed `truncate_bits` does, and a resume across the change would leave index values under two keys in one column with nothing raised. Before #213, `write_suite` covered it.
 
 The projected population and the override records are left out: they decide whether a declaration is accepted, not what is stored.
 
@@ -150,14 +153,14 @@ The projected population and the override records are left out: they decide whet
 **Worked example.** A frontend's tests MUST reproduce this hash from these inputs:
 
 ```json
-{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
+{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
 ```
 
 ```
-8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0
+960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419
 ```
 
-The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters.
+The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters. The index's `suite_id` (`0xFF02`) differs from `write_suite` (`0xFF01`) on purpose, so a frontend that records the write suite in its place does not reproduce the hash.
 
 **On resume**, the frontend rebuilds `config` from the live client and declarations, and compares it to the stored one. If they differ it MUST refuse, and name each member that differs. It prints names and parameters only; there is nothing secret in `config`.
 
@@ -402,6 +405,7 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 | BF-18 | A run row with `procedure_version` 2 | Refused |
 | BF-19 | Two processes start a new run on one table at once | Exactly one run row exists; the other start is refused by the unique constraint and names the run that holds the table |
 | BF-20 | A run stopped by `max_failures` mid-way through a batch's worth of failing rows, then resumed with the same setting | The stop leaves the run `running`, with the failing batch committed: its failure rows are recorded and `cursor_value` is past every row that failed. The resume starts beyond them, and completes when the failures do not continue |
+| BF-21 | `encrypt`, killed, then resumed with one index's declared `suite_id` changed and `write_suite` unchanged | Refused, naming that index's `suite_id`; nothing written |
 
 A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the core's header accessor (`docs/09` §4; D-1 in §11, decided by [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in a frontend until that frontend's core ships it. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
 
@@ -419,3 +423,5 @@ Recorded here so that a frontend is not built on an assumption.
 ## 12. Changing this document
 
 `procedure_version` increases when a change alters what is stored in either state table, what a run writes, or how `config` is built. A clarification that changes none of those does not. Every change is an issue first, and updates the shared scenarios with it.
+
+**One exception, taken once.** [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281) changed how `config` is built (§4 gained each index's `suite_id`) and kept version 1. The version exists so that a frontend can tell runs recorded under another procedure, and refuse them (§3, BF-18). When #281 was made, no release had carried a frontend: the Django frontend reached `main` on 2026-10-16 ([#255](https://github.com/fieldseal-dev/fieldseal-spec/pull/255)), and no tag contains it; the last release is `v0.1.3`. So no released program could have recorded a version-1 run under the old `config`. A run recorded by an unreleased build is still refused on resume, through the comparison rather than the version: its stored `config` has no `suite_id` member, and the live one does, so the comparison names that member (§4). Once a release carries a frontend, this rule applies with no exception.

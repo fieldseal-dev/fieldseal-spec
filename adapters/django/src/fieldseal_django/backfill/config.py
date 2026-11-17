@@ -52,6 +52,11 @@ def build(
                 # The registry has no storage member: `EncryptedIndex` is a
                 # `BinaryField`, and this adapter has no hex form.
                 "storage": "binary",
+                # The DECLARED suite (spec §7.2, #213; PROCEDURE §4, #281),
+                # as the core validated it. It keys every index value this
+                # run writes and is independent of `write_suite`, so it is
+                # recorded here rather than covered by it.
+                "suite_id": validated.suite_id,
             })
         columns.append({
             "column_uuid": field.column_uuid.hex(),

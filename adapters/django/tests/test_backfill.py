@@ -523,6 +523,61 @@ def test_bf05_resume_with_a_changed_write_suite_is_refused(
     assert _snapshot(shape, run_id) == before
 
 
+def test_bf21_resume_with_a_changed_declared_suite_is_refused(
+        shape, monkeypatch):
+    """PROCEDURE §4 (#281): an index's declared suite keys every index value
+    the run writes, independently of `write_suite` (spec §7.2, #213), so the
+    resume is refused by the index's own `suite_id` member. `0xFF02` is a
+    real declaration here, not a patched reflection: derivation needs the
+    suite's KDF only, which this build has (`SuiteTwoDoc`)."""
+    run_id = _killed_run(shape)
+    before = _snapshot(shape, run_id)
+    field = shape.model._meta.get_field(shape.field)
+    assert field.index.suite_id == 0xFF01
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        assert get_client().write_suite == 0xFF01
+        with pytest.raises(BackfillError) as refused:
+            resume(run_id)
+        _, _, error = command("resume", run_id)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    member = f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+    assert member in str(refused.value)
+    assert "write_suite" not in str(refused.value)
+    assert member in str(error)
+    assert _snapshot(shape, run_id) == before
+
+
+def test_bf21_a_config_recorded_without_the_suite_is_refused(shape):
+    """A run recorded before #281 has no `suite_id` member in its index
+    entries. PROCEDURE §12 kept version 1 on the ground that such a run is
+    refused by the comparison, naming the member; this pins that ground."""
+    run_id = _killed_run(shape)
+    stored = state.load_run(connection, run_id)
+    old = json.loads(stored.config)
+    for column in old["columns"]:
+        for index in column["indexes"]:
+            del index["suite_id"]
+    text = config.serialize(old)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, config.digest(text), run_id])
+    before = _snapshot(shape, run_id)
+    field = shape.model._meta.get_field(shape.field)
+
+    with pytest.raises(BackfillError) as refused:
+        resume(run_id)
+
+    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+            in str(refused.value))
+    assert _snapshot(shape, run_id) == before
+
+
 def test_bf05_the_command_names_the_member_and_writes_nothing(
         shape, monkeypatch):
     run_id = _killed_run(shape)
@@ -1029,12 +1084,12 @@ WORKED_EXAMPLE = (
     '{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":'
     '[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id",'
     '"index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":'
-    '"refuse","storage":"binary","truncate_bits":24}],"logical_type":'
-    '"string","source":null,"storage":"binary"}],"cursor":[{"name":"id",'
-    '"type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":'
-    '"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}')
+    '"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],'
+    '"logical_type":"string","source":null,"storage":"binary"}],"cursor":'
+    '[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,'
+    '"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}')
 WORKED_HASH = (
-    "8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0")
+    "960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419")
 
 
 def test_bf17_the_worked_example():
@@ -1054,6 +1109,7 @@ def test_bf17_the_worked_example():
         normalize = "nfc-casefold-v1"
         truncate_bits = 24
         on_unindexable = "refuse"
+        suite_id = 0xFF02
 
     table = bytes.fromhex("018f3c2e7a1b7c3d8e4f5a6b7c8d9e00")
     registry = {f"{table.hex()}/{Field.column_uuid.hex()}/exact": Validated}
@@ -1082,7 +1138,7 @@ def test_the_run_row_stores_the_document_its_hash_is_of(shape):
     assert column["indexes"] == [{
         "argon2": None, "idf": "hmac-sha512", "index_id": "exact",
         "normalize": "nfc-casefold-v1", "on_unindexable": "refuse",
-        "storage": "binary", "truncate_bits": 15}]
+        "storage": "binary", "suite_id": 0xFF01, "truncate_bits": 15}]
     assert stored.frontend.startswith("django/")
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", stored.started_at)
 

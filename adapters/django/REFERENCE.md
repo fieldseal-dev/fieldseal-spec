@@ -180,7 +180,7 @@ not the target matrix in `docs/12` §6.
 | Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
 | `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
 | `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
-| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v1, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-20; two-column shape for every column, in place for `binary` storage, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)), and for `base64` storage, where legacy text reads back as stored and a non-string column converts only §3.6 canonical text ([#245](https://github.com/fieldseal-dev/fieldseal-spec/issues/245)); on Postgres a plain `AlterField` into `bytea` rewrites or refuses legacy values, so use two columns there until [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252) is decided | `tests/test_backfill.py` (`test_bfNN_…`) |
+| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v1, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-21 (BF-21, a resume across a changed declared suite, since [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281)); two-column shape for every column, in place for `binary` storage, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)), and for `base64` storage, where legacy text reads back as stored and a non-string column converts only §3.6 canonical text ([#245](https://github.com/fieldseal-dev/fieldseal-spec/issues/245)); on Postgres a plain `AlterField` into `bytea` rewrites or refuses legacy values, so use two columns there until [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252) is decided | `tests/test_backfill.py` (`test_bfNN_…`) |
 | `fieldseal_backfill` on a tenant-bound column | ⚠️ **not converted**: recorded as `CONTEXT_UNAVAILABLE` and left as it was ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244)) | `test_a_tenant_bound_column_is_context_unavailable` |
 | `fieldseal_backfill` `rotate`, `verify` | ❌ not built: `rotate` and BF-11, BF-12, BF-13, BF-15k are blocked on [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); `verify` (BF-15) is next | — |
 | `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
@@ -335,13 +335,6 @@ cannot enumerate them.
   is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
   tenant-bound model outside `tenant_scope(...)` refuses. Both are correct
   (fail closed) and neither is obvious.
-- **The backfill's recorded configuration does not include the declared
-  suite.** `tools/backfill/PROCEDURE.md` §4 fixes the `config` members
-  "exactly", and the index members it lists have no `suite_id`, so
-  `fieldseal_backfill` writes under the client's declared suite (it derives
-  through the client) but a resume across a changed `suite_id` is not refused
-  the way a changed `truncate_bits` is. Closing it is a change to that
-  procedure and its worked-example hash, which this adapter does not make.
 - **The AD-1 CI grep is a tripwire, not a proof** — it matches `import`/`from`
   lines and would not catch `importlib`.
 - **E001 is hygiene, not a live bug.** Declaration order does not affect the
