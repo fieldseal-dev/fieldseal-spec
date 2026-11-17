@@ -27,7 +27,7 @@ core/<lang>/
   testing      encrypt_with_materials + fixed entropy source  (docs/08 §6; never exported from the main module)
 ```
 
-Dependency rule, enforced by review and (where the language allows) by package visibility: `api` → everything; `envelope`/`context`/`kdf`/`aead`/`commitment`/`blindindex` → `registry` + `errors` only; `keyprovider`/`cache` → `errors` only. No module imports `api`. `testing` imports the internals it injects into; nothing imports `testing`.
+Dependency rule, enforced by review and (where the language allows) by package visibility: `api` → everything; `envelope`/`context`/`kdf`/`aead`/`commitment`/`blindindex` → `registry` + `errors` only; `keyprovider`/`cache` → `errors` only. No module imports `api`. Where a core has one predicate deciding which operands count as bytes, shared by `envelope`'s recognizer and the operations, it lives in `registry`, so both may import it under this rule ([#257](https://github.com/fieldseal-dev/fieldseal-spec/issues/257)). `testing` imports the internals it injects into; nothing imports `testing`.
 
 ## 2. The client object
 
