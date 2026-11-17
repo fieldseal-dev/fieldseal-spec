@@ -114,17 +114,37 @@ def _check(value: Any) -> None:
         f"a configuration member is a {type(value).__name__}")
 
 
+#: Suffixes `differences` puts on a member present on one side only.
+NOT_RECORDED = " (not recorded)"
+NOT_LIVE = " (not in the live configuration)"
+
+
+def unrecorded_note(members: list[str]) -> str:
+    """The sentence a refusal adds when a member was not recorded at all."""
+    if not any(m.endswith(NOT_RECORDED) for m in members):
+        return ""
+    return (" A member marked 'not recorded' is one the recorded "
+            "configuration does not have, not one whose value changed: it "
+            "was recorded before PROCEDURE §4 added that member (#281, "
+            "§12). The tool cannot tell what the recorded run used for it.")
+
+
 def differences(stored: Any, live: Any, path: str = "") -> list[str]:
     """The members at which `live` differs from `stored`, by name.
 
-    Names and parameters only; there is nothing secret in `config`.
+    Names and parameters only; there is nothing secret in `config`. A member
+    present on one side only is marked (`NOT_RECORDED`, `NOT_LIVE`), so a
+    member the stored document was recorded without -- a run recorded before
+    PROCEDURE §4 gained it (#281, §12) -- does not read as a changed value.
     """
     if isinstance(stored, dict) and isinstance(live, dict):
         out: list[str] = []
         for key in sorted(set(stored) | set(live)):
             where = f"{path}.{key}" if path else str(key)
-            if key not in stored or key not in live:
-                out.append(where)
+            if key not in stored:
+                out.append(where + NOT_RECORDED)
+            elif key not in live:
+                out.append(where + NOT_LIVE)
             else:
                 out.extend(differences(stored[key], live[key], where))
         return out
