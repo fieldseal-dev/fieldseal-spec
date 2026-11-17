@@ -16,7 +16,7 @@
  * - **It runs no vector families.** This package contains no cryptography
  *   (AD-1, spec §11.3), so `results` is empty and `L0` is not claimed. The
  *   suite is exercised by `@fieldseal/core`, whose own report carries the L0
- *   claim and the six `pinned_decisions` keys `docs/14` §4 obliges a core to
+ *   claim and the seven `pinned_decisions` keys `docs/14` §4 obliges a core to
  *   declare. Recorded in `harness_notes` rather than left to be noticed.
  * - **Its evidence is the `coverage_matrix`**, which `docs/14` §4 requires an
  *   adapter to attach, mirroring its published coverage table "so the claim
@@ -259,7 +259,7 @@ function main(): number {
     },
     harness_notes: [
       "This package runs no vector families and claims no L0: it contains no cryptography (AD-1, " +
-        "spec §11.3). The families, and the six pinned_decisions keys docs/14 §4 obliges a core to " +
+        "spec §11.3). The families, and the seven pinned_decisions keys docs/14 §4 obliges a core to " +
         "carry, belong to @fieldseal/core's own report. The keys above are this adapter's own, " +
         "which docs/14 §4 permits.",
       "coverage_matrix is parsed out of REFERENCE.md and each row's status is the status of the tests " +
