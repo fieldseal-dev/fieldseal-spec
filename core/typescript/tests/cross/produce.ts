@@ -48,6 +48,8 @@ interface IndexCase {
   key_ref: string;
   declaration: {
     index_id: string;
+    /** The index's declared suite, string form (docs/08 §3). Required since cross/v3 (spec §7.2, #213). */
+    suite_id: string;
     idf: string;
     idf_params: Record<string, number | string>;
     normalize: string;
@@ -78,6 +80,22 @@ function valueOf(c: IndexCase): string | Uint8Array {
   throw new Error(`${c.case}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
 }
 
+/**
+ * The declared suite of an index case, read from the case itself.
+ *
+ * Required, and never substituted: not the key's suite, not this client's write
+ * suite, not a default (docs/08 §4.7, spec §7.2, #213). A corpus case without it
+ * is malformed and stops the producer by name, rather than building a
+ * declaration that the core would then refuse for a less useful reason.
+ */
+function declaredSuiteOf(c: IndexCase): number {
+  const s = c.declaration.suite_id as unknown;
+  if (typeof s !== "string" || !/^0x[0-9A-F]{4}$/.test(s)) {
+    throw new Error(`${c.case}: declaration.suite_id must be a 0xXXXX suite id (cross/v3, docs/08 §4.7); got ${JSON.stringify(s)}`);
+  }
+  return parseInt(s.slice(2), 16);
+}
+
 /** The corpus's declaration, as the core's registry wants it. */
 function declOf(c: IndexCase): IndexDeclaration {
   const d = c.declaration;
@@ -85,6 +103,7 @@ function declOf(c: IndexCase): IndexDeclaration {
     tableUuid: hex(c.context.table_uuid!),
     columnUuid: hex(c.context.column_uuid!),
     indexId: d.index_id,
+    suiteId: declaredSuiteOf(c),
     idf: d.idf as IndexDeclaration["idf"],
     normalize: d.normalize as IndexDeclaration["normalize"],
     truncateBits: d.truncate_bits,
@@ -167,7 +186,7 @@ const clients = new Map(Object.entries(keys).map(([ref, k]) => [ref, clientFor(k
 
 const pkg = JSON.parse(readFileSync(join(REPO, "core", "typescript", "package.json"), "utf-8")) as { version: string };
 const doc = {
-  schema: indexCases.length > 0 ? "fieldseal-vectors/cross/v2" : "fieldseal-vectors/cross/v1",
+  schema: indexCases.length > 0 ? "fieldseal-vectors/cross/v3" : "fieldseal-vectors/cross/v1",
   producer: {
     implementation: "typescript",
     version: pkg.version,

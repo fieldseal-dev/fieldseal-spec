@@ -36,6 +36,8 @@ interface IndexCase {
   key_ref: string;
   declaration: {
     index_id: string;
+    /** The index's declared suite, string form (docs/08 §3). Required since cross/v3 (spec §7.2, #213). */
+    suite_id?: string;
     idf: string;
     normalize: string;
     truncate_bits: number;
@@ -64,6 +66,23 @@ function valueOf(c: IndexCase): string | Uint8Array {
   throw new Error(`${c.id}: no value_text, value_bytes or value_marker (docs/08 §4.7)`);
 }
 
+/**
+ * The declared suite of an index case, read from the document and from nowhere
+ * else (docs/08 §4.7, spec §7.2, #213). A consumer MUST NOT substitute its own
+ * write suite, take one from its allow-list, or default a missing one: a v3
+ * case without `suite_id` is malformed and fails here, by name, as that pair's
+ * result. Registration is checked by the core when the declaration is built, so
+ * an unregistered suite fails as a refused declaration, not as a mismatch.
+ */
+function declaredSuiteOf(c: IndexCase): number {
+  const s = c.declaration.suite_id as unknown;
+  if (s === undefined) throw new Error(`${c.id}: declaration carries no suite_id; a cross/v3 index case without one is malformed (docs/08 §4.7)`);
+  if (typeof s !== "string" || !/^0x[0-9A-F]{4}$/.test(s)) {
+    throw new Error(`${c.id}: declaration.suite_id must be a 0xXXXX suite id; got ${JSON.stringify(s)}`);
+  }
+  return parseInt(s.slice(2), 16);
+}
+
 /** The producer's declaration block, as this core's registry wants it. */
 function declOf(c: IndexCase): IndexDeclaration {
   const d = c.declaration;
@@ -71,6 +90,7 @@ function declOf(c: IndexCase): IndexDeclaration {
     tableUuid: hex(c.context.table_uuid!),
     columnUuid: hex(c.context.column_uuid!),
     indexId: d.index_id,
+    suiteId: declaredSuiteOf(c),
     idf: d.idf as IndexDeclaration["idf"],
     normalize: d.normalize as IndexDeclaration["normalize"],
     truncateBits: d.truncate_bits,
@@ -134,10 +154,20 @@ const clients = new Map(Object.entries(keys).map(([ref, k]) => [ref, clientFor(k
  * never touch the index half. A green run that skipped the more valuable
  * assertion is worse than a red one.
  *
- * `v2` adds `index_cases` beside `cases`; `v1` documents stay valid and are
- * recorded as carrying no index half rather than counting as if they had one.
+ * `v2` added `index_cases` beside `cases`; `v3` (suite 0.11.0-provisional, #213)
+ * makes `declaration.suite_id` a required member of every index case. `v1`
+ * documents stay valid and are recorded as carrying no index half rather than
+ * counting as if they had one.
+ *
+ * `v2` is refused, deliberately: docs/08 §4.7 says v2 documents are no longer
+ * produced and is silent on whether a consumer still reads them, and the
+ * stricter reading is the only safe one -- a v2 index case has no declared
+ * suite to build the declaration from, so reading it would mean supplying one,
+ * which is exactly the substitution the v3 rule forbids.
  */
-const SCHEMAS = new Set(["fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"]);
+const SCHEMAS = new Set(["fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v3"]);
+const SCHEMA_V1 = "fieldseal-vectors/cross/v1";
+const SCHEMA_V2 = "fieldseal-vectors/cross/v2";
 
 interface Pair {
   id: string;
@@ -172,6 +202,7 @@ for (const f of files) {
   const producer = doc.producer.implementation;
   producers.push(producer);
   if (doc.schema === undefined || !SCHEMAS.has(doc.schema)) {
+    const hint = doc.schema === SCHEMA_V2 ? " (cross/v2 carries no declared suite per index case and is no longer read; docs/08 §4.7, #213)" : "";
     // Fail closed. An unrecognised schema may carry assertions this consumer
     // cannot make, and silently checking only the half it understands is how a
     // matrix reports green on a claim nobody tested.
@@ -180,7 +211,7 @@ for (const f of files) {
       producer,
       kind: "document",
       status: "fail",
-      reason: `unrecognised producer schema ${String(doc.schema)}; this consumer reads ${[...SCHEMAS].join(", ")}`,
+      reason: `unrecognised producer schema ${String(doc.schema)}; this consumer reads ${[...SCHEMAS].join(", ")}${hint}`,
     });
     continue;
   }
@@ -200,11 +231,11 @@ for (const f of files) {
   // did not check them" must not look the same in a verdict.
   const indexCases = doc.index_cases ?? [];
   if (indexCases.length === 0) {
-    // v1 means "this producer carries no index half" and is a pass. v2 means
-    // "this producer carries one" -- so v2 with an empty array is a producer
+    // v1 means "this producer carries no index half" and is a pass. A v3 document means
+    // "this producer carries one" -- so v3 with an empty array is a producer
     // that lost its index cases to a bug, and passing it would be precisely
     // the silent skip this half exists to close.
-    const v1 = doc.schema === "fieldseal-vectors/cross/v1";
+    const v1 = doc.schema === SCHEMA_V1;
     pairs.push({
       id: `${producer}/index-half`,
       producer,

@@ -83,6 +83,27 @@ describe("report invariants (docs/14 §4)", () => {
       }
     }
   });
+  it("runs the declared-suite vectors (suite 0.11.0, spec §7.2, #213), each with its #async twin and the primitive's #pipeline", () => {
+    // The index context's suite_id is the DECLARED suite. These are the vectors
+    // that fail a core filling it from the write suite: the harness's client has
+    // write suite and allow-list 0xFF01 only, so a 0xFF02-declared vector is
+    // derived by a client not configured for 0xFF02.
+    const ids = [
+      "kdf/index-key/email-eq-suite-ff02",
+      "blind-index/hmac-sha512/ascii-email-suite-ff02-b15",
+      "blind-index/hmac-sha512/ascii-email-suite-ff02-b15#pipeline",
+      "blind-index/hmac-sha512/declared-suite-missing-refused",
+      "blind-index/hmac-sha512/declared-suite-unregistered-refused",
+      "blind-index/hmac-sha512/declared-suite-ff02-accepted",
+    ];
+    for (const base of ids) {
+      for (const suffix of ["", "#async"]) {
+        const r = report.results.find((x) => x.id === `${base}${suffix}`);
+        expect(r, `${base}${suffix}`).toBeDefined();
+        expect(r?.status, `${base}${suffix}`).toBe("pass");
+      }
+    }
+  });
   it("carries no harness note that contradicts the results", () => {
     // The #108 review found this report describing blind-index/argon2id.json
     // as held out and not iterated while listing 30 of its results as passing:
