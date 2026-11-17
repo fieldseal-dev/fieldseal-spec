@@ -114,9 +114,14 @@ def _check(value: Any) -> None:
         f"a configuration member is a {type(value).__name__}")
 
 
-#: Suffixes `differences` puts on a member present on one side only.
+#: Suffixes `differences` puts on what is present on one side only. A
+#: member (an object key) the stored document lacks was never recorded: the
+#: run predates the member (PROCEDURE §12). A column or an index (a list
+#: element) on one side only was added or removed by the declarations.
 NOT_RECORDED = " (not recorded)"
 NOT_LIVE = " (not in the live configuration)"
+ADDED = " (added since the recorded run)"
+REMOVED = " (removed since the recorded run)"
 
 
 def unrecorded_note(members: list[str]) -> str:
@@ -124,18 +129,19 @@ def unrecorded_note(members: list[str]) -> str:
     if not any(m.endswith(NOT_RECORDED) for m in members):
         return ""
     return (" A member marked 'not recorded' is one the recorded "
-            "configuration does not have, not one whose value changed: it "
-            "was recorded before PROCEDURE §4 added that member (#281, "
-            "§12). The tool cannot tell what the recorded run used for it.")
+            "configuration does not have, not one whose value changed: the "
+            "run was recorded under a construction of the configuration "
+            "without that member (PROCEDURE §12). The tool cannot tell what "
+            "the recorded run used for it.")
 
 
 def differences(stored: Any, live: Any, path: str = "") -> list[str]:
     """The members at which `live` differs from `stored`, by name.
 
-    Names and parameters only; there is nothing secret in `config`. A member
-    present on one side only is marked (`NOT_RECORDED`, `NOT_LIVE`), so a
-    member the stored document was recorded without -- a run recorded before
-    PROCEDURE §4 gained it (#281, §12) -- does not read as a changed value.
+    Names and parameters only; there is nothing secret in `config`. What is
+    present on one side only is marked: a member as `NOT_RECORDED` or
+    `NOT_LIVE`, so one the stored document was recorded without does not
+    read as a changed value; a column or index as `ADDED` or `REMOVED`.
     """
     if isinstance(stored, dict) and isinstance(live, dict):
         out: list[str] = []
@@ -162,8 +168,10 @@ def differences(stored: Any, live: Any, path: str = "") -> list[str]:
         out = []
         for key in sorted(set(a_by) | set(b_by), key=str):
             where = f"{path}[{key}]"
-            if key not in a_by or key not in b_by:
-                out.append(where)
+            if key not in a_by:
+                out.append(where + ADDED)
+            elif key not in b_by:
+                out.append(where + REMOVED)
             else:
                 out.extend(differences(a_by[key], b_by[key], where))
         return out

@@ -606,7 +606,9 @@ def test_bf21_a_run_recorded_before_281_is_refused_and_says_why(shape):
     message = str(refused.value)
     assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
             f"{config.NOT_RECORDED}") in message
-    assert "recorded before PROCEDURE §4 added that member" in message
+    assert "under a construction of the configuration without that member" \
+        in message
+    assert "#281" not in message
     assert _snapshot(shape, run_id) == before
 
 
@@ -735,7 +737,9 @@ def test_bf22_a_new_run_after_a_pre_281_run_is_refused(shape):
         begin(shape)
     message = str(refused.value)
     assert f".suite_id{config.NOT_RECORDED}" in message
-    assert "recorded before PROCEDURE §4 added that member" in message
+    assert "under a construction of the configuration without that member" \
+        in message
+    assert "#281" not in message
 
 
 def test_bf22_a_new_run_with_the_same_declarations_starts(shape):
@@ -745,6 +749,100 @@ def test_bf22_a_new_run_with_the_same_declarations_starts(shape):
     outcome = drive(p, run)
     assert outcome.run.status == "complete"
     assert outcome.run.values_written + outcome.run.values_current == 25
+
+
+@contextlib.contextmanager
+def renamed_index(shape, monkeypatch):
+    """The column's one index declared under another `index_id`: to the
+    comparison, the recorded index is removed and a new one added. The
+    sibling column derives through the source field's declaration, so it
+    follows the rename."""
+    field = shape.model._meta.get_field(shape.field)
+    with monkeypatch.context() as m:
+        m.setattr(field, "index",
+                  dataclasses.replace(field.index, index_id="renamed"))
+        reset_client()
+        try:
+            yield f"columns[{field.column_uuid.hex()}].indexes"
+        finally:
+            m.undo()
+            reset_client()
+
+
+def test_differences_mark_an_index_on_one_side_only():
+    stored = json.loads(WORKED_EXAMPLE)
+    live = json.loads(WORKED_EXAMPLE)
+    (index,) = live["columns"][0]["indexes"]
+    live["columns"][0]["indexes"] = [dict(index, index_id="other")]
+    c = "018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f"
+    found = config.differences(stored, live)
+    assert found == [f"columns[{c}].indexes[exact]{config.REMOVED}",
+                     f"columns[{c}].indexes[other]{config.ADDED}"]
+    assert config.unrecorded_note(found) == ""
+
+
+def test_bf05_resume_with_an_index_added_and_removed_is_refused(
+        shape, monkeypatch):
+    run_id = _killed_run(shape)
+    before = _snapshot(shape, run_id)
+    with renamed_index(shape, monkeypatch) as at:
+        with pytest.raises(BackfillError) as refused:
+            resume(run_id)
+    message = str(refused.value)
+    assert f"{at}[exact]{config.REMOVED}" in message
+    assert f"{at}[renamed]{config.ADDED}" in message
+    assert "not recorded" not in message
+    assert _snapshot(shape, run_id) == before
+
+
+def test_bf22_a_new_run_with_an_index_added_and_removed_is_refused(
+        shape, monkeypatch):
+    """BF-22's other half: an index present in only one of the two. The
+    abandoned run's converted values have an index under `exact` and none
+    under `renamed`, and a new run would never derive the second for them."""
+    run_id = _killed_run(shape)
+    assert state.abandon(connection, run_id)
+    rows = _run_rows(shape)
+    with renamed_index(shape, monkeypatch) as at:
+        with pytest.raises(BackfillError) as refused:
+            begin(shape)
+    message = str(refused.value)
+    assert run_id in message
+    assert f"{at}[exact]{config.REMOVED}" in message
+    assert f"{at}[renamed]{config.ADDED}" in message
+    assert _run_rows(shape) == rows
+
+
+def test_bf22_the_command_names_the_run_and_member_and_writes_nothing(
+        shape, monkeypatch):
+    """BF-22 through `manage.py fieldseal_backfill encrypt`, as BF-21 is
+    checked through `resume`: the refusal reaches the operator, names the
+    earlier run and the member, and inserts no run row."""
+    run_id = _killed_run(shape)
+    _, _, error = command("abandon", run_id)
+    assert error is None
+    before = (all_raw(shape.model, shape.field),
+              all_raw(shape.model, shape.index), _run_rows(shape))
+    field = shape.model._meta.get_field(shape.field)
+    args = [f"--source={k}={v}" for k, v in shape.sources.items()]
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        _, _, error = command(
+            "encrypt", f"tests.{shape.model.__name__}",
+            "--columns", ",".join(shape.columns),
+            "--rows-per-second", "100000",
+            "--acknowledge-preexisting-backups", *args)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    assert isinstance(error, CommandError)
+    assert run_id in str(error)
+    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+            in str(error))
+    assert (all_raw(shape.model, shape.field),
+            all_raw(shape.model, shape.index), _run_rows(shape)) == before
 
 
 def test_bf05_the_command_names_the_member_and_writes_nothing(
@@ -1525,7 +1623,7 @@ def test_differences_name_each_member():
     c = "018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f"
     assert config.differences(stored, live) == [
         f"columns[{c}].indexes[exact].argon2.time_cost",
-        f"columns[{'ff' * 16}]",
+        f"columns[{'ff' * 16}]{config.ADDED}",
         "cursor[0].name",
         "write_suite",
     ]
