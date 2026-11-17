@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.10.0-provisional",
+  "vector_suite_version": "0.11.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -463,6 +463,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -491,6 +492,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -519,6 +521,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -547,6 +550,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -575,6 +579,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -603,6 +608,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -631,6 +637,7 @@
       "assertion": "unindexable-marker",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -670,6 +677,7 @@
       "assertion": "unindexable-bucket",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -708,6 +716,7 @@
       "assertion": "refuse",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -743,6 +752,7 @@
       "assertion": "refuse",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,
@@ -819,6 +829,7 @@
       "assertion": "unindexable-marker",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "argon2id",
         "idf_params": {
           "version": 19,

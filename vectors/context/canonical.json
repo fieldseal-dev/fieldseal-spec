@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/context/v1",
-  "vector_suite_version": "0.10.0-provisional",
+  "vector_suite_version": "0.11.0-provisional",
   "group": "context",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -318,7 +318,8 @@
           "projected_population": 1048576,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -343,7 +344,8 @@
           "projected_population": 1048576,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -368,7 +370,8 @@
           "projected_population": 1048576,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -393,7 +396,8 @@
           "projected_population": 1048576,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -418,7 +422,8 @@
           "projected_population": 1048576,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {

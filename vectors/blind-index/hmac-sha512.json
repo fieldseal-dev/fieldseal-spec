@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/blind-index/v1",
-  "vector_suite_version": "0.10.0-provisional",
+  "vector_suite_version": "0.11.0-provisional",
   "group": "blind-index",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -353,6 +353,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -374,6 +375,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -395,6 +397,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -416,6 +419,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -437,6 +441,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -458,6 +463,7 @@
       "assertion": "equal",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -479,6 +485,7 @@
       "assertion": "unindexable-marker",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -511,6 +518,7 @@
       "assertion": "unindexable-bucket",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -542,6 +550,7 @@
       "assertion": "refuse",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -570,6 +579,7 @@
       "assertion": "refuse",
       "suite_id": "0xFF01",
       "inputs": {
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "index_key": "5054c7402f241c6272e81aad0b670470e098406f1ce6ea72a89eb27da1d7d46e",
@@ -592,6 +602,37 @@
       }
     },
     {
+      "id": "blind-index/hmac-sha512/ascii-email-suite-ff02-b15",
+      "description": "hmac-sha512 index over 'alice@example.com' truncated to 15 bits, the inputs of ascii-email-b15 with the index declared under suite 0xFF02 (spec §7.2, #213). A core run through a client whose write suite is 0xFF01 and whose index is declared with suite 0xFF02 MUST produce these bytes. A core that fills the index context's suite_id from the write suite produces the ascii-email-b15 bytes instead and fails",
+      "spec_ref": "§7.2, §7.3, §7.4, §7.11",
+      "suite_id": "0xFF02",
+      "idf": "hmac-sha512",
+      "idf_params": {},
+      "index_key": "afe29ee4eba442fb1a08f0cb2f732613ddf044ddc4f41b4a2030101983395714",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "normalize": "nfc-casefold-v1",
+      "plaintext": "616c696365406578616d706c652e636f6d",
+      "plaintext_preimage": "alice@example.com",
+      "truncate_bits": 15,
+      "expected": {
+        "raw": "b21599502d1e270b675d5c7700e56ac3ea6ca11e846051d76c4a6892c83352ca50c8cb5b8a721845c04ded79721acc9f80b7026f31bae16fee5676d26cad7da4",
+        "index": "b214",
+        "stored": {
+          "binary": "b214",
+          "hex": "b214",
+          "octets": 2
+        }
+      }
+    },
+    {
       "id": "blind-index/hmac-sha512/gate-low-cardinality-refused",
       "description": "index declaration: P = 2^10 - 1 distinct values, below the §7.6 gate, no override: refused (configuration outcome, no §9 code)",
       "spec_ref": "§7.6",
@@ -609,7 +650,8 @@
           "projected_population": 1023,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -634,7 +676,8 @@
           "projected_population": 1024,
           "skewed": false,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -663,7 +706,8 @@
             "approved_by": "vectors",
             "date": "2026-09-27"
           },
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -692,7 +736,8 @@
             "approved_by": "",
             "date": "2026-09-27"
           },
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -717,7 +762,8 @@
           "projected_population": 1048576,
           "skewed": true,
           "cardinality_override": null,
-          "on_unindexable": "refuse"
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
         }
       },
       "expected": {
@@ -746,7 +792,85 @@
             "approved_by": "vectors",
             "date": "2026-09-27"
           },
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF01"
+        }
+      },
+      "expected": {
+        "declaration": "accepted"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/declared-suite-missing-refused",
+      "description": "index declaration: the declaration names no suite_id, and the declared suite has no default (spec §7.2): refused, not filled in from the write suite (configuration outcome, no §9 code)",
+      "spec_ref": "§7.2, §4.2, §4.3",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
           "on_unindexable": "refuse"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/declared-suite-unregistered-refused",
+      "description": "index declaration: the declaration names suite 0x0001, reserved and unassigned in §4.2 and so not registered: refused (configuration outcome, no §9 code)",
+      "spec_ref": "§7.2, §4.2, §4.3",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse",
+          "suite_id": "0x0001"
+        }
+      },
+      "expected": {
+        "declaration": "refused"
+      }
+    },
+    {
+      "id": "blind-index/hmac-sha512/declared-suite-ff02-accepted",
+      "description": "index declaration: the declaration names suite 0xFF02 on a client whose write suite and allow-list are 0xFF01 only: accepted, because the declared suite need not be the write suite nor on the allow-list (spec §7.2, §4.3). It fails a core that refuses a declared suite its client is not configured for (configuration outcome, no §9 code)",
+      "spec_ref": "§7.2, §4.2, §4.3",
+      "assertion": "declaration",
+      "suite_id": "0xFF01",
+      "inputs": {
+        "declaration": {
+          "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+          "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+          "index_id": "email-eq",
+          "idf": "hmac-sha512",
+          "idf_params": {},
+          "normalize": "identity",
+          "truncate_bits": 16,
+          "projected_population": 1048576,
+          "skewed": false,
+          "cardinality_override": null,
+          "on_unindexable": "refuse",
+          "suite_id": "0xFF02"
         }
       },
       "expected": {
