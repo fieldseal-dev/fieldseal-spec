@@ -890,7 +890,7 @@ Tooling an adapter package ships outside its value path, such as a backfill fron
 
 *Justification.* The rotation sweep §11.1 describes ("parses the header and calls `rotate` only on envelopes whose `key_id` or `suite_id` is stale") cannot be written within the sentence above, and a frontend parsing the bytes itself would be a second recognition rule beside §3.4's. The accessor is no value-path operation and adds no conformance level; no vector observes it.
 
-**[flag: the last sentence of this section's first paragraph is already narrower than the shipped adapters.** The Django, Prisma and Hibernate adapters also call the configuration-reflection accessors (`docs/09` §2, G18) and the assigned-code-point check (`docs/09` §7.1, G22), as `.indexes`, `first_unassigned` and `firstUnassigned` in `adapters/*/src` show. Reconciling the sentence with them is a separate issue, not made here.**]**
+**[flag: the last sentence of this section's first paragraph is already narrower than the shipped adapters.** Each shipped adapter calls non-cryptographic core surfaces beyond the five functions plus `warm`: Django calls the configuration-reflection accessor `client.indexes` (`docs/09` §2, G18) and `normalize`; Hibernate calls the assigned-code-point check `Fieldseal.firstUnassigned` (`docs/09` §7.1, G22) and its declaration's normalizer; Prisma calls `normalize` and `UNICODE_VERSION`. Reconciling the sentence with them is [#278](https://github.com/fieldseal-dev/fieldseal-spec/issues/278), not made here.**]**
 
 ---
 
