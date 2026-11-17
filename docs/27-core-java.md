@@ -99,7 +99,7 @@ Package root `dev.fieldseal.core`. The packages mirror `docs/09` §1's modules, 
 ```
 core/java/
   fieldseal-core/            module dev.fieldseal.core
-    dev/fieldseal/core/                  api: Fieldseal, FieldContext, KeyProviders, IndexDeclaration, ValidatedIndex, Unassigned, CachePolicy, ReadMode   (exported)
+    dev/fieldseal/core/                  api: Fieldseal, FieldContext, KeyProviders, IndexDeclaration, ValidatedIndex, Unassigned, HeaderFields, CachePolicy, ReadMode   (exported)
     dev/fieldseal/core/errors/           FieldsealError + one subclass per §9 code                              (exported)
     dev/fieldseal/core/keyprovider/      KeyProvider SPI, KeyRequest, EnvelopeHeader, KeyMaterial, Wrapper, WrappedKeyStore   (exported: callers implement the SPI)
     dev/fieldseal/core/internal/envelope/     header, parse, serialize, isCiphertext, BufferLimits, Operand (the §6.2 seam)
@@ -155,7 +155,8 @@ CompletableFuture<Void> w = fs.warm(List.of(ctx));   // docs/09 §3.6: async whe
 fs.readMode(); fs.writeSuite(); fs.allowedSuites(); fs.provisionalArmed();
 Map<String, ValidatedIndex> fs.indexes();     // keyed by indexRegistryKey(...)
 // + static on Fieldseal: validateIndexDeclaration, indexRegistryKey,
-//   firstUnassigned -> Optional<Unassigned>, UNICODE_VERSION (docs/09 §12, G18/G22)
+//   firstUnassigned -> Optional<Unassigned>, UNICODE_VERSION (docs/09 §12, G18/G22),
+//   readHeader(byte[]) -> Optional<HeaderFields>  (docs/09 §4, #241: tooling surface, no client, no key; not yet built)
 // + IndexDeclaration.Normalizer.normalize(String | byte[]): spec §7.5's comparison (docs/09 §7)
 ```
 
@@ -180,6 +181,7 @@ Decisions:
 - **`api-boundary-order` is this core's own pinned decision** (`docs/14` §4). It is declared in the report and tested. `docs/09` §3.1 notes that the order of steps 1 and 1b cannot be observed through vectors. As built (S4b, `ApiBoundaryOrderTest`): on `encrypt`, `MODE_VIOLATION` → `SUITE_PROVISIONAL` → the operand (null: `INVALID_ARGUMENT`; then `LENGTH_EXCEEDED`) → the context (`INVALID_ARGUMENT`) → key acquisition. On `rotate`, the same first two, then the operand as `decrypt` reads it, except that a non-envelope is `NOT_CIPHERTEXT` in every mode.
 - **`decrypt-order`**, as built: the operand (null) → recognition (`UNKNOWN_FORMAT_VERSION`; a non-envelope is `NOT_CIPHERTEXT` in `strict`, returned as-is otherwise) → `LENGTH_EXCEEDED` → `SUITE_NOT_ALLOWED` → the context → `KEY_UNAVAILABLE` → per candidate, the commitment and then the tag (`TAG_INVALID`) → `COMMITMENT_INVALID`. `AAD_MISMATCH` is never raised (`aad-mismatch`): under spec §6.3 a wrong context and a wrong key are indistinguishable.
 - **`unimplemented-registered-suite`** (decided 2026-09-25): naming `0xFF02` in `allowedSuites` or as `writeSuite` is a `ConfigurationError` that names G7. A `0xFF02` envelope is still recognized (`isCiphertext` is true), and decrypting one is `SUITE_NOT_ALLOWED`.
+- **Header accessor (`docs/09` §4, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); not yet built as of 2026-11-04).** `Fieldseal.readHeader(byte[]) → Optional<HeaderFields>` is a static, not a client method: it needs no client and no key, never calls a provider, and ignores read mode. It lives in the exported api package because `internal.envelope` is not exported; `docs/09` §1's rule (api may depend on everything) and the ArchUnit test are unchanged, and `module-info` gains no export. `HeaderFields` is a record `(int suiteId, byte[] keyId)` whose canonical constructor and `keyId()` both copy, so the result cannot alias the operand. A record's array component otherwise makes `equals` and `hashCode` identity-based on the array, so the core card either overrides them by content or holds `keyId` in an immutable form; it decides which, and the test plan (§7) pins non-aliasing. It returns a value exactly when `isCiphertext` is true, and `Optional.empty()` otherwise: for a `ReservedVersion` and a `NonEnvelope` from the `Recognition` sealed interface, and for `null`. It never throws. A `0xFF02` envelope is reported, consistent with `unimplemented-registered-suite` above. It is called by tooling outside the value path (spec §11.3): the Hibernate adapter's future backfill frontend (`tools/backfill/PROCEDURE.md` §7.1, §8). Its output is unauthenticated until a `decrypt` of the same bytes succeeds.
 - **`FieldContext` has no `suite_id` and no `purpose`.** The core fills both (`docs/09` §12): `suite_id` from `writeSuite` on a write and from the envelope's header on a read (`docs/09` §3.2 step 4); the purpose is `"encrypt"` for values and an index's own at S5, never a string a caller passed.
 - **`decryptionKeys` receives the call's context as well as the header** (decided 2026-09-25). Spec §8 passes the header alone, and a derived provider cannot find a tenant in an opaque `key_id`. `EnvelopeHeader` carries `suite_id`, `key_id` and a `KeyRequest` for the call.
 - **What the core checks in what a provider returns:** a non-empty key and a 16-byte `key_id`, and a non-empty candidate list of non-empty keys. Anything else, and any exception, is `KEY_UNAVAILABLE`, with the provider's exception as its cause. The DEK's length is not checked: the spec does not fix it.
@@ -325,6 +327,7 @@ The result is a fact for §6.1 ("on JDK X / HotSpot, the largest `byte[]` is 2³
 - **jqwik properties** (the `docs/09` §4 fuzzing mandate):
   - `parse ∘ serialize` round trips;
   - `isCiphertext` is total over arbitrary bytes;
+  - `Fieldseal.readHeader` returns a value exactly when `isCiphertext` is true, over arbitrary bytes (#241; item 4 of the header-accessor plan below);
   - recognition over the length edges, computed as `long`: 0, 1, overhead−1, overhead, overhead+1, 2³¹−1, 2³¹, 2³², `Long.MAX_VALUE`;
   - guard totality: only typed errors ever escape;
   - `CachePolicy.maxUses` at its edges: 2³² accepted; 2³²+1, 0 and negatives refused.
@@ -335,6 +338,19 @@ The result is a fact for §6.1 ("on JDK X / HotSpot, the largest `byte[]` is 2³
   - "production `encrypt` accepts no caller-supplied nonce or seed, in any form";
   - the strict-UTF-8 grep (§4);
   - `firstUnassigned` on astral-plane input.
+
+**Header accessor (`docs/09` §4, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); owed, not yet built as of 2026-11-04).** No vector can observe an accessor, so these per-core tests are the whole executable obligation (the G18 pattern: no `pinned_decisions` key, no `out_of_band` entry, no `docs/14` §4 change). Suggested homes: `internal/envelope/CodecProperties.java` for the property, and a new targeted test beside `ApiBoundaryOrderTest`.
+
+1. **Valid envelopes.** A valid `0xFF01` envelope gives its suite id and key id, compared with bytes 1–2 (big-endian) and 3–18. The same for a `0xFF02` envelope, which is recognized even where the core refuses to configure `0xFF02`. Fixtures come from the pinned `vectors/envelope/` cases, so no expected value is computed by the code under test.
+2. **Non-envelopes give `Optional.empty()`:** empty input; 1 and 2 bytes; one byte under the suite minimum (110 for `0xFF01`, 122 for `0xFF02`) and, as the contrast, exactly at it with a valid header (a value); an unregistered suite id; `fmt_ver` `0x00`, `0x03` and `0xFF`.
+3. **Reserved version.** `fmt_ver 0x02` at 110, **111** and 120 bytes, and longer, gives `Optional.empty()` and does not raise. 111 bytes is the case no vector covers (`docs/28` J-04): an off-by-one floor passes both `errors/format` vectors.
+4. **The invariant.** `Fieldseal.readHeader` returns a value **if and only if** `isCiphertext` is true: over every fixture above, and as a jqwik property over arbitrary bytes, with lengths biased around 0–3, 110–112 and 122–124 and the first byte drawn from `{0x00, 0x01, 0x02, 0x03, 0xFF}`.
+5. **Totality.** It never raises on arbitrary bytes or on wrong-typed operands (including `null`, which gives `Optional.empty()`), and agrees with a client's `isCiphertext` on them. If `isCiphertext` itself raises on some operand, record that as a finding in this core's report; do not paper over it in the accessor.
+6. **No key, no client.** It works with no client constructed, and under a provider that fails if touched (zero calls recorded); it gives the same answer whatever read mode a coexisting client has (`strict`, `permissive`, `readonly`).
+7. **Allow-list independence.** An envelope under a registered suite that no client allows is still reported.
+8. **No aliasing.** Mutating the returned key id, where the type allows it, changes neither the operand nor a second call's answer; mutating the operand after the call does not change the returned key id.
+9. **Nothing to leak.** It raises nothing, so this guards a future change: with a hostile operand, no output, log or warning carries operand bytes.
+10. **Public reachability.** A test outside the module calls `Fieldseal.readHeader` and uses `HeaderFields` through the module's exports; the module-descriptor pin is unchanged apart from the new type in the api package, and the ArchUnit dependency test still passes.
 
 ## 8. Build stages
 

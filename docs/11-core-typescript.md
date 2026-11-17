@@ -46,9 +46,9 @@ It also **relocates** cost rather than removing it: the derivation now occupies 
 
 ```
 core/typescript/src/
-  index.ts           exports: Fieldseal, FieldContext, errors, providers — no testing exports
+  index.ts           exports: Fieldseal, FieldContext, errors, providers, readHeader, HeaderFields — no testing exports
   api.ts             Fieldseal client class
-  envelope.ts        parse/serialize/isCiphertext
+  envelope.ts        parse/serialize/isCiphertext/readHeader
   registry.ts        frozen suite table
   context.ts         FieldContext, canonicalContext(), aad()
   kdf.ts
@@ -97,6 +97,9 @@ fs.writeSuite: number
 fs.allowedSuites: ReadonlySet<number>
 fs.provisionalArmed: boolean
 fs.indexes: ReadonlyMap<string, ValidatedIndex>   // keyed by indexRegistryKey(...)
+
+// docs/09 §4 header accessor (#241): tooling surface, no client, no key; not yet built
+readHeader(v: Uint8Array): HeaderFields | null   // package export, not a client method
 ```
 
 - Inputs typed `Uint8Array` (accepts `Buffer`); returns `Buffer` (a `Uint8Array` subclass) per Node convention. **Strings are not accepted — except by `blindIndex`, which requires them** (docs/09 §7.1; G16 part A). An implicit `utf8` coercion on the *envelope* operations would be exactly the cross-language divergence the vectors exist to catch, and that reasoning still holds for `encrypt`, `decrypt`, `rotate` and `isCiphertext`. It does not hold for index derivation, and inverting there was the point of G16 part A: `TextEncoder` substitutes U+FFFD for an unpaired surrogate rather than failing, so a caller who encodes first has already collapsed two distinct values into one before this core is entered. Passing the string keeps the refusal where the information still exists. This core previously refused strings with a message directing callers to encode themselves, which named the lossy conversion as the supported route.
@@ -107,6 +110,7 @@ fs.indexes: ReadonlyMap<string, ValidatedIndex>   // keyed by indexRegistryKey(.
 - Method naming is the docs/09 §12 casing rule applied: `blindIndex`/`isCiphertext` are the camelCase renderings of the fixed operation names. A §11.1 companion takes that name plus an `Async` suffix (`blindIndexAsync`, `unindexableMarkerAsync`). Spec §11.1 fixes neither the name nor the signature of a companion (G9), so this is this binding's convention and not a portable name — `docs/09` §12 says so, and a core in another language is free to spell it differently.
 - **The companions refuse exactly what the synchronous forms refuse, in the same order, and refuse it as a rejection.** Both entry points run one shared prelude (value type → context validation → the fail-closed registry lookup) and one shared input step (key acquisition → index-key derivation → normalization), so the two cannot drift; `KEY_UNAVAILABLE` still precedes the `INVALID_ARGUMENT` a refused value would raise. Both methods are declared `async`, so a refusal that happens before any `await` still arrives as a rejection rather than a synchronous throw — a caller writing `.catch(…)` would otherwise miss it.
 - **Configuration reflection (docs/09 §2).** The first four accessors predate G18; `indexes` is what that issue added, and it is the one an adapter needs — before it, `docs/12` §5's E006 registry check was unimplementable in this language *at all*, not merely awkwardly: `#cfg` is a hard private field on an instance the constructor freezes, so there is no bad option to fall back on the way Python's `_indexes` offers one. `ValidatedIndex`, `validateIndexDeclaration` and `indexRegistryKey` are exported for the comparison. **Three runtime guarantees are load-bearing here and none comes from a type.** `indexes` returns `new Map(this.#cfg.indexes)` and `allowedSuites` returns `new Set(this.#cfg.allowedSuites)`, because `ReadonlyMap`/`ReadonlySet` are erased at runtime: both accessors would otherwise hand out the very collections the value path consults, and one `as Map`/`as Set` cast would let a caller clear the registry or change what the client will decrypt. Both copies are O(small) on startup-time calls, and internal code keeps reading `#cfg` directly, so neither touches the value path. And `validateIndexDeclaration` freezes what it returns, because `readonly` on an interface member is a compile-time claim only — a caller with the record in hand could otherwise rewrite `truncateBits` through a single cast and change what the client derives. **`allowedSuites` was missed on the first pass** and caught in review: it predates G18, so the clause this section documents made an accessor that already existed non-conformant. Worth stating, because it is the general hazard of adding a rule to a surface that grew before it — the new members get the treatment and the old ones are assumed to have had it.
+- **Header accessor (docs/09 §4, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); not yet built as of 2026-11-04).** `readHeader` is exported from the package entry `index.ts` (the `exports` map makes anything else unreachable, the G22 lesson), not a client method: it needs no client and no key, never calls a provider, and ignores read mode. It returns `HeaderFields`, an interface `{ readonly suiteId: number; readonly keyId: Uint8Array }`, exactly when `isCiphertext(v)` is `true`, and `null` otherwise — for every operand, never throwing. The result object is frozen; `keyId` is a fresh, unpooled copy on every call, because a typed array cannot be frozen and a view would alias the caller's operand (the §5 "`Buffer` aliasing" rule). It is called by tooling outside the value path (spec §11.3): the Prisma adapter's future backfill frontend (`tools/backfill/PROCEDURE.md` §7.1, §8). Its output is unauthenticated until a `decrypt` of the same bytes succeeds.
 
 ## 5. Security-relevant implementation notes
 
@@ -121,6 +125,19 @@ fs.indexes: ReadonlyMap<string, ValidatedIndex>   // keyed by indexRegistryKey(.
 ## 6. Testing plan
 
 Mirrors the Python plan (docs/10 §6) with vitest: vector harness with schema validation and shared report format · both-direction envelope runs · exact error-code mapping · fuzz/property pass over the codec (`fast-check`) · cross-output producer script · a build-level test that `import "@fieldseal/core"` resolves no module under `testing/` · a runtime test that `encrypt_with_materials` throws when `FIELDSEAL_TEST_MODE` is unset.
+
+**Header accessor (`docs/09` §4, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); owed, not yet built as of 2026-11-04).** No vector can observe an accessor, so these per-core tests are the whole executable obligation (the G18 pattern: no `pinned_decisions` key, no `out_of_band` entry, no `docs/14` §4 change). Suggested homes: `tests/gates.test.ts` and `tests/totality.test.ts`, or a new `tests/read-header.test.ts`.
+
+1. **Valid envelopes.** A valid `0xFF01` envelope gives its suite id and key id, compared with bytes 1–2 (big-endian) and 3–18. The same for a `0xFF02` envelope, which is recognized even where the core refuses to configure `0xFF02`. Fixtures come from the pinned `vectors/envelope/` cases, so no expected value is computed by the code under test.
+2. **Non-envelopes give `null`:** empty input; 1 and 2 bytes; one byte under the suite minimum (110 for `0xFF01`, 122 for `0xFF02`) and, as the contrast, exactly at it with a valid header (a value); an unregistered suite id; `fmt_ver` `0x00`, `0x03` and `0xFF`.
+3. **Reserved version.** `fmt_ver 0x02` at 110, **111** and 120 bytes, and longer, gives `null` and does not raise. 111 bytes is the case no vector covers (`docs/28` J-04): an off-by-one floor passes both `errors/format` vectors.
+4. **The invariant.** `readHeader` returns a value **if and only if** `isCiphertext` is true: over every fixture above, and as a fast-check property over arbitrary bytes, with lengths biased around 0–3, 110–112 and 122–124 and the first byte drawn from `{0x00, 0x01, 0x02, 0x03, 0xFF}`.
+5. **Totality.** It never raises on arbitrary bytes or on wrong-typed operands (every operand `isCiphertext` answers `false` for, including `null`, `undefined`, strings, numbers and non-`Uint8Array` objects), and agrees with `isCiphertext` on them. If `isCiphertext` itself raises on some operand, record that as a finding in this core's report; do not paper over it in the accessor.
+6. **No key, no client.** It works with no client constructed, and under a provider that fails if touched (zero calls recorded); it gives the same answer whatever read mode a coexisting client has (`strict`, `permissive`, `readonly`).
+7. **Allow-list independence.** An envelope under a registered suite that no client allows is still reported.
+8. **No aliasing.** Mutating the returned key id, where the type allows it, changes neither the operand nor a second call's answer; mutating the operand after the call does not change the returned key id.
+9. **Nothing to leak.** It raises nothing, so this guards a future change: with a hostile operand, no output, log or warning carries operand bytes.
+10. **Public reachability.** A build-level test imports `readHeader` and the `HeaderFields` type from `@fieldseal/core`, not from a deep path (the package's `exports` map makes anything not in `index.ts` unreachable, the G22 lesson).
 
 One addition specific to this core's Phase 1 role: the **independence rule**. Until the first vector freeze, the TypeScript implementer works from `docs/02-spec-v0.1.md` + `docs/08` + `docs/09` + this document only — **no reading `core/python/**` or `tools/vector-gen/**`**. Divergences found this way are the review mechanism working (docs/08 §7); record each in `docs/06-verification-log.md` style in the implementation plan's decision log.
 
