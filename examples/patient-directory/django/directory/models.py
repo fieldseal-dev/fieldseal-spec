@@ -66,15 +66,20 @@ class Patient(models.Model):
     #: here and matches `schema.prisma`, which spells it out too. It is spec
     #: §7.3's Required IDF for an enumerable column such as email; the same
     #: table puts HMAC out of scope for exactly this column.
-    #: The committed migration carries only `projected_population`, because
-    #: `BlindIndex.deconstruct()` emits only what differs from the adapter's
-    #: defaults. This note lives here rather than in the migration because
-    #: `makemigrations` rewrites that file and would drop it.
+    #: `suite_id=0xFF01` is the suite the index is DECLARED under (spec §7.2,
+    #: #213): required, no default, and deliberately not read from
+    #: `WRITE_SUITE`, so changing the write suite later cannot silently change
+    #: the index. `schema.prisma` states the same suite. The committed
+    #: migration carries it too, because `BlindIndex.deconstruct()` always
+    #: emits `suite_id` and emits the other parameters only where they differ
+    #: from the adapter's defaults. This note lives here rather than in the
+    #: migration because `makemigrations` rewrites that file and would drop it.
     email = Encrypted(
         models.EmailField(),
         column_uuid=COL_EMAIL,
         db_column="email",
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="argon2id",
             normalize="nfc-casefold-v1",

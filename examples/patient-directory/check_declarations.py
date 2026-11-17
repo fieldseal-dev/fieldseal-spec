@@ -172,6 +172,10 @@ def load_prisma() -> dict[str, Any]:
                 if idx is None
                 else {
                     "index_id": idx["indexId"],
+                    # The generated map carries the suite as a number, from the
+                    # validated annotation; rendered here as Django's dump
+                    # renders it, so the two compare as strings.
+                    "declared_suite_id": f"0x{idx['suiteId']:04X}",
                     "idf": idx["idf"],
                     "normalize": idx["normalize"],
                     "truncate_bits": idx["truncateBits"],
@@ -258,6 +262,21 @@ COMPARED = {
 #: - `prismaType`: the storage type, already implied by `storage`.
 NOT_COMPARED = ("noun", "nullable", "prismaType")
 
+#: Index parameters whose divergence has a consequence worth more than the
+#: generic one. The declared suite (spec 7.2, #213) is the `suite_id` inside
+#: the index-key context, so two stacks declaring different suites derive
+#: different keys and different index values for the same plaintext.
+INDEX_PARAM_CONSEQUENCE = {
+    "declared_suite_id": (
+        "the two stacks declare the blind index under different suites, so "
+        "the `suite_id` in the index context differs and the derived keys and "
+        "index values differ for the same plaintext: a lookup written by one "
+        "silently misses rows written by the other. Nothing raises. The "
+        "declared suite is fixed for the life of an index (spec 7.2, 7.8); "
+        "this is the declaration's suite, not the write suite"
+    ),
+}
+
 INDEX_CONSEQUENCE = (
     "the blind indexes derived by the two stacks differ, so a lookup written "
     "by one silently misses rows written by the other. Nothing raises: the "
@@ -342,7 +361,9 @@ def compare(django: dict[str, Any], prisma: dict[str, Any]) -> list[str]:
                         f"{label}: index {param} differs -- Django "
                         f"{di.get(param)!r}, Prisma {pi.get(param)!r}. "
                         f"Consequence: "
-                        + INDEX_CONSEQUENCE.format(param=param)
+                        + INDEX_PARAM_CONSEQUENCE.get(
+                            param, INDEX_CONSEQUENCE.format(param=param)
+                        )
                     )
     return problems
 
@@ -370,6 +391,7 @@ def report(django: dict[str, Any], prisma: dict[str, Any]) -> None:
             print(
                 f"      index {idx['index_id']}: {idx['idf']} / "
                 f"{idx['normalize']} / {idx['truncate_bits']} bits / "
+                f"declared suite {idx['declared_suite_id']} / "
                 f"P={idx['projected_population']}  ->  "
                 f"\"{idx['sibling_column']}\""
             )

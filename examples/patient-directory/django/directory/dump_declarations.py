@@ -110,6 +110,12 @@ def dump() -> dict[str, Any]:
             )
             entry["index"] = {
                 "index_id": decl.index_id,
+                # The suite this index is DECLARED under (spec 7.2, #213), read
+                # from the validated declaration the core derives with. Not
+                # `settings.SUITE_ID`: that is the WRITE suite, and the two
+                # are separate decisions that only happen to hold the same
+                # value in this demo.
+                "declared_suite_id": f"0x{decl.suite_id:04X}",
                 "idf": decl.idf,
                 "normalize": decl.normalize,
                 "truncate_bits": decl.truncate_bits,
@@ -134,7 +140,10 @@ def dump() -> dict[str, Any]:
             "fieldseal_django.apps.iter_encrypted_fields / build_index_registry "
             "/ Encrypted.fieldseal_context"
         ),
-        "suite_id": f"0x{settings.SUITE_ID:04X}",
+        # The WRITE suite (`settings.SUITE_ID`, the key file's suite), kept
+        # for a reader of the dump. It is not an index's declared suite, which
+        # is `columns[...].index.declared_suite_id`, and nothing compares it.
+        "write_suite_id": f"0x{settings.SUITE_ID:04X}",
         "key_ref": settings.KEY_REF,
         "columns": columns,
     }
