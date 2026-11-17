@@ -117,7 +117,7 @@ class Patient(models.Model):
     email = Encrypted(
         models.EmailField(),
         column_uuid="0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64",
-        index=BlindIndex(projected_population=100_000),   # makes it searchable
+        index=BlindIndex(suite_id=0xFF01, projected_population=100_000),   # makes it searchable
     )
     email_bidx = Encrypted.index_column("email")          # must come after `email`
 
@@ -190,14 +190,15 @@ candidate and drops the ones that do not match before you see them.
 
 The options decide what counts as a match, how hard the hashes are to attack,
 and how much the index reveals. Choose them before the first write: changing
-`idf`, `time_cost`, `memory_kib`, `normalize`, `truncate_bits` or `index_id`
-later changes every stored hash, so the index has to be rebuilt.
+`suite_id`, `idf`, `time_cost`, `memory_kib`, `normalize`, `truncate_bits` or
+`index_id` later changes every stored hash, so the index has to be rebuilt.
 
 ```python
 email = Encrypted(
     models.EmailField(),
     column_uuid="0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64",
     index=BlindIndex(
+        suite_id=0xFF01,                # required: the suite this index is declared under
         projected_population=100_000,   # required
         idf="argon2id",                 # the defaults, spelled out
         normalize="nfc-casefold-v1",
@@ -209,6 +210,7 @@ email_bidx = Encrypted.index_column("email")
 
 | Option | Default | Accepted values |
 |---|---|---|
+| `suite_id` | none: **required** | a registered suite identifier, such as `0xFF01` |
 | `projected_population` | none: **required** | an integer, at least 16 |
 | `normalize` | `"nfc-casefold-v1"` | `"nfc-casefold-v1"`, `"identity"`, `"digits-only-v1"` |
 | `idf` | `"argon2id"` | `"argon2id"`, `"hmac-sha512"` |
@@ -220,6 +222,32 @@ email_bidx = Encrypted.index_column("email")
 | `on_unindexable` | `"refuse"` | `"refuse"`, `"bucket"` |
 | `unindexable_override` | `None` | `Override(...)`, required for `"bucket"` |
 | `index_id` | `"exact"` | 1–32 lowercase letters, digits and hyphens |
+
+### `suite_id`
+
+The cipher suite the index is declared under (spec §7.2). It has no default,
+and the adapter never takes it from `WRITE_SUITE`: leaving it out is a
+`TypeError` when the model module loads, and a value the core does not accept
+(`None`, a non-integer, an unregistered suite) fails `manage.py check` with
+`fieldseal.E003`, naming the model field.
+
+An index value carries no header, so nothing stored says which suite produced
+it. That is why the suite is a declaration rather than a setting. It is fixed
+for the life of the index (spec §7.8): changing it, like changing `idf` or
+`truncate_bits`, makes a new index that has to be rebuilt. Changing
+`WRITE_SUITE` no longer affects any blind index; it changes only the suite new
+envelopes are written under. The declared suite need not be the write suite
+and need not appear in `ALLOWED_SUITES`.
+
+**Upgrading.** Every `BlindIndex(...)` must now add `suite_id=`, or the models
+module fails to import. Declare the suite the index was written under, which
+for a deployment that has not changed `WRITE_SUITE` is the one in your
+settings: stored index bytes are then unchanged and nothing needs rebuilding.
+Migrations you have already generated are affected too: they serialize the
+field's `BlindIndex(...)`, so every `fieldseal_django.declarations.BlindIndex(...)`
+in an existing migration file needs the same `suite_id=` added, or that
+migration fails to import. New migrations write it themselves. If you supply your own
+`CLIENT`, `fieldseal.E006` compares the declared suite too.
 
 ### `projected_population`
 
@@ -307,7 +335,7 @@ most columns.
 |---|---|---|
 | `KEY_PROVIDER` | yes | A `KeyProvider`, or a callable returning one. |
 | `ALLOWED_SUITES` | yes | The cipher suites this deployment accepts. `{0xFF01}` is the only one implemented. |
-| `WRITE_SUITE` | yes | The suite new values are written under: `0xFF01`. |
+| `WRITE_SUITE` | yes | The suite new values are written under: `0xFF01`. It does not affect blind indexes, which are derived under the `suite_id` each `BlindIndex` declares. |
 | `ARM_PROVISIONAL_SUITES` | to write | `True` to allow writing under a provisional suite. Setting `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment does the same. Reading never needs it. |
 | `READ_MODE` | no | `"strict"` (default), `"permissive"` or `"readonly"`. The last two are for migrating existing plaintext columns and warn while active. `python manage.py fieldseal_backfill` encrypts an existing table's plaintext in resumable, rate-limited batches; see `REFERENCE.md` and `tools/backfill/PROCEDURE.md` for what it does and does not cover. |
 | `WARM_ON_READY` | no | Load keys at startup; see *Keys* below. |

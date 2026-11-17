@@ -74,7 +74,37 @@ columns that actually exist. `FIELDSEAL["CLIENT"]` overrides it, and
 `fieldseal.E006` then checks the supplied client's registry against the model
 declarations — an exact match in both directions, comparing the validated
 form, because a client carrying an index the models do not declare stores
-values for that column under rules no model states and nothing raises.
+values for that column under rules no model states and nothing raises. The
+validated form includes the index's declared suite (spec §7.2, #213), so a
+client whose index has the same parameters but a different `suite_id` is an
+E006 mismatch: it would store different bytes for every row.
+
+## Declaring the index's suite
+
+Every `BlindIndex` states `suite_id=`, for example `BlindIndex(suite_id=0xFF01,
+projected_population=100_000)`. It is required, keyword-only and has no default,
+and the adapter never fills it from `FIELDSEAL["WRITE_SUITE"]`: the index
+context's `suite_id` is the suite the index is declared under, not the suite
+envelopes are written under (spec §7.2), because a stored index value carries
+no header to say which suite produced it. Omitting it is a `TypeError` when the
+model module loads. An explicit `None`, a bool or an unregistered suite is
+refused by the core when the client is built and reported by `fieldseal.E003`
+with the model field's name; the adapter does not re-check the value (AD-1).
+
+The suite is fixed for the life of the index (spec §7.8), and changing
+`WRITE_SUITE` no longer affects any blind index. It need not be the write suite
+or appear in `ALLOWED_SUITES`. `BlindIndex.deconstruct()` always emits it, so a
+migration carries the suite the index was created under.
+
+**Upgrading from a release without it:** add `suite_id=` to every
+`BlindIndex(...)` in models and in already-generated migration files. Stored
+index bytes do not change when the declared suite equals the write suite that
+was in use (spec §7.2, *Compatibility*).
+
+`cross_produce.py` emits the `fieldseal-vectors/cross/v3` document, in which
+each index declaration carries `suite_id` read off the client's validated
+registry; `tests/test_declared_suite.py` covers the rules above, including a
+column declared under `0xFF02` against a write suite of `0xFF01` end to end.
 
 ## Coverage matrix
 
@@ -301,6 +331,13 @@ cannot enumerate them.
   is not byte-reproducible, and it needs a tenant scope: `dumpdata` over a
   tenant-bound model outside `tenant_scope(...)` refuses. Both are correct
   (fail closed) and neither is obvious.
+- **The backfill's recorded configuration does not include the declared
+  suite.** `tools/backfill/PROCEDURE.md` §4 fixes the `config` members
+  "exactly", and the index members it lists have no `suite_id`, so
+  `fieldseal_backfill` writes under the client's declared suite (it derives
+  through the client) but a resume across a changed `suite_id` is not refused
+  the way a changed `truncate_bits` is. Closing it is a change to that
+  procedure and its worked-example hash, which this adapter does not make.
 - **The AD-1 CI grep is a tripwire, not a proof** — it matches `import`/`from`
   lines and would not catch `importlib`.
 - **E001 is hygiene, not a live bug.** Declaration order does not affect the

@@ -21,6 +21,7 @@ class Patient(models.Model):
         models.EmailField(),
         column_uuid=COL_EMAIL,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -47,6 +48,7 @@ class Patient(models.Model):
         column_uuid=COL_NICKNAME,
         null=True,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -92,6 +94,7 @@ class TenantDoc(models.Model):
         column_uuid=COL_HANDLE,
         null=True,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -127,6 +130,7 @@ class Person(models.Model):
         column_uuid=COL_LEGAL_NAME,
         unindexable_noun="name",
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -164,6 +168,7 @@ class Visit(models.Model):
         models.CharField(max_length=100),
         column_uuid=COL_REASON,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -213,6 +218,7 @@ class TwoIndexColumns(models.Model):
         models.EmailField(),
         column_uuid=COL_TWO_EMAIL,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -248,6 +254,7 @@ class LegacyInPlace(models.Model):
         column_uuid=COL_LEGACY_SECRET,
         null=True,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -282,6 +289,7 @@ class LegacyTwoColumn(models.Model):
         column_uuid=COL_LEGACY_EMAIL,
         null=True,
         index=BlindIndex(
+            suite_id=0xFF01,
             index_id="exact",
             idf="hmac-sha512",
             normalize="nfc-casefold-v1",
@@ -310,3 +318,33 @@ class LegacyUuidKey(models.Model):
                      column_uuid=COL_LEGACY_UUID_NAME, null=True)
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_LEGACY_UUID_KEY)
+
+
+TABLE_SUITE_TWO = "018f3c2e-0000-7000-8000-0000000000e0"
+COL_SUITE_TWO_HANDLE = "018f3c2e-0000-7000-8000-0000000000e1"
+
+
+class SuiteTwoDoc(models.Model):
+    """An index declared under `0xFF02` while the write suite is `0xFF01`.
+
+    Spec §7.2 (#213): the index context's `suite_id` is the suite the index
+    is *declared* under, never the client's write suite, so this column's
+    index is derived under `0xFF02` although every envelope is written under
+    `0xFF01`. Every parameter other than the suite is `Patient.email`'s.
+    """
+
+    handle = Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=COL_SUITE_TWO_HANDLE,
+        index=BlindIndex(
+            suite_id=0xFF02,
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    handle_bidx = Encrypted.index_column("handle")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_SUITE_TWO)

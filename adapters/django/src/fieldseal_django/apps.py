@@ -24,7 +24,14 @@ from django.conf import settings
 from django.core.signals import setting_changed
 from django.db.models.signals import class_prepared, pre_save
 from django.dispatch import receiver
-from fieldseal import Argon2Params, CardinalityOverride, Fieldseal, IndexDeclaration
+from fieldseal import (
+    Argon2Params,
+    CardinalityOverride,
+    Fieldseal,
+    IndexDeclaration,
+    validate_index_declaration,
+)
+from fieldseal.errors import ConfigurationError
 
 from .errors import FieldsealConfigurationError
 
@@ -97,6 +104,19 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
                 "there is no defensible default (system check fieldseal.E003)."
             )
 
+        if idx.suite_id is None:
+            # `BlindIndex(suite_id=...)` is keyword-required, so this is only
+            # reachable with an explicit `None`; the core refuses that too,
+            # but its message cannot name the model field.
+            raise FieldsealConfigurationError(
+                f"{model.__name__}.{field.name} declares a BlindIndex with no "
+                "suite_id. State the suite explicitly, e.g. "
+                "BlindIndex(suite_id=0xFF01, ...): spec §7.2 derives the "
+                "index under the suite its declaration names, which is fixed "
+                "for the life of the index (§7.8) and is never taken from "
+                "FIELDSEAL['WRITE_SUITE'] (system check fieldseal.E003)."
+            )
+
         def _override(o: Override | None) -> CardinalityOverride | None:
             if o is None:
                 return None
@@ -121,9 +141,10 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
                 "`fieldseal = FieldsealMeta(table_uuid=...)` "
                 "(system check fieldseal.E004)"
             )
-        decls.append(IndexDeclaration(
+        decl = IndexDeclaration(
             table_uuid=meta.table_uuid_bytes,
             column_uuid=field.column_uuid,
+            suite_id=idx.suite_id,
             index_id=idx.index_id,
             idf=idx.idf,
             normalize=idx.normalize,
@@ -134,7 +155,19 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
             skewed=idx.skewed,
             on_unindexable=idx.on_unindexable,
             unindexable_override=_override(idx.unindexable_override),
-        ))
+        )
+        # The core's own gate, run here only so its refusal can name the
+        # model field (it names the index-id and nothing else). The verdict
+        # and the message are the core's; the prefix is the adapter's.
+        try:
+            validate_index_declaration(decl)
+        except ConfigurationError as e:
+            raise ConfigurationError(
+                f"{model.__name__}.{field.name} (BlindIndex "
+                f"{idx.index_id!r}): {e}. If the suite is the problem, state "
+                "it explicitly with BlindIndex(suite_id=...)."
+            ) from e
+        decls.append(decl)
     return decls
 
 

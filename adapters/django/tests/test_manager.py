@@ -28,7 +28,7 @@ def run_checks(apps=None):
 
 
 def _index():
-    return BlindIndex(index_id="exact", idf="hmac-sha512",
+    return BlindIndex(suite_id=0xFF01, index_id="exact", idf="hmac-sha512",
                       normalize="nfc-casefold-v1", truncate_bits=15,
                       projected_population=100_000)
 

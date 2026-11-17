@@ -89,6 +89,14 @@ class BlindIndex:
     refuses those lookups rather than scanning or returning nothing.
     """
 
+    #: The suite this index is DECLARED under (spec §7.2, #213): the
+    #: `suite_id` inside the index-key context, e.g. `0xFF01`. Required, with
+    #: no default and keyword-only, so a declaration that omits it is a
+    #: `TypeError` at import. It is never taken from `WRITE_SUITE`: a default
+    #: filled in from the write suite would recreate the coupling the spec
+    #: removed. Fixed for the life of the index (spec §7.8). Validation of the
+    #: value is the core's.
+    suite_id: int = _dc_field(kw_only=True)
     index_id: str = "exact"
     idf: str = "argon2id"
     normalize: str = "nfc-casefold-v1"
@@ -140,6 +148,10 @@ class BlindIndex:
         }
         kwargs = {k: getattr(self, k) for k, v in defaults.items()
                   if getattr(self, k) != v}
+        # The declared suite has no default (spec §7.2, #213), so it is always
+        # emitted: a migration must state the suite the index was created
+        # under, and an omitted one would not even load.
+        kwargs["suite_id"] = self.suite_id
         return (f"{self.__class__.__module__}.{self.__class__.__qualname__}",
                 [], kwargs)
 

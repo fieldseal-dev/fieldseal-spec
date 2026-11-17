@@ -33,7 +33,7 @@ def test_index_declared_before_its_source_is_E001():
             email_bidx = Encrypted.index_column("email")
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(projected_population=100_000))
+                index=BlindIndex(suite_id=0xFF01, projected_population=100_000))
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
 
@@ -47,7 +47,7 @@ def test_declared_index_with_no_sibling_column_is_E001():
         class Bad(models.Model):
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(projected_population=100_000))
+                index=BlindIndex(suite_id=0xFF01, projected_population=100_000))
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
 
@@ -72,7 +72,7 @@ def test_missing_projected_population_is_E003():
     with isolate_apps("tests") as apps:
         class Bad(models.Model):
             email = Encrypted(models.EmailField(), column_uuid=COL_EMAIL,
-                              index=BlindIndex())
+                              index=BlindIndex(suite_id=0xFF01))
             email_bidx = Encrypted.index_column("email")
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
@@ -87,7 +87,8 @@ def test_truncation_outside_the_band_is_E003_from_the_core():
         class Bad(models.Model):
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(truncate_bits=30, projected_population=100_000))
+                index=BlindIndex(suite_id=0xFF01, truncate_bits=30,
+                                 projected_population=100_000))
             email_bidx = Encrypted.index_column("email")
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
@@ -246,7 +247,8 @@ def test_client_does_not_disable_E003():
             # this declaration at construction.
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(projected_population=64, truncate_bits=4))
+                index=BlindIndex(suite_id=0xFF01, projected_population=64,
+                                 truncate_bits=4))
             email_bidx = Encrypted.index_column("email")
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
