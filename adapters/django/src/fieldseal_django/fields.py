@@ -362,6 +362,119 @@ class Encrypted(models.Field):
             "supported because it carries literals."
         )
 
+    def get_placeholder_sql(
+            self, value: Any, compiler: Any, connection: Any) -> Any:
+        """Check the whole statement, then render the value as Django would.
+
+        This is the one field hook that receives the *compiler*, so it is
+        the only place a field can see which other columns a statement
+        writes. That is what closes #240's residue one layer down, the way
+        `_IndexedLookup` closed the read side (#118): `FieldsealQuerySet`
+        derives the index for `update()`, `bulk_update()` and upserts, but
+        `Model._base_manager` is a plain `QuerySet`, so on that route the
+        statement wrote the new envelope and left the index as it was.
+
+        Django 6 calls this from the UPDATE and INSERT compilers and from
+        `Value.as_sql`; the rendering below is what each does without the
+        hook. `get_placeholder` is Django 5.2's name for the same hook.
+        """
+        self._refuse_stale_index_write(compiler)
+        if hasattr(value, "as_sql"):
+            return compiler.compile(value)
+        if value is None:
+            return "NULL", ()
+        return "%s", (value,)
+
+    def get_placeholder(self, value: Any, compiler: Any,
+                        connection: Any) -> str:
+        """Django 5.2's spelling of `get_placeholder_sql`. Django 6 ignores
+        it, and does not warn about it, because the class defines both."""
+        self._refuse_stale_index_write(compiler)
+        return "%s"
+
+    def _refuse_stale_index_write(self, compiler: Any) -> None:
+        """Refuse a statement that would write this column and leave an index
+        column of it stale (#240; spec §10.2).
+
+        Three shapes, each measured on `Model._base_manager`:
+
+        - an UPDATE that sets this column without every index column of it
+          (`update(email=...)`, `bulk_update([...], ["email"])`);
+        - an UPDATE that sets the index column to an expression nobody
+          derived: `bulk_update([...], ["email", "email_bidx"])` reads the
+          index off the instance, which still holds the old value. Only
+          `FieldsealQuerySet.bulk_update` derives it first, and it marks the
+          query so this check can tell. `Model.save()` also writes through
+          `_base_manager`, but with the index `pre_save` just derived, which
+          is a plain value and passes;
+        - an upsert (`bulk_create(update_conflicts=True)`) whose
+          `update_fields` name this column without its index column, so the
+          conflict branch updates one and not the other.
+
+        Setting an index column to a plain value is left alone, as
+        `FieldsealQuerySet.update` leaves it: it is an explicit act on a
+        non-editable column, not the silent case.
+
+        Raised from inside the compiler, so in an `atomic()` block it leaves
+        the transaction marked for rollback, as `update(field=F(...))` does
+        on this route. Nothing has been written when it raises.
+        """
+        from django.db.models.constants import OnConflict
+        from django.db.models.sql.compiler import (
+            SQLInsertCompiler,
+            SQLUpdateCompiler,
+        )
+
+        siblings = index_siblings(self.model).get(self.name)
+        if not siblings:
+            return
+        query = compiler.query
+        model = self.model.__name__
+        if isinstance(compiler, SQLUpdateCompiler):
+            written = {field: value for field, _, value in query.values}
+            if self not in written:
+                return
+            for sibling in siblings:
+                if sibling not in written:
+                    raise FieldsealNotSupported(
+                        f"This UPDATE sets {model}.{self.name} without its "
+                        f"blind index {sibling.name!r}, so the index would "
+                        "keep pointing at the old value and an equality "
+                        "lookup would silently miss the row (spec §10.2). "
+                        "Write through the model's FieldsealManager, which "
+                        "derives the index with the column, or call `save()` "
+                        f"on the instance. `{model}._base_manager` and other "
+                        "plain managers cannot derive it (#240)."
+                    )
+                if (hasattr(written[sibling], "resolve_expression")
+                        and not getattr(query, _DERIVED_MARK, False)):
+                    raise FieldsealNotSupported(
+                        f"This UPDATE sets {model}.{sibling.name} from an "
+                        "expression, which on a plain manager is "
+                        f"`bulk_update()` reading the index off each instance: "
+                        f"the instance still holds the index of its old "
+                        f"{self.name!r}, so the row would be written with a "
+                        "stale index and silently missed by an equality "
+                        "lookup (spec §10.2). Use the model's "
+                        "FieldsealManager, whose `bulk_update()` derives the "
+                        f"index per instance (#240)."
+                    )
+            return
+        if (isinstance(compiler, SQLInsertCompiler)
+                and query.on_conflict == OnConflict.UPDATE
+                and self in query.update_fields):
+            for sibling in siblings:
+                if sibling not in query.update_fields:
+                    raise FieldsealNotSupported(
+                        f"This upsert updates {model}.{self.name} on conflict "
+                        f"without its blind index {sibling.name!r}, so a "
+                        "conflicting row would keep the index of its old "
+                        "value and an equality lookup would silently miss it "
+                        f"(spec §10.2). Add {sibling.name!r} to "
+                        "`update_fields`, or use the model's FieldsealManager, "
+                        "which adds it (#240)."
+                    )
+
     def from_db_value(self, value: Any, expression: Any, connection: Any) -> Any:
         if value is None:
             return None
@@ -902,6 +1015,11 @@ class EncryptedIn(_IndexedLookup):
 
 
 _INDEXED_LOOKUPS = {"exact": EncryptedExact, "in": EncryptedIn}
+
+# Set on a `Query` by `FieldsealQuerySet.update` when `bulk_update` has
+# already derived every index it writes; `Query.chain` carries it into the
+# `UpdateQuery` the compiler sees (`Encrypted._refuse_stale_index_write`).
+_DERIVED_MARK = "fieldseal_indexes_derived"
 
 
 @functools.cache

@@ -977,6 +977,15 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
         if self._verifying:
             self._refuse_sql_answered("update")
         self._refuse_unsafe_expressions(kwargs)
+        if self._fieldseal_indexes_derived:
+            # `bulk_update` derived each index before Django built its `Case`
+            # expressions. Say so on the query, which `QuerySet.update` chains
+            # into the `UpdateQuery` the field checks at compile time; without
+            # the mark that check cannot tell this statement from a plain
+            # manager's `bulk_update` reading a stale index off the instance.
+            from .fields import _DERIVED_MARK
+
+            setattr(self.query, _DERIVED_MARK, True)
         updated: int = super().update(**self._with_derived_indexes(kwargs))
         return updated
 

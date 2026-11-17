@@ -411,13 +411,15 @@ The specification requires every implementation to state these.
 - **No row binding.** A value is bound to its table, column and tenant, but
   not to its row, so someone with database write access can swap encrypted
   values between rows of the same column.
-- **An indexed column and its index are written together, and two paths need
-  your help.** `save()`, `create()`, `bulk_create()`, `update()` and
-  `bulk_update()` write the index with the value. `save(update_fields=[...])`
-  raises unless it names the index column beside the encrypted one. `update()`
-  and `bulk_update()` through `Model._base_manager`, or any manager that is
-  not `FieldsealManager`, write the value and leave the old index, and the
-  row is then not found by its new value.
+- **An indexed column and its index are written together.** `save()`,
+  `create()`, `bulk_create()`, `update()` and `bulk_update()` write the index
+  with the value. `save(update_fields=[...])` raises unless it names the index
+  column beside the encrypted one. Through `Model._base_manager`, or any
+  manager that is not `FieldsealManager`, an `update()`, `bulk_update()` or
+  `bulk_create()` upsert that would leave the index stale raises instead of
+  writing; use the model's `FieldsealManager` for those writes. Inside
+  `atomic()`, that refusal leaves the transaction unusable unless the call has
+  its own savepoint.
 
 ## Learn more
 

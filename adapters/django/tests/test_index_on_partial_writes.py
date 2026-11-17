@@ -15,8 +15,9 @@ ordinary `create()` of the same value stores.
 from __future__ import annotations
 
 import pytest
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Value
+from django.db.transaction import TransactionManagementError
 
 from fieldseal_django.errors import FieldsealNotSupported
 from fieldseal_django.fields import index_siblings
@@ -314,3 +315,122 @@ class TestReviewRound1:
     # 8. The mapping is built once per model.
     def test_the_sibling_mapping_is_cached_per_model(self):
         assert index_siblings(Patient) is index_siblings(Patient)
+
+
+class TestPlainManager:
+    """#240's residue: `Model._base_manager`, or any manager that is not
+    `FieldsealManager`, builds a plain `QuerySet`, so nothing of ours derived
+    the index. The field now refuses such a statement when it is compiled,
+    one layer down, as `_IndexedLookup` does for reads (#118).
+
+    Each refusal asserts that nothing was written: the envelope and the index
+    are byte-identical to what `create()` stored. Each refused call runs in
+    its own savepoint, because the refusal is raised while Django compiles
+    the statement inside `mark_for_rollback_on_error`, which marks the
+    enclosing transaction; the last test pins that.
+    """
+
+    def _created(self, email: str = "a@example.com") -> Patient:
+        return Patient.objects.create(email=email)
+
+    def test_update_without_the_index_is_refused(self):
+        p = self._created()
+        before = _stored(p)
+        with pytest.raises(FieldsealNotSupported, match="email_bidx"), \
+                transaction.atomic():
+            Patient._base_manager.filter(pk=p.pk).update(email="b@example.com")
+        assert _stored(p) == before
+        assert _found("a@example.com") == [p.pk]
+
+    def test_bulk_update_without_the_index_is_refused(self):
+        p = self._created()
+        before = _stored(p)
+        p.email = "b@example.com"
+        with pytest.raises(FieldsealNotSupported, match="email_bidx"), \
+                transaction.atomic():
+            Patient._base_manager.bulk_update([p], ["email"])
+        assert _stored(p) == before
+
+    def test_bulk_update_naming_the_index_is_refused(self):
+        """The original report's call: the instance's index attribute is the
+        old value's, and a plain `bulk_update` writes it as it is."""
+        p = self._created()
+        before = _stored(p)
+        p.email = "b@example.com"
+        with pytest.raises(FieldsealNotSupported, match="stale index"), \
+                transaction.atomic():
+            Patient._base_manager.bulk_update([p], ["email", "email_bidx"])
+        assert _stored(p) == before
+
+    def test_upsert_without_the_index_is_refused(self):
+        p = self._created()
+        before = _stored(p)
+        with pytest.raises(FieldsealNotSupported, match="update_fields"), \
+                transaction.atomic():
+            Patient._base_manager.bulk_create(
+                [Patient(pk=p.pk, email="b@example.com")],
+                update_conflicts=True, update_fields=["email"],
+                unique_fields=["id"])
+        assert _stored(p) == before
+
+    def test_upsert_naming_the_index_writes_both(self):
+        """The inserted row's index comes from `pre_save`, so the conflict
+        branch's `EXCLUDED` value is derived, not stale."""
+        p = self._created()
+        Patient._base_manager.bulk_create(
+            [Patient(pk=p.pk, email="b@example.com")],
+            update_conflicts=True, update_fields=["email", "email_bidx"],
+            unique_fields=["id"])
+        assert _found("b@example.com") == [p.pk]
+        assert _index(p.pk) == _reference_index("b@example.com")
+
+    def test_save_still_writes_through_the_base_manager(self):
+        """`Model.save()` updates through `_base_manager`, with the index
+        `pre_save` derived: a plain value, which the check passes."""
+        p = self._created()
+        p.email = "b@example.com"
+        p.save()
+        assert _found("b@example.com") == [p.pk]
+        assert _index(p.pk) == _reference_index("b@example.com")
+
+    def test_an_explicit_index_value_is_left_to_the_caller(self):
+        """Setting the index column to a plain value is a deliberate act on a
+        non-editable column, as on `FieldsealQuerySet.update`."""
+        p = self._created()
+        derived = _reference_index("b@example.com")
+        Patient._base_manager.filter(pk=p.pk).update(
+            email="b@example.com", email_bidx=derived)
+        assert _found("b@example.com") == [p.pk]
+
+    def test_an_unindexed_column_is_written_as_before(self):
+        p = self._created()
+        Patient._base_manager.filter(pk=p.pk).update(note="hello")
+        assert Patient.objects.get(pk=p.pk).note == "hello"
+
+    def test_every_index_column_is_required(self):
+        t = TwoIndexColumns.objects.create(email="a@example.com")
+        with pytest.raises(FieldsealNotSupported, match="email_bidx2"):
+            TwoIndexColumns._base_manager.filter(pk=t.pk).update(
+                email="b@example.com", email_bidx=b"\x00" * 2)
+
+    def test_the_fieldseal_manager_paths_still_pass_the_check(self):
+        """`FieldsealQuerySet.bulk_update` also writes the index as a `Case`,
+        but marks the query as derived."""
+        p = self._created()
+        p.email = "b@example.com"
+        Patient.objects.bulk_update([p], ["email", "email_bidx"])
+        Patient.objects.filter(pk=p.pk).update(email="c@example.com")
+        assert _found("c@example.com") == [p.pk]
+        assert _index(p.pk) == _reference_index("c@example.com")
+
+    def test_a_refusal_marks_the_enclosing_transaction(self):
+        """The cost of refusing at compile time, on the route that has no
+        queryset layer to refuse earlier: the enclosing `atomic()` can run
+        nothing more, as with `update(field=F(...))` there. A savepoint
+        around the call contains it, as the tests above show."""
+        p = self._created()
+        with pytest.raises(TransactionManagementError), transaction.atomic():
+            with pytest.raises(FieldsealNotSupported):
+                Patient._base_manager.filter(pk=p.pk).update(
+                    email="b@example.com")
+            Patient.objects.count()
