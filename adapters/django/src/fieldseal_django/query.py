@@ -978,16 +978,27 @@ class FieldsealQuerySet(models.QuerySet):  # type: ignore[misc]
             self._refuse_sql_answered("update")
         self._refuse_unsafe_expressions(kwargs)
         if self._fieldseal_indexes_derived:
-            # `bulk_update` derived each index before Django built its `Case`
-            # expressions. Say so on the query, which `QuerySet.update` chains
-            # into the `UpdateQuery` the field checks at compile time; without
-            # the mark that check cannot tell this statement from a plain
-            # manager's `bulk_update` reading a stale index off the instance.
-            from .fields import _DERIVED_MARK
-
-            setattr(self.query, _DERIVED_MARK, True)
+            self._mark_derived_indexes(kwargs)
         updated: int = super().update(**self._with_derived_indexes(kwargs))
         return updated
+
+    def _mark_derived_indexes(self, kwargs: dict[str, Any]) -> None:
+        """Mark the index-column expressions `bulk_update` built.
+
+        `bulk_update` set each instance's index attribute to the derived
+        value before Django built a `Case` from those attributes. The field's
+        compile-time check refuses that `Case` on a plain manager, where the
+        attribute is stale, so it has to be told this one is not. The mark
+        goes on the expression, which Django carries into the parent table's
+        UPDATE under multi-table inheritance, unlike anything on this query.
+        """
+        from .fields import DERIVED_MARK, index_siblings
+
+        for siblings in index_siblings(self.model).values():
+            for sibling in siblings:
+                value = kwargs.get(sibling.attname, kwargs.get(sibling.name))
+                if hasattr(value, "resolve_expression"):
+                    setattr(value, DERIVED_MARK, True)
 
     def _refuse_unsafe_expressions(self, kwargs: dict[str, Any]) -> None:
         """Run the field's expression refusal before the statement starts.

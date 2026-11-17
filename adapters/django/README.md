@@ -417,7 +417,8 @@ The specification requires every implementation to state these.
   column beside the encrypted one. Through `Model._base_manager`, or any
   manager that is not `FieldsealManager`, an `update()`, `bulk_update()` or
   `bulk_create()` upsert that would leave the index stale raises instead of
-  writing; use the model's `FieldsealManager` for those writes. Inside
+  writing; use the model's `FieldsealManager` for those writes, or `save()`
+  on each instance where there is none, as in a data migration. Inside
   `atomic()`, that refusal leaves the transaction unusable unless the call has
   its own savepoint.
 
