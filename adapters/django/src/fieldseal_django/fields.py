@@ -23,6 +23,10 @@ from typing import TYPE_CHECKING, Any
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.constants import OnConflict
+from django.db.models.expressions import Case
+from django.db.models.functions import Cast
+from django.db.models.sql.compiler import SQLInsertCompiler, SQLUpdateCompiler
 from fieldseal.errors import InvalidArgument
 
 from . import codec, unindexable
@@ -57,6 +61,46 @@ REFUSED_LOOKUPS = {
     "month": "date parts are not recoverable from ciphertext",
     "day": "date parts are not recoverable from ciphertext",
 }
+
+
+# Set by `FieldsealQuerySet.bulk_update` on each index-column expression it
+# built from attributes it had just derived; read by
+# `Encrypted._refuse_stale_index_write`. On the expression, not the query:
+# see that method.
+DERIVED_MARK = "_fieldseal_derived_index"
+
+
+def _is_bulk_update_case(value: Any) -> bool:
+    """Whether `value` has the shape Django's `bulk_update` writes a column
+    with: a `Case`, wrapped in a `Cast` on backends that set
+    `requires_casted_case_in_updates` (PostgreSQL)."""
+    if isinstance(value, Cast):
+        value = value.get_source_expressions()[0]
+    return isinstance(value, Case)
+
+
+class _IndexedHook:
+    """A method that exists only on an `Encrypted` field with a blind index.
+
+    Django decides whether to call a field hook with `hasattr`, and its
+    PostgreSQL INSERT compiler gives up the UNNEST bulk insert for any field
+    that has `get_placeholder_sql`. Raising `AttributeError` on a column
+    without an index keeps that path for every model that has nothing for
+    the hook to check.
+    """
+
+    def __init__(self, func: Any) -> None:
+        self.func = func
+
+    def __set_name__(self, owner: Any, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self
+        if obj.index is None:
+            raise AttributeError(self.name)
+        return self.func.__get__(obj, objtype)
 
 
 class Encrypted(models.Field):
@@ -361,6 +405,147 @@ class Encrypted(models.Field):
             "in Python, and write back with `bulk_update()`, which is "
             "supported because it carries literals."
         )
+
+    # The compile-time half of #240 (see `_refuse_stale_index_write`). Bound
+    # through `_IndexedHook` so that `hasattr(field, "get_placeholder_sql")`
+    # is false on a column without a blind index: Django's Postgres INSERT
+    # compiler drops its UNNEST bulk insert for any field that has the hook,
+    # and a column with no index has nothing to check.
+
+    def _placeholder_sql(
+            self, value: Any, compiler: Any, connection: Any) -> Any:
+        """Check the whole statement, then render the value as Django would.
+
+        This is the one field hook that receives the *compiler*, so it is
+        the only place a field can see which other columns a statement
+        writes. That is what closes #240's residue one layer down, the way
+        `_IndexedLookup` closed the read side (#118): `FieldsealQuerySet`
+        derives the index for `update()`, `bulk_update()` and upserts, but
+        `Model._base_manager` is a plain `QuerySet`, so on that route the
+        statement wrote the new envelope and left the index as it was.
+
+        Django 6 calls this from the UPDATE and INSERT compilers and from
+        `Value.as_sql`; the rendering below is what each does without the
+        hook.
+        """
+        self._refuse_stale_index_write(compiler)
+        if hasattr(value, "as_sql"):
+            return compiler.compile(value)
+        if value is None:
+            return "NULL", ()
+        return "%s", (value,)
+
+    def _placeholder(self, value: Any, compiler: Any,
+                     connection: Any) -> str:
+        """Django 5.2's spelling of the same hook. Django 6 ignores it, and
+        does not warn about it, because the class defines both names.
+
+        Unlike Django 5.2's own `Value.as_sql`, which renders a `None` it
+        prepares as the literal `NULL`, this placeholder binds it as a
+        parameter, so a `bulk_update` `CASE` branch carries a bound NULL.
+        Measured equivalent on SQLite; not run against Postgres on 5.2.
+        """
+        self._refuse_stale_index_write(compiler)
+        return "%s"
+
+    def _refuse_stale_index_write(self, compiler: Any) -> None:
+        """Refuse a statement that would write this column, or its index,
+        and leave the two disagreeing (#240; spec §10.2).
+
+        Four shapes, each a silent stale index without this check on
+        `Model._base_manager` or any other plain `QuerySet`:
+
+        - an UPDATE that sets this column without every index column of it
+          (`update(email=...)`, `bulk_update([...], ["email"])`);
+        - an UPDATE that sets the index column to the `Case` that
+          `bulk_update` builds from each instance's attribute, which still
+          holds the old value's index (`bulk_update([...], ["email",
+          "email_bidx"])`). `FieldsealQuerySet.bulk_update` derives those
+          attributes first and marks the expressions it built
+          (`DERIVED_MARK`), which this check honours. The mark is on the
+          expression rather than the query because Django moves the
+          expression itself into the parent table's UPDATE under multi-table
+          inheritance, where a mark on the child's query would not follow;
+        - an upsert whose `update_fields` name this column without its index
+          column, or an index column without this column: the conflict
+          branch would update one and not the other.
+
+        `Model.save()` also writes through `_base_manager`, with the index
+        `pre_save` just derived, a plain value, and passes. So does setting
+        the index column to a plain value or any expression other than
+        `bulk_update`'s: that is an explicit act on a non-editable column,
+        as on `FieldsealQuerySet.update`, not the silent case.
+
+        Run once per statement and field: Django reaches this hook once per
+        value, and `bulk_update` of N objects has N + 1.
+
+        **What has been written when it raises.** Nothing, for a statement
+        on one table. Under multi-table inheritance a column on the parent
+        is written by a second UPDATE, which Django compiles only after it
+        has executed the child table's; outside `atomic()` the child's
+        columns are then already written. That shape needs
+        `FIELDSEAL["CLIENT"]` (the adapter's own client refuses an indexed
+        column inherited through multi-table inheritance), and `atomic()`
+        around the call undoes it. Raised from inside the compiler, the
+        refusal also marks an enclosing `atomic()` for rollback, as
+        `update(field=F(...))` does on this route.
+        """
+        done = compiler.__dict__.setdefault("_fieldseal_index_checked", set())
+        if self in done:
+            return
+        siblings = index_siblings(self.model).get(self.name, ())
+        query = compiler.query
+        model = self.model.__name__
+        remedy = (
+            f"Write through {model}'s FieldsealManager, which derives the "
+            "index with the column, or call `save()` on each instance, which "
+            "derives it on any manager, including a data migration's "
+            "historical model (#240)."
+        )
+        if isinstance(compiler, SQLUpdateCompiler):
+            written = {field: value for field, _, value in query.values}
+            if self in written:
+                for sibling in siblings:
+                    if sibling not in written:
+                        raise FieldsealNotSupported(
+                            f"This UPDATE sets {model}.{self.name} without "
+                            f"its blind index {sibling.name!r}, so the index "
+                            "would keep pointing at the old value and an "
+                            "equality lookup would silently miss the row "
+                            f"(spec §10.2). {remedy}"
+                        )
+                    value = written[sibling]
+                    if (_is_bulk_update_case(value)
+                            and not getattr(value, DERIVED_MARK, False)):
+                        raise FieldsealNotSupported(
+                            f"This UPDATE sets {model}.{sibling.name} from "
+                            "each instance's attribute, which is how a plain "
+                            "manager's `bulk_update()` writes it: the "
+                            "instance still holds the index of its old "
+                            f"{self.name!r}, so the row would keep a stale "
+                            "index and an equality lookup would silently "
+                            f"miss it (spec §10.2). {remedy}"
+                        )
+        elif (isinstance(compiler, SQLInsertCompiler)
+                and query.on_conflict == OnConflict.UPDATE):
+            updated = set(query.update_fields)
+            for sibling in siblings:
+                if (self in updated) == (sibling in updated):
+                    continue
+                named, missing = ((self.name, sibling.name)
+                                  if self in updated
+                                  else (sibling.name, self.name))
+                raise FieldsealNotSupported(
+                    f"This upsert updates {model}.{named} on conflict "
+                    f"without {missing!r}, so a conflicting row would keep "
+                    f"an index that does not match {self.name!r} and an "
+                    "equality lookup would silently miss it (spec §10.2). "
+                    f"Name both in `update_fields`. {remedy}"
+                )
+        done.add(self)
+
+    get_placeholder_sql = _IndexedHook(_placeholder_sql)
+    get_placeholder = _IndexedHook(_placeholder)
 
     def from_db_value(self, value: Any, expression: Any, connection: Any) -> Any:
         if value is None:
