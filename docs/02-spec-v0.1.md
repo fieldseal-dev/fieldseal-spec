@@ -205,6 +205,8 @@ Decrypt-side suite policy MUST be a configured allow-list. An implementation MUS
 
 *Justification.* This is how a suite is retired without a downgrade window.
 
+The allow-list governs envelopes. A blind index names its suite in its declaration (§7.2) and is not subject to it.
+
 ### 4.4 Nonce policy (normative)
 
 For every encryption operation, including UPDATEs of an existing value, the nonce MUST be freshly generated from a CSPRNG. The nonce MUST NOT be derived from row identity. It MUST NOT be a counter. It MUST NOT be persisted.
@@ -408,6 +410,8 @@ An implementation SHOULD prefer on-*write* re-encryption plus a background sweep
 
 The full re-encryption sweep of §5.8 is the mechanism by which a suite is retired. NIST CSWP 39 §5.1: "For the encrypted storage of data at rest, a mechanism must be established to handle encrypted user data when the encryption algorithm is to be replaced by a stronger one." **Agility without a re-encryption sweep is a claim, not a capability.**
 
+**Blind indexes are not part of the sweep.** A blind index is derived under the suite its declaration names (§7.2), not under the write suite. Changing the write suite and re-encrypting therefore leaves every stored index value valid, and lookups keep working throughout the migration. Moving an index off a suite is §7.8's procedure, a new index column and a full backfill, and is scheduled separately. A suite is retired from a deployment only when no stored envelope and no index declaration names it.
+
 ---
 
 ## 6. Context binding
@@ -547,6 +551,19 @@ The tenant index key is a sibling of the tenant DEK under the KEK, and MUST NOT 
 
 *Justification.* SP 800-57 §5.2 ("a single key shall be used for only one purpose"). Both CipherSweet and `blind_index` implement per-index key separation; CipherSweet's design note is explicit: "Each blind index on each column uses a distinct key from your encryption key and each other blind index key." Cross-column shared keys additionally merge frequency-analysis populations, which is the opposite of what §7.6 requires.
 
+**The index context's `suite_id` (normative; [#213](https://github.com/fieldseal-dev/fieldseal-spec/issues/213)).** `canonical_context` begins with a `suite_id` (§6.2), and an index derivation has no envelope to read one from. Every blind-index declaration MUST name exactly one `suite_id`, and the index context's `suite_id` MUST be that declared suite. It MUST NOT be taken from the client's write suite, from the allow-list of §4.3, or from any envelope. The declared suite supplies the KDF of the derivation above.
+
+- The declared suite MUST be registered (§4.2). It has **no default**: a declaration that names no suite MUST be refused when the index is declared. A default filled in from the write suite would restore the coupling this clause removes, one step earlier and just as silently.
+- The declared suite need not be the write suite and need not be on the decrypt allow-list. The allow-list is a policy over stored envelopes, each of which names its own suite in its header; a stored index value names nothing, so there is nothing for an allow-list to compare against.
+- An index derivation uses the suite's KDF and no AEAD. An implementation that cannot perform the declared suite's KDF MUST refuse the declaration, and MUST NOT derive under any other suite.
+- The declared suite is part of the index's key-derivation context and is immutable under §7.8.
+
+This clause does not change §4.8, whose arming gate is stated for producing envelopes. Whether deriving an index under a provisional suite should also require arming is **not decided here**: a stored index value carries no `suite_id`, so the after-the-fact identification §4.8 relies on is not available for it.
+
+*Justification.* An envelope can change suite one row at a time because its header says which suite produced it, and §4.3's allow-list lets old and new coexist for as long as the §5.9 sweep takes. An index value has no header. If the index context carried the write suite, two clients that differed only in write suite would derive different bytes for the same value, and they differ in exactly that way during every suite migration: across a fleet mid-deploy, and across time on either side of the configuration change. The stored index values would stop matching, lookups would return nothing, and nothing would raise — the failure §7.8 exists to prevent, reached by changing a setting that does not mention indexes. Naming the suite in the declaration makes the immutable thing a declared thing, and lets a value-path migration (§5.9) and an index migration (§7.8) be scheduled separately. It stays inside §4.1: a declaration names a whole registered suite, never an algorithm, and it is fixed at declaration, not chosen per call. NIST CSWP 39 §5.1's requirement, quoted in §5.9, is that a mechanism exist for stored data when an algorithm is replaced; for an index that mechanism is §7.8's new column and backfill. No shipping product was checked for a per-index suite identifier, so this clause cites no precedent for one.
+
+*Compatibility.* An index declared with suite `S` derives the bytes that a client whose write suite was `S` derived before this clause, so no stored index value changes. What changes is the declaration: it gains a required member in every implementation and in the `cross/` document format (§12).
+
 ### 7.3 Index derivation function selection (normative)
 
 > **[PROVISIONAL — G2]** The selection rule and the invocation below are adopted provisionally under Gate 0a. **Narrowed 2026-08-22:** routing the index key through Argon2's secret parameter `K` — the original proposal — is **ruled out on portability grounds**, which is an engineering finding the project could settle itself, not a cryptographic judgment (see the Argon2id invocation below and [gap G2](issues/G02-argon2id-parameters.md)). What remains open is cryptographic and stays with the reviewers: whether salt-only keying through a domain-separated HKDF step is sound for this deterministic, keyed use. See [issue #2](https://github.com/fieldseal-dev/fieldseal-spec/issues/2) and reviewer question [Q3](16-reviewer-brief.md#q3).
@@ -628,7 +645,7 @@ Two blind indexes MUST NOT be created over correlated fields.
 
 ### 7.8 Immutability after first write (normative)
 
-Once any row has been written with a given blind index, its `IDF`, `normalize` function, truncation length `b`, key-derivation context, and stored representation (§7.11) MUST NOT change. Changing any of them requires creating a new index column and performing a full backfill.
+Once any row has been written with a given blind index, its `IDF`, `normalize` function, truncation length `b`, key-derivation context, and stored representation (§7.11) MUST NOT change. Changing any of them requires creating a new index column and performing a full backfill. The key-derivation context includes the suite the index was declared with (§7.2), so moving an index to another suite is a new index column and a backfill, never a configuration change.
 
 ### 7.9 Prefix indexes (OPTIONAL, gated)
 
