@@ -20,10 +20,14 @@ import java.util.Objects;
  * client never takes one as input, so a hand-built one validates nothing and changes nothing.
  * Immutable: the arrays are copied in and out.
  *
+ * @param suiteId the declared suite (spec §7.2, #213), registered: the {@code suite_id} of this
+ *     index's key-derivation context, never the client's write suite. It is part of equality,
+ *     so two declarations that differ only in suite are different indexes (spec §7.8)
  * @param argon2 the cost for {@link Idf#ARGON2ID}; null for {@link Idf#HMAC_SHA512}, which has
  *     none
  */
-public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId, Idf idf,
+public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, int suiteId, String indexId,
+        Idf idf,
         Argon2Params argon2, Normalizer normalize, int truncateBits, long projectedPopulation,
         boolean skewed, ReviewedOverride cardinalityOverride, OnUnindexable onUnindexable,
         ReviewedOverride unindexableOverride) {
@@ -56,7 +60,8 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
     @Override
     public boolean equals(Object o) {
         return o instanceof ValidatedIndex v && Arrays.equals(tableUuid, v.tableUuid)
-                && Arrays.equals(columnUuid, v.columnUuid) && indexId.equals(v.indexId)
+                && Arrays.equals(columnUuid, v.columnUuid) && suiteId == v.suiteId
+                && indexId.equals(v.indexId)
                 && idf == v.idf && Objects.equals(argon2, v.argon2) && normalize == v.normalize
                 && truncateBits == v.truncateBits && projectedPopulation == v.projectedPopulation
                 && skewed == v.skewed
@@ -67,7 +72,8 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
 
     @Override
     public int hashCode() {
-        return Objects.hash(Arrays.hashCode(tableUuid), Arrays.hashCode(columnUuid), indexId,
+        return Objects.hash(Arrays.hashCode(tableUuid), Arrays.hashCode(columnUuid), suiteId,
+                indexId,
                 idf, argon2, normalize, truncateBits, projectedPopulation, skewed, cardinalityOverride,
                 onUnindexable, unindexableOverride);
     }
@@ -76,7 +82,8 @@ public record ValidatedIndex(byte[] tableUuid, byte[] columnUuid, String indexId
     public String toString() {
         HexFormat h = HexFormat.of();
         return "ValidatedIndex[table=" + h.formatHex(tableUuid) + ", column="
-                + h.formatHex(columnUuid) + ", indexId=" + indexId + ", idf=" + idf.id()
+                + h.formatHex(columnUuid) + ", suiteId=" + String.format("0x%04X", suiteId)
+                + ", indexId=" + indexId + ", idf=" + idf.id()
                 + ", argon2=" + argon2 + ", normalize=" + normalize.id() + ", truncateBits="
                 + truncateBits + ", projectedPopulation=" + projectedPopulation + ", skewed=" + skewed
                 + ", cardinalityOverride=" + cardinalityOverride + ", onUnindexable="

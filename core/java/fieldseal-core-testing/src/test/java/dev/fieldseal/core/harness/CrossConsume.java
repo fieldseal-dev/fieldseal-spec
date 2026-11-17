@@ -28,7 +28,8 @@ import java.util.function.Consumer;
  * run exits 1 if any case fails.
  *
  * <p>What makes a case fail, beyond a wrong byte: a {@code schema} other than {@code cross/v1}
- * or {@code cross/v2}, and a v1 document carrying {@code index_cases} (docs/08 §4.7: a consumer
+ * or {@code cross/v3} ({@code cross/v2} is refused: its index cases name no suite, so a declaration
+ * could only be completed from this client's write suite, which spec §7.2 forbids; #213), and a v1 document carrying {@code index_cases} (docs/08 §4.7: a consumer
  * that read past either would skip the index half and stay green); a {@code purpose} that is not
  * {@code "index:" + index_id}; not exactly one of {@code value_text}, {@code value_bytes} and
  * {@code value_marker}, or {@code value_bytes} under a normalizer other than {@code identity};
@@ -62,15 +63,18 @@ public final class CrossConsume {
         }
         List<String> documentProblems = new ArrayList<>();
         String schema = doc.path("schema").asText(null);
-        if (!Cross.V1.equals(schema) && !Cross.V2.equals(schema)) {
+        if (Cross.V2.equals(schema)) {
+            documentProblems.add(Cross.V2 + " is refused: its index cases name no declared suite"
+                    + " (spec §7.2, #213); a producer must emit " + Cross.V3);
+        } else if (!Cross.V1.equals(schema) && !Cross.V3.equals(schema)) {
             documentProblems.add("schema " + doc.path("schema") + " is not " + Cross.V1 + " or "
-                    + Cross.V2);
+                    + Cross.V3);
         } else if (Cross.V1.equals(schema) && doc.has("index_cases")) {
             documentProblems.add(Cross.V1 + " carries index_cases");
-        } else if (Cross.V2.equals(schema) && (!doc.path("index_cases").isArray()
+        } else if (Cross.V3.equals(schema) && (!doc.path("index_cases").isArray()
                 || doc.path("index_cases").isEmpty())) {
-            // v2 means "this producer carries an index half": an empty one would pass unchecked.
-            documentProblems.add(Cross.V2 + " without index cases");
+            // v3 means "this producer carries an index half": an empty one would pass unchecked.
+            documentProblems.add(Cross.V3 + " without index cases");
         }
         if (!doc.path("cases").isArray() || doc.path("cases").isEmpty()) {
             documentProblems.add("no envelope cases");
@@ -107,7 +111,7 @@ public final class CrossConsume {
         Map<String, Cross.Key> keys = Cross.keys(vectors);
         List<Pair> pairs = new ArrayList<>();
         pairs.add(envelopes(producer, name, doc.path("cases"), keys, suite, warn, notes));
-        if (Cross.V2.equals(schema)) {
+        if (Cross.V3.equals(schema)) {
             pairs.add(indexes(producer, name, indexCases, keys, suite, warn));
         }
         return pairs;

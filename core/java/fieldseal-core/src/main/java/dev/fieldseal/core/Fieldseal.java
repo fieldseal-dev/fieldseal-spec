@@ -225,8 +225,10 @@ public final class Fieldseal {
                     + HEX.formatHex(c.columnUuid()) + " (docs/09 §3.3 step 2)");
         }
         KeyMaterial km = encryptionKey(indexRequest(c, v));
+        // spec §7.2 (#213): the context's suite_id is the index's declared suite, never the write
+        // suite or an envelope's. Nothing on this path reads writeSuite.
         byte[] indexKey = KeyDerivation.indexKey(km.key(), CanonicalContext.encodeForIndexKey(
-                fields(c, writeSuite.id(), v.purpose())));
+                fields(c, v.suiteId(), v.purpose())));
         byte[] normalized = null;
         try {
             normalized = switch (in.apply(v)) {

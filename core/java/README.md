@@ -65,6 +65,7 @@ A blind index lets you find rows by an encrypted value's equality without decryp
 
 ```java
 IndexDeclaration emailIndex = IndexDeclaration.builder(tableUuid, columnUuid)
+    .suiteId(0xFF01)                              // required, no default: the index's own suite (spec §7.2)
     .indexId("email-eq")                          // [a-z0-9-]{1,32}; default "exact"
     .idf(IndexDeclaration.Idf.ARGON2ID)           // an enumerable domain: Argon2id (spec §7.3)
     .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1)
@@ -76,6 +77,8 @@ byte[] index = fs.blindIndex("Ada@Example.com", ctx.forIndex("email-eq"));   // 
 ```
 
 To look a value up, compute its index, query the index column, then decrypt the candidates and compare them under the index's normalizer (`IndexDeclaration.Normalizer.normalize`), not byte for byte. The index is a filter, never an answer: truncation makes collisions deliberate. For the same reason, pagination built directly on an indexed column is wrong: fetch more candidates than the page needs, decrypt, filter, then paginate. See spec [§7](../../docs/02-spec-v0.1.md) for what an index does and does not hide.
+
+**An index names its own suite.** `suiteId` is required and has no default: it is not taken from the client's write suite or allow-list, so a change of write suite does not change a stored index value. A declaration with no suite, or one that is not registered (`0xFF01` and `0xFF02` are; `0x0001` and `0x0002` are not), is refused with a `ConfigurationError` when the client is built; the builder itself checks nothing, so omitting `suiteId(...)` is caught there and not by the compiler. The declared suite need not be the write suite or on the allow-list, and only its KDF is used, so `0xFF02` can be declared although this core cannot seal under it. The suite is part of the index (spec §7.8): moving an index to another suite is a new index column and a backfill. `fs.indexes()` reports it as `ValidatedIndex.suiteId()`, and it takes part in `ValidatedIndex` equality.
 
 The client checks each declaration when it is built, and refuses one that breaks the rules: a truncation length outside the band for its population, fewer than 2¹⁰ distinct values, or a column declared `skewed`, without a recorded, reviewed override, or an Argon2id cost below the minimum. `Fieldseal.validateIndexDeclaration` runs the same checks on its own, and `fs.indexes()` reports what the client was built with, defaults filled in.
 
