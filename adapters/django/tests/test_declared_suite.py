@@ -47,15 +47,14 @@ def _uuid_bytes(s: str) -> bytes:
 # -- 1. required, no default, never the write suite ---------------------------
 
 
-def test_a_blind_index_without_a_suite_is_a_TypeError_at_declaration():
-    with pytest.raises(TypeError, match="suite_id"):
-        BlindIndex(projected_population=100_000)  # type: ignore[call-arg]
-
-
-def test_the_suite_member_has_no_default():
+def test_an_unstated_suite_is_None_and_never_a_suite():
+    """The dataclass default is `None`, "not stated", so that a migration
+    written before the suite existed still imports (PR #282 review). It is
+    not a suite, and nothing completes it: see the E003 tests below."""
     f = next(f for f in dataclasses.fields(BlindIndex) if f.name == "suite_id")
-    assert f.default is dataclasses.MISSING
-    assert f.default_factory is dataclasses.MISSING
+    assert f.default is None
+    assert f.kw_only
+    assert BlindIndex(projected_population=100_000).suite_id is None
 
 
 def test_the_suite_is_never_filled_from_the_write_suite():
@@ -74,13 +73,14 @@ def test_the_suite_is_never_filled_from_the_write_suite():
     assert {d.suite_id for d in build_index_registry()} == {0xFF01, 0xFF02}
 
 
-def test_an_explicit_None_is_E003_and_names_the_model_field():
+@pytest.mark.parametrize("kwargs", [{}, {"suite_id": None}],
+                         ids=["omitted", "explicit-None"])
+def test_an_unstated_suite_is_E003_and_names_the_model_field(kwargs):
     with isolate_apps("tests") as apps:
         class NoSuite(models.Model):
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(suite_id=None,  # type: ignore[arg-type]
-                                 projected_population=100_000))
+                index=BlindIndex(projected_population=100_000, **kwargs))
             email_bidx = Encrypted.index_column("email")
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
@@ -108,7 +108,64 @@ def test_an_unregistered_suite_is_E003_and_names_the_model_field():
         msg = issues[0].msg
         assert "BadSuite.email" in msg
         assert "0x1234" in msg and "not registered" in msg
-        assert "suite_id" in msg
+        assert "§7.2 declared suite" in issues[0].hint
+
+
+def test_an_unstated_suite_is_refused_at_first_use_without_the_checks():
+    """A project that skips `manage.py check` still fails closed: building
+    the client refuses the declaration, naming the model field."""
+    from fieldseal_django.apps import index_declarations
+    from fieldseal_django.errors import FieldsealConfigurationError
+
+    with isolate_apps("tests") as apps:
+        class Unstated(models.Model):
+            email = Encrypted(
+                models.EmailField(), column_uuid=COL_EMAIL,
+                index=BlindIndex(projected_population=100_000))
+            email_bidx = Encrypted.index_column("email")
+
+            fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
+
+        with pytest.raises(FieldsealConfigurationError,
+                           match="Unstated.email declares a BlindIndex with "
+                                 "no suite_id"):
+            index_declarations(apps)
+
+
+def test_a_refusal_that_is_not_about_the_suite_does_not_blame_the_suite():
+    """The band gate's refusal names the model field and says nothing about
+    stating a suite: the declaration already states one (PR #282 review)."""
+    with isolate_apps("tests") as apps:
+        class WideBand(models.Model):
+            email = Encrypted(
+                models.EmailField(), column_uuid=COL_EMAIL,
+                index=BlindIndex(suite_id=0xFF01, truncate_bits=30,
+                                 projected_population=100_000))
+            email_bidx = Encrypted.index_column("email")
+
+            fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
+
+        issues = [i for i in run_checks(apps) if i.id == "fieldseal.E003"]
+        assert issues, ids(run_checks(apps))
+        msg = issues[0].msg
+        assert "WideBand.email (BlindIndex 'exact')" in msg
+        assert "suite" not in msg.lower()
+
+
+def test_the_registry_builder_does_not_validate():
+    """Translation only: an unregistered suite passes through
+    `build_index_registry` untouched and is the core's to refuse."""
+    with isolate_apps("tests") as apps:
+        class BadSuite(models.Model):
+            email = Encrypted(
+                models.EmailField(), column_uuid=COL_EMAIL,
+                index=BlindIndex(suite_id=0x1234, projected_population=100_000))
+            email_bidx = Encrypted.index_column("email")
+
+            fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
+
+        (decl,) = build_index_registry(apps)
+        assert decl.suite_id == 0x1234
 
 
 def test_a_bool_is_not_a_suite():
@@ -176,14 +233,20 @@ def test_a_migration_round_trips_the_declared_suite(model, suite):
     assert Encrypted(*args, **kwargs).index.suite_id == suite
 
 
-def test_a_migration_written_before_the_suite_existed_fails_to_load():
-    """The README and docs/12 §1.0 say existing migration files need the
-    keyword added by hand; this is what they would hit otherwise."""
-    with pytest.raises(TypeError, match="suite_id"):
-        exec(  # noqa: S102
-            "import fieldseal_django.declarations\n"
-            "fieldseal_django.declarations.BlindIndex("
-            "projected_population=100000)", {})
+def test_a_migration_written_before_the_suite_existed_still_loads():
+    """A historical migration serializes `BlindIndex(...)` without a suite.
+    It must import, or `migrate`, `makemigrations` and `showmigrations` all
+    crash while loading the graph, before E003 can explain anything
+    (PR #282 review). It loads as "not stated", and is written back as it
+    was: nothing invents a suite for it."""
+    ns: dict = {}
+    exec(  # noqa: S102
+        "import fieldseal_django.declarations\n"
+        "idx = fieldseal_django.declarations.BlindIndex("
+        "projected_population=100000)", ns)
+    assert ns["idx"].suite_id is None
+    _, _, kwargs = ns["idx"].deconstruct()
+    assert "suite_id" not in kwargs
 
 
 def test_the_suite_is_emitted_even_when_every_other_member_is_default():

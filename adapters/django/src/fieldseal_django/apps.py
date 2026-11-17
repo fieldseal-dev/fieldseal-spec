@@ -29,9 +29,7 @@ from fieldseal import (
     CardinalityOverride,
     Fieldseal,
     IndexDeclaration,
-    validate_index_declaration,
 )
-from fieldseal.errors import ConfigurationError
 
 from .errors import FieldsealConfigurationError
 
@@ -89,9 +87,18 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
     enforce, and it does, at construction. `docs/12` §5's E003 exists to turn
     that refusal into a startup check rather than to duplicate the rule.
     """
+    return [decl for _, _, decl in index_declarations(registry)]
+
+
+def index_declarations(
+        registry: Any = None) -> list[tuple[Any, Any, IndexDeclaration]]:
+    """`build_index_registry`, with the model and field each declaration came
+    from. The system checks use the pairing to name the model field when the
+    core refuses a declaration; the core's own message names the index id.
+    """
     from .declarations import Override
 
-    decls: list[IndexDeclaration] = []
+    decls: list[tuple[Any, Any, IndexDeclaration]] = []
     for model, field in iter_encrypted_fields(registry):
         idx = field.index
         if idx is None:
@@ -105,9 +112,9 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
             )
 
         if idx.suite_id is None:
-            # `BlindIndex(suite_id=...)` is keyword-required, so this is only
-            # reachable with an explicit `None`; the core refuses that too,
-            # but its message cannot name the model field.
+            # `None` is "not stated" (the dataclass default, kept so that old
+            # migration files import). The core refuses it too, but its
+            # message cannot name the model field.
             raise FieldsealConfigurationError(
                 f"{model.__name__}.{field.name} declares a BlindIndex with no "
                 "suite_id. State the suite explicitly, e.g. "
@@ -156,18 +163,7 @@ def build_index_registry(registry: Any = None) -> list[IndexDeclaration]:
             on_unindexable=idx.on_unindexable,
             unindexable_override=_override(idx.unindexable_override),
         )
-        # The core's own gate, run here only so its refusal can name the
-        # model field (it names the index-id and nothing else). The verdict
-        # and the message are the core's; the prefix is the adapter's.
-        try:
-            validate_index_declaration(decl)
-        except ConfigurationError as e:
-            raise ConfigurationError(
-                f"{model.__name__}.{field.name} (BlindIndex "
-                f"{idx.index_id!r}): {e}. If the suite is the problem, state "
-                "it explicitly with BlindIndex(suite_id=...)."
-            ) from e
-        decls.append(decl)
+        decls.append((model, field, decl))
     return decls
 
 

@@ -55,7 +55,7 @@ const CLIENT_OPTS = {
 };
 
 /** The fixture map with `Patient.alias`'s index declared under `suiteId`. */
-function aliasMap(suiteId: number | undefined): FieldMap {
+function aliasMap(suiteId: number | null | undefined): FieldMap {
   return {
     ...fieldsealFieldMap,
     models: fieldsealFieldMap.models.map((m) =>
@@ -136,6 +136,12 @@ describe("the extension refuses a map whose index has no suite (spec §7.2)", ()
     expect(build).toThrow(FieldsealConfigurationError);
     expect(build).toThrow(/Patient\.alias .*declares no suite_id/);
     expect(build).toThrow(/State the suite explicitly/);
+  });
+
+  it("treats a null suite, which only an edited map can hold, as absent", () => {
+    const build = () => fieldsealExtension({ fieldMap: aliasMap(null), ...CLIENT_OPTS });
+    expect(build).toThrow(FieldsealConfigurationError);
+    expect(build).toThrow(/Patient\.alias .*declares no suite_id/);
   });
 
   it("passes the core's own refusal of an unregistered suite, with the column named", () => {

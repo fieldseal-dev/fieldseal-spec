@@ -225,11 +225,12 @@ email_bidx = Encrypted.index_column("email")
 
 ### `suite_id`
 
-The cipher suite the index is declared under (spec §7.2). It has no default,
-and the adapter never takes it from `WRITE_SUITE`: leaving it out is a
-`TypeError` when the model module loads, and a value the core does not accept
-(`None`, a non-integer, an unregistered suite) fails `manage.py check` with
-`fieldseal.E003`, naming the model field.
+The cipher suite the index is declared under (spec §7.2). It is required, and
+the adapter never takes it from `WRITE_SUITE` or completes it from anything
+else: leaving it out, or passing a value the core does not accept (a
+non-integer, an unregistered suite), fails `manage.py check` with
+`fieldseal.E003`, naming the model field. A project that skips the checks is
+refused the same way the first time the client is built.
 
 An index value carries no header, so nothing stored says which suite produced
 it. That is why the suite is a declaration rather than a setting. It is fixed
@@ -239,15 +240,17 @@ for the life of the index (spec §7.8): changing it, like changing `idf` or
 envelopes are written under. The declared suite need not be the write suite
 and need not appear in `ALLOWED_SUITES`.
 
-**Upgrading.** Every `BlindIndex(...)` must now add `suite_id=`, or the models
-module fails to import. Declare the suite the index was written under, which
-for a deployment that has not changed `WRITE_SUITE` is the one in your
-settings: stored index bytes are then unchanged and nothing needs rebuilding.
-Migrations you have already generated are affected too: they serialize the
-field's `BlindIndex(...)`, so every `fieldseal_django.declarations.BlindIndex(...)`
-in an existing migration file needs the same `suite_id=` added, or that
-migration fails to import. New migrations write it themselves. If you supply your own
-`CLIENT`, `fieldseal.E006` compares the declared suite too.
+**Upgrading.** Every `BlindIndex(...)` on a model must now add `suite_id=`, or
+startup fails with `fieldseal.E003`. Declare the suite the index was written
+under, which for a deployment that has not changed `WRITE_SUITE` is the one in
+your settings: stored index bytes are then unchanged and nothing needs
+rebuilding. Migrations you have already generated keep loading as they are:
+a `BlindIndex(...)` serialized without a suite reads as "not stated", which is
+refused on a model and harmless in a historical migration. The next
+`makemigrations` writes an `AlterField` that records the suite (measured on
+the patient-directory demo; what SQL that operation emits was not measured).
+If you supply your own `CLIENT`, `fieldseal.E006` compares the declared suite
+too.
 
 ### `projected_population`
 

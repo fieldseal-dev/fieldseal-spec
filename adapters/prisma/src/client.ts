@@ -80,8 +80,10 @@ export function buildIndexRegistry(map: ResolvedMap, opts: ClientOptions): Index
       // Spec §7.2 (#213): the declared suite has no default. The generator
       // refuses a declaration without one, so a miss here is a map generated
       // before the suite existed, or edited. It is refused, naming the column,
-      // and never completed from `opts.writeSuite`.
-      if ((idx.suiteId as number | undefined) === undefined) {
+      // and never completed from `opts.writeSuite`. `null` counts as absent:
+      // only an edited map can hold it, and the core's refusal of it names
+      // the index id, not the column (PR #282 review).
+      if ((idx.suiteId as number | null | undefined) == null) {
         throw new FieldsealConfigurationError(
           `fieldseal: ${model.model}.${idx.source} (index "${idx.indexId}", sibling ` +
             `${model.model}.${idx.field}) declares no suite_id. State the suite ` +

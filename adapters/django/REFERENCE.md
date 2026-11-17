@@ -86,18 +86,22 @@ projected_population=100_000)`. It is required, keyword-only and has no default,
 and the adapter never fills it from `FIELDSEAL["WRITE_SUITE"]`: the index
 context's `suite_id` is the suite the index is declared under, not the suite
 envelopes are written under (spec §7.2), because a stored index value carries
-no header to say which suite produced it. Omitting it is a `TypeError` when the
-model module loads. An explicit `None`, a bool or an unregistered suite is
-refused by the core when the client is built and reported by `fieldseal.E003`
-with the model field's name; the adapter does not re-check the value (AD-1).
+no header to say which suite produced it. Omitting it, or passing `None`, is
+refused when the registry is assembled and reported by `fieldseal.E003` with
+the model field's name; the Python default is `None`, meaning "not stated",
+only so that a migration written before the suite existed still imports. A
+bool or an unregistered suite is refused by the core when the client is built
+and reported by `fieldseal.E003` with the model field's name; the adapter does
+not re-check the value (AD-1).
 
 The suite is fixed for the life of the index (spec §7.8), and changing
 `WRITE_SUITE` no longer affects any blind index. It need not be the write suite
-or appear in `ALLOWED_SUITES`. `BlindIndex.deconstruct()` always emits it, so a
-migration carries the suite the index was created under.
+or appear in `ALLOWED_SUITES`. `BlindIndex.deconstruct()` always emits a stated
+suite, so a migration carries the suite the index was created under.
 
 **Upgrading from a release without it:** add `suite_id=` to every
-`BlindIndex(...)` in models and in already-generated migration files. Stored
+`BlindIndex(...)` in models. Already-generated migration files load unchanged,
+and the next `makemigrations` records the suite in an `AlterField`. Stored
 index bytes do not change when the declared suite equals the write suite that
 was in use (spec §7.2, *Compatibility*).
 

@@ -154,6 +154,18 @@ def load_prisma() -> dict[str, Any]:
     columns: dict[str, Any] = {}
     for model in raw["models"]:
         indexes = {i["source"]: i for i in model["indexes"]}
+        for i in model["indexes"]:
+            # The map version did not change when the declared suite was added
+            # (#213), so a map generated before it passes the version check
+            # above and has no `suiteId`. Say so, rather than a KeyError.
+            if not isinstance(i.get("suiteId"), int):
+                _fail(
+                    f"{FIELD_MAP}: the index on {model['model']}."
+                    f"{i['source']} carries no declared suite (`suiteId`). "
+                    f"The map predates #213, or was edited: re-run "
+                    f"`npx prisma generate` in `prisma/` so it is rebuilt "
+                    f"from `schema.prisma`, which must state `suite_id`."
+                )
         for enc in model["encrypted"]:
             idx = indexes.get(enc["field"])
             columns[_uuid_key(enc["columnUuid"])] = {

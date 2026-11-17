@@ -90,13 +90,20 @@ class BlindIndex:
     """
 
     #: The suite this index is DECLARED under (spec §7.2, #213): the
-    #: `suite_id` inside the index-key context, e.g. `0xFF01`. Required, with
-    #: no default and keyword-only, so a declaration that omits it is a
-    #: `TypeError` at import. It is never taken from `WRITE_SUITE`: a default
-    #: filled in from the write suite would recreate the coupling the spec
-    #: removed. Fixed for the life of the index (spec §7.8). Validation of the
-    #: value is the core's.
-    suite_id: int = _dc_field(kw_only=True)
+    #: `suite_id` inside the index-key context, e.g. `0xFF01`. Required: a
+    #: model whose index names no suite fails startup (E003), and the first
+    #: use of the client refuses it too. It is never taken from `WRITE_SUITE`:
+    #: a default filled in from the write suite would recreate the coupling
+    #: the spec removed. Fixed for the life of the index (spec §7.8).
+    #: Validation of the value is the core's.
+    #:
+    #: The Python default is `None`, which means "not stated" and is refused,
+    #: never completed. It is `None` rather than absent so that a migration
+    #: file written before the suite existed, which serializes
+    #: `BlindIndex(...)` without it, still imports: a required argument made
+    #: every such file a `TypeError` while Django loaded the migration graph,
+    #: before any check could explain it (PR #282 review).
+    suite_id: int | None = _dc_field(default=None, kw_only=True)
     index_id: str = "exact"
     idf: str = "argon2id"
     normalize: str = "nfc-casefold-v1"
@@ -148,10 +155,12 @@ class BlindIndex:
         }
         kwargs = {k: getattr(self, k) for k, v in defaults.items()
                   if getattr(self, k) != v}
-        # The declared suite has no default (spec §7.2, #213), so it is always
-        # emitted: a migration must state the suite the index was created
-        # under, and an omitted one would not even load.
-        kwargs["suite_id"] = self.suite_id
+        # A stated suite is always emitted (spec §7.2, #213): it is not a
+        # default a later release could change, so a migration records the
+        # suite the index was created under. An unstated one stays unstated;
+        # the model is refused at startup, not rewritten here.
+        if self.suite_id is not None:
+            kwargs["suite_id"] = self.suite_id
         return (f"{self.__class__.__module__}.{self.__class__.__qualname__}",
                 [], kwargs)
 
