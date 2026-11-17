@@ -244,7 +244,52 @@ def _refusal(run_id: str, members: list[str]) -> str:
     return (f"run {run_id} cannot be resumed: the configuration it was "
             "started with differs from the live one, so the rest of the "
             "table would be written differently from the part already "
-            f"done (PROCEDURE §4). Differs: {', '.join(members)}.")
+            f"done (PROCEDURE §4). Differs: {', '.join(members)}."
+            + config.unrecorded_note(members))
+
+
+def check_earlier_runs(p: Plan) -> None:
+    """PROCEDURE §4, *On a new `encrypt` run*: refuse a new run whose index
+    declarations differ from those of an earlier run that converted values.
+
+    A value an earlier run converted is `current` to this one and is never
+    rewritten (§6.2), and no job re-derives its index (§1). So without this
+    check, abandoning a run that a resume refused, then starting a new one,
+    would walk around the refusal and leave index values under two
+    declarations in one column.
+    """
+    live = {c["column_uuid"]: c["indexes"] for c in p.config["columns"]}
+    connection = connections[p.alias]
+    for run in state.converting_runs(connection, p.config["table_uuid"]):
+        try:
+            stored = json.loads(run.config)
+            columns = stored["columns"]
+        except (ValueError, TypeError, KeyError):
+            raise BackfillError(
+                f"refused: run {run.run_id} converted values of this table "
+                "and its recorded configuration cannot be read, so whether "
+                "this run would index under the same declarations cannot be "
+                "checked (PROCEDURE §4). Nothing was written.") from None
+        members: list[str] = []
+        for column in columns:
+            uuid_hex = column.get("column_uuid")
+            if uuid_hex in live:
+                members.extend(config.differences(
+                    column.get("indexes"), live[uuid_hex],
+                    f"columns[{uuid_hex}].indexes"))
+        if members:
+            raise BackfillError(
+                f"refused: run {run.run_id} ({run.status}) converted "
+                f"{run.values_written} values of this table under index "
+                "declarations that differ from the live ones. A converted "
+                "value is never rewritten and its index is never re-derived "
+                "(PROCEDURE §6.2, §1), so a new run would leave index values "
+                "under two declarations in one column, and lookups would "
+                f"miss one half (PROCEDURE §4). Differs: {', '.join(members)}."
+                + config.unrecorded_note(members)
+                + " Changing an index declaration over a converted table is "
+                "a new index (spec §7.8), which this tool does not build. "
+                "Nothing was written.")
 
 
 def table_has_rows(p: Plan) -> bool:
@@ -256,7 +301,12 @@ def table_has_rows(p: Plan) -> bool:
 
 
 def new_run(p: Plan) -> state.Run:
-    """Insert the run row. Raises `state.RunHeld` if the table is taken."""
+    """Insert the run row. Raises `state.RunHeld` if the table is taken.
+
+    Refuses first, inserting nothing, if an earlier run converted values of
+    the table under other index declarations (`check_earlier_runs`).
+    """
+    check_earlier_runs(p)
     at = state.now()
     run = state.Run(
         run_id=str(uuid.uuid4()),

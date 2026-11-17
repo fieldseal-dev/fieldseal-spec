@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import dataclasses
+import hashlib
 import json
 import pathlib
 import re
@@ -34,6 +35,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import OperationalError, connection, connections, transaction
 from django.test.utils import isolate_apps, override_settings
+from fieldseal import ValidatedIndex, index_registry_key
 
 from fieldseal_django import Encrypted, FieldsealMeta, tenant_scope
 from fieldseal_django.apps import get_client, reset_client
@@ -521,6 +523,326 @@ def test_bf05_resume_with_a_changed_write_suite_is_refused(
             resume(run_id)
     assert "Differs: write_suite." in str(refused.value)
     assert _snapshot(shape, run_id) == before
+
+
+def test_bf21_resume_with_a_changed_declared_suite_is_refused(
+        shape, monkeypatch):
+    """PROCEDURE §4 (#281): an index's declared suite keys every index value
+    the run writes, independently of `write_suite` (spec §7.2, #213), so the
+    resume is refused by the index's own `suite_id` member. `0xFF02` is a
+    real declaration here, not a patched reflection: derivation needs the
+    suite's KDF only, which this build has (`SuiteTwoDoc`)."""
+    run_id = _killed_run(shape)
+    before = _snapshot(shape, run_id)
+    field = shape.model._meta.get_field(shape.field)
+    assert field.index.suite_id == 0xFF01
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        assert get_client().write_suite == 0xFF01
+        with pytest.raises(BackfillError) as refused:
+            resume(run_id)
+        _, _, error = command("resume", run_id)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    member = f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+    assert member in str(refused.value)
+    assert "write_suite" not in str(refused.value)
+    assert member in str(error)
+    assert _snapshot(shape, run_id) == before
+
+
+#: What the frontend recorded for each shape before #281, verbatim: produced
+#: by the frontend at `b466188` (the commit before the change) and copied
+#: here, with the hash it stored. Literal so that a later change to
+#: `serialize` or `digest` cannot quietly change what "a pre-#281 run" means.
+PRE_281 = {
+    "in_place": (
+        '{"columns":[{"column_uuid":"018f3c2e000070008000000000000051",'
+        '"indexes":[{"argon2":null,"idf":"hmac-sha512","index_id":"exact",'
+        '"normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":'
+        '"binary","truncate_bits":15}],"logical_type":"string","source":null,'
+        '"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":'
+        '"encrypt","procedure_version":1,"table_uuid":'
+        '"018f3c2e000070008000000000000050","write_suite":65281}',
+        "1bfffb152108161c9947b20113766911028596b86946aff9a15742edd75f88fc"),
+    "two_column": (
+        '{"columns":[{"column_uuid":"018f3c2e000070008000000000000061",'
+        '"indexes":[{"argon2":null,"idf":"hmac-sha512","index_id":"exact",'
+        '"normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":'
+        '"binary","truncate_bits":15}],"logical_type":"string","source":'
+        '"email_legacy","storage":"binary"}],"cursor":[{"name":"id","type":'
+        '"int"}],"job":"encrypt","procedure_version":1,"table_uuid":'
+        '"018f3c2e000070008000000000000060","write_suite":65281}',
+        "1e1093d53e39ad0062a3b21787f5d9da806d83e7b903cfb18cebfe0e4accab4c"),
+}
+
+
+def _record_pre_281(shape, run_id):
+    text, digest = PRE_281[shape.name]
+    assert hashlib.sha256(text.encode("ascii")).hexdigest() == digest
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, digest, run_id])
+
+
+def test_bf21_a_run_recorded_before_281_is_refused_and_says_why(shape):
+    """PROCEDURE §12 kept version 1 on the ground that a run recorded before
+    #281 is refused by the comparison, naming the member; this pins that
+    ground against the document such a run actually stored. The refusal
+    marks the member as not recorded, so an operator who only upgraded does
+    not go looking for a suite change that never happened."""
+    run_id = _killed_run(shape)
+    _record_pre_281(shape, run_id)
+    before = _snapshot(shape, run_id)
+    field = shape.model._meta.get_field(shape.field)
+
+    with pytest.raises(BackfillError) as refused:
+        resume(run_id)
+
+    message = str(refused.value)
+    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+            f"{config.NOT_RECORDED}") in message
+    assert "under a construction of the configuration without that member" \
+        in message
+    assert "#281" not in message
+    assert _snapshot(shape, run_id) == before
+
+
+def test_the_old_worked_example_is_a_pre_281_document():
+    """The worked example before #281, by its own published hash: a
+    document without `suite_id` is what a version-1 run recorded then."""
+    old = WORKED_EXAMPLE.replace('"suite_id":65282,', "")
+    assert old != WORKED_EXAMPLE
+    assert hashlib.sha256(old.encode("ascii")).hexdigest() == (
+        "8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0")
+    assert config.differences(json.loads(old), json.loads(WORKED_EXAMPLE)) \
+        == ["columns[018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f].indexes[exact]"
+            f".suite_id{config.NOT_RECORDED}"]
+
+
+def test_bf21_the_suite_is_read_from_the_validated_registry(shape):
+    """PROCEDURE §4: index members come from the client's validated
+    registry, never the declaration as written. The registry is made to
+    disagree with the declaration, which the core itself never does, so a
+    `config.build` that read `field.index.suite_id` would fail here."""
+    field = shape.model._meta.get_field(shape.field)
+    table = shape.model.fieldseal.table_uuid_bytes
+    key = index_registry_key(table, field.column_uuid, "exact")
+    registry = dict(get_client().indexes)
+    assert field.index.suite_id == registry[key].suite_id == 0xFF01
+    registry[key] = dataclasses.replace(registry[key], suite_id=0xFF02)
+
+    built = config.build(
+        job="encrypt", table_uuid=table, write_suite=0xFF01,
+        cursor=[("id", "int")], targets=[(field, None)], indexes=registry)
+
+    (column,) = built["columns"]
+    assert column["indexes"][0]["suite_id"] == 0xFF02
+
+
+#: `ValidatedIndex` members the configuration deliberately leaves out, and
+#: why: `key` is the registry key, which `column_uuid` and `index_id` already
+#: carry; the population and the override flag decide whether a declaration
+#: is accepted, not what is stored (PROCEDURE §4).
+NOT_IN_CONFIG = {"key", "projected_population", "overridden"}
+
+
+def test_every_validated_index_member_is_recorded_or_excluded(shape):
+    """#281's root cause: the index entry is written out by hand, and a
+    member the core added (the declared suite) was missed. A member added
+    to `ValidatedIndex` now fails here until it is recorded or excluded
+    above with a reason."""
+    members = {f.name for f in dataclasses.fields(ValidatedIndex)}
+    p = encrypt.plan(shape.model, shape.columns, shape.sources)
+    (index,) = p.config["columns"][0]["indexes"]
+    recorded = set(index) - {"storage"}  # storage is the column's, §7.11
+    assert recorded | NOT_IN_CONFIG == members
+    assert not recorded & NOT_IN_CONFIG
+
+
+# -- BF-22: a new run after an abandoned one ----------------------------------
+
+def _run_rows(shape):
+    table = shape.model.fieldseal.table_uuid_bytes.hex()
+    with connection.cursor() as cur:
+        cur.execute(
+            f"SELECT run_id FROM {state.RUNS} WHERE table_uuid = %s "
+            "ORDER BY run_id", [table])
+        return [r[0] for r in cur.fetchall()]
+
+
+def test_bf22_a_new_run_after_abandon_with_a_changed_suite_is_refused(
+        shape, monkeypatch):
+    """PROCEDURE §4, *On a new `encrypt` run*: the resume refusal of BF-21
+    cannot be walked around by abandoning the run and starting another. The
+    abandoned run's converted values are `current` to a new run and their
+    indexes are never re-derived, so the new run would index the rest under
+    another suite."""
+    run_id = _killed_run(shape)
+    assert state.load_run(connection, run_id).values_written > 0
+    _, _, error = command("abandon", run_id)
+    assert error is None
+    before = (all_raw(shape.model, shape.field),
+              all_raw(shape.model, shape.index), _run_rows(shape))
+    field = shape.model._meta.get_field(shape.field)
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        with pytest.raises(BackfillError) as refused:
+            begin(shape)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+
+    message = str(refused.value)
+    assert run_id in message and "(abandoned)" in message
+    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+            in message)
+    assert (all_raw(shape.model, shape.field),
+            all_raw(shape.model, shape.index), _run_rows(shape)) == before
+
+
+def test_bf22_an_abandoned_run_that_wrote_nothing_does_not_count(
+        shape, monkeypatch):
+    shape.seed(emails(5))
+    _, run = begin(shape)
+    assert state.abandon(connection, run.run_id)
+    field = shape.model._meta.get_field(shape.field)
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        p, second = begin(shape)
+        outcome = drive(p, second)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written == 5
+
+
+def test_bf22_a_new_run_after_a_pre_281_run_is_refused(shape):
+    """PROCEDURE §12: a run recorded before #281 that converted values blocks
+    a new run on its table too, since which suite its indexes were derived
+    under cannot be told. The refusal says the member was not recorded."""
+    run_id = _killed_run(shape)
+    _record_pre_281(shape, run_id)
+    assert state.abandon(connection, run_id)
+    with pytest.raises(BackfillError) as refused:
+        begin(shape)
+    message = str(refused.value)
+    assert f".suite_id{config.NOT_RECORDED}" in message
+    assert "under a construction of the configuration without that member" \
+        in message
+    assert "#281" not in message
+
+
+def test_bf22_a_new_run_with_the_same_declarations_starts(shape):
+    run_id = _killed_run(shape)
+    assert state.abandon(connection, run_id)
+    p, run = begin(shape)
+    outcome = drive(p, run)
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written + outcome.run.values_current == 25
+
+
+@contextlib.contextmanager
+def renamed_index(shape, monkeypatch):
+    """The column's one index declared under another `index_id`: to the
+    comparison, the recorded index is removed and a new one added. The
+    sibling column derives through the source field's declaration, so it
+    follows the rename."""
+    field = shape.model._meta.get_field(shape.field)
+    with monkeypatch.context() as m:
+        m.setattr(field, "index",
+                  dataclasses.replace(field.index, index_id="renamed"))
+        reset_client()
+        try:
+            yield f"columns[{field.column_uuid.hex()}].indexes"
+        finally:
+            m.undo()
+            reset_client()
+
+
+def test_differences_mark_an_index_on_one_side_only():
+    stored = json.loads(WORKED_EXAMPLE)
+    live = json.loads(WORKED_EXAMPLE)
+    (index,) = live["columns"][0]["indexes"]
+    live["columns"][0]["indexes"] = [dict(index, index_id="other")]
+    c = "018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f"
+    found = config.differences(stored, live)
+    assert found == [f"columns[{c}].indexes[exact]{config.REMOVED}",
+                     f"columns[{c}].indexes[other]{config.ADDED}"]
+    assert config.unrecorded_note(found) == ""
+
+
+def test_bf05_resume_with_an_index_added_and_removed_is_refused(
+        shape, monkeypatch):
+    run_id = _killed_run(shape)
+    before = _snapshot(shape, run_id)
+    with renamed_index(shape, monkeypatch) as at:
+        with pytest.raises(BackfillError) as refused:
+            resume(run_id)
+    message = str(refused.value)
+    assert f"{at}[exact]{config.REMOVED}" in message
+    assert f"{at}[renamed]{config.ADDED}" in message
+    assert "not recorded" not in message
+    assert _snapshot(shape, run_id) == before
+
+
+def test_bf22_a_new_run_with_an_index_added_and_removed_is_refused(
+        shape, monkeypatch):
+    """BF-22's other half: an index present in only one of the two. The
+    abandoned run's converted values have an index under `exact` and none
+    under `renamed`, and a new run would never derive the second for them."""
+    run_id = _killed_run(shape)
+    assert state.abandon(connection, run_id)
+    rows = _run_rows(shape)
+    with renamed_index(shape, monkeypatch) as at:
+        with pytest.raises(BackfillError) as refused:
+            begin(shape)
+    message = str(refused.value)
+    assert run_id in message
+    assert f"{at}[exact]{config.REMOVED}" in message
+    assert f"{at}[renamed]{config.ADDED}" in message
+    assert _run_rows(shape) == rows
+
+
+def test_bf22_the_command_names_the_run_and_member_and_writes_nothing(
+        shape, monkeypatch):
+    """BF-22 through `manage.py fieldseal_backfill encrypt`, as BF-21 is
+    checked through `resume`: the refusal reaches the operator, names the
+    earlier run and the member, and inserts no run row."""
+    run_id = _killed_run(shape)
+    _, _, error = command("abandon", run_id)
+    assert error is None
+    before = (all_raw(shape.model, shape.field),
+              all_raw(shape.model, shape.index), _run_rows(shape))
+    field = shape.model._meta.get_field(shape.field)
+    args = [f"--source={k}={v}" for k, v in shape.sources.items()]
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        _, _, error = command(
+            "encrypt", f"tests.{shape.model.__name__}",
+            "--columns", ",".join(shape.columns),
+            "--rows-per-second", "100000",
+            "--acknowledge-preexisting-backups", *args)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    assert isinstance(error, CommandError)
+    assert run_id in str(error)
+    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
+            in str(error))
+    assert (all_raw(shape.model, shape.field),
+            all_raw(shape.model, shape.index), _run_rows(shape)) == before
 
 
 def test_bf05_the_command_names_the_member_and_writes_nothing(
@@ -1029,12 +1351,12 @@ WORKED_EXAMPLE = (
     '{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":'
     '[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id",'
     '"index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":'
-    '"refuse","storage":"binary","truncate_bits":24}],"logical_type":'
-    '"string","source":null,"storage":"binary"}],"cursor":[{"name":"id",'
-    '"type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":'
-    '"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}')
+    '"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],'
+    '"logical_type":"string","source":null,"storage":"binary"}],"cursor":'
+    '[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,'
+    '"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}')
 WORKED_HASH = (
-    "8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0")
+    "960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419")
 
 
 def test_bf17_the_worked_example():
@@ -1054,6 +1376,7 @@ def test_bf17_the_worked_example():
         normalize = "nfc-casefold-v1"
         truncate_bits = 24
         on_unindexable = "refuse"
+        suite_id = 0xFF02
 
     table = bytes.fromhex("018f3c2e7a1b7c3d8e4f5a6b7c8d9e00")
     registry = {f"{table.hex()}/{Field.column_uuid.hex()}/exact": Validated}
@@ -1082,7 +1405,7 @@ def test_the_run_row_stores_the_document_its_hash_is_of(shape):
     assert column["indexes"] == [{
         "argon2": None, "idf": "hmac-sha512", "index_id": "exact",
         "normalize": "nfc-casefold-v1", "on_unindexable": "refuse",
-        "storage": "binary", "truncate_bits": 15}]
+        "storage": "binary", "suite_id": 0xFF01, "truncate_bits": 15}]
     assert stored.frontend.startswith("django/")
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", stored.started_at)
 
@@ -1300,7 +1623,7 @@ def test_differences_name_each_member():
     c = "018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f"
     assert config.differences(stored, live) == [
         f"columns[{c}].indexes[exact].argon2.time_cost",
-        f"columns[{'ff' * 16}]",
+        f"columns[{'ff' * 16}]{config.ADDED}",
         "cursor[0].name",
         "write_suite",
     ]
