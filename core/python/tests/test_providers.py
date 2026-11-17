@@ -26,7 +26,11 @@ from fieldseal import FieldContext, Fieldseal  # noqa: E402
 from fieldseal.blindindex import IndexDeclaration  # noqa: E402
 from fieldseal.cache import CachePolicy, DekCache  # noqa: E402
 from fieldseal.envelope import EnvelopeHeader  # noqa: E402
-from fieldseal.errors import ConfigurationError, KeyUnavailable  # noqa: E402
+from fieldseal.errors import (  # noqa: E402
+    ConfigurationError,
+    FieldsealError,
+    KeyUnavailable,
+)
 from fieldseal.keyprovider import (  # noqa: E402
     EnvelopeKeyProvider,
     InMemoryKeyDirectory,
@@ -43,6 +47,14 @@ SCOPE = b"tenant-0001"
 CTX = FieldContext(table_uuid=bytes(16), column_uuid=bytes(range(16)),
                    purpose="encrypt", tenant_id=SCOPE)
 
+# A second tenant, for the one-capacity test (#215). Its key id must differ
+# from KEY_ID: InMemoryKeyDirectory refuses a duplicate.
+SCOPE_B = b"tenant-0002"
+KEY_ID_B = bytes(range(16, 32))
+DEK_B = bytes(range(64, 96))
+INDEX_KEY_B = bytes(range(96, 128))
+CTX_B = replace(CTX, tenant_id=SCOPE_B)
+
 def _client(provider: object, **kw: object) -> Fieldseal:
     return Fieldseal(key_provider=provider,  # type: ignore[arg-type]
                      allowed_suites={0xFF01}, write_suite=0xFF01,
@@ -51,6 +63,16 @@ def _client(provider: object, **kw: object) -> Fieldseal:
 
 def _run(coro: Callable[..., object]) -> object:
     return asyncio.run(coro)  # type: ignore[arg-type]
+
+
+def _code_of(fn: Callable[[], object]) -> str:
+    """The error code a call raises, or "NO_ERROR" -- the same shape as the
+    TypeScript suite's `codeOf`, so these cases assert codes, not messages."""
+    try:
+        fn()
+    except FieldsealError as e:
+        return e.code
+    return "NO_ERROR"
 
 
 # -- DekCache (spec §5.5) ------------------------------------------------------
@@ -218,6 +240,31 @@ def _provider(max_uses: int = 1000,
     return provider, wrapper
 
 
+def _two_tenant_provider(
+        capacity: int, max_uses: int = 1000
+) -> tuple[EnvelopeKeyProvider, CountingXorWrapper]:
+    """One provider serving two unrelated tenants, so the #215 capacity case
+    can watch one client's warms evict the other's key."""
+    wrapper = CountingXorWrapper()
+    directory = InMemoryKeyDirectory([
+        WrappedKeySet(
+            scope=SCOPE, active_version=1,
+            versions=[WrappedKeyVersion(version=1, key_id=KEY_ID,
+                                        wrapped_dek=wrap(DEK),
+                                        wrapped_index_key=wrap(INDEX_KEY))]),
+        WrappedKeySet(
+            scope=SCOPE_B, active_version=1,
+            versions=[WrappedKeyVersion(version=1, key_id=KEY_ID_B,
+                                        wrapped_dek=wrap(DEK_B),
+                                        wrapped_index_key=wrap(INDEX_KEY_B))]),
+    ])
+    provider = EnvelopeKeyProvider(
+        wrapper=wrapper, directory=directory,
+        cache=CachePolicy(max_age=timedelta(seconds=60),
+                          max_uses=max_uses, capacity=capacity))
+    return provider, wrapper
+
+
 def _index_decl() -> IndexDeclaration:
     """An `hmac-sha512` equality index on CTX's column: cheap enough that the
     index-role tests stay fast, and identity normalization keeps the derived
@@ -363,6 +410,62 @@ class TestEnvelopeKeyProvider:
         assert c.encrypt(PT, CTX)      # DEK use 3 → evicted on return
         with pytest.raises(KeyUnavailable):
             c.encrypt(PT, CTX)
+
+    # -- clients sharing one provider (docs/09 §8.3, "What sharing one
+    # provider means"; #215). Written from that text alone.
+
+    def test_clients_sharing_a_provider_share_its_cache(self):
+        """docs/09 §8.3: a key is unwrapped once per residency, whichever
+        client first needs it. The second client is not warmed: it is served
+        from the cache the first client's warm filled, with no unwrap."""
+        p, w = _provider()
+        a = _client(p)
+        b = _client(p)
+        _run(a.warm([CTX]))
+        assert w.calls == 2                       # dek + index key, once each
+        env_b = b.encrypt(PT, CTX)                # b never warmed
+        assert a.decrypt(env_b, CTX) == PT
+        assert b.decrypt(a.encrypt(PT, CTX), CTX) == PT
+        assert w.calls == 2                       # no client unwrapped again
+        assert p.cache.size == 2                  # one entry per role, not per client
+
+    def test_clients_sharing_a_provider_share_one_max_uses_budget(self):
+        """docs/09 §8.3: a DEK entry's max_uses budget is shared -- every
+        client's returns of that key spend one budget, not one each. So N
+        encryptions spread over two clients use up max_uses = N."""
+        n = 4
+        p, _ = _provider(max_uses=n)
+        a = _client(p)
+        b = _client(p)
+        _run(a.warm([CTX]))
+        for i in range(n):                        # a, b, a, b
+            assert (a if i % 2 == 0 else b).encrypt(PT, CTX)
+        assert _code_of(lambda: a.encrypt(PT, CTX)) == "KEY_UNAVAILABLE"
+        assert _code_of(lambda: b.encrypt(PT, CTX)) == "KEY_UNAVAILABLE"
+        assert p.cache.metrics.evictions["max-uses"] == 1   # one budget, spent once
+
+    def test_one_clients_warms_evict_the_other_clients_key_which_fails_closed(self):
+        """docs/09 §8.3: capacity is one budget covering every tenant the
+        sharing clients serve, so one client's warms can evict a key another
+        client relies on; that key then fails closed with KEY_UNAVAILABLE
+        until it is warmed again.
+
+        capacity=2 and a warm puts two entries (dek + index key), so B's warm
+        must evict both of A's whatever their LRU order."""
+        p, _ = _two_tenant_provider(capacity=2)
+        a = _client(p)                            # serves tenant A (CTX)
+        b = _client(p)                            # serves tenant B (CTX_B)
+        _run(a.warm([CTX]))
+        assert a.encrypt(PT, CTX)
+        _run(b.warm([CTX_B]))
+        assert b.encrypt(PT, CTX_B)
+        assert p.cache.metrics.evictions["capacity"] == 2
+        assert p.cache.size == 2
+        assert _code_of(lambda: a.encrypt(PT, CTX)) == "KEY_UNAVAILABLE"
+        # "until it is warmed again": re-warming A restores it, and evicts B.
+        _run(a.warm([CTX]))
+        assert a.encrypt(PT, CTX)
+        assert _code_of(lambda: b.encrypt(PT, CTX_B)) == "KEY_UNAVAILABLE"
 
     def test_decryption_keys_for_an_unknown_key_id_is_empty(self):
         p, _ = _provider()
