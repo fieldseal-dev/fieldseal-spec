@@ -21,8 +21,10 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import warnings
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 os.environ.setdefault("FIELDSEAL_TEST_MODE", "1")
@@ -123,6 +125,38 @@ PINNED_DECISIONS = {
         "raise TypeError, verified against 25.1.0 and pinned by "
         "tests/test_blindindex_salt.py), so there is no buffer to "
         "overwrite. Candidate reads do not count against max_uses."),
+    "index-role-use-budget": (
+        "none (docs/09 §8.3): the index role has no use budget. max_uses "
+        "is spent only by DEK-role `encryption_key` returns; an index key "
+        "is never AEAD key material and draws no nonce, so the SP 800-38D "
+        "ceiling spec §5.5 sets max_uses for does not reach it. max_age and "
+        "the capacity LRU still apply to both roles. This core decides it "
+        "once, where the role is known: `EnvelopeKeyProvider` puts its "
+        "index-role cache slots with `counted=False` (keyprovider.py), and "
+        "`DekCache.get` spends no budget on an uncounted slot (cache.py). "
+        "Test-backed (docs/14 §4): docs/08 §8 keeps provider behaviour out "
+        "of the vector suite, so this generator runs "
+        "tests/test_index_role_budget.py::TestIndexRoleUseBudget::"
+        "test_index_role_slot_never_spends_max_uses (an index-role slot "
+        "read past max_uses=1, with a counted DEK slot as the control) and "
+        "tests/test_providers.py::TestEnvelopeKeyProvider::"
+        "test_index_key_returns_do_not_deplete_max_uses (the same end to "
+        "end through blind_index), and claims no level if either did not "
+        "run or did not pass  [#212, #225]"),
+}
+
+# docs/14 §4: a **test-backed pinned decision** cites the tests that prove it,
+# and the report generator runs them; if any did not run or did not pass, the
+# report claims no level (the key's text still states the decision). Node ids
+# are relative to core/python and are quoted verbatim in the key's text --
+# `test_vectors.py` asserts that, so the text and the run cannot drift.
+PINNED_TESTS: dict[str, tuple[str, ...]] = {
+    "index-role-use-budget": (
+        "tests/test_index_role_budget.py::TestIndexRoleUseBudget::"
+        "test_index_role_slot_never_spends_max_uses",
+        "tests/test_providers.py::TestEnvelopeKeyProvider::"
+        "test_index_key_returns_do_not_deplete_max_uses",
+    ),
 }
 # Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 # these over: `unknown-format-version-set` → spec §3.1/§3.4/§9/§10.3,
@@ -209,6 +243,12 @@ def _index_decl(inp: dict, ctx: FieldContext,
                 on_unindexable: str = "refuse") -> IndexDeclaration:
     return IndexDeclaration(
         table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+        # The DECLARED suite (spec §7.2, #213): `inp["suite_id"]` is it in
+        # every shape -- under `inputs` beside `idf`, or at the top level of a
+        # primitive vector. The client below is built on 0xFF01 only, so a
+        # vector declared under 0xFF02 also checks that the declaration is not
+        # tied to the write suite.
+        suite_id=_suite_id(inp),
         index_id=inp["index_id"], idf=inp["idf"],
         argon2=_argon2_params(inp),
         normalize=inp["normalize"], truncate_bits=inp["truncate_bits"],
@@ -269,8 +309,16 @@ def _run_declaration(v: dict, results: list[dict]) -> None:
     try:
         # Built inside the boundary: a malformed vector is its own recorded
         # failure, never an abort with no report (the #108 lesson).
+        # A declaration vector names the declared suite as
+        # `inputs.declaration.suite_id` (docs/08 §3); its top-level suite_id
+        # names the CLIENT, which `_client` builds on 0xFF01 only (docs/08
+        # §4.4). `IndexDeclaration.suite_id` has no default, so a member the
+        # vector omits is passed as `None` -- the Python constructor cannot be
+        # called without it, and it is the validator's refusal of a missing
+        # suite that `declared-suite-missing-refused` pins.
         decl = IndexDeclaration(
             table_uuid=H(d["table_uuid"]), column_uuid=H(d["column_uuid"]),
+            suite_id=_suite_id(d) if "suite_id" in d else None,  # type: ignore[arg-type]
             index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
             truncate_bits=d["truncate_bits"],
             projected_population=d["projected_population"],
@@ -623,8 +671,12 @@ def _errors_client(v: dict) -> Fieldseal:
     if "index_declaration" in v:
         d = v["index_declaration"]
         ctx = _ctx(v, _suite_id(v))
+        # This family's `index_declaration` has no suite member (docs/08
+        # §4.6) and its vectors assert an outcome, not bytes, so the index is
+        # declared under the vector's own top-level suite.
         indexes = (IndexDeclaration(
             table_uuid=ctx.table_uuid, column_uuid=ctx.column_uuid,
+            suite_id=_suite_id(v),
             index_id=d["index_id"], idf=d["idf"], normalize=d["normalize"],
             truncate_bits=d["truncate_bits"],
             projected_population=_population_for(d["truncate_bits"])),)
@@ -770,7 +822,8 @@ def run_out_of_band() -> list[dict]:
     # carrying the operand's bytes form (suite 0.8.0, G26); `not-run` until
     # then. Python's `str` holds the operand, so this entry is "direct".
     idx_fs = _client(bytes(16), b"\x22" * 32, b"\x33" * 32, (IndexDeclaration(
-        table_uuid=bytes(16), column_uuid=bytes(16), index_id="exact",
+        table_uuid=bytes(16), column_uuid=bytes(16), suite_id=0xFF01,
+        index_id="exact",
         idf="hmac-sha512", normalize="nfc-casefold-v1", truncate_bits=15,
         projected_population=_population_for(15)),))
     idx_ctx = FieldContext(table_uuid=bytes(16), column_uuid=bytes(16),
@@ -858,6 +911,89 @@ def check_manifest() -> dict:
     return manifest
 
 
+CORE = REPO / "core" / "python"
+
+
+def _junit_address(nodeid: str) -> tuple[str, str]:
+    # pytest's junit report addresses a test by `classname` -- the node id's
+    # path, `.py` dropped and `/` as `.`, then its classes -- and `name`, the
+    # last part: "tests/test_x.py::TestY::test_z" is ("tests.test_x.TestY",
+    # "test_z"). Node ids are relative to the rootdir this run pins.
+    path, *rest = nodeid.split("::")
+    if path.endswith(".py"):
+        path = path[:-3]
+    return ".".join([path.replace("/", "."), *rest[:-1]]), (rest[-1] if rest else "")
+
+
+def run_pinned_tests(
+        pinned: dict[str, tuple[str, ...]] | None = None) -> dict[str, dict]:
+    """Runs the tests behind each test-backed pinned decision (docs/14 §4)
+    and classifies every cited node id as `pass`, `fail` or `missing`.
+
+    Only the cited node ids run, in a child pytest -- never the whole suite,
+    which imports this module (`test_vectors.py`) and would recurse. A key is
+    `pass` only if every test it cites ran and passed. Fail closed: no pytest,
+    no junit file, or a node id the run did not report is `missing`, never a
+    pass."""
+    pinned = PINNED_TESTS if pinned is None else pinned
+    out: dict[str, dict] = {}
+    for key, nodeids in pinned.items():
+        tests: dict[str, str] = {n: "missing" for n in nodeids}
+        reason = ""
+        with tempfile.TemporaryDirectory() as tmp:
+            xml_path = Path(tmp) / "pinned.xml"
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q",
+                     "-p", "no:cacheprovider", f"--rootdir={CORE}",
+                     f"--junitxml={xml_path}", *nodeids],
+                    cwd=CORE, capture_output=True, text=True, timeout=600)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                proc = None
+                reason = f"pytest could not be run: {e}"
+            if proc is not None and xml_path.exists():
+                by_address = {_junit_address(n): n for n in nodeids}
+                try:
+                    cases = list(ET.parse(xml_path).getroot().iter("testcase"))
+                except ET.ParseError as e:
+                    cases = []
+                    reason = f"pytest's junit report could not be read: {e}"
+                for case in cases:
+                    nid = by_address.get((case.get("classname", ""),
+                                          case.get("name", "")))
+                    if nid is None:
+                        continue
+                    # A skip is not a pass: a backing test that did not run
+                    # its assertions proves nothing (docs/14 §4).
+                    bad = any(case.find(t) is not None
+                              for t in ("failure", "error", "skipped"))
+                    tests[nid] = "fail" if bad else "pass"
+            if (proc is not None and not reason
+                    and any(s != "pass" for s in tests.values())):
+                tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
+                reason = (f"pytest exit {proc.returncode}: "
+                          + " | ".join(tail))
+        if all(s == "pass" for s in tests.values()):
+            status = "pass"
+        elif any(s == "fail" for s in tests.values()):
+            status = "fail"
+        else:
+            status = "missing"
+        out[key] = {"status": status, "tests": tests, "reason": reason}
+    return out
+
+
+def _pinned_note(key: str, pin: dict) -> str:
+    listed = "; ".join(f"{n}: {s}" for n, s in pin["tests"].items())
+    verdict = ("backed" if pin["status"] == "pass"
+               else "NOT backed, so no level is claimed")
+    note = (f"pinned_decisions.{key} is test-backed (docs/14 §4); this run: "
+            f"{listed}. {verdict}")
+    if pin["status"] != "pass" and pin["reason"]:
+        note += f" ({pin['reason']})"
+    return note
+
+
 def run() -> dict:
     manifest = check_manifest()
     results: list[dict] = []
@@ -875,7 +1011,12 @@ def run() -> dict:
     oob = run_out_of_band()
     npass = sum(r["status"] == "pass" for r in results)
     nfail = sum(r["status"] == "fail" for r in results)
-    green = nfail == 0 and all(o["status"] == "pass" for o in oob)
+    # docs/14 §4: a test-backed pinned decision whose tests did not run or did
+    # not pass withholds the level on the same terms as a failed result. It is
+    # not folded into `summary`, which counts vectors only.
+    pins = run_pinned_tests()
+    backed = all(p["status"] == "pass" for p in pins.values())
+    green = nfail == 0 and all(o["status"] == "pass" for o in oob) and backed
     return {
         "schema": "fieldseal-conformance/v1",
         "implementation": {"name": "python-core",
@@ -923,6 +1064,17 @@ def run() -> dict:
             "exists for a configuration refusal (docs/08 §4.3); any other "
             "exception is a failure. 'accepted' passes only if construction "
             "succeeds.",
+            "Declared suite (suite 0.11.0, #213; spec §7.2): every blind-index "
+            "vector's index is declared under the vector's declared suite "
+            "(inputs.suite_id, or the top-level suite_id of a primitive "
+            "vector) on a client whose write suite and decrypt allow-list are "
+            "0xFF01 only, and every 'declaration' vector is run on such a "
+            "client. A declaration vector without a suite_id member is "
+            "built with suite_id=None, because the Python constructor "
+            "cannot be called without the member; the validator's "
+            "ConfigurationError is what the vector pins. The errors/ "
+            "family's index_declaration carries no suite and is declared "
+            "under the vector's top-level suite_id.",
             "Every out_of_band entry carries basis 'direct' (docs/14 §4): the "
             "length-bound operands are allocated or mapped and the "
             "lone-surrogate operand is held in a str, so this harness uses "
@@ -939,6 +1091,7 @@ def run() -> dict:
             "asserted on its own. A vector this core cannot derive at -- a "
             "missing or non-§7.3 idf_params, or the argon2 extra not "
             "installed -- is a recorded failure, not an abort.",
+            *(_pinned_note(k, p) for k, p in pins.items()),
         ],
         "results": results,
         "held_out": held,
@@ -962,9 +1115,15 @@ def main() -> int:
                       f"{o.get('reason', '')}\n")
     for h in report["held_out"]:
         err.write(f"  NOT RUN (held out): {h['path']}\n")
+    for note in report["harness_notes"]:
+        if note.startswith("pinned_decisions.") and "NOT backed" in note:
+            err.write(f"  PINNED UNBACKED {note}\n")
     err.write(json.dumps(report["summary"]) + "\n")
+    # L0 is withheld by an unbacked test-backed pinned decision too (docs/14
+    # §4), so exit 1 whenever the report claims no level.
     ok = (report["summary"]["fail"] == 0
-          and all(o["status"] == "pass" for o in report["out_of_band"]))
+          and all(o["status"] == "pass" for o in report["out_of_band"])
+          and report["claimed_levels"]["L0"] is True)
     return 0 if ok else 1
 
 

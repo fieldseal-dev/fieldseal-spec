@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { runSuite, type Report } from "./harness/run.ts";
+import { PINNED_TESTS, pinnedTestName, runPinnedTests, runSuite, type Report } from "./harness/run.ts";
 
 // Top-level await: vitest awaits the test module during collection, so the
 // `it` cases below are registered once both passes have run.
@@ -83,6 +83,27 @@ describe("report invariants (docs/14 §4)", () => {
       }
     }
   });
+  it("runs the declared-suite vectors (suite 0.11.0, spec §7.2, #213), each with its #async twin and the primitive's #pipeline", () => {
+    // The index context's suite_id is the DECLARED suite. These are the vectors
+    // that fail a core filling it from the write suite: the harness's client has
+    // write suite and allow-list 0xFF01 only, so a 0xFF02-declared vector is
+    // derived by a client not configured for 0xFF02.
+    const ids = [
+      "kdf/index-key/email-eq-suite-ff02",
+      "blind-index/hmac-sha512/ascii-email-suite-ff02-b15",
+      "blind-index/hmac-sha512/ascii-email-suite-ff02-b15#pipeline",
+      "blind-index/hmac-sha512/declared-suite-missing-refused",
+      "blind-index/hmac-sha512/declared-suite-unregistered-refused",
+      "blind-index/hmac-sha512/declared-suite-ff02-accepted",
+    ];
+    for (const base of ids) {
+      for (const suffix of ["", "#async"]) {
+        const r = report.results.find((x) => x.id === `${base}${suffix}`);
+        expect(r, `${base}${suffix}`).toBeDefined();
+        expect(r?.status, `${base}${suffix}`).toBe("pass");
+      }
+    }
+  });
   it("carries no harness note that contradicts the results", () => {
     // The #108 review found this report describing blind-index/argon2id.json
     // as held out and not iterated while listing 30 of its results as passing:
@@ -113,9 +134,33 @@ describe("report invariants (docs/14 §4)", () => {
       "unimplemented-registered-suite",
       "commitment-construction",
       "key-material-ownership",
+      "index-role-use-budget",
     ]) {
       expect(report.pinned_decisions[key], key).toBeTruthy();
     }
+  });
+  it("backs index-role-use-budget with the tests its text cites (docs/14 §4, #225)", () => {
+    // The text must quote every test the harness runs for the key, so the two
+    // cannot drift apart; on this green run every one of them must have run
+    // and passed, which is what lets L0 stand.
+    const text = report.pinned_decisions["index-role-use-budget"] ?? "";
+    const cited = PINNED_TESTS["index-role-use-budget"] ?? [];
+    expect(cited.length).toBeGreaterThan(0);
+    for (const t of cited) expect(text, pinnedTestName(t)).toContain(pinnedTestName(t));
+    const notes = report.harness_notes.filter((n) => n.startsWith("pinned_decisions.index-role-use-budget "));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.endsWith(". backed"), notes[0]).toBe(true);
+    expect(report.claimed_levels.L0).toBe(true);
+  });
+  it("withholds the level when a backing test is missing (docs/14 §4)", async () => {
+    // The "did not run" branch, without mutating source: a cited test that
+    // does not exist is `missing`, never a pass, and `runSuite` turns any
+    // non-pass into L0 false.
+    const pins = await runPinnedTests({
+      "index-role-use-budget": [{ file: "tests/index-role-budget.test.ts", ancestors: ["index-role use budget (docs/09 §8.3, #225)"], title: "does not exist" }],
+    });
+    expect(pins["index-role-use-budget"]?.status).toBe("missing");
+    expect(pins["index-role-use-budget"]?.tests.map((t) => t.status)).toEqual(["missing"]);
   });
   it("does not declare decisions the specification has since taken over", () => {
     // Issue #48 (G15) closed these four into the text: a pinned decision

@@ -55,6 +55,11 @@ reserves. The ones an operator will meet:
   not depend on the interpreter's `unicodedata`. That closed D-10, which this
   file used to describe as open: CPython 3.14 ships Unicode 16.0, so folding
   with the interpreter's tables was a cross-core risk for shared indexes.
+- **The index role has no use budget (docs/09 §8.3).** `max_uses` counts
+  DEK-role key returns only; index keys are still retired by `max_age` and
+  the capacity LRU. `pinned_decisions.index-role-use-budget` says so, and
+  `tests/run_vectors.py` runs the tests that prove it: if one is missing or
+  red, the report claims no level and exits 1 (docs/14 §4; #225).
 
 `fieldseal.testing.encrypt_with_materials` runs the same API boundary as
 `encrypt()` — mode, arming and length gates included — and replaces only the two

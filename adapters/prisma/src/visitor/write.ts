@@ -48,6 +48,15 @@ export interface WriteCtx {
   readonly context: ContextOptions;
   /** Every mutation below is recorded before it is applied -- `journal.ts`. */
   readonly journal: Journal;
+  /**
+   * Walk and refuse only: no key, no context, no mutation. The extension runs
+   * the walk this way in its refusal step, so a payload that will be refused
+   * is refused before any column of it is encrypted -- and, under L4, before a
+   * key is fetched for a statement that will never run. One walk in two modes
+   * rather than a second walker, so the refusals and the encryption cannot
+   * disagree about which nodes of the tree are payloads.
+   */
+  readonly check?: boolean;
 }
 
 /** Keys under which an operation's write payload can appear. */
@@ -126,6 +135,7 @@ function encryptRow(
     if (written === undefined) continue;
 
     if (written === null) {
+      if (ctx.check === true) continue;
       // NULL is an absence, not a value: it stays NULL, and the sibling with
       // it, so `where: { field: null }` keeps working as plain SQL.
       const idx = model.indexBySource.get(enc.field);
@@ -158,6 +168,7 @@ function encryptRow(
           `around the statement and accept the equality it stores.`,
       );
     }
+    if (ctx.check === true) continue;
 
     const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
     const plaintext = toBytes(written, enc, label);

@@ -64,8 +64,11 @@ The failure it prevents has no error message worth reading. A `column_uuid` that
 |---|---|
 | same `column_uuid`, different `table_uuid` | undecryptable rows |
 | same `column_uuid`, different index declaration | silent lookup miss, naming the parameter |
+| same `column_uuid`, different index **declared suite** | silent lookup miss: the `suite_id` in the index context differs, so the derived index values differ |
 | `column_uuid` on one side only | one stack cannot see a column the other writes |
 | same `column_uuid`, different physical `(table, column)` | two stacks pointed at different columns while claiming one identity |
+
+**The index's declared suite is compared, and it is not the write suite.** Each index declaration names its own suite (`BlindIndex(suite_id=0xFF01, ...)` in Django, `suite_id: "0xFF01"` in the Prisma annotation; spec §7.2, #213), and the index is derived under that suite rather than the client's `WRITE_SUITE`. Both adapters require it, with no default. The checker takes each side's value from that stack's resolved declaration (Django's `build_index_registry()` entry, Prisma's generated field map) and never from a settings constant, so two stacks whose indexes differ only in declared suite fail with a message naming `declared_suite_id`. The Django dump's top-level `write_suite_id` (the key file's suite, `settings.SUITE_ID`) is a different decision that holds the same value in this demo; it is printed for a reader and compared with nothing. The committed migration serializes the declared suite as `suite_id=65281` because `BlindIndex.deconstruct()` always emits it.
 
 **Both sides are resolved rather than as-written.** Prisma's side is the field map its generator emitted at `prisma generate`; Django's is a runtime dump through the adapter's own accessors. An `ast` parse of `models.py` would be exactly the mistake the Django adapter's E006 check names in its own rationale: comparing as-declared inputs lets two declarations that agree textually and differ operationally register as a match.
 

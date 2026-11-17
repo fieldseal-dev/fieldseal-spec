@@ -385,8 +385,11 @@ export class Fieldseal {
     ctx: FieldContext,
     preNormalized: boolean,
   ): { indexKey: Uint8Array; normalized: Uint8Array } {
-    const suite = getSuite(this.#cfg.writeSuite) as Suite;
-    const resolved: ResolvedContext = { ...ctx, suiteId: suite.id };
+    // Spec §7.2 (#213): the index context's suite_id is the DECLARED suite,
+    // validated at construction. `writeSuite` is deliberately not read on this
+    // path: an index value carries no header, so a write suite that followed
+    // the deployment would silently re-key every stored index.
+    const resolved: ResolvedContext = { ...ctx, suiteId: decl.suiteId };
     const material = this.#encryptionKey(resolved, 32); // the tenant INDEX key (spec §8)
     let indexKey: Uint8Array;
     try {

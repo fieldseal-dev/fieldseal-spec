@@ -44,7 +44,7 @@ const idxField = (name = "emailBidx", source = "email", extra = "") =>
   field({
     name,
     documentation:
-      `@fieldseal(index: "${source}", idf: "hmac-sha512", ` +
+      `@fieldseal(index: "${source}", suite_id: "0xFF01", idf: "hmac-sha512", ` +
       `normalize: "nfc-casefold-v1", truncate_bits: 15, ` +
       `projected_population: 100000${extra})`,
   });
@@ -232,7 +232,7 @@ describe("refusals", () => {
             field({
               name: "eBidx",
               documentation:
-                '@fieldseal(index: "email", idf: "hmac-sha512", normalize: "my-own", ' +
+                '@fieldseal(index: "email", suite_id: "0xFF01", idf: "hmac-sha512", normalize: "my-own", ' +
                 "truncate_bits: 15, projected_population: 100000)",
             }),
           ],

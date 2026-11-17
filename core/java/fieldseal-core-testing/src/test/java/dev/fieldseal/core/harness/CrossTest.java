@@ -83,9 +83,16 @@ class CrossTest {
     // --- the producer --------------------------------------------------------------------------
 
     @Test
-    void theProducerWritesEveryCorpusCaseAsCrossV2() throws IOException {
+    void theProducerWritesEveryCorpusCaseAsCrossV3() throws IOException {
         JsonNode corpus = Cross.support(VECTORS, "cross/corpus.json");
-        assertEquals(Cross.V2, produced.path("schema").asText());
+        assertEquals(Cross.V3, produced.path("schema").asText());
+        // The declared suite travels with each index case, as the corpus gave it (#213).
+        for (int i = 0; i < corpus.path("index_cases").size(); i++) {
+            assertEquals(corpus.path("index_cases").get(i).path("declaration").path("suite_id"),
+                    produced.path("index_cases").get(i).path("declaration").path("suite_id"));
+        }
+        assertTrue(produced.path("index_cases").toString().contains("\"suite_id\":\"0xFF02\""),
+                "one corpus case is declared under 0xFF02");
         assertEquals("java", produced.path("producer").path("implementation").asText());
         assertEquals(corpus.path("suite_id"), produced.path("suite_id"));
         assertEquals(corpus.path("cases").size(), produced.path("cases").size());
@@ -279,8 +286,43 @@ class CrossTest {
 
     @Test
     void anUnknownSchemaFails() throws IOException {
-        ObjectNode doc = copy().put("schema", "fieldseal-vectors/cross/v3");
+        ObjectNode doc = copy().put("schema", "fieldseal-vectors/cross/v9");
         failsOnce(doc, "document", "schema");
+    }
+
+    /** docs/08 §4.7: v2 documents are no longer produced; this consumer refuses to read one. */
+    @Test
+    void aV2DocumentIsRefused() throws IOException {
+        ObjectNode doc = copy().put("schema", Cross.V2);
+        ((ObjectNode) indexCase(doc, "exact-ascii").path("declaration")).remove("suite_id");
+        failsOnce(doc, "document", "cross/v2 is refused");
+    }
+
+    @Test
+    void aV3IndexCaseWithoutASuiteFails() throws IOException {
+        ObjectNode doc = copy();
+        ((ObjectNode) indexCase(doc, "exact-ascii").path("declaration")).remove("suite_id");
+        failsOnce(doc, "index", "missing [suite_id]");
+    }
+
+    /** The consumer builds the declaration from the document, never from its own write suite. */
+    @Test
+    void theFf02CaseRewrittenToFf01Fails() throws IOException {
+        ObjectNode doc = copy();
+        ((ObjectNode) indexCase(doc, "exact-ascii-suite-ff02").path("declaration"))
+                .put("suite_id", "0xFF01");
+        failsOnce(doc, "index", "derives");
+    }
+
+    @Test
+    void aMalformedOrUnregisteredDeclaredSuiteFails() throws IOException {
+        ObjectNode doc = copy();
+        ((ObjectNode) indexCase(doc, "exact-ascii").path("declaration")).put("suite_id", "ff01");
+        failsOnce(doc, "index", "not 0x followed by four hex digits");
+        ObjectNode doc2 = copy();
+        ((ObjectNode) indexCase(doc2, "exact-ascii").path("declaration"))
+                .put("suite_id", "0x0001");
+        failsOnce(doc2, "index", "not a registered suite");
     }
 
     @Test
@@ -289,7 +331,7 @@ class CrossTest {
     }
 
     @Test
-    void aV2DocumentWithoutIndexCasesFails() throws IOException {
+    void aV3DocumentWithoutIndexCasesFails() throws IOException {
         ObjectNode doc = copy();
         doc.putArray("index_cases");
         failsOnce(doc, "document", "without index cases");

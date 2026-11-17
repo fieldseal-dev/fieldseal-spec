@@ -9,11 +9,15 @@
  * recorded in the M2 divergence report, not tuned away.
  */
 
+import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Fieldseal, MAX_PLAINTEXT_LEN } from "../../src/api.ts";
 import type { ReadMode } from "../../src/config.ts";
-import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId } from "../../src/blindindex.ts";
+import { ARGON2_OUTPUT_LEN, ARGON2_P, ARGON2_VERSION, argon2Salt, idf, idfAsync, truncateBits, UNINDEXABLE_PREIMAGE, type Argon2Params, type IdfId, type IndexDeclaration } from "../../src/blindindex.ts";
 import { COMMIT_INFO, computeCommitment } from "../../src/commitment.ts";
 import { aad as buildAad, canonicalContext, type FieldContext, type ResolvedContext } from "../../src/context.ts";
 import { INDEX_KEY_SALT, deriveIndexKey, deriveRecordKey } from "../../src/kdf.ts";
@@ -370,6 +374,10 @@ function runDeclaration(v: Record<string, unknown>): Result {
   const d = (v.inputs as Record<string, unknown>).declaration as Record<string, unknown>;
   const want = (v.expected as Record<string, unknown>).declaration;
   const o = d.cardinality_override as { reason: string; approved_by: string; date: string } | null;
+  // `suite_id` is a required declaration member with no default (spec §7.2, #213), and a
+  // vector that omits it must reach the client without one: an absent member stays
+  // absent (declared-suite-missing-refused), never completed from the client's suite.
+  const declared: { suiteId?: number } = "suite_id" in d ? { suiteId: parseSuiteId(d.suite_id as string) } : {};
   if (d.idf !== "hmac-sha512" || Object.keys(d.idf_params as object).length !== 0) {
     return { id, status: "fail", reason: "declaration vector with an IDF this runner does not build" };
   }
@@ -377,8 +385,11 @@ function runDeclaration(v: Record<string, unknown>): Result {
     new Fieldseal(
       {
         keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: new Uint8Array(32).fill(0xbb) }),
-        allowedSuites: [parseSuiteId(v.suite_id as string)],
-        writeSuite: parseSuiteId(v.suite_id as string),
+        // Suite 0.11.0 (docs/08 §3): every declaration vector runs on a client whose write
+        // suite and allow-list are 0xFF01 only; the declared suite travels inside the
+        // declaration and is never the client's.
+        allowedSuites: [SUITE_FF01],
+        writeSuite: SUITE_FF01,
         indexes: [
           {
             tableUuid: hex(d.table_uuid as string),
@@ -391,7 +402,8 @@ function runDeclaration(v: Record<string, unknown>): Result {
             skewed: d.skewed as boolean,
             ...(o === null ? {} : { cardinalityOverride: { reason: o.reason, approvedBy: o.approved_by, date: o.date } }),
             onUnindexable: d.on_unindexable as "refuse" | "bucket",
-          },
+            ...declared,
+          } as IndexDeclaration,
         ],
       },
       { armProvisionalSuites: true },
@@ -661,6 +673,9 @@ function unindexableClient(inp: Record<string, unknown>, onUnindexable: "refuse"
           tableUuid: c.tableUuid,
           columnUuid: c.columnUuid,
           indexId: inp.index_id as string,
+          // The declared suite is the vector's `inputs.suite_id`; the client's write suite
+          // and allow-list stay 0xFF01 only (suite 0.11.0, docs/08 §3).
+          suiteId: parseSuiteId(inp.suite_id as string),
           idf: inp.idf as IdfId,
           ...(argon2Of(inp) ? { argon2: argon2Of(inp) as Argon2Params } : {}),
           normalize: inp.normalize as NormalizerId,
@@ -749,17 +764,22 @@ function blindIndexProblems(v: Record<string, unknown>, i: BlindIndexInputs, raw
  */
 function pipelineClient(v: Record<string, unknown>, i: BlindIndexInputs, ctx: FieldContext): Fieldseal {
   const P = 2 ** (i.b + 1); // inside the §7.4 band for any b ≥ 2: P·2^−b = 2, √P > 2
-  const suiteId = parseSuiteId(v.suite_id as string);
+  // Suite 0.11.0 (docs/08 §3, spec §7.2): the primitive shape's top-level `suite_id` is
+  // the index's DECLARED suite. The client's write suite and allow-list stay 0xFF01
+  // only, so a vector declared under 0xFF02 is derived by a client that is not
+  // configured for it -- which is the case the vector exists to pin.
+  const declaredSuite = parseSuiteId(v.suite_id as string);
   return new Fieldseal(
     {
       keyProvider: new StaticKeyProvider({ dek: new Uint8Array(32).fill(0xaa), keyId: new Uint8Array(16), indexKey: hex(v.tenant_index_key as string) }),
-      allowedSuites: [suiteId],
-      writeSuite: suiteId,
+      allowedSuites: [SUITE_FF01],
+      writeSuite: SUITE_FF01,
       indexes: [
         {
           tableUuid: ctx.tableUuid,
           columnUuid: ctx.columnUuid,
           indexId: v.index_id as string,
+          suiteId: declaredSuite,
           idf: i.which,
           ...(i.argon2 ? { argon2: i.argon2 } : {}),
           normalize: i.normId as NormalizerId,
@@ -859,6 +879,10 @@ function errorsClient(v: Record<string, unknown>, ctx: FieldContext | undefined)
                 tableUuid: ctx.tableUuid,
                 columnUuid: ctx.columnUuid,
                 indexId: decl.index_id as string,
+                // errors/ declarations carry no `suite_id` member (docs/08 §4.6 lists
+                // index_id, idf, normalize, truncate_bits). The vector's own top-level
+                // `suite_id` stands in, and a declared one wins if a vector ever adds it.
+                suiteId: parseSuiteId((decl.suite_id ?? v.suite_id) as string),
                 idf: decl.idf as IdfId,
                 normalize: NORMALIZERS[decl.normalize as string]!,
                 truncateBits: decl.truncate_bits as number,
@@ -1020,6 +1044,7 @@ function indexBoundaryClient(): { fs: Fieldseal; ctx: FieldContext } {
         {
           tableUuid: new Uint8Array(16),
           columnUuid: new Uint8Array(16),
+          suiteId: SUITE_FF01,
           idf: "hmac-sha512",
           normalize: "nfc-casefold-v1",
           truncateBits: 15,
@@ -1240,6 +1265,13 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       skipped: results.filter((r) => r.status === "skipped").length,
       held_out: heldOut.length,
     };
+    // docs/14 §4: a test-backed pinned decision whose tests did not run or did
+    // not pass withholds the level on the same terms as a failed result. It is
+    // not folded into `summary`, which keeps counting results and out-of-band
+    // entries; `run_vectors.ts` exits 1 on L0 false as well.
+    const pins = await runPinnedTests();
+    const backed = Object.values(pins).every((p) => p.status === "pass");
+    const pinNotes = Object.entries(pins).map(([key, p]) => pinnedNote(key, p));
     const suitesSupported = ["0xFF01"];
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf-8")) as { version: string };
     return {
@@ -1250,7 +1282,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
       // L0 requires every family the supported suite reaches, with fail = 0.
       // A green run against a provisional suite is L0 conformance to the
       // PROVISIONAL suite 0xFF01 -- not to any frozen format (PRD §8, Gate 0b).
-      claimed_levels: { L0: summary.fail === 0, L1: false, L2: false, L3: false, L4: false },
+      claimed_levels: { L0: summary.fail === 0 && backed, L1: false, L2: false, L3: false, L4: false },
       suites_supported: suitesSupported,
       provisional_suites: suitesSupported.some((s) => isProvisionalId(parseSuiteId(s))),
       environment: {
@@ -1265,7 +1297,7 @@ export async function runSuite(opts: RunOptions = {}): Promise<Report> {
         unicode_tables: `vendored UCD ${UNICODE_VERSION} (NFC + CaseFolding C+F)`,
       },
       pinned_decisions: PINNED_DECISIONS,
-      harness_notes: [...HARNESS_NOTES, asyncSplit],
+      harness_notes: [...HARNESS_NOTES, asyncSplit, ...pinNotes],
       results,
       held_out: heldOut,
       out_of_band: outOfBand,
@@ -1292,7 +1324,153 @@ export const PINNED_DECISIONS: Record<string, string> = {
   "key-material-ownership":
     "provider-owned (docs/09 §8.1): the core never mutates or erases what `encryptionKey` or `decryptionKeys` returned. `#encryptionKey` validates and copies (api.ts:196), so the encrypt and blind-index paths erase their own copy; the decrypt candidate loop borrows and erases nothing. Erasure steps performed: docs/09 §3.1 step 13 and §3.2 record_key (both, Uint8Array), the intermediate plaintext buffer, the untruncated IDF output, the Argon2id salt (spec §7.3 makes it key-equivalent for the column), and §8.3 cache eviction. None skipped. Candidate reads do not count against max_uses. " +
     "In the §11.1 asynchronous companions both index keys are erased as soon as `idfAsync` returns -- the Argon2id salt is derived from them synchronously, so nothing the in-flight derivation holds reads them; the threadpool job is already queued by then, and captured the salt and the copy rather than the key -- and the normalized value is copied rather than borrowed across the await, because under `identity` it is the caller's own array and on the marker path it is the process-wide reserved preimage; neither original is ever zeroed. The copy is what makes erasing the buffer handed to the backend safe: on the shipped backend node copies it synchronously, so the caller is not relying on the copy for that.",
+  "index-role-use-budget":
+    "none (docs/09 §8.3): the index role has no use budget. maxUses is spent only by DEK-role `encryptionKey` returns; an index key is never AEAD key material and draws no nonce, so the SP 800-38D ceiling spec §5.5 sets maxUses for does not reach it. Max-age and the capacity LRU still apply to both roles. " +
+    "This core decides it once, where the role is known: `EnvelopeKeyProvider` puts its index-role cache slots with `{ counted: false }` (keyprovider.ts), and `DekCache.get` spends no budget on an uncounted slot (cache.ts). " +
+    "Test-backed (docs/14 §4): docs/08 §8 keeps provider behaviour out of the vector suite, so this harness runs " +
+    "tests/index-role-budget.test.ts > index-role use budget (docs/09 §8.3, #225) > index-role slot lookups never spend maxUses; a DEK slot in the same cache still does " +
+    "(an index-role slot read past maxUses 1, with a counted DEK slot as the control) and " +
+    "tests/providers.test.ts > EnvelopeKeyProvider (docs/09 §8.2) > index-role returns do not deplete max-uses; the index role has no use budget (docs/09 §8.3) " +
+    "(the same end to end through blindIndex), and claims no level if either did not run or did not pass [#212, #225]",
 };
+
+/** One test a test-backed pinned decision cites: its file (relative to core/typescript), its `describe` chain, and its title. */
+export interface PinnedTest {
+  readonly file: string;
+  readonly ancestors: readonly string[];
+  readonly title: string;
+}
+
+export type PinnedTestStatus = "pass" | "fail" | "missing";
+
+export interface PinnedOutcome {
+  status: PinnedTestStatus;
+  tests: { name: string; status: PinnedTestStatus }[];
+  reason: string;
+}
+
+/** `file > describe > … > title`, the form the pinned decision's text quotes. */
+export function pinnedTestName(t: PinnedTest): string {
+  return [t.file, ...t.ancestors, t.title].join(" > ");
+}
+
+/**
+ * docs/14 §4: a **test-backed pinned decision** cites the tests that prove it,
+ * and the report generator runs them; if any did not run or did not pass, the
+ * report claims no level (the key's text still states the decision). Every
+ * entry's `pinnedTestName` is quoted verbatim in the key's text --
+ * `vectors.test.ts` asserts that, so the text and the run cannot drift.
+ */
+export const PINNED_TESTS: Record<string, readonly PinnedTest[]> = {
+  "index-role-use-budget": [
+    {
+      file: "tests/index-role-budget.test.ts",
+      ancestors: ["index-role use budget (docs/09 §8.3, #225)"],
+      title: "index-role slot lookups never spend maxUses; a DEK slot in the same cache still does",
+    },
+    {
+      file: "tests/providers.test.ts",
+      ancestors: ["EnvelopeKeyProvider (docs/09 §8.2)"],
+      title: "index-role returns do not deplete max-uses; the index role has no use budget (docs/09 §8.3)",
+    },
+  ],
+};
+
+const CORE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface VitestJson {
+  testResults?: { name?: string; assertionResults?: { ancestorTitles?: string[]; title?: string; status?: string }[] }[];
+}
+
+function runVitest(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; output: string; error?: string }> {
+  return new Promise((resolve) => {
+    let output = "";
+    const child = spawn(process.execPath, args, { cwd: CORE_ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => child.kill(), 600_000);
+    child.stdout.on("data", (d: Buffer) => (output = (output + d.toString()).slice(-4096)));
+    child.stderr.on("data", (d: Buffer) => (output = (output + d.toString()).slice(-4096)));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: null, output, error: e.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
+/**
+ * Runs the tests behind each test-backed pinned decision (docs/14 §4) and
+ * classifies each as `pass`, `fail` or `missing`.
+ *
+ * Only the cited tests run, in a child vitest filtered by file and title --
+ * never the whole suite, which includes `vectors.test.ts` and would recurse
+ * into this harness. Fail closed: no vitest, no JSON, or a cited test the run
+ * did not report is `missing`, never a pass; a skipped one is `fail`.
+ */
+export async function runPinnedTests(pinned: Record<string, readonly PinnedTest[]> = PINNED_TESTS): Promise<Record<string, PinnedOutcome>> {
+  const out: Record<string, PinnedOutcome> = {};
+  const entry = join(CORE_ROOT, "node_modules", "vitest", "vitest.mjs");
+  // The child must not think it is a vitest worker, and needs no arming: the
+  // cited tests do not use the testing seam.
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("VITEST") && k !== TEST_MODE_ENV) env[k] = v;
+  }
+  for (const [key, tests] of Object.entries(pinned)) {
+    const statuses = tests.map((t) => ({ name: pinnedTestName(t), status: "missing" as PinnedTestStatus }));
+    let reason = "";
+    if (!existsSync(entry)) {
+      reason = `vitest is not installed at ${entry}`;
+    } else {
+      const dir = mkdtempSync(join(tmpdir(), "fieldseal-pinned-"));
+      try {
+        const file = join(dir, "pinned.json");
+        const files = [...new Set(tests.map((t) => t.file))];
+        const pattern = tests.map((t) => escapeRegExp(t.title)).join("|");
+        const run = await runVitest([entry, "run", ...files, "-t", pattern, "--reporter=json", `--outputFile=${file}`], env);
+        if (run.error !== undefined) reason = `vitest could not be run: ${run.error}`;
+        else if (existsSync(file)) {
+          const json = JSON.parse(readFileSync(file, "utf-8")) as VitestJson;
+          tests.forEach((t, i) => {
+            for (const fr of json.testResults ?? []) {
+              if (!(fr.name ?? "").replaceAll("\\", "/").endsWith(t.file)) continue;
+              for (const a of fr.assertionResults ?? []) {
+                const anc = a.ancestorTitles ?? [];
+                if (a.title === t.title && anc.length === t.ancestors.length && anc.every((x, j) => x === t.ancestors[j])) {
+                  (statuses[i] as { status: PinnedTestStatus }).status = a.status === "passed" ? "pass" : "fail";
+                }
+              }
+            }
+          });
+        }
+        if (reason === "" && statuses.some((s) => s.status !== "pass")) {
+          reason = `vitest exit ${run.code}: ${run.output.trim().split("\n").slice(-3).join(" | ")}`;
+        }
+      } catch (e) {
+        reason = `vitest output could not be read: ${(e as Error).message}`;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const status: PinnedTestStatus = statuses.every((s) => s.status === "pass") ? "pass" : statuses.some((s) => s.status === "fail") ? "fail" : "missing";
+    out[key] = { status, tests: statuses, reason };
+  }
+  return out;
+}
+
+function pinnedNote(key: string, p: PinnedOutcome): string {
+  const listed = p.tests.map((t) => `${t.name}: ${t.status}`).join("; ");
+  const verdict = p.status === "pass" ? "backed" : "NOT backed, so no level is claimed";
+  let note = `pinned_decisions.${key} is test-backed (docs/14 §4); this run: ${listed}. ${verdict}`;
+  if (p.status !== "pass" && p.reason !== "") note += ` (${p.reason})`;
+  return note;
+}
 // Retired 2026-08-24 when issue #48 (G15) closed and the specification took
 // these over: `unknown-format-version-set` -> spec §3.1/§3.4/§9/§10.3,
 // `rotate-in-permissive` -> §11.1, `provisional-arming` -> §4.8,
@@ -1307,6 +1485,7 @@ export const HARNESS_NOTES: string[] = [
   "blind-index/ 'refuse' vectors (suite 0.8.0, G26) pass their hex preimage to Fieldseal.blindIndex() as bytes under on_unindexable=\"refuse\" and match the raised code against expected.refuse; the bytes are never decoded by the harness.",
   "Every out_of_band entry carries basis \"direct\" (docs/14 §4): this harness allocates the length-bound operands and holds the lone-surrogate operand in a string, so it uses neither the seam route nor the representability route.",
   "'declaration' vectors (suite 0.10.0, #210 context/ and #211 blind-index/) build the vector's index declaration into a Fieldseal client at construction. 'refused' passes only on a ConfigurationError -- no §9 code is matched, because none exists for a configuration refusal (docs/08 §4.3); anything else is a failure. 'accepted' passes only if construction succeeds. Construction has no asynchronous companion, so their #async twins are sync re-runs.",
+  "Suite 0.11.0-provisional (#213, spec §7.2): a blind-index declaration names its own suite, and the index context's suite_id is that declared suite, never the client's write suite. Every blind-index vector is run through a client whose write suite and decrypt allow-list are 0xFF01 only; the declaration takes the vector's declared suite (top-level suite_id for the primitive shape, inputs.suite_id for the shapes that carry inputs, inputs.declaration.suite_id for 'declaration' vectors), so the 0xFF02-declared vectors are derived by a client that is not configured for 0xFF02. A declaration vector with no suite_id member reaches the client without one and is passed only if refused (declared-suite-missing-refused); nothing completes it. errors/ vectors' index_declaration carries no suite_id member, so the harness declares the vector's own top-level suite_id (0xFF01 in every such vector) and would prefer a declared one.",
   "Assertion vectors (assertion: distinct|equal) carry their inputs since suite 0.2.0; both sides are reproduced and the relation checked.",
   "errors/ vectors run each operation against a client built from the vector's config; a raised FieldsealError is matched by code, anything else is a failure. blind_index cases pass the preimage bytes under the vector's index_declaration.",
   "'<result-id>#async' is the docs/08 §5 item 10 pass: the entire suite run a second time with every operation that has a spec §11.1 asynchronous companion routed through it, asserting identical bytes and identical error codes. The suffix is applied to the synchronous result id, so it comes last ('<id>#decrypt#async', '<id>#pipeline#async'). This core ships companions for blind_index and unindexable_marker only: blind-index/ primitives and their #pipeline results derive through idfAsync / Fieldseal.blindIndexAsync / Fieldseal.unindexableMarkerAsync, and errors/ blind_index cases through blindIndexAsync (both are positive controls, so the companions' error-code parity rests on the unindexable refusal check, the blind-index/ refuse vectors, the '#async' out-of-band entry and tests/async-companions.test.ts instead). envelope/, kdf/, context/, commitment/ and the other errors/ operations have no companion, and their '#async' twins re-run the synchronous operation.",

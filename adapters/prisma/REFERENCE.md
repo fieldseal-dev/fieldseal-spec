@@ -56,6 +56,36 @@ The generator refuses a required sibling.
 P = 100,000), which **mandates collisions**. A `@unique` sibling is therefore
 wrong and spec §7.10 forbids it outright.
 
+## The index declares its own suite (spec §7.2, #213)
+
+**An index's `suite_id` is part of its declaration, is required, and has no
+default.** The index-key context carries the suite the *declaration* names, never
+the client's `writeSuite`. A default filled in from the write suite would
+recreate the coupling the spec removed: changing the write suite would silently
+change every index and orphan every stored value. So the generator refuses an
+index annotation with no `suite_id` (`Patient.emailBidx: an index declares no
+suite_id. State the suite explicitly, …`), and the extension refuses a field map
+whose index lacks one (a map generated before #213, or edited) with the same
+words, naming `Model.sourceField`. Both read the literal `"0xFF01"` (or a
+decimal integer); a value that is not a suite literal is refused as syntax.
+
+The value passes through to the core's `IndexDeclaration.suiteId` untouched.
+Whether it is a 16-bit identifier, registered, and one whose KDF the core can
+perform is the **core's** gate (AD-1: this package re-implements none of the
+core's gates), run at construction by the same `validateIndexDeclaration` call
+that already attributes a refusal to its column. In the TypeScript core, `0xFF02`
+cannot be a write suite or be allow-listed but is accepted as an index's declared
+suite, because index derivation uses only the suite's KDF.
+
+It is fixed for the life of the index (spec §7.8). **What breaks:** every index
+declaration must add `suite_id`, and the field map must be regenerated. **What
+does not:** stored index bytes are unchanged when the declared suite equals the
+write suite that was in use.
+
+There is no registry check against a supplied core client here, because there is
+no `client` option (below), so there is nothing to compare; `Fieldseal.indexes`
+reports each index's `suiteId`, and `tests/index-suite.test.ts` reads it.
+
 ## Register fieldseal last
 
 **Register fieldseal last.** The extension registered *first* is outermost, so
@@ -286,7 +316,7 @@ the target matrix in `docs/13` §6.
 |---|---|---|
 | `create`, `createMany`, `update` | ✅ encrypts; index sibling derived | `round-trips the plaintext…`, `encrypts through createMany and updateMany` |
 | The index sibling on each top-level write path: `update`, `updateMany`, `updateManyAndReturn`, `upsert`, `createMany`, `createManyAndReturn`, and `update` / `updateMany` inside an interactive transaction | ✅ the stored sibling holds the new value's index; a lookup finds the row by the new value and not by the old. The `updateMany` cases run inside `sharedEnvelopeScope()` (#250), because there the payload is deliberately shared | `update writes it`, `update with { set } writes it`, `updateMany writes it`, `updateManyAndReturn writes it`, `upsert writes it on the update branch`, `upsert writes it on the create branch`, `createMany writes it…`, `createManyAndReturn writes it…`, `update inside an interactive transaction…`, `updateMany inside an interactive transaction…` |
-| **`updateMany` / `updateManyAndReturn` writing a declared encrypted column**, and a nested `updateMany` under any operation | 🛑 refused by default (#250) — one payload, so one envelope byte for byte on every matched row, and on a column with no blind index the rows become visibly equal. `sharedEnvelopeScope(fn)` lifts the refusal and nothing else; the payload is still encrypted once and index siblings still derived. `null`, a payload touching no encrypted column, and `createMany` (one payload per row) are served without it | `refuses updateMany that would write an indexed encrypted column`, `refuses updateMany on a column with no blind index`, `refuses updateManyAndReturn`, `refuses a nested updateMany`, `refuses inside an interactive transaction and writes nothing`, `allows a payload that touches no encrypted column`, `allows null, which duplicates no envelope`, `allows createMany, which gives every row its own payload`, `stores one envelope on every matched row…`, `does not leak out of the callback`, `does NOT cover a statement constructed inside but awaited after the callback` |
+| **`updateMany` / `updateManyAndReturn` writing a declared encrypted column**, and a nested `updateMany` under any operation | 🛑 refused by default (#250) — one payload, so one envelope byte for byte on every matched row, and on a column with no blind index the rows become visibly equal. `sharedEnvelopeScope(fn)` lifts the refusal and nothing else; the payload is still encrypted once and index siblings still derived. `null`, a payload touching no encrypted column, and `createMany` (one payload per row) are served without it | `refuses updateMany that would write an indexed encrypted column`, `refuses updateMany on a column with no blind index`, `refuses updateManyAndReturn`, `refuses a nested updateMany`, `refuses inside an interactive transaction and writes nothing`, `refuses a payload before it fetches a key for it (#250)`, `allows a payload that touches no encrypted column`, `allows null, which duplicates no envelope`, `allows createMany, which gives every row its own payload`, `stores one envelope on every matched row…`, `does not leak out of the callback`, `does NOT cover a statement constructed inside but awaited after the callback` |
 | `updateMany` / `updateManyAndReturn` / nested `updateMany` whose `where` pins every column of one unique key | ✅ served without the scope — at most one row matches, so the one draw is that row's own. An equality under `OR` or `NOT`, `in`, `not` and `mode: "insensitive"` do not pin, and a map generated before `uniqueKeys` existed pins nothing | `serves updateMany pinned by…`, `serves updateManyAndReturn pinned by its primary key`, `serves a nested updateMany pinned by the target's primary key`, `still refuses a where that only looks pinned…`, `still refuses on a map generated before unique keys were emitted`, `needs every column of a compound key`, `serves the remedy it names…` |
 | Nested relation writes (`create`, `connectOrCreate`, `upsert`, nested `update`) | ✅ reached through the relation graph, not path patterns | `encrypts a nested relation write…` |
 | **Filters inside nested writes** (`updateMany.where`, `deleteMany`, `upsert.where`, unique inputs) | 🛑 refused when they name an encrypted column — same walk as the top-level `where` | `refuses a nested updateMany.where…`, `refuses a nested deleteMany…` |
@@ -353,8 +383,9 @@ the target matrix in `docs/13` §6.
 | Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
 | `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction, naming the column | `refuses \`on_unindexable: "bucket"\` without the §7.2 ceremony`, `constructs once the ceremony is supplied in code` |
 | A §7.6 / §7.2 override naming a column with no declared index, or naming one twice | 🛑 refused — a recorded human approval pointing at the wrong place, while the column it was meant for stays ungated | `refuses an override that names a column with no declared index`, `refuses the same column listed twice in one override` |
-| **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v2`; the N×N CI job has both cores decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
-| **Cross-language: a blind index written here, re-derived by another core** | ✅ the index half — six cases including the fold pair, a base64-stored source column, and the §7.2 marker the extension stores unasked. A mismatched index is a *silent lookup miss*, which the envelope half above cannot catch | `derives every index case from the shared key material alone`, `lands the fold pair on one index value`, `stores the §7.2 marker for a value the normalizer refuses, unasked` |
+| **Cross-language: a row written here, read by another core** | ✅ `tests/cross/produce.ts` emits `fieldseal-vectors/cross/v3`; the N×N CI job has both cores decrypt it | `decrypts every case from the shared key material alone`, `pins every \`as:\` rendering…` |
+| **Cross-language: a blind index written here, re-derived by another core** | ✅ the index half — eight cases including the fold pair, a base64-stored source column, the §7.2 marker the extension stores unasked, and one index declared under `0xFF02` while the write suite is `0xFF01`. Each case's `declaration.suite_id` is the core client's validated declaration. A mismatched index is a *silent lookup miss*, which the envelope half above cannot catch | `derives every index case from the shared key material alone`, `lands the fold pair on one index value`, `stores the §7.2 marker for a value the normalizer refuses, unasked`, `names the declared suite on every index case, taken from the core's report`, `carries one index case declared under 0xFF02, derived under that suite and no other` |
+| **An index declares its own suite** (spec §7.2, #213) | 🛑 a declaration with no `suite_id` fails `prisma generate`, and a map without one fails construction, naming the model and field; never completed from `writeSuite`. ✅ an index declared under `0xFF02` on a `0xFF01`-only client is written, found by equality, and stored as the core's `0xFF02` derivation, which differs from the `0xFF01` one | `refuses a declaration with no suite, naming the model and field`, `refuses a suite_id that is not a suite identifier literal`, `names the model and field, and never completes it from writeSuite`, `passes the core's own refusal of an unregistered suite, with the column named`, `accepts 0xFF02 as a declared suite although it is not a write suite`, `creates, and finds the row by equality`, `stores the core's 0xFF02 derivation, which differs from the 0xFF01 one` |
 | `row_id` binding (L3-row) | ❌ not in v0 | — |
 | **L4** — `KEY_UNAVAILABLE` → `await warm()` → retry the pass | ✅ on by default when the provider can warm; `warmOnKeyMiss: false` opts out; warm accounting is per pass, so an eviction between the write and read passes is retried rather than misread as an unproductive warm | `is the difference between a cold deployment…`, `warms once per cold operation…`, `warms the index key too…`, `warms again for the read pass…` |
 | Warm cycles beyond the first | ✅ a cycle runs whenever the next attempt needs a context no earlier cycle warmed — strict progress, bounded by the contexts one pass can build | `runs a second warm cycle when the next attempt needs a context the first never reached` |
@@ -402,8 +433,10 @@ storage form, and how the context is assembled.
 
 So `tests/cross/produce.ts` writes rows through the **real extension** (real
 `create()`, runtime CSPRNG, no test-mode injection), reads the raw columns back
-through `$queryRawUnsafe`, and emits the standard `fieldseal-vectors/cross/v1`
-document that every existing consumer already reads:
+through `$queryRawUnsafe`, and emits the standard cross document (`fieldseal-vectors/cross/v3` since #213, whose
+index cases' `declaration.suite_id` is read from the core client's validated
+declaration, never from a constant or the write suite) that every existing
+consumer already reads:
 
 ```
 npm run cross:produce -- --out ../../cross-prisma.json
@@ -498,7 +531,9 @@ report and turns CI red. That is what "the claim and the docs cannot drift
 apart" has to mean to mean anything — and on its first run it found a row
 claiming a refusal and pointing at a fixture instead of a test.
 
-`pinned_decisions` is this adapter's own list, and the first entry is the one
+`pinned_decisions` is this adapter's own list. `index-declared-suite` (#213) states
+that an index names its own suite, required with no default, never the write suite.
+The first entry is the one
 no core report can carry: **the codec's renderings**. `as: "int"` becoming
 `b"45"` was a decision this package made until spec §3.6 pinned it (G25,
 #123); the `codec/` vectors now pin every rendering, and

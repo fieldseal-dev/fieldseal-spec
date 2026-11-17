@@ -32,6 +32,30 @@ from django.core.checks import Error, Warning, register
 from .errors import FieldsealAdapterError
 
 
+def _refused_field(registry: Any) -> str:
+    """`"Model.field (BlindIndex 'exact'): "` for the declaration the core
+    refuses, or `""` when none can be singled out.
+
+    The core's refusal names the index id and nothing else. This runs only
+    after the client has already failed to build, so the passing path is not
+    validated twice; the verdict and the message stay the core's.
+    """
+    from fieldseal import validate_index_declaration
+
+    from .apps import index_declarations
+
+    try:
+        triples = index_declarations(registry)
+    except Exception:  # noqa: BLE001 - reported by the caller already
+        return ""
+    for model, field, decl in triples:
+        try:
+            validate_index_declaration(decl)
+        except Exception:  # noqa: BLE001 - the core's ConfigurationError
+            return (f"{model.__name__}.{field.name} "
+                    f"(BlindIndex {decl.index_id!r}): ")
+    return ""
+
 @register("fieldseal")
 def check_fieldseal(app_configs: Any = None, apps: Any = None,
                     admin_registry: Any = None,
@@ -270,9 +294,11 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
             issues.append(Error(str(e), obj=None, id="fieldseal.E003"))
         except Exception as e:  # noqa: BLE001 - the core's ConfigurationError
             issues.append(Error(
-                f"the core refused an index declaration: {e}",
-                hint="This is the core's own §7.4 band / §7.6 cardinality "
-                     "gate, running where it always runs -- at client "
+                "the core refused an index declaration: "
+                f"{_refused_field(apps)}{e}",
+                hint="This is one of the core's own gates (the §7.2 declared "
+                     "suite, the §7.4 band, the §7.6 cardinality gate), "
+                     "running where it always runs -- at client "
                      "construction. The adapter does not duplicate the rule; "
                      "fix the declaration named above.",
                 obj=None, id="fieldseal.E003"))
@@ -335,8 +361,10 @@ def _check_client_registry(registry: Any = None) -> list[Any]:
         return [Error(str(e), obj=None, id="fieldseal.E003")]
     except Exception as e:  # noqa: BLE001 - the core's ConfigurationError
         return [Error(
-            f"the core refused an index declaration: {e}",
-            hint="This is the core's own §7.4 band / §7.6 cardinality gate. "
+            "the core refused an index declaration: "
+            f"{_refused_field(registry)}{e}",
+            hint="This is one of the core's own gates (the §7.2 declared "
+                 "suite, the §7.4 band, the §7.6 cardinality gate). "
                  "FIELDSEAL['CLIENT'] means the adapter never assembles the "
                  "registry, so this is the only place the gate runs against "
                  "your models -- and the client you supplied is not running "

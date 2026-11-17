@@ -183,6 +183,23 @@ def load_run(connection: Any, run_id: str) -> Run | None:
     return None if row is None else Run(*row)
 
 
+def converting_runs(connection: Any, table_uuid: str) -> list[Run]:
+    """Every `encrypt` run on the table that wrote a value, in any status.
+
+    PROCEDURE §4, *On a new `encrypt` run*: these are the runs whose index
+    declarations a new run must match. A run that wrote nothing converted
+    nothing, and does not count.
+    """
+    with connection.cursor() as cur:
+        cur.execute(
+            f"SELECT {', '.join(_RUN_COLUMNS)} FROM {RUNS} "
+            "WHERE table_uuid = %s AND job = 'encrypt' "
+            "AND values_written > 0 ORDER BY started_at, run_id",
+            [table_uuid])
+        rows = cur.fetchall()
+    return [Run(*row) for row in rows]
+
+
 def claim(connection: Any, run_id: str, batch_seq: int) -> bool:
     """§5.2 step 3. False when another process owns the run or it has ended.
 

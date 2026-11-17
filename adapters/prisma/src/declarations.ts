@@ -298,6 +298,7 @@ function indexField(ann: Annotation, f: FieldInput, site: Site): IndexFieldDecl 
     );
   }
 
+  const suiteId = declaredSuite(ann, site);
   const idf = requiredString(ann, "idf", site);
   if (!(IDF_IDS as readonly string[]).includes(idf)) {
     throw new FieldsealConfigurationError(
@@ -334,6 +335,7 @@ function indexField(ann: Annotation, f: FieldInput, site: Site): IndexFieldDecl 
     field: f.name,
     source: requiredString(ann, "index", site),
     indexId: optString(ann, "index_id", site) ?? "exact",
+    suiteId,
     idf: idf as IdfId,
     normalize: normalize as NormalizerId,
     truncateBits: requiredInt(ann, "truncate_bits", site),
@@ -346,6 +348,34 @@ function indexField(ann: Annotation, f: FieldInput, site: Site): IndexFieldDecl 
       : {}),
   };
   return decl;
+}
+
+/**
+ * `suite_id` (spec §7.2, #213): the suite the index is declared under.
+ *
+ * Required, with no default and no fallback to the client's `writeSuite`: a
+ * default taken from the write suite recreates the coupling the spec removed,
+ * and would let a later change of write suite silently change every index.
+ * This reads the literal -- `"0xFF01"` or the decimal integer -- and nothing
+ * more. Whether the number names a registered suite whose KDF the core can
+ * perform is the core's gate, run at client construction (AD-1).
+ */
+function declaredSuite(ann: Annotation, site: Site): number {
+  const v = ann.values.get("suite_id");
+  if (v === undefined) {
+    throw new FieldsealConfigurationError(
+      `${siteLabel(site)}: an index declares no suite_id. State the suite ` +
+        `explicitly, e.g. suite_id: "0xFF01". Spec §7.2 derives the index ` +
+        `under the suite its declaration names, which is fixed for the life of ` +
+        `the index (spec §7.8); it is never taken from the client's writeSuite.`,
+    );
+  }
+  if (typeof v === "number") return v;
+  if (/^0x[0-9a-f]{1,4}$/i.test(v)) return parseInt(v.slice(2), 16);
+  throw new FieldsealConfigurationError(
+    `${siteLabel(site)}: suite_id "${v}" is not a suite identifier literal. ` +
+      `Write it as a hex string such as "0xFF01" (or a plain integer).`,
+  );
 }
 
 function requiredUuid(anns: readonly Annotation[], key: string, site: Site): string {

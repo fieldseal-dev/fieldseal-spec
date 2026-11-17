@@ -60,10 +60,15 @@ def client_for(key: dict, indexes: list | None = None) -> Fieldseal:
 #: report `fail: 0`, and never touch the index half. A green run that skipped
 #: the more valuable assertion is worse than a red one.
 #:
-#: `v2` adds `index_cases` beside `cases`; `v1` documents stay valid and are
-#: recorded as carrying no index half rather than silently counting as if they
-#: had one.
-SCHEMAS = {"fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v2"}
+#: `v3` carries `index_cases` beside `cases`, each case's `declaration`
+#: naming the index's declared suite (spec §7.2, #213); `v1` documents stay
+#: valid and are recorded as carrying no index half rather than silently
+#: counting as if they had one. `v2` is NOT here: docs/08 §4.7 says `cross/v2`
+#: documents "are no longer produced" and does not say whether a consumer
+#: still reads one. This takes the stricter reading, because a `v2` index case
+#: has no declared suite and the only way to derive it would be to invent one,
+#: which is the substitution the clause forbids.
+SCHEMAS = {"fieldseal-vectors/cross/v1", "fieldseal-vectors/cross/v3"}
 
 
 def _value_of(case: dict) -> str | bytes:
@@ -83,9 +88,17 @@ def decl_of(case: dict) -> IndexDeclaration:
     """The producer's declaration block, as this core's registry wants it."""
     d, ctx = case["declaration"], case["context"]
     override = d.get("unindexable_override")
+    if "suite_id" not in d:
+        # docs/08 §4.7: a `v3` case without `suite_id` is malformed and a
+        # consumer fails on it. It MUST NOT substitute its own write suite,
+        # take one from its allow-list, or default it (spec §7.2, #213).
+        raise ValueError(
+            f"{case['id']}: declaration has no suite_id; a cross/v3 index "
+            "case without one is malformed (docs/08 §4.7)")
     return IndexDeclaration(
         table_uuid=H(ctx["table_uuid"]),
         column_uuid=H(ctx["column_uuid"]),
+        suite_id=int(d["suite_id"], 16),
         index_id=d["index_id"],
         idf=d["idf"],
         normalize=d["normalize"],
@@ -149,7 +162,7 @@ def consume(files: list[Path]) -> dict:
         index_cases = doc.get("index_cases", [])
         if not index_cases:
             # v1 means "this producer carries no index half" and is a pass.
-            # v2 means "this producer carries one" -- so v2 with an empty array
+            # v3 means "this producer carries one" -- so v3 with an empty array
             # is a producer that lost its index cases to a bug, and passing it
             # would be precisely the silent skip this half exists to close.
             v1 = schema == "fieldseal-vectors/cross/v1"

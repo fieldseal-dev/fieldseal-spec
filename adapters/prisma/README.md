@@ -96,8 +96,9 @@ model Patient {
   name      Bytes
   /// @fieldseal(encrypted, column_uuid: "0c9e4b7a-2d15-4f6e-8a3b-1e7d5c9f2a64")
   email     Bytes
-  /// @fieldseal(index: "email", idf: "argon2id", normalize: "nfc-casefold-v1",
-  ///            truncate_bits: 15, projected_population: 100000)
+  /// @fieldseal(index: "email", suite_id: "0xFF01", idf: "argon2id",
+  ///            normalize: "nfc-casefold-v1", truncate_bits: 15,
+  ///            projected_population: 100000)
   emailBidx Bytes?
 
   @@index([emailBidx])
@@ -208,14 +209,15 @@ derived on every write; you never set it, and it is left out of results unless
 
 The options decide what counts as a match, how hard the hashes are to attack,
 and how much the index reveals. Choose them before the first write: changing
-`idf`, `normalize`, `truncate_bits`, `index_id` or the Argon2id cost later
-changes every stored hash, so the index has to be rebuilt.
+`suite_id`, `idf`, `normalize`, `truncate_bits`, `index_id` or the Argon2id
+cost later changes every stored hash, so the index has to be rebuilt.
 
 **On the index field:** `@fieldseal(index: "<encrypted field>", ...)`:
 
 | Key | Default | Accepted values |
 |---|---|---|
 | `index` | **required** | The name of the encrypted field this indexes. |
+| `suite_id` | **required, no default** | The suite the index is declared under, as a hex string such as `"0xFF01"`. It is the `suite_id` inside the index's key context (spec §7.2), so it is part of what every stored hash is, and it is fixed for the life of the index (spec §7.8). It is never taken from `writeSuite`: the write suite chooses how envelopes are encrypted and no longer affects blind indexes. Leaving it out fails `prisma generate`, naming the model and field. Whether it names a registered suite is checked by the core when the extension is constructed. |
 | `projected_population` | **required** | How many *distinct* values the column will hold, at least 16. |
 | `idf` | **required** | `"argon2id"`: slow on purpose, for anything guessable (emails, phone numbers, IDs, birth dates). `"hmac-sha512"`: fast, only for high-entropy values nobody could enumerate, such as random tokens. |
 | `normalize` | **required** | `"nfc-casefold-v1"`: Unicode-normalized and case-folded, so `Ada@Example.com` matches `ada@example.com`. `"identity"`: exact, case-sensitive. `"digits-only-v1"`: digits only, so `+1 (555) 010-0199` matches `15550100199`. |
@@ -224,6 +226,15 @@ changes every stored hash, so the index has to be rebuilt.
 | `index_id` | `"exact"` | 1–32 lowercase letters, digits and hyphens. Another implementation searching this column must use the same value. |
 | `skewed` | `false` | `true` if a few values dominate the column. A skewed column is gated like a small one (below). |
 | `on_unindexable` | `"refuse"` | For a value containing a character `"nfc-casefold-v1"` cannot index: `"refuse"` it with `FieldsealUnindexable`, or `"bucket"` it under the column's reserved hash. |
+
+**Upgrading (#213).** Every index declaration must add `suite_id`, and then re-run
+`prisma generate` to refresh the committed `fieldseal-map.ts`; a map generated
+before this change is refused at construction, naming the column. Stored index
+bytes do not change when the declared suite equals the write suite you were
+using: put `suite_id: "0xFF01"` on an index you wrote under `writeSuite:
+0xFF01` and nothing needs rebuilding. Changing it afterwards is a new index
+(spec §7.8) and needs a full backfill. Changing `writeSuite` no longer touches
+any index.
 
 **Overrides, in code.** A column with fewer than 1,024 distinct values, or a
 skewed one, is refused unless you record who accepted the risk, because an

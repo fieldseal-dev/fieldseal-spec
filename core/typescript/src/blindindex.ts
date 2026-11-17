@@ -6,9 +6,10 @@
 
 import { argon2, argon2Sync, createHmac } from "node:crypto";
 import { isValidIndexId, UUID_LEN } from "./context.ts";
-import { ConfigurationError } from "./errors.ts";
+import { ConfigurationError, suiteHex } from "./errors.ts";
 import { hkdfSha512 } from "./kdf.ts";
 import { isNormalizerId, type NormalizerId } from "./normalize.ts";
+import { canPerformKdf, getSuite } from "./registry.ts";
 
 export type IdfId = "hmac-sha512" | "argon2id";
 
@@ -232,6 +233,19 @@ export interface IndexDeclaration {
   readonly columnUuid: Uint8Array;
   /** Defaults to "exact" (spec §7.2). */
   readonly indexId?: string;
+  /**
+   * The suite this index is derived under (spec §7.2, #213; docs/09 §7).
+   * **Required, no default.** It fills the index context's `suite_id`, and
+   * nothing else does: not `writeSuite`, not `allowedSuites`, not an envelope.
+   * It need not be the write suite and need not be allow-listed; only its KDF
+   * is used, so it must be a registered suite whose KDF this core performs.
+   * Immutable under spec §7.8 like the rest of the declaration.
+   *
+   * Typed `number` and not optional so that a TypeScript caller cannot omit it;
+   * validation still refuses a missing value, because JavaScript callers and
+   * `as` casts exist.
+   */
+  readonly suiteId: number;
   readonly idf: IdfId;
   readonly argon2?: Argon2Params;
   readonly normalize: NormalizerId;
@@ -276,6 +290,8 @@ export const UNINDEXABLE_PREIMAGE: Uint8Array = new Uint8Array([0xff, ...Buffer.
 export interface ValidatedIndex {
   readonly key: string;
   readonly indexId: string;
+  /** The declared suite (spec §7.2, #213), validated: registered, KDF performable. */
+  readonly suiteId: number;
   readonly idf: IdfId;
   readonly argon2: Argon2Params | undefined;
   readonly normalize: NormalizerId;
@@ -309,6 +325,28 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
     // Spec §6.1: refused when the index is declared, never at call time.
     throw new ConfigurationError(
       `index declaration: index-id ${JSON.stringify(indexId)} violates the spec §6.1 grammar [a-z0-9-]{1,32}`,
+    );
+  }
+  // Spec §7.2 (#213): no default. A suite filled in from the write suite would
+  // restore the coupling the clause removes, so an absent member is refused.
+  const declared: unknown = d.suiteId;
+  if (declared === undefined || declared === null) {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: suiteId is required and has no default; a declaration that names no suite is refused, never completed from the write suite (spec §7.2, #213)`,
+    );
+  }
+  if (typeof declared !== "number" || !Number.isInteger(declared) || declared < 0 || declared > 0xffff) {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: suiteId ${typeof declared === "string" ? JSON.stringify(declared) : String(declared)} is not a 16-bit suite identifier (spec §7.2, #213)`,
+    );
+  }
+  const suite = getSuite(declared);
+  if (suite === undefined) {
+    throw new ConfigurationError(`index declaration ${indexId}: suiteId ${suiteHex(declared)} is not a registered suite (spec §4.2, §7.2)`);
+  }
+  if (!canPerformKdf(suite)) {
+    throw new ConfigurationError(
+      `index declaration ${indexId}: this core cannot perform the KDF of suite ${suiteHex(declared)} (${suite.kdf}); it refuses the declaration and derives under no other suite (spec §7.2)`,
     );
   }
   if (d.idf !== "hmac-sha512" && d.idf !== "argon2id") {
@@ -393,6 +431,7 @@ export function validateIndexDeclaration(d: IndexDeclaration): ValidatedIndex {
   return Object.freeze({
     key: indexRegistryKey(d.tableUuid, d.columnUuid, indexId),
     indexId,
+    suiteId: declared,
     idf: d.idf,
     argon2: argon2 === undefined ? undefined : Object.freeze({ ...argon2 }),
     normalize: d.normalize,

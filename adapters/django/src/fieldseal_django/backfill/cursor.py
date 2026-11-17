@@ -138,8 +138,9 @@ def stored_bytes(value: Any, storage: str) -> bytes | None:
     """`T` of PROCEDURE §6.2: the stored value as bytes, base64 decoded.
 
     None means "not an envelope whatever it is": a `base64` column whose
-    value does not decode. Decoding is strict here, unlike the adapter's
-    read (#245), because this result only ever feeds `is_ciphertext`.
+    value does not decode. Decoding is strict, the same decode the
+    adapter's read makes (#245), and this result only ever feeds
+    `is_ciphertext` (PROCEDURE §6.2).
     """
     if storage == "base64":
         try:

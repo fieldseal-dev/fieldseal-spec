@@ -15,8 +15,9 @@ export const UUID_LEN = 16;
  * The tuple supplied to every core operation (spec §6.1).
  *
  * `suiteId` is deliberately absent: docs/09 §12 fixes that the *core* fills
- * the suite_id member -- from `writeSuite` on encrypt and from the parsed,
- * allow-listed header on decrypt (docs/09 §3.2 step 4) -- never the caller.
+ * the suite_id member -- from `writeSuite` on encrypt, from the parsed,
+ * allow-listed header on decrypt (docs/09 §3.2 step 4), and from the index's
+ * validated declaration on the index path (spec §7.2, #213) -- never the caller.
  * A caller-supplied suite would be a per-call algorithm parameter, which §4.1
  * forbids.
  */

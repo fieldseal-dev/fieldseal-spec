@@ -1,6 +1,6 @@
 {
   "schema": "fieldseal-vectors/kdf/v1",
-  "vector_suite_version": "0.10.0-provisional",
+  "vector_suite_version": "0.11.0-provisional",
   "group": "kdf",
   "spec_version": "0.1-draft",
   "status": "pinned",
@@ -108,6 +108,26 @@
       "provisional_on": [
         "G14"
       ]
+    },
+    {
+      "id": "kdf/index-key/email-eq-suite-ff02",
+      "description": "pins that the index context carries the index's declared suite (spec §7.2, #213): the inputs of email-eq with suite_id 0xFF02. expected.info differs from email-eq's only in the suite_id bytes inside canonical_context, and index_key differs with it",
+      "spec_ref": "§5.2, §7.2",
+      "suite_id": "0xFF02",
+      "tenant_index_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "index_id": "email-eq",
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:email-eq"
+      },
+      "expected": {
+        "salt": "6669656c647365616c2d696e6465782d7631",
+        "info": "010000000000000002ff0200000000000000103f2504e04f8911d39a0c0305e82c330100000000000000107d4448409dc011d1b2455ffdce74fad2000000000000000b74656e616e742d30303031000000000000000e696e6465783a656d61696c2d6571",
+        "index_key": "afe29ee4eba442fb1a08f0cb2f732613ddf044ddc4f41b4a2030101983395714"
+      }
     },
     {
       "id": "kdf/index-key/distinct-per-index",

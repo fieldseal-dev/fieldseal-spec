@@ -74,7 +74,41 @@ columns that actually exist. `FIELDSEAL["CLIENT"]` overrides it, and
 `fieldseal.E006` then checks the supplied client's registry against the model
 declarations — an exact match in both directions, comparing the validated
 form, because a client carrying an index the models do not declare stores
-values for that column under rules no model states and nothing raises.
+values for that column under rules no model states and nothing raises. The
+validated form includes the index's declared suite (spec §7.2, #213), so a
+client whose index has the same parameters but a different `suite_id` is an
+E006 mismatch: it would store different bytes for every row.
+
+## Declaring the index's suite
+
+Every `BlindIndex` states `suite_id=`, for example `BlindIndex(suite_id=0xFF01,
+projected_population=100_000)`. It is required, keyword-only and has no default,
+and the adapter never fills it from `FIELDSEAL["WRITE_SUITE"]`: the index
+context's `suite_id` is the suite the index is declared under, not the suite
+envelopes are written under (spec §7.2), because a stored index value carries
+no header to say which suite produced it. Omitting it, or passing `None`, is
+refused when the registry is assembled and reported by `fieldseal.E003` with
+the model field's name; the Python default is `None`, meaning "not stated",
+only so that a migration written before the suite existed still imports. A
+bool or an unregistered suite is refused by the core when the client is built
+and reported by `fieldseal.E003` with the model field's name; the adapter does
+not re-check the value (AD-1).
+
+The suite is fixed for the life of the index (spec §7.8), and changing
+`WRITE_SUITE` no longer affects any blind index. It need not be the write suite
+or appear in `ALLOWED_SUITES`. `BlindIndex.deconstruct()` always emits a stated
+suite, so a migration carries the suite the index was created under.
+
+**Upgrading from a release without it:** add `suite_id=` to every
+`BlindIndex(...)` in models. Already-generated migration files load unchanged,
+and the next `makemigrations` records the suite in an `AlterField`. Stored
+index bytes do not change when the declared suite equals the write suite that
+was in use (spec §7.2, *Compatibility*).
+
+`cross_produce.py` emits the `fieldseal-vectors/cross/v3` document, in which
+each index declaration carries `suite_id` read off the client's validated
+registry; `tests/test_declared_suite.py` covers the rules above, including a
+column declared under `0xFF02` against a write suite of `0xFF01` end to end.
 
 ## Coverage matrix
 
@@ -97,7 +131,7 @@ not the target matrix in `docs/12` §6.
 | Two index columns over one encrypted column | ✅ `update()` and `bulk_update()` write both; `save(update_fields=...)` requires both | `test_update_writes_both_index_columns`, `test_bulk_update_writes_both_index_columns`, `test_save_with_update_fields_must_name_both` |
 | `save(update_fields=[...])` naming an indexed column without its index column | 🛑 raises `FieldsealNotSupported`; name both | `test_the_column_without_its_index_is_refused`, `test_naming_both_writes_both` |
 | `bulk_create(update_conflicts=True, update_fields=[...])` | ✅ the index column is added to `update_fields` with its column | `test_the_conflict_update_writes_the_index_with_the_column` |
-| `update()` or `bulk_update()` of an indexed column through `Model._base_manager`, or any manager that is not `FieldsealManager` | ⚠️ not covered: the ciphertext is written and the index is left stale, so the row is not found by its new value | — |
+| `update()`, `bulk_update()` or a `bulk_create` upsert of an indexed column through `Model._base_manager`, or any manager that is not `FieldsealManager` | 🛑 raises `FieldsealNotSupported` while the statement is compiled when the index would be left stale: the index column missing, set to the `Case` a plain `bulk_update` builds from the instance's stale attribute, or only one of the two in an upsert's `update_fields`. `save()` and an upsert naming both columns pass, and `save()` is the remedy where no `FieldsealManager` exists, as in a data migration. Nothing is written for a single table; under multi-table inheritance the child table's columns are written first, so use `atomic()`. Inside `atomic()`, give the call its own savepoint to keep the transaction usable (#240) | `TestPlainManager` in `test_index_on_partial_writes.py`; `test_index_check_review.py` |
 | `update(field=F(...))`, arithmetic, DB functions | 🛑 raises `FieldsealNotSupported` | `test_expression_rhs_is_refused` |
 | Reads: `get()`, `filter()` on other columns | ✅ decrypts | `test_save_then_read_returns_the_plaintext` |
 | `.values()`, `values_list()`, `only()`, `raw()` results | ✅ decrypts | `TestReadPathsTheMatrixClaims` |
@@ -146,7 +180,7 @@ not the target matrix in `docs/12` §6.
 | Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
 | `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
 | `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
-| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v1, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-20; two-column shape for every column, in place for `binary` storage only, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)); on Postgres a plain `AlterField` into `bytea` rewrites or refuses legacy values, so use two columns there until [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252) is decided | `tests/test_backfill.py` (`test_bfNN_…`) |
+| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v1, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-22 (since [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281): BF-21, a resume across a changed declared suite, and BF-22, a new run after an abandoned one, refused when an earlier run converted values under other index declarations); two-column shape for every column, in place for `binary` storage, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)), and for `base64` storage, where legacy text reads back as stored and a non-string column converts only §3.6 canonical text ([#245](https://github.com/fieldseal-dev/fieldseal-spec/issues/245)); on Postgres a plain `AlterField` into `bytea` rewrites or refuses legacy values, so use two columns there until [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252) is decided | `tests/test_backfill.py` (`test_bfNN_…`) |
 | `fieldseal_backfill` on a tenant-bound column | ⚠️ **not converted**: recorded as `CONTEXT_UNAVAILABLE` and left as it was ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244)) | `test_a_tenant_bound_column_is_context_unavailable` |
 | `fieldseal_backfill` `rotate`, `verify` | ❌ not built: `rotate` and BF-11, BF-12, BF-13, BF-15k are blocked on [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); `verify` (BF-15) is next | — |
 | `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |

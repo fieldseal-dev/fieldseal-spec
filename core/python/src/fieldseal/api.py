@@ -36,7 +36,6 @@ from .blindindex import (
     describe_operand,
     idf,
     index_registry_key,
-    is_byte_string,
     require_index_operand,
     truncate,
     validate_index_declaration,
@@ -66,7 +65,7 @@ from .errors import (
 )
 from .kdf import commitment, index_key, record_key
 from .keyprovider import KeyProvider
-from .registry import SUITES, Suite, is_provisional
+from .registry import SUITES, Suite, is_byte_string, is_provisional
 
 # Spec §4.8 constrains the arming mechanism's shape but does not name it
 # (docs/18 D-14). The name uses §4.8's own verb -- the section speaks of
@@ -102,7 +101,7 @@ def _backend(suite_id: int) -> GcmBackend:
 def _require_bytes(operand: object,
                    op: str) -> bytes | bytearray | memoryview:
     """`encrypt`, `decrypt` and `rotate` take bytes (spec §11.1, docs/10 §4;
-    `blindindex.is_byte_string`), and anything else is refused as
+    `registry.is_byte_string`), and anything else is refused as
     INVALID_ARGUMENT, never coerced: `bytes()` on an int is that many zero
     bytes, so 42 would be encrypted, decrypted or rotated as 42 NULs, and an
     int the size of a phone number allocates gigabytes before anything
@@ -411,7 +410,9 @@ class Fieldseal:
         # Spec §7.2: the index context is the field's with purpose retargeted
         # and row_id dropped; spec §8: a provider handed that purpose returns
         # the tenant INDEX key, never the DEK.
-        bound = ctx.for_index(decl.index_id).with_suite(self._write_suite)
+        # Spec §7.2 (#213): the context's suite is the index's DECLARED suite.
+        # The write suite is not read anywhere on this path.
+        bound = ctx.for_index(decl.index_id).with_suite(decl.suite_id)
         tenant_index_key, _ = self._provider.encryption_key(bound)
         ik = index_key(tenant_index_key, bound, decl.index_id)
         # Every IDF parameter comes from the declaration, the Argon2id cost

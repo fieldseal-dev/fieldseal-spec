@@ -22,7 +22,7 @@ public class TenantDoc {
     @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-000000000023", tenantBound = true)
     public String handle;
 
-    @BlindIndex(source = "handle", idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
+    @BlindIndex(source = "handle", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
             truncateBits = 15, projectedPopulation = 100_000)
     public byte[] handleIndex;
 

@@ -85,7 +85,7 @@ class TestMakemigrations:
     def test_a_blind_index_is_serializable_into_a_migration(self):
         from django.db.migrations.writer import MigrationWriter
 
-        idx = BlindIndex(idf="hmac-sha512", truncate_bits=15,
+        idx = BlindIndex(suite_id=0xFF01, idf="hmac-sha512", truncate_bits=15,
                          projected_population=100_000)
         text, imports = MigrationWriter.serialize(idx)
         assert "BlindIndex" in text

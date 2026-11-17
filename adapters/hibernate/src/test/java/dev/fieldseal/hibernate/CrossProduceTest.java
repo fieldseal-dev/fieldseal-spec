@@ -39,7 +39,7 @@ class CrossProduceTest {
     @Test
     void everyCaseIsReadableFromTheSharedKeyAlone() {
         ObjectNode doc = CrossProduce.produce();
-        assertEquals("fieldseal-vectors/cross/v2", doc.get("schema").asText());
+        assertEquals("fieldseal-vectors/cross/v3", doc.get("schema").asText());
         assertEquals("hibernate", doc.get("producer").get("implementation").asText());
         Fieldseal client = TestSupport.independentClient();
         int tenantBound = 0;
@@ -59,12 +59,21 @@ class CrossProduceTest {
     void everyIndexCaseIsRederivedFromItsOwnDeclaration() {
         ObjectNode doc = CrossProduce.produce();
         boolean marker = false;
+        int ff02 = 0;
         for (JsonNode c : doc.get("index_cases")) {
             JsonNode d = c.get("declaration");
             JsonNode ctx = c.get("context");
             assertEquals("index:" + d.get("index_id").asText(), ctx.get("purpose").asText());
+            // The declared suite, from the case: never the consumer's write suite (spec 7.2, #213).
+            String suiteText = d.get("suite_id").asText();
+            assertTrue(suiteText.matches("0x[0-9A-F]{4}"), suiteText);
+            int suite = Integer.parseInt(suiteText.substring(2), 16);
+            if (suite == 0xFF02) {
+                ff02++;
+            }
             IndexDeclaration.Builder b = IndexDeclaration.builder(hex(ctx.get("table_uuid")),
                             hex(ctx.get("column_uuid")))
+                    .suiteId(suite)
                     .indexId(d.get("index_id").asText())
                     .idf(IndexDeclaration.Idf.HMAC_SHA512)
                     .normalize(IndexDeclaration.Normalizer.NFC_CASEFOLD_V1)
@@ -89,6 +98,9 @@ class CrossProduceTest {
             assertArrayEquals(want, hex(c.get("index")), c.get("id").asText());
         }
         assertTrue(marker, "the bucket-marker case is present");
+        assertEquals(1, ff02, "exactly one index case is declared under 0xFF02");
+        // The document's own write suite stays 0xFF01: the 0xFF02 case is not the write suite.
+        assertEquals("0xFF01", doc.get("suite_id").asText());
     }
 
     /** Two runs disagree on every envelope: a producer on a fixed seed would pass the rest. */

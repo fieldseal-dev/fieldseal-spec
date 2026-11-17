@@ -76,6 +76,16 @@ export function getSuite(id: number): Suite | undefined {
   return SUITES.get(id);
 }
 
+/**
+ * Whether this core can perform the suite's KDF (spec §7.2: an index
+ * derivation uses the suite's KDF and no AEAD, so this -- not `implemented`,
+ * which is about the AEAD -- decides whether an index may be declared under
+ * it). Both registered suites use HKDF-SHA-512, which `kdf.ts` performs.
+ */
+export function canPerformKdf(s: Suite): boolean {
+  return s.kdf === "HKDF-SHA-512";
+}
+
 export function isRegistered(id: number): boolean {
   return SUITES.has(id);
 }

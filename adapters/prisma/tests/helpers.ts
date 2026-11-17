@@ -10,7 +10,7 @@
 
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { StaticKeyProvider } from "@fieldseal/core";
+import { StaticKeyProvider, SUITE_FF01, SUITE_FF02 } from "@fieldseal/core";
 
 import { fieldsealExtension, type FieldsealExtensionOptions } from "../src/index.ts";
 import { PrismaClient } from "./fixture/generated/prisma/client.ts";
@@ -22,7 +22,9 @@ export const DEK = H("00112233445566778899aabbccddeeff00112233445566778899aabbcc
 export const INDEX_KEY = H("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100");
 export const KEY_ID = H("0102030405060708090a0b0c0d0e0f10");
 
-export const SUITE = 0xff01;
+export const SUITE = SUITE_FF01;
+/** An index may be declared under 0xFF02 although it is not a write suite (spec §7.2, #213). */
+export const INDEX_SUITE_FF02 = SUITE_FF02;
 
 /**
  * Which database the suite runs against.

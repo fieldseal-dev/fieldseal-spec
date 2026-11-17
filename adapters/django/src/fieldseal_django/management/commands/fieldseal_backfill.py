@@ -163,7 +163,9 @@ class Command(BaseCommand):  # type: ignore[misc]
                 f"{options['database']!r}.")
         self.stdout.write(
             f"run {options['run_id']} is abandoned. The rows it converted "
-            "stay converted; a new run skips them.")
+            "stay converted; a new run skips them and does not re-derive "
+            "their indexes, so a new run is refused if its index "
+            "declarations differ from this run's (PROCEDURE §4).")
 
     def _run(self, runner: Any, run: Any, limits: Any) -> None:
         from ...backfill import report

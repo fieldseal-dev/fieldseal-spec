@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .errors import UnknownFormatVersion
-from .registry import SUITES, Suite
+from .registry import SUITES, Suite, is_byte_string
 
 FMT_VER = 0x01
 HEADER_LEN = 51  # 1 + 2 + 16 + 32
@@ -57,17 +57,17 @@ def serialize_header(suite_id: int, key_id: bytes, msg_seed: bytes) -> bytes:
 
 
 def _view(blob: object) -> memoryview | None:
-    """A byte view over any contiguous bytes-like operand, or None."""
-    if isinstance(blob, memoryview):
-        mv = blob
-    elif isinstance(blob, (bytes, bytearray)):
-        mv = memoryview(blob)
-    else:
+    """A view over an operand the operations accept (`registry.is_byte_string`),
+    or None. Recognition shares the operations' predicate (#257): a view they
+    refuse -- wider items, a non-'B' format such as ctypes' '<B', strided,
+    multi-dimensional, released -- is not "one of ours" here either, so
+    `is_ciphertext` never says True of a value `decrypt` refuses.
+
+    Never copies, never raises.
+    """
+    if not is_byte_string(blob):
         return None
-    try:
-        return mv.cast("B") if mv.format != "B" or mv.ndim != 1 else mv
-    except (TypeError, ValueError):  # not castable; or a released view
-        return None
+    return blob if isinstance(blob, memoryview) else memoryview(blob)
 
 
 def recognize(blob: object) -> EnvelopeHeader | None:
@@ -81,6 +81,10 @@ def recognize(blob: object) -> EnvelopeHeader | None:
     read mode, because that operand is best explained as ciphertext from a
     newer implementation and silently handing it back as plaintext would be the
     §3.4 double-encryption accident.
+
+    An operand `registry.is_byte_string` refuses -- a non-bytes type, or a
+    view of wider items, a non-'B' format, strided, multi-dimensional or
+    released -- returns None (#257).
     """
     mv = _view(blob)
     if mv is None or len(mv) == 0:
@@ -134,6 +138,9 @@ def is_ciphertext(blob: object) -> bool:
     not "this is authentic". Authenticity is decrypt's job. A reserved future
     version is *not* ciphertext here (§3.4: the version must be recognized),
     even though `decrypt` names it; that tension is D-03 in docs/18.
+
+    Answers False for any operand shape the operations refuse (#257), so it and
+    `decrypt` agree on every byte view.
     """
     try:
         return recognize(blob) is not None

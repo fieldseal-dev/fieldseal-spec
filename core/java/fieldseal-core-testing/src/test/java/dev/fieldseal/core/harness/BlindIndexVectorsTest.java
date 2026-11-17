@@ -61,9 +61,11 @@ class BlindIndexVectorsTest {
                 "unindexable-marker", 2, "unindexable-bucket", 1, "refuse", 2)));
         // Since suite 0.10.0-provisional, spec §7.6's gate as six declaration vectors (#211),
         // in this file only: the gate never reads the IDF (docs/08 §4.4).
-        PINNED.put("blind-index/hmac-sha512.json", new TreeMap<>(Map.of("primitive", 11,
+        // Since 0.11.0-provisional (#213), one more primitive (the 0xFF02 index) and three more
+        // declaration vectors (the declared suite).
+        PINNED.put("blind-index/hmac-sha512.json", new TreeMap<>(Map.of("primitive", 12,
                 "equal", 6, "unindexable-marker", 1, "unindexable-bucket", 1, "refuse", 2,
-                "declaration", 6)));
+                "declaration", 9)));
     }
 
     private static final byte[] DEK = bytes("000102030405060708090a0b0c0d0e0f"
@@ -159,6 +161,8 @@ class BlindIndexVectorsTest {
     /** Two preimages, recomputed; their equality is {@code must_be_equal} (docs/08 §4). */
     private static void equal(JsonNode v) {
         JsonNode in = v.path("inputs");
+        assertEquals(v.path("suite_id"), in.path("suite_id"),
+                "inputs.suite_id is the declared suite, the same as the top level (docs/08 §3)");
         Normalizer n = normalizer(in.path("normalize"));
         byte[] key = hex(in.path("index_key"));
         int bits = in.path("truncate_bits").asInt();
@@ -320,6 +324,10 @@ class BlindIndexVectorsTest {
         } else {
             d.idf(Idf.HMAC_SHA512);
         }
+        // The declared suite, from the vector (#213): the primitive shape carries it at the top
+        // level, the others in inputs. The client's write suite and allow-list stay 0xFF01 only.
+        assertTrue(in.path("suite_id").isTextual(), "the vector carries its declared suite_id");
+        d.suiteId(Integer.decode(in.path("suite_id").asText()));
         return Fieldseal.builder()
                 .keyProvider(KeyProviders.staticKeys(DEK, hex(in.path("tenant_index_key")), KEY_ID))
                 .allowedSuites(Set.of(0xFF01)).writeSuite(0xFF01)

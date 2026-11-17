@@ -1,6 +1,6 @@
 # The backfill procedure
 
-**Procedure version:** 1 · **Date:** 2026-09-30 · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). No frontend implements it yet, so nothing here has been run. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
+**Procedure version:** 1 · **Date:** 2026-09-30, corrected in place 2026-11-17 ([#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281); §12 says why the version did not change) · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). One frontend implements part of it: the Django adapter's `fieldseal_backfill` implements the `encrypt` job, and neither `rotate` nor `verify`; the scenarios it passes are listed in that adapter's `REFERENCE.md`. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
 
 This is the one procedure every backfill frontend implements: the state tables, the cursor, the batch, the two jobs, `verify`, what the tool must print, and the scenarios a frontend's tests must pass. The design it makes concrete is [`docs/15-tooling.md`](../../docs/15-tooling.md) §1. A frontend is a thin program in one language over one adapter (`docs/26` §5 item 4). A frontend that needs this document changed files an issue and waits; it does not diverge locally (`docs/26` §6).
 
@@ -117,7 +117,7 @@ The inputs are what decides the bytes a run stores, and nothing operational. Bat
 | `procedure_version` | `1` |
 | `job` | `"encrypt"` or `"rotate"` |
 | `table_uuid` | The table's UUID, 32 lowercase hex digits |
-| `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2) |
+| `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2). It decides the envelopes a run writes and no index: each index records its own declared suite (below; spec §7.2) |
 | `cursor` | Array, one object per cursor column in key order: `{"name": <the column's SQL name>, "type": <"int", "uuid" or "text">}` (§5.1). A primary key has no `column_uuid`, so its name is the identity recorded; a renamed or replaced key column refuses the resume, and a key replaced by another of the same name and type is not detected |
 | `columns` | Array, one object per encrypted column in the run, sorted by `column_uuid` |
 
@@ -142,6 +142,9 @@ Each `indexes` element, taken from the client's **validated** registry (`docs/09
 | `truncate_bits` | `b` |
 | `on_unindexable` | `"refuse"` or `"bucket"` |
 | `storage` | `"binary"` or `"hex"` (spec §7.11) |
+| `suite_id` | The index's declared suite as an integer (spec §7.2), as the validated registry reports it |
+
+`suite_id` is recorded per index because, since [#213](https://github.com/fieldseal-dev/fieldseal-spec/issues/213), it no longer follows `write_suite`: an index is derived under the suite its declaration names, which keys every index value the run writes. Changing it makes a new index (spec §7.8), as a changed `truncate_bits` does, and a resume across the change would leave index values under two keys in one column with nothing raised. Before #213, `write_suite` covered it.
 
 The projected population and the override records are left out: they decide whether a declaration is accepted, not what is stored.
 
@@ -150,16 +153,18 @@ The projected population and the override records are left out: they decide whet
 **Worked example.** A frontend's tests MUST reproduce this hash from these inputs:
 
 ```json
-{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
+{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
 ```
 
 ```
-8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0
+960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419
 ```
 
-The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters.
+The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters. The index's `suite_id` (`0xFF02`) differs from `write_suite` (`0xFF01`) on purpose, so a frontend that records the write suite in its place does not reproduce the hash.
 
-**On resume**, the frontend rebuilds `config` from the live client and declarations, and compares it to the stored one. If they differ it MUST refuse, and name each member that differs. It prints names and parameters only; there is nothing secret in `config`.
+**On resume**, the frontend rebuilds `config` from the live client and declarations, and compares it to the stored one. If they differ it MUST refuse, and name each member that differs. What is present in only one of the two is named as such: a member the stored `config` was recorded without (§12) as not recorded, so it does not read as a changed value, and a column or index as added or removed. It prints names and parameters only; there is nothing secret in `config`.
+
+**On a new `encrypt` run**, the comparison also runs against earlier runs, because abandoning a refused run and starting a new one would otherwise walk around it. A value an earlier run converted is `current` to every later run and is never rewritten (§6.2), and this version has no job that re-derives its index (§1). So a new run under a changed index declaration would leave index values derived under two declarations in one column, and lookups would miss one half with nothing raised. Before inserting its run row, the frontend MUST compare its `config` with that of every earlier `encrypt` run on the same `table_uuid` whose `values_written` is above zero, whatever that run's status. For each column both contain, it compares the column's `indexes` as on resume. If any member differs, or an index or member is present in only one of the two, it MUST refuse to start, name the earlier run and each such member, and insert nothing. An earlier run that wrote no value converted nothing, so it does not count. A changed index declaration over a table this tool has converted is §1's index rebuild, which this version does not define.
 
 ## 5. The cursor and the batch
 
@@ -267,7 +272,9 @@ From the stored bytes `T`, decoded as in §6.2:
 | Envelope, header `suite_id` = the client's write suite **and** header `key_id` = the write key id for the row's context (§7.2) | `current` | None. The value MUST NOT be rewritten |
 | Any other envelope | `pending` | Rotate |
 
-The test reads the header only. It needs no key (`docs/15` §1.1).
+The test reads the header only, through the core's header accessor (`docs/09` §4). It needs no key (`docs/15` §1.1).
+
+**A newer-format envelope is `anomalous`.** Reserved-version input (`fmt_ver 0x02`, spec §3.4) is not an envelope to `is_ciphertext` or to the header accessor, so a `rotate` run classifies it `anomalous` and leaves it unchanged. This is spec §3.4's documented trade ("The asymmetry in the second row is deliberate"), not a new one.
 
 **The header is not authenticated until a decrypt.** A damaged or forged envelope whose first 19 bytes look current is classified `current`. The tool is not an integrity check; `verify`'s sampled decrypt is the closest thing to one here (§8).
 
@@ -279,12 +286,12 @@ The probe uses public operations only and never touches the provider, which the 
 
 **The probe assumes the key id does not depend on `row_id`.** Spec §5.2 makes the DEK scope the tenant, or a documented scope for deployments without one, and `key_id` is the provider's to define (spec §3.1). The probe is sound for every scope a provider can express from the context without its `row_id`; a provider whose key id depends on the row would make every envelope classify `pending` on every run, and every run rewrite the whole table. So §7.3 step 2 checks each rotated envelope against the probe, and a mismatch stops the run rather than letting it converge on nothing.
 
-**[flag: open decision D-5, §11.]**
+**Decided ([#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241), D-5 in §11).** No core exposes a `write_key_id(ctx)`: asking the provider which key it would use is the surface `docs/09` §2 withholds. The probe is the write path itself, so it cannot drift from `encrypt`, and its cost is one empty encrypt per distinct context per batch. **Revisit condition:** a provider whose key id lawfully depends on something the probe cannot carry. Until then, §7.3 step 2's process stop is the guard.
 
 ### 7.3 Rotating a pending value
 
 1. `out = rotate(T, c)` on the core client, with the adapter's context for that row and column.
-2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten. This is a process stop, not a value failure: nothing is recorded for it (§7.4). Reading `out`'s header is the parse D-1 (§11) says no core exports yet, like the rest of this job.
+2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten. This is a process stop, not a value failure: nothing is recorded for it (§7.4). `out`'s header is read with the core's header accessor (`docs/09` §4), like the rest of this job.
 3. Write `out`, in the column's storage form, to that row and column only, as a bound parameter, in the batch's transaction.
 
 `rotate` is used, rather than the adapter's read followed by the adapter's write, because spec §11.1 and `docs/09` §3.5 define the sweep that way and because it leaves the plaintext bytes exactly as they were: nothing passes through a codec. The write in step 3 stores an envelope the core just produced, and step 2 checks it. **[flag: open decision D-2, §11. `docs/26` §4 says a frontend works "through the adapter's encrypting write path", which describes `encrypt` and not this step.]**
@@ -314,7 +321,9 @@ Reads only, under a `readonly` client (§2). It has two parts and reports both.
 **Census.** A full pass in cursor order, rate-limited as a run is, reading stored bytes and classifying without decrypting:
 
 - For every column: the number of NULL values, envelopes, and non-envelopes.
-- For every column, the number of envelopes per `(suite_id, key_id)`, both in hex. This line needs the header accessor of D-1 (§11) and is blocked until it lands; the line above needs only `is_ciphertext`.
+- For every column, the number of envelopes per `(suite_id, key_id)`, both in hex. This line uses the core's header accessor (`docs/09` §4; D-1 in §11) and is blocked in a frontend until its core ships it; the line above needs only `is_ciphertext`.
+
+A value the census counts as a non-envelope may be an envelope of a newer format version (spec §3.4; §7.1). It is not counted under any `(suite_id, key_id)`.
 
 **Sample.** `N` rows (default 1000, or every row if there are fewer), chosen uniformly at random among the rows scanned; the frontend states its method and `N` in the report. Each sampled envelope is decrypted through the adapter's read path. In the two-column shape, while the legacy column still exists, the result is compared with the legacy value. The report gives counts of decrypted, failed (by error code) and mismatched. It never prints a value.
 
@@ -387,31 +396,40 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 | BF-08 | NULL values, in both shapes | Counted `null`, left NULL, index left NULL |
 | BF-09 | A reserved-version value in an in-place column | Recorded as a failure with `UNKNOWN_FORMAT_VERSION`; bytes unchanged |
 | BF-10 | `encrypt` on a populated table without the acknowledgement flag | Text 1 printed; nothing written; no run row created |
-| BF-11 ⏸ | `rotate` over current, stale-key, stale-suite, NULL and plaintext values | Stale values become current and decrypt to the same plaintext bytes; current values have bytes unchanged; the plaintext is `anomalous` and unchanged; every index column has bytes unchanged |
+| BF-11 ⏸ | `rotate` over current, stale-key, stale-suite, NULL, plaintext and reserved-version (`fmt_ver 0x02`, ≥ 111 bytes) values | Stale values become current and decrypt to the same plaintext bytes; current values have bytes unchanged; the plaintext and the reserved-version value are `anomalous` and unchanged; every index column has bytes unchanged |
 | BF-12 ⏸ | `rotate`, killed and resumed; then a new run | As BF-02 and BF-04 |
 | BF-13 ⏸ | `rotate` with one envelope that cannot be decrypted | A failure row with the spec §9 code; the run continues and completes; the report's first line says not fully converted |
 | BF-14 | A run with `rows_per_second` set low enough to bind | Measured rate is at most the limit, beyond one batch of burst |
 | BF-15 | `verify` with one planted plaintext; with one planted mismatch in the two-column shape | The census counts the plaintext; the sample, taken over every row, reports the mismatch |
-| BF-15k ⏸ | `verify` over envelopes under two key versions and two suites | The census by `(suite_id, key_id)` reports each count |
+| BF-15k ⏸ | `verify` over envelopes under two key versions and two suites, and a reserved-version (`fmt_ver 0x02`) value | The census by `(suite_id, key_id)` reports each count; the reserved-version value counts as a non-envelope and under no `(suite_id, key_id)` |
 | BF-16 | Any scenario above that produced output | No plaintext value, envelope or index value appears in any output or in either state table |
 | BF-17 | The §4 worked example | The frontend's serializer and hash reproduce it |
 | BF-18 | A run row with `procedure_version` 2 | Refused |
 | BF-19 | Two processes start a new run on one table at once | Exactly one run row exists; the other start is refused by the unique constraint and names the run that holds the table |
 | BF-20 | A run stopped by `max_failures` mid-way through a batch's worth of failing rows, then resumed with the same setting | The stop leaves the run `running`, with the failing batch committed: its failure rows are recorded and `cursor_value` is past every row that failed. The resume starts beyond them, and completes when the failures do not continue |
+| BF-21 | `encrypt`, killed, then resumed with one index's declared `suite_id` changed and `write_suite` unchanged | Refused, naming that index's `suite_id`; nothing written |
+| BF-22 | `encrypt`, killed and abandoned after writing values, then a new run with one index's declared `suite_id` changed; again after an abandoned run that wrote nothing | The first new run is refused before a run row is inserted, naming the abandoned run and that index's `suite_id`; nothing written. The second starts |
 
-A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the header accessor of D-1 (§11, [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in every frontend until it lands. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
+A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the core's header accessor (`docs/09` §4; D-1 in §11, decided by [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in a frontend until that frontend's core ships it. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
 
 ## 11. Open decisions and what the cores owe
 
 Recorded here so that a frontend is not built on an assumption.
 
-- **D-1. No core exports a header parse** ([#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241))**.** §7.1 and the census need `suite_id` and `key_id` from stored bytes. `docs/15` §3 says `docs/09` §4 "already provides `EnvelopeHeader`; keep it exported". The type is public in all three cores, and a function that produces one from bytes is public in none: Python's is `fieldseal.envelope.recognize`, outside the package root's `__all__`; TypeScript's `recognize` is not exported from the package entry; Java's codec is under `internal`. It needs #241 decided and an accessor in each core before the `rotate` job or the census by key can be built. The `encrypt` job and the census of envelopes against non-envelopes need only `is_ciphertext`, and are not blocked. A frontend MUST NOT parse the header bytes itself in the meantime.
+- **D-1. The header accessor: decided ([#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241), 2026-11-04), owed per core.** §7.1 and the census need `suite_id` and `key_id` from stored bytes. Before #241, `docs/15` §3 said `docs/09` §4 "already provides `EnvelopeHeader`; keep it exported": the type was public in all three cores, and a function that produces one from bytes was public in none (Python's is `fieldseal.envelope.recognize`, outside the package root's `__all__`; TypeScript's `recognize` is not exported from the package entry; Java's codec is under `internal`). #241 decided the accessor (`docs/09` §4, §12): `read_header` / `readHeader`, returning `HeaderFields { suite_id, key_id }` exactly when `is_ciphertext` is true and not-an-envelope otherwise (including reserved-version input), never raising, needing no key, ignoring read mode, and unauthenticated until a decrypt. **Not met as of 2026-11-04:** no core ships it yet, and the `rotate` job and the census by key cannot be built in a frontend until its core does. The `encrypt` job and the census of envelopes against non-envelopes need only `is_ciphertext`, and are not blocked. A frontend MUST NOT parse the header bytes itself in the meantime.
 - **D-2. `rotate` writes the core's output directly** (§7.3), not through the adapter's write path. The alternative is the adapter's read followed by its write, which keeps one write path and passes every value through a codec.
 - **D-3. The census** (§8) is an addition to `docs/15` §1.1's sampled verify.
 - **D-4. The rate defaults** (§5.3) are unmeasured, and `batch_size` also bounds lock hold (§5.2 step 4).
-- **D-5. The write key id by probe** (§7.2). The alternative is a core accessor that reports the key id a write would carry; it would go in D-1's issue.
+- **D-5. The write key id by probe: decided ([#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)).** No core gets a `write_key_id(ctx)`; §7.2's probe stays. Reasons: such an accessor would ask the provider on a caller's behalf, which `docs/09` §2's reflection clause withholds; the probe is the write path itself and cannot drift from `encrypt`; and it costs one empty encrypt per distinct context per batch. §7.3 step 2's process stop for a row-dependent key id stays. **Revisit condition:** a provider whose key id lawfully depends on something the probe cannot carry.
 - **The Java core's metrics hook** (§8's flag) is owed by `docs/27` §4, not by this document.
 
 ## 12. Changing this document
 
 `procedure_version` increases when a change alters what is stored in either state table, what a run writes, or how `config` is built. A clarification that changes none of those does not. Every change is an issue first, and updates the shared scenarios with it.
+
+**One exception, taken once.** [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281) changed how `config` is built (§4 gained each index's `suite_id`, and a new `encrypt` run's comparison with earlier runs) and kept version 1. Version 1 therefore names two constructions of `config`: the one before #281, whose index elements have no `suite_id`, and the one after. The version exists so that a frontend can tell runs recorded under another procedure, and refuse them (§3, BF-18). When #281 was made, no release had carried a frontend: the Django frontend reached `main` on 2026-10-16 ([#255](https://github.com/fieldseal-dev/fieldseal-spec/pull/255)), and no tag contains it; the last release is `v0.1.3`. So no released program could have recorded a version-1 run under the old `config`, though a build from `main` could have. Such a run is told apart by the comparison rather than the version, and only where it matters:
+
+- **A run over a table with an indexed column** has index elements without `suite_id`. Resuming it is refused, naming that member as absent from the stored `config` (§4). If it wrote values, a new `encrypt` run on the table is refused the same way. The tool cannot tell which suite those values' indexes were derived under, and this version has no subcommand that settles it.
+- **A run with no indexed column** records no index element, so its `config` is the same under both constructions and it resumes. That is correct: nothing it writes depends on the member.
+
+Once a release carries a frontend, this rule applies with no exception.

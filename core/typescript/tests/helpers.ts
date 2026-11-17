@@ -133,6 +133,7 @@ export const OVERRIDE = { reason: "legal name column; refusing a customer's name
  * between tests is what the test is about, and this is the part that is not.
  */
 export const INDEX_BASE = {
+  suiteId: SUITE_FF01,
   tableUuid: CTX.tableUuid,
   columnUuid: CTX.columnUuid,
   normalize: "nfc-casefold-v1" as const,

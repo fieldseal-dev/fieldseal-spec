@@ -64,8 +64,8 @@ export function renderModule(map: FieldMap, importPath: string): string {
 // secret. Commit it.
 //
 // Changing a \`column_uuid\` or \`table_uuid\` here does not re-key anything; it
-// makes existing rows undecryptable (spec §6.1). Changing an index's \`idf\`,
-// \`normalize\` or \`truncate_bits\` after any row is written is a NEW index
+// makes existing rows undecryptable (spec §6.1). Changing an index's \`suite_id\`,
+// \`idf\`, \`normalize\` or \`truncate_bits\` after any row is written is a NEW index
 // under spec §7.8 and requires a full backfill, not an edit.
 
 import type { FieldMap } from ${JSON.stringify(importPath)};

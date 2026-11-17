@@ -103,6 +103,7 @@ class TestEarliestLatest:
                 models.CharField(max_length=50),
                 column_uuid="018f3c2e-0000-7000-8000-0000000000a1",
                 index=BlindIndex(
+                    suite_id=0xFF01,
                     index_id="exact", idf="hmac-sha512",
                     normalize="nfc-casefold-v1", truncate_bits=15,
                     projected_population=100_000),

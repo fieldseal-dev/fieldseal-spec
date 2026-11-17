@@ -10,6 +10,7 @@ from ..keys import INDEX_KEY_SALT, index_key, record_key
 from ._common import ctx_json, suite_str, wrapper
 
 SUITE = 0xFF01
+SUITE_FF02 = 0xFF02   # registered (spec §4.2); its KDF is HKDF-SHA-512 too
 MAX_INDEX_ID = "a" * 32
 
 
@@ -104,7 +105,9 @@ def _index_vector(slug: str, description: str, ctx: FieldContext,
         "id": f"kdf/index-key/{slug}",
         "description": description,
         "spec_ref": "§5.2, §7.2",
-        "suite_id": suite_str(SUITE),
+        # The index's declared suite (spec §7.2, #213), which is what
+        # canonical_context carries -- not a write suite.
+        "suite_id": suite_str(ctx.suite_id),
         "tenant_index_key": I.TENANT_INDEX_KEY.hex(),
         "index_id": index_id,
         "context": ctx_json(caller),
@@ -155,6 +158,13 @@ def generate_index_key() -> dict:
                       "2000-byte tenant_id, index-id at the 32-char maximum "
                       "(the G14 case). Retires if G14 adopts a bound below it",
                       _ctx(tenant_id=I.TENANT_ID_2000B), MAX_INDEX_ID, "G14"),
+        _index_vector("email-eq-suite-ff02",
+                      "pins that the index context carries the index's "
+                      "declared suite (spec §7.2, #213): the inputs of "
+                      "email-eq with suite_id 0xFF02. expected.info differs "
+                      "from email-eq's only in the suite_id bytes inside "
+                      "canonical_context, and index_key differs with it",
+                      _ctx(suite_id=SUITE_FF02), "email-eq"),
     ]
     # row-id-dropped is, by construction, the same derivation as email-eq.
     # Say so where a reader will see it rather than leaving two identical
@@ -162,6 +172,17 @@ def generate_index_key() -> dict:
     assert (vectors[3]["expected"]["index_key"]
             == vectors[0]["expected"]["index_key"])
     vectors[3]["same_as"] = vectors[0]["id"]
+    # The suite is the only thing that differs from email-eq: the keys differ,
+    # and so does `info` -- in exactly the two suite_id bytes.
+    ff02 = vectors[-1]
+    assert ff02["id"] == "kdf/index-key/email-eq-suite-ff02"
+    a = bytes.fromhex(vectors[0]["expected"]["info"])
+    b = bytes.fromhex(ff02["expected"]["info"])
+    assert len(a) == len(b) and ff02["expected"]["index_key"] != vectors[0]["expected"]["index_key"]
+    # info = presence(1) || u64be(2) || suite_id(2) ...: bytes 9-10 are the
+    # suite, and 0xFF01 vs 0xFF02 differ in byte 10 alone.
+    assert [i for i in range(len(a)) if a[i] != b[i]] == [10], (
+        "info differs outside the suite_id bytes")
 
     # §7.2: two indexes MUST NOT share a key. Inputs carried (docs/18 D-08).
     ctx = _ctx()

@@ -450,6 +450,36 @@ describe("L4: warm() in the value path (docs/13 §5)", () => {
     expect(r.unwraps).toEqual([]);
     await base.$disconnect();
   });
+
+  it("refuses a payload before it fetches a key for it (#250)", async () => {
+    // The multi-row refusal is raised by the write walk. Run only in step 4, it
+    // came after every column walked before the refused one was encrypted --
+    // here the outer row's email -- so a cold cache was warmed from the KMS for
+    // a statement that was never going to run. Step 3 now runs the walk in
+    // check mode, and the refusal arrives with no key touched.
+    const seeded = makeClient();
+    const p = await loose(seeded.prisma)["patient"]!["create"]!({
+      data: { email: "ada@example.com", note: "n", age: 36, plainName: "Ada" },
+    });
+    await loose(seeded.prisma)["visit"]!["create"]!({
+      data: { patientId: p["id"], reason: "checkup" },
+    });
+    await seeded.base.$disconnect();
+
+    const cold = rig();
+    const { prisma, base } = makeClient({ keyProvider: cold.provider });
+    await expect(
+      loose(prisma)["patient"]!["update"]!({
+        where: { id: p["id"] },
+        data: {
+          email: "new@example.com",
+          visits: { updateMany: { where: { patientId: p["id"] }, data: { reason: "x" } } },
+        },
+      }),
+    ).rejects.toThrow(/the nested `updateMany` applies one payload/);
+    expect(cold.unwraps).toEqual([]);
+    await base.$disconnect();
+  });
 });
 
 describe("the journal: a retried pass starts from a clean tree", () => {

@@ -39,6 +39,14 @@ final class DeclarationVectors {
             "index_id", "idf", "idf_params", "normalize", "truncate_bits", "projected_population",
             "skewed", "cardinality_override", "on_unindexable"));
 
+    /**
+     * The declared suite (suite {@code 0.11.0-provisional}, #213): a required {@code
+     * IndexDeclaration} member with no default. A vector may omit it ({@code
+     * declared-suite-missing-refused}), and then the declaration is built without one, never with
+     * the client's write suite.
+     */
+    private static final String SUITE = "suite_id";
+
     private static final byte[] DEK = new byte[32];
     private static final byte[] INDEX_KEY = {1};
     private static final byte[] KEY_ID = new byte[16];
@@ -49,6 +57,7 @@ final class DeclarationVectors {
         JsonNode d = v.path("inputs").path("declaration");
         Set<String> present = new TreeSet<>();
         d.fieldNames().forEachRemaining(present::add);
+        present.remove(SUITE);
         assertEquals(FIELDS, present, "the declaration's fields (docs/08 §4: none defaulted)");
         String want = v.path("expected").path("declaration").asText();
         assertEquals(1, v.path("expected").size(), "expected names no error code (docs/08 §4)");
@@ -56,6 +65,9 @@ final class DeclarationVectors {
                 "expected.declaration is refused or accepted, not '" + want + "'");
 
         IndexDeclaration declaration = declaration(d);
+        // The vector's top-level suite_id is the CLIENT's write suite (docs/08 §3, #213); the
+        // declared suite is inputs.declaration.suite_id. Every declaration vector runs on a
+        // client whose write suite and allow-list are that one suite, 0xFF01 in the pinned suite.
         Fieldseal.Builder client = Fieldseal.builder()
                 .keyProvider(KeyProviders.staticKeys(DEK, INDEX_KEY, KEY_ID))
                 .allowedSuites(Set.of(Integer.decode(v.path("suite_id").asText())))
@@ -93,6 +105,11 @@ final class DeclarationVectors {
                 .projectedPopulation(longInteger(d, "projected_population"))
                 .onUnindexable(byId(OnUnindexable.values(), OnUnindexable::id,
                         text(d, "on_unindexable")));
+        if (d.has(SUITE)) {
+            String s = text(d, SUITE);
+            assertTrue(s.matches("0x[0-9A-Fa-f]{4}"), "suite_id is 0x and four hex digits: " + s);
+            b.suiteId(Integer.decode(s));
+        }
         assertTrue(d.path("skewed").isBoolean(), "skewed is a boolean");
         b.skewed(d.path("skewed").asBoolean());
         JsonNode o = d.path("cardinality_override");

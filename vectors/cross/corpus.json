@@ -1,9 +1,9 @@
 {
   "schema": "fieldseal-vectors/cross-corpus/v1",
-  "vector_suite_version": "0.10.0-provisional",
+  "vector_suite_version": "0.11.0-provisional",
   "spec_version": "0.1-draft",
   "suite_id": "0xFF01",
-  "note": "Producer inputs only (docs/08 §4.7). A producer encrypts every case through its production path -- runtime CSPRNG for msg_seed and nonce, no test-mode injection -- resolving key_ref against keys/test-keys.json, and emits cross/<impl> files whose envelopes every other implementation must decrypt. `index_cases` are the other half: a producer registers each `declaration` on its client and derives the index through its production path, and every consumer re-derives and compares byte-exact -- a mismatched index is a silent lookup miss, not an error, so nothing else in the matrix would notice.",
+  "note": "Producer inputs only (docs/08 §4.7). A producer encrypts every case through its production path -- runtime CSPRNG for msg_seed and nonce, no test-mode injection -- resolving key_ref against keys/test-keys.json, and emits cross/<impl> files whose envelopes every other implementation must decrypt. `index_cases` are the other half: a producer registers each `declaration` on its client and derives the index through its production path, and every consumer re-derives and compares byte-exact -- a mismatched index is a silent lookup miss, not an error, so nothing else in the matrix would notice. Every `declaration` carries the index's declared `suite_id` (spec §7.2, #213; the `cross/v3` document format): a consumer builds the declaration with it and MUST NOT substitute its own write suite.",
   "cases": [
     {
       "case": "size-empty",
@@ -204,6 +204,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -221,10 +222,33 @@
       "value_text": "alice@example.com"
     },
     {
+      "case": "exact-ascii-suite-ff02",
+      "key_ref": "tenant-a-dek-v1",
+      "declaration": {
+        "index_id": "exact-ff02",
+        "suite_id": "0xFF02",
+        "idf": "hmac-sha512",
+        "idf_params": {},
+        "normalize": "nfc-casefold-v1",
+        "truncate_bits": 15,
+        "projected_population": 100000,
+        "on_unindexable": "refuse"
+      },
+      "context": {
+        "table_uuid": "3f2504e04f8911d39a0c0305e82c3301",
+        "column_uuid": "7d4448409dc011d1b2455ffdce74fad2",
+        "tenant_id": "74656e616e742d30303031",
+        "row_id": null,
+        "purpose": "index:exact-ff02"
+      },
+      "value_text": "alice@example.com"
+    },
+    {
       "case": "exact-non-ascii",
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -246,6 +270,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -267,6 +292,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -288,6 +314,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -309,6 +336,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -330,6 +358,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "exact",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -351,6 +380,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "wide",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",
@@ -372,6 +402,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "raw",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "identity",
@@ -393,6 +424,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "digits",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "digits-only-v1",
@@ -414,6 +446,7 @@
       "key_ref": "tenant-a-dek-v1",
       "declaration": {
         "index_id": "bucketed",
+        "suite_id": "0xFF01",
         "idf": "hmac-sha512",
         "idf_params": {},
         "normalize": "nfc-casefold-v1",

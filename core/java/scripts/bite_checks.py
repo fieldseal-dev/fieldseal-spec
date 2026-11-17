@@ -478,6 +478,36 @@ MUTATIONS = [
      "            if (d.cardinalityOverride() == null) {",
      "            if (true) {",
      [VEC + "*BlindIndexVectorsTest"], "red"),
+    # ---- #213: the index context's suite_id is the declared suite ----------------------------
+    # The mutation the issue is about: the index path reads the write suite again. Every
+    # 0xFF02-declared index (the pinned vectors, the unit tests) then derives the 0xFF01 bytes.
+    # The cross self-pair cannot see it (producer and consumer share the mutated code), so
+    # CrossTest is not named; the other cores' documents are what catch it there.
+    ("213 index: context suite_id from the write suite", M / "Fieldseal.java",
+     "                fields(c, v.suiteId(), v.purpose())));",
+     "                fields(c, writeSuite.id(), v.purpose())));",
+     [CORE + "*DeclaredSuiteTest", VEC + "*BlindIndexVectorsTest"], "red"),
+    ("213 validation: a declaration naming no suite takes 0xFF01", M / "IndexValidation.java",
+     "        if (suiteId == null) {\n            throw new ConfigurationError(where",
+     "        if (suiteId == null) {\n            return 0xFF01;\n        }\n"
+     "        if (false) {\n            throw new ConfigurationError(where",
+     [CORE + "*DeclaredSuiteTest", VEC + "*BlindIndexVectorsTest"], "red"),
+    ("213 validation: an unregistered suite accepted", M / "IndexValidation.java",
+     "        if (Registry.lookup(suiteId).isEmpty()) {", "        if (false) {",
+     [CORE + "*DeclaredSuiteTest", VEC + "*BlindIndexVectorsTest"], "red"),
+    ("213 validation: a declared suite must have a built AEAD",
+     M / "IndexValidation.java",
+     "        if (Registry.lookup(suiteId).isEmpty()) {",
+     "        if (Registry.lookup(suiteId).isEmpty() || !Registry.lookup(suiteId).get().implemented()) {",
+     [CORE + "*DeclaredSuiteTest", VEC + "*BlindIndexVectorsTest"], "red"),
+    ("213 validated index: the suite left out of equality", M / "ValidatedIndex.java",
+     " && suiteId == v.suiteId\n", "\n",
+     [CORE + "*DeclaredSuiteTest"], "red"),
+    ("213 harness: a declaration vector missing its suite_id is read anyway",
+     T / "DeclarationVectors.java",
+     "        if (d.has(SUITE)) {",
+     "        if (true) {",
+     [VEC + "*DeclarationVectorsTest"], "red"),
     # ---- S6: the testing artifact, the report -------------------------------------------
     ("s6 seam: the arming gate lets anything through", I / "testing/MaterialsSeam.java",
      'if (!"1".equals(environment.apply(ARMING_VARIABLE))) {', "if (false) {",
@@ -582,16 +612,25 @@ MUTATIONS = [
      "        if (!missing.isEmpty() || !unknown.isEmpty()) {", "        if (!missing.isEmpty()) {",
      [VEC + "*CrossTest"], "red"),
     ("s7 consumer: any schema accepted", T / "CrossConsume.java",
-     "        if (!Cross.V1.equals(schema) && !Cross.V2.equals(schema)) {", "        if (false) {",
+     "        } else if (!Cross.V1.equals(schema) && !Cross.V3.equals(schema)) {",
+     "        } else if (false) {",
      [VEC + "*CrossTest"], "red"),
     ("s7 consumer: a v1 document's index cases ignored", T / "CrossConsume.java",
      '        } else if (Cross.V1.equals(schema) && doc.has("index_cases")) {',
      "        } else if (false) {",
      [VEC + "*CrossTest"], "red"),
-    ("s7 consumer: a v2 document without index cases accepted", T / "CrossConsume.java",
-     '        } else if (Cross.V2.equals(schema) && (!doc.path("index_cases").isArray()\n'
+    ("s7 consumer: a v3 document without index cases accepted", T / "CrossConsume.java",
+     '        } else if (Cross.V3.equals(schema) && (!doc.path("index_cases").isArray()\n'
      '                || doc.path("index_cases").isEmpty())) {',
      "        } else if (false) {",
+     [VEC + "*CrossTest"], "red"),
+    # #213: cross/v2 is refused, because its index cases name no declared suite.
+    ("s7 consumer: a cross/v2 document refused no longer", T / "CrossConsume.java",
+     "        if (Cross.V2.equals(schema)) {", "        if (false) {",
+     [VEC + "*CrossTest"], "red"),
+    # #213: the consumer builds the declaration from the document's suite_id, never its own.
+    ("s7 consumer: the declared suite taken from a constant, not the document", T / "Cross.java",
+     '                .suiteId(suite(text(d, "suite_id")))', "                .suiteId(0xFF01)",
      [VEC + "*CrossTest"], "red"),
     ("s7 consumer: plaintext not compared", T / "CrossConsume.java",
      '                if (!Arrays.equals(Cross.hex(c, "plaintext"), got)) {', "                if (false) {",

@@ -97,7 +97,7 @@ class StartupChecksTest {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
         @Column(unique = true)
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 15, projectedPopulation = 100_000) byte[] vIndex;
     }
 
@@ -128,14 +128,14 @@ class StartupChecksTest {
     @Entity @FieldsealTable(T) public static class OrphanIndex {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "nope", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "nope", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 15, projectedPopulation = 100_000) byte[] vIndex;
     }
 
     @Entity @FieldsealTable(T) public static class StringIndex {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 15, projectedPopulation = 100_000) String vIndex;
     }
 
@@ -143,7 +143,7 @@ class StartupChecksTest {
     @Entity @FieldsealTable(T) public static class OutOfBand {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 16, projectedPopulation = 100_000) byte[] vIndex;
     }
 
@@ -151,7 +151,7 @@ class StartupChecksTest {
     @Entity @FieldsealTable(T) public static class LowCardinality {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 4, projectedPopulation = 100) byte[] vIndex;
     }
 
@@ -159,7 +159,7 @@ class StartupChecksTest {
     @Entity @FieldsealTable(T) public static class BucketNoOverride {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.NFC_CASEFOLD_V1,
                 truncateBits = 15, projectedPopulation = 100_000,
                 onUnindexable = OnUnindexable.BUCKET) byte[] vIndex;
     }
@@ -167,10 +167,31 @@ class StartupChecksTest {
     @Entity @FieldsealTable(T) public static class BadOverrideDate {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 4, projectedPopulation = 100,
                 cardinalityOverride = @ReviewedOverride(reason = "r", approvedBy = "a",
                         date = "yesterday")) byte[] vIndex;
+    }
+
+    /** Spec 7.2 (#213): 0xFFEE is not a registered suite; the core refuses it, the adapter names it. */
+    @Entity @FieldsealTable(T) public static class UnregisteredSuite {
+        @Id UUID id;
+        @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
+        @BlindIndex(source = "v", suiteId = 0xFFEE, idf = Idf.HMAC_SHA512,
+                normalize = Normalizer.IDENTITY, truncateBits = 15,
+                projectedPopulation = 100_000) byte[] vIndex;
+    }
+
+    @Test
+    void fsH003UnregisteredSuiteNamesTheAttribute() {
+        var e = assertThrows(RuntimeException.class,
+                () -> TestSupport.sessionFactory(UnregisteredSuite.class).close());
+        FieldsealConfigurationException c = causeOf(e, FieldsealConfigurationException.class);
+        assertNotNull(c, e.toString());
+        assertTrue(c.getMessage().startsWith("FS-H003: UnregisteredSuite.vIndex:"),
+                c.getMessage());
+        assertTrue(c.getMessage().contains("suiteId 0xFFEE is not a registered suite"),
+                c.getMessage());
     }
 
     @Test
@@ -217,6 +238,32 @@ class StartupChecksTest {
             b.indexes(List.of());
         };
         refusedWith("FS-H004", Map.of(FieldsealSettings.CLIENT, c), Patient.class);
+    }
+
+    /**
+     * Spec 7.2 (#213): the registry comparison is the core's whole ValidatedIndex, the declared
+     * suite included. A client whose index has Patient's parameters under 0xFF02 is a mismatch.
+     */
+    @Test
+    void fsH004SameParametersDifferentDeclaredSuite() {
+        SessionFactory probe = TestSupport.sessionFactory(Patient.class);
+        List<dev.fieldseal.core.IndexDeclaration> other = new java.util.ArrayList<>();
+        for (var d : declared(probe)) {
+            other.add(dev.fieldseal.core.IndexDeclaration.builder(d.tableUuid(), d.columnUuid())
+                    .suiteId(0xFF02).indexId(d.indexId()).idf(d.idf()).normalize(d.normalize())
+                    .truncateBits(d.truncateBits())
+                    .projectedPopulation(d.projectedPopulation()).build());
+        }
+        probe.close();
+        Fieldseal.Builder b = Fieldseal.builder();
+        TestSupport.configurer().configure(b);
+        b.indexes(other);
+        Map<String, Object> s = Map.of(FieldsealSettings.CLIENT, b.build());
+        var e = assertThrows(RuntimeException.class,
+                () -> TestSupport.sessionFactory(s, Patient.class).close());
+        FieldsealConfigurationException c = causeOf(e, FieldsealConfigurationException.class);
+        assertNotNull(c, e.toString());
+        assertTrue(c.getMessage().startsWith("FS-H004:"), c.getMessage());
     }
 
     /** The matching prebuilt client is accepted. */
@@ -342,7 +389,7 @@ class StartupChecksTest {
     @Entity @DynamicUpdate @FieldsealTable(T) public static class Dynamic {
         @Id UUID id;
         @Encrypted(column = "018f3c2e-7a1b-7c3d-8e4f-0000000000a2") String v;
-        @BlindIndex(source = "v", idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
+        @BlindIndex(source = "v", suiteId = 0xFF01, idf = Idf.HMAC_SHA512, normalize = Normalizer.IDENTITY,
                 truncateBits = 15, projectedPopulation = 100_000) byte[] vIndex;
     }
 

@@ -58,7 +58,7 @@ OVERRIDE = CardinalityOverride(reason="test", approved_by="tests",
 def _decl(**kw) -> IndexDeclaration:
     """A declaration on CTX's column, inside the §7.4 band for b=15."""
     d = dict(table_uuid=CTX.table_uuid, column_uuid=CTX.column_uuid,
-             index_id="email-eq", idf="hmac-sha512",
+             suite_id=0xFF01, index_id="email-eq", idf="hmac-sha512",
              normalize="nfc-casefold-v1", truncate_bits=15,
              projected_population=65536)
     d.update(kw)
