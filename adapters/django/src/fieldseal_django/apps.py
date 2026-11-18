@@ -293,8 +293,15 @@ class FieldsealConfig(AppConfig):
     verbose_name = "fieldseal"
 
     def ready(self) -> None:
-        from . import checks  # noqa: F401  (registers the system checks)
+        from django.db.models.signals import pre_migrate
 
+        from . import checks  # noqa: F401  (registers the system checks)
+        from .operations import refuse_unsafe_alter_fields
+
+        # No `sender`: Django sends `pre_migrate` only for apps with a models
+        # module, and this one has none. The receiver walks each plan once.
+        pre_migrate.connect(refuse_unsafe_alter_fields,
+                            dispatch_uid="fieldseal_django.operations.252")
         self._warm_on_ready()
 
     def _warm_on_ready(self) -> None:
