@@ -674,19 +674,52 @@ def test_a_refused_conversion_stops_the_plan_before_earlier_migrations(case):
 
 
 @postgres_only
+@isolate_apps("tests")
 def test_rolling_back_a_conversion_after_a_write_fails_and_keeps_bytea(case):
     """Backwards is for a column nothing has written to through the field:
-    an envelope is not UTF-8, so `convert_from` refuses it."""
+    an envelope the field wrote is not UTF-8, so `convert_from` refuses it.
+    Written through the field, not as made-up bytes, so the test notices if
+    a real envelope ever became valid UTF-8."""
     from django.db import DataError
 
     c = case(CHAR, _convert(_encrypted("models.CharField(max_length=100)")))
     c.migrate("0001")
     c.insert("ada@example.com")
     c.migrate("0002")
-    c.insert(b"\xff\x00envelope")
+    Sealed = type(f"Sealed252_{next(_serial)}", (models.Model,), {
+        "__module__": "tests",
+        "v": Encrypted(models.CharField(max_length=100), column_uuid=UUID,
+                       null=True),
+        "fieldseal": FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-000000252002"),
+        "Meta": type("Meta", (), {"db_table": c.table, "managed": False}),
+    })
+    Sealed.objects.create(v="ada@example.com")
+    envelope = c.values()[-1]
+    assert isinstance(envelope, bytes)
+    assert envelope != b"ada@example.com"
     with pytest.raises(DataError, match="UTF8"):
         c.migrate("0001")
     assert c.column_type() == "bytea"
     assert "0002_change" in c.applied()
     with connection.cursor() as cur:  # so teardown can unapply
         cur.execute(f"DELETE FROM {c.table}")
+
+
+def test_a_refused_conversion_stops_the_plan_on_every_backend(case):
+    """`ConvertToEncrypted` between two `Encrypted` declarations refuses on
+    SQLite too; the walk raises it before `0002` commits, not after."""
+    field = _encrypted("models.CharField(max_length=100)")
+    c = case(graph=lambda table: {
+        "0001_initial": create(table, field),
+        "0002_widen": mig(["0001_initial"], '[migrations.AlterField('
+                          'model_name="thing", name="w", '
+                          'field=models.BigIntegerField(null=True))]'),
+        "0003_convert": mig(["0002_widen"], _convert(_encrypted(
+            "models.CharField(max_length=100)", storage='"base64"'))),
+    })
+    c.migrate("0001")
+    with pytest.raises(FieldsealNotSupported,
+                       match="0003_convert.*one side must be"):
+        c.migrate("0003")
+    assert c.applied() == {"0001_initial"}

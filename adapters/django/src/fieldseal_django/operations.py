@@ -32,8 +32,9 @@ way to supply its own `USING` expression.
 - `refuse_unsafe_alter_fields`, a `pre_migrate` receiver. Before `migrate`
   runs any DDL it walks the plan with the states Django's executor will use,
   and on PostgreSQL it refuses a plain `AlterField` that would cast a column
-  between `bytea` and another type with an `Encrypted` field on either side,
-  and a `ConvertToEncrypted` that would refuse when it runs. Spec §10.2:
+  between `bytea` and another type with an `Encrypted` field on either side;
+  on every backend it refuses a `ConvertToEncrypted` that would refuse when
+  it runs. Spec §10.2:
   where a path would silently return wrong results, the adapter MUST throw.
   `makemigrations` writes the plain `AlterField`, so without the receiver
   the default path is the corrupting one.
@@ -309,26 +310,29 @@ def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
     """`pre_migrate` receiver: refuse the plan before any DDL runs if a plain
     `AlterField` in it would cast an `Encrypted` column into or out of
     `bytea` on PostgreSQL, or a `ConvertToEncrypted` in it would refuse when
-    it ran (#252)."""
+    it ran, on any backend (#252)."""
     global _last_plan
     if not plan or plan is _last_plan:
         return
     _last_plan = plan
     connection = connections[using]
-    if connection.vendor != "postgresql":
-        return
-    if not any(_has_alter_field(m.operations) for m, _ in plan):
+    # Off PostgreSQL a plain `AlterField` casts nothing, so only conversions
+    # are worth the walk there.
+    conversions_only = connection.vendor != "postgresql"
+    if not any(_has_alter_field(m.operations, conversions_only)
+               for m, _ in plan):
         return
     for problem in _unsafe_alter_fields(plan, connection):
         raise FieldsealNotSupported(problem)
 
 
-def _has_alter_field(operations: list[Any]) -> bool:
+def _has_alter_field(operations: list[Any], conversions_only: bool) -> bool:
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
-            if _has_alter_field(op.database_operations):
+            if _has_alter_field(op.database_operations, conversions_only):
                 return True
-        elif isinstance(op, AlterField):
+        elif isinstance(op, ConvertToEncrypted if conversions_only
+                        else AlterField):
             return True
     return False
 
@@ -400,7 +404,8 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             continue
         if isinstance(op, ConvertToEncrypted):
             problem = _check_conversion(migration, op, state, connection)
-        elif isinstance(op, AlterField):
+        elif (isinstance(op, AlterField)
+              and connection.vendor == "postgresql"):
             problem = _check(migration, op, state, connection)
         else:
             problem = None
