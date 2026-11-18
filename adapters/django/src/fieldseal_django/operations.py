@@ -210,11 +210,10 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
                            from_state: Any, to_state: Any) -> None:
         self.database_forwards(app_label, schema_editor, from_state, to_state)
 
-    def _using_expression(self, app_label: str, old: Any, new: Any,
-                          connection: Any) -> str | None:
-        """The `USING` expression for `old` to `new`, or None for Django's
-        own; raises for a pair this operation has no correct conversion for.
-        """
+    def _refuse_declaration(self, app_label: str, old: Any, new: Any) -> None:
+        """Raise if `old` to `new` is not a conversion this operation is for,
+        on any backend: these mean the migration itself is wrong, which is
+        true under `--fake` as well."""
         where = f"{app_label}.{self.model_name}.{self.name}"
         if _is_encrypted(old) == _is_encrypted(new):
             raise FieldsealNotSupported(
@@ -223,7 +222,7 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
                 "a change between two Encrypted declarations use AlterField; "
                 "for a change between storage formats there is no in-place "
                 "route, so use the two-column shape (docs/12 §7).")
-        sealed, plain = (new, old) if _is_encrypted(new) else (old, new)
+        sealed = new if _is_encrypted(new) else old
         if sealed.storage != "binary":
             raise FieldsealNotSupported(
                 f"ConvertToEncrypted on {where}: it converts into and out of "
@@ -231,6 +230,15 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
                 "AlterField into a base64 column leaves the legacy text as "
                 "it is; from a bytea column there is no in-place route, so "
                 "use the two-column shape (docs/12 §7).")
+
+    def _using_expression(self, app_label: str, old: Any, new: Any,
+                          connection: Any) -> str | None:
+        """The `USING` expression for `old` to `new`, or None for Django's
+        own; raises for a pair this operation has no correct conversion for.
+        """
+        where = f"{app_label}.{self.model_name}.{self.name}"
+        self._refuse_declaration(app_label, old, new)
+        sealed, plain = (new, old) if _is_encrypted(new) else (old, new)
         if old.db_type(connection) == new.db_type(connection):
             return None
         if connection.vendor == "sqlite":
@@ -316,29 +324,29 @@ def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
         return
     _last_plan = plan
     connection = connections[using]
-    # Off PostgreSQL a plain `AlterField` casts nothing, so only conversions
-    # are worth the walk there.
-    conversions_only = connection.vendor != "postgresql"
-    if not any(_has_alter_field(m.operations, conversions_only)
-               for m, _ in plan):
+    # The one place the backend decides what is checked: on PostgreSQL every
+    # `AlterField`, `ConvertToEncrypted` included; elsewhere a plain
+    # `AlterField` casts nothing, so only conversions are worth the walk.
+    checked = (AlterField if connection.vendor == "postgresql"
+               else ConvertToEncrypted)
+    if not any(_has_operation(m.operations, checked) for m, _ in plan):
         return
-    for problem in _unsafe_alter_fields(plan, connection):
+    for problem in _unsafe_alter_fields(plan, connection, checked):
         raise FieldsealNotSupported(problem)
 
 
-def _has_alter_field(operations: list[Any], conversions_only: bool) -> bool:
+def _has_operation(operations: list[Any], checked: type) -> bool:
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
-            if _has_alter_field(op.database_operations, conversions_only):
+            if _has_operation(op.database_operations, checked):
                 return True
-        elif isinstance(op, ConvertToEncrypted if conversions_only
-                        else AlterField):
+        elif isinstance(op, checked):
             return True
     return False
 
 
-def _unsafe_alter_fields(plan: list[Any],
-                         connection: Any) -> Iterator[str]:
+def _unsafe_alter_fields(plan: list[Any], connection: Any,
+                         checked: type) -> Iterator[str]:
     """Walk `plan` with the states Django's executor will give each
     migration, and describe each unsafe `AlterField` in it."""
     from django.db.migrations.executor import MigrationExecutor
@@ -370,7 +378,7 @@ def _unsafe_alter_fields(plan: list[Any],
                 state = migration.mutate_state(state, preserve=True)
                 to_run.remove(migration)
                 yield from _scan(migration, migration.operations, before,
-                                 connection)
+                                 connection, checked)
             elif migration in applied:
                 migration.mutate_state(state, preserve=False)
         return
@@ -386,11 +394,11 @@ def _unsafe_alter_fields(plan: list[Any],
         if migration in to_run:
             to_run.remove(migration)
             yield from _scan(migration, migration.operations, state,
-                             connection)
+                             connection, checked)
 
 
 def _scan(migration: Any, operations: list[Any], state: Any,
-          connection: Any) -> Iterator[str]:
+          connection: Any, checked: type) -> Iterator[str]:
     """Check each operation against `state`, advancing it as Django does."""
     app_label = migration.app_label
     for op in operations:
@@ -398,17 +406,15 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             # The database operations run against a copy of the state, and
             # only the state operations move the real one.
             yield from _scan(migration, op.database_operations,
-                             state.clone(), connection)
+                             state.clone(), connection, checked)
             for state_op in op.state_operations:
                 state_op.state_forwards(app_label, state)
             continue
+        problem = None
         if isinstance(op, ConvertToEncrypted):
             problem = _check_conversion(migration, op, state, connection)
-        elif (isinstance(op, AlterField)
-              and connection.vendor == "postgresql"):
+        elif isinstance(op, checked):
             problem = _check(migration, op, state, connection)
-        else:
-            problem = None
         if problem:
             yield problem
         op.state_forwards(app_label, state)
@@ -430,8 +436,11 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
     """The refusal `op` would raise when it ran, raised before the plan
     starts instead, so no earlier migration in it has committed.
 
-    Checked forwards only: `_using_expression`'s refusals do not depend on
-    the direction, and backwards swaps the two fields."""
+    Checked forwards only: the refusals do not depend on the direction,
+    and backwards swaps the two fields. On a backend that is not measured
+    only the declaration's refusals are raised here; the backend's own one
+    stays where it was, when the operation runs, so `migrate --fake` can
+    still record a column an operator converted by hand there."""
     app_label = migration.app_label
     model_state = state.models.get((app_label, op.model_name_lower))
     if model_state is None:
@@ -440,7 +449,10 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
     if old is None:
         return None
     try:
-        op._using_expression(app_label, old, op.field, connection)
+        if connection.vendor in ("postgresql", "sqlite"):
+            op._using_expression(app_label, old, op.field, connection)
+        else:
+            op._refuse_declaration(app_label, old, op.field)
     except FieldsealNotSupported as e:
         if not _allowed(op, app_label, state, connection):
             return None

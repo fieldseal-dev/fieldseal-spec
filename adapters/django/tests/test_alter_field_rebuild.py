@@ -25,9 +25,9 @@ from django.db.migrations.writer import MigrationWriter
 from django.test.utils import CaptureQueriesContext
 
 from fieldseal_django import BlindIndex, Encrypted
+from fieldseal_django.fields import EncryptedIndex
 
-# The migration-package fixture and helpers of the #252 tests.
-from .test_convert_to_encrypted import case, mig  # noqa: F401
+from .migration_cases import alter
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -139,6 +139,29 @@ def test_a_migration_with_the_inner_field_first_reads_as_unchanged():
     assert not _altered(historical, _email(index=INDEX))
 
 
+def test_renaming_the_indexed_field_does_not_alter_its_index_column():
+    """`EncryptedIndex.source` names the encrypted field; renaming that field
+    rewrites `source` and nothing about the `bytea` column (PR #287 review)."""
+    assert not _altered(EncryptedIndex("email"), EncryptedIndex("mail"))
+    assert not _altered(_rebuilt(EncryptedIndex("email")),
+                        _rebuilt(EncryptedIndex("mail")))
+    assert _altered(EncryptedIndex("email"), EncryptedIndex("email",
+                                                            null=False))
+
+
+def test_an_index_column_written_with_source_first_reads_as_unchanged():
+    ns: dict = {}
+    exec("import fieldseal_django.fields\n"  # noqa: S102
+         "field = fieldseal_django.fields.EncryptedIndex('email', "
+         "db_column='emailBidx', null=True)", ns)
+    current = EncryptedIndex("email", db_column="emailBidx")
+    _, _, args, kwargs = current.deconstruct()
+    assert args == [] and kwargs["source"] == "email"
+    detector = MigrationAutodetector(ProjectState(), ProjectState())
+    assert (detector.deep_deconstruct(ns["field"])
+            == detector.deep_deconstruct(current))
+
+
 # -- real migrations ---------------------------------------------------------
 
 
@@ -146,11 +169,6 @@ def _field(inner: str, **kw: str) -> str:
     extra = "".join(f", {k}={v}" for k, v in kw.items())
     return (f"fieldseal_django.fields.Encrypted({inner}, "
             f"column_uuid={U!r}{extra})")
-
-
-def _alter(field: str) -> str:
-    return (f'[migrations.AlterField(model_name="thing", name="v", '
-            f'field={field})]')
 
 
 def _ddl(queries: list[dict]) -> list[str]:
@@ -161,7 +179,7 @@ def _ddl(queries: list[dict]) -> list[str]:
             and "django_migrations" not in q["sql"]]
 
 
-def test_migrate_issues_no_sql_for_an_unchanged_column(case):  # noqa: F811
+def test_migrate_issues_no_sql_for_an_unchanged_column(case):
     """The issue's shape: an `AlterField` that only states the suite. On
     SQLite it used to remake the table (`CREATE TABLE "new__..."`, `INSERT
     ... SELECT`, `DROP`, `RENAME`)."""
@@ -171,7 +189,7 @@ def test_migrate_issues_no_sql_for_an_unchanged_column(case):  # noqa: F811
     after = _field("models.CharField(max_length=200)",
                    index="fieldseal_django.declarations.BlindIndex("
                          "projected_population=100000, suite_id=1)")
-    c = case(before, _alter(after))
+    c = case(before, alter(after))
     c.migrate("0001")
     with CaptureQueriesContext(connection) as ctx:
         c.migrate("0002")
@@ -181,12 +199,12 @@ def test_migrate_issues_no_sql_for_an_unchanged_column(case):  # noqa: F811
 
 @pytest.mark.skipif(connection.vendor != "sqlite",
                     reason="SQLite storage classes")
-def test_a_rebuild_keeps_each_legacy_values_storage_class(case):  # noqa: F811
+def test_a_rebuild_keeps_each_legacy_values_storage_class(case):
     """A change that does alter the column still rebuilds the table on
     SQLite. `INSERT ... SELECT` must copy each legacy value in its own
     storage class, which the adapter's legacy read depends on (#251)."""
     c = case(_field("models.CharField(max_length=100)"),
-             _alter(_field("models.CharField(max_length=100)",
+             alter(_field("models.CharField(max_length=100)",
                            null="True")))
     c.migrate("0001")
     legacy = ["ada@example.com", 42, 1.5, b"\x00\xffbytes"]

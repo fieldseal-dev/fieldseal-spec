@@ -113,7 +113,9 @@ class Encrypted(models.Field):
 
     #: What the schema editor may ignore when it asks whether an `AlterField`
     #: changes the column (`_field_should_be_altered`, the only reader of
-    #: `non_db_attrs` in Django). The column is `bytea` (`text` for `base64`)
+    #: `non_db_attrs` in Django 5.2.19 and 6.1.3, the versions checked; it
+    #: is private API, and `tests/test_alter_field_rebuild.py` would notice a
+    #: release that stopped honouring it). The column is `bytea` (`text` for `base64`)
     #: whatever the inner field is, so the inner field and everything this
     #: class adds about the plaintext and its keys are not the column's.
     #: `storage`, `null`, `unique`, `db_column` and Django's other column
@@ -804,6 +806,11 @@ class EncryptedIndex(models.BinaryField):
 
     description = "fieldseal blind index"
 
+    #: As `Encrypted.non_db_attrs` (#283): `source` names the encrypted field
+    #: this column indexes, and the column is `bytea` whatever it names, so
+    #: renaming that field must not make SQLite rebuild the table for it.
+    non_db_attrs = (*models.BinaryField.non_db_attrs, "source")
+
     def __init__(self, source: str, **kwargs: Any) -> None:
         self.source = source
         kwargs.setdefault("editable", False)
@@ -811,8 +818,11 @@ class EncryptedIndex(models.BinaryField):
         super().__init__(**kwargs)
 
     def deconstruct(self) -> tuple[str, str, list[Any], dict[str, Any]]:
+        """`source` as a keyword, so `non_db_attrs` can drop it; a migration
+        written with it first still loads, as `Encrypted`'s inner field."""
         name, path, args, kwargs = super().deconstruct()
-        return name, path, [self.source, *args], kwargs
+        kwargs["source"] = self.source
+        return name, path, args, kwargs
 
     @property
     def source_field(self) -> Encrypted:

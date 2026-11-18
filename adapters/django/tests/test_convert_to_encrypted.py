@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-import itertools
-import sys
 import textwrap
 
 import pytest
@@ -27,15 +25,13 @@ from django.conf import settings
 from django.core.management import call_command
 from django.db import connection, models
 from django.db.migrations.writer import MigrationWriter
-from django.db.models.signals import pre_migrate
 from django.test.utils import isolate_apps, override_settings
 
 from fieldseal_django import Encrypted, FieldsealMeta, FieldsealNotSupported
 from fieldseal_django.apps import get_client, reset_client
-from fieldseal_django.operations import (
-    ConvertToEncrypted,
-    refuse_unsafe_alter_fields,
-)
+from fieldseal_django.operations import ConvertToEncrypted
+
+from .migration_cases import alter, create, guard_off, mig, serial
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -46,8 +42,6 @@ postgres_only = pytest.mark.skipif(connection.vendor != "postgresql",
                                    reason="PostgreSQL's ::bytea cast")
 sqlite_only = pytest.mark.skipif(connection.vendor != "sqlite",
                                  reason="SQLite's table rebuild")
-
-_serial = itertools.count(1)
 
 #: Legacy text that `::bytea` rewrites or refuses, and two controls. The
 #: first four are the issue's table; the `\x` rows its review's.
@@ -74,148 +68,9 @@ def _encrypted(inner: str, **kw: str) -> str:
             f"column_uuid={UUID!r}, null=True{extra})")
 
 
-HEAD = textwrap.dedent("""\
-    from django.db import migrations, models
-    import fieldseal_django.fields
-    import fieldseal_django.operations
-    """)
-
-
-def create(table: str, v: str, *, replaces: str = "") -> str:
-    """A `0001`-style migration creating the table, with an unencrypted
-    integer column `w` beside `v` for changes that do not touch it."""
-    return textwrap.dedent("""
-        class Migration(migrations.Migration):
-            initial = True
-            dependencies = []
-            REPLACES
-            operations = [migrations.CreateModel(
-                name="Thing",
-                fields=[
-                    ("id", models.BigAutoField(primary_key=True,
-                                               serialize=False)),
-                    ("v", V),
-                    ("w", models.IntegerField(null=True)),
-                ],
-                options={"db_table": TABLE},
-            )]
-        """).replace("REPLACES", f"replaces = {replaces}" if replaces else "") \
-        .replace("V", v).replace("TABLE", repr(table))
-
-
-def mig(deps: list[str], ops: str) -> str:
-    """A migration in app252 depending on `deps` and running `ops`."""
-    # Dedent the template before interpolating: `ops` may span lines.
-    return textwrap.dedent("""
-        class Migration(migrations.Migration):
-            dependencies = DEPS
-            operations = OPS
-        """).replace("DEPS", repr([("app252", d) for d in deps])) \
-        .replace("OPS", ops)
-
-
-class Case:
-    """A migration package for app252: `0001` creates the table with `old`,
-    `0002` runs `change`: Python source of a list of operations, or a
-    function from the table name to it. `graph`, a function from the table
-    name to {module name: source}, writes any other graph instead."""
-
-    def __init__(self, root, old: str, change, graph=None) -> None:
-        n = next(_serial)
-        self.table = f"app252_t{n}"
-        if graph is None:
-            if callable(change):
-                change = change(self.table)
-            files = {"0001_initial": create(self.table, old),
-                     "0002_change": mig(["0001_initial"], change)}
-        else:
-            files = graph(self.table)
-        self.package = f"m252_{n}"
-        pkg = root / self.package
-        pkg.mkdir()
-        (pkg / "__init__.py").write_text("")
-        for name, source in files.items():
-            (pkg / f"{name}.py").write_text(HEAD + source)
-
-    def migrate(self, target: str) -> None:
-        call_command("migrate", "app252", target, verbosity=0)
-
-    def insert(self, *values: object) -> None:
-        with connection.cursor() as cur:
-            for v in values:
-                cur.execute(f"INSERT INTO {self.table} (v) VALUES (%s)", [v])
-
-    def values(self) -> list[object]:
-        with connection.cursor() as cur:
-            cur.execute(f"SELECT v FROM {self.table} ORDER BY id")
-            rows = [r[0] for r in cur.fetchall()]
-        return [bytes(v) if isinstance(v, memoryview) else v for v in rows]
-
-    def column_type(self) -> str:
-        with connection.cursor() as cur:
-            cur.execute("SELECT data_type FROM information_schema.columns "
-                        "WHERE table_name = %s AND column_name = 'v'",
-                        [self.table])
-            return str(cur.fetchone()[0])
-
-    def applied(self) -> set[str]:
-        with connection.cursor() as cur:
-            cur.execute("SELECT name FROM django_migrations "
-                        "WHERE app = 'app252'")
-            return {r[0] for r in cur.fetchall()}
-
-
-@contextlib.contextmanager
-def guard_off():
-    pre_migrate.disconnect(dispatch_uid="fieldseal_django.operations.252")
-    try:
-        yield
-    finally:
-        pre_migrate.connect(refuse_unsafe_alter_fields,
-                            dispatch_uid="fieldseal_django.operations.252")
-
-
-@pytest.fixture
-def case(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(tmp_path))
-    made: list[Case] = []
-    stack = contextlib.ExitStack()
-
-    def make(old: str = "", change="", graph=None) -> Case:
-        c = Case(tmp_path, old, change, graph)
-        made.append(c)
-        stack.enter_context(
-            override_settings(MIGRATION_MODULES={"app252": c.package}))
-        return c
-
-    try:
-        yield make
-    finally:
-        try:
-            for c in made:
-                # Unapplying may cross a plain AlterField a test applied with
-                # the guard off; the guard has been asserted by then.
-                with guard_off():
-                    c.migrate("zero")
-        finally:
-            # A squashed migration's own row outlives `migrate zero`.
-            with connection.cursor() as cur:
-                cur.execute("DELETE FROM django_migrations "
-                            "WHERE app = 'app252'")
-            stack.close()
-            for name in list(sys.modules):
-                if name.startswith("m252_"):
-                    del sys.modules[name]
-
-
 def _convert(field: str) -> str:
     return (f'[fieldseal_django.operations.ConvertToEncrypted('
             f'model_name="thing", name="v", field={field})]')
-
-
-def _alter(field: str) -> str:
-    return (f'[migrations.AlterField(model_name="thing", name="v", '
-            f'field={field})]')
 
 
 CHAR = "models.CharField(max_length=100, null=True, db_index=True)"
@@ -264,7 +119,7 @@ def test_after_convert_a_permissive_read_returns_the_legacy_text(case, text):
     c.migrate("0001")
     c.insert(text)
     c.migrate("0002")
-    n = next(_serial)
+    n = next(serial)
     Sealed = type(f"Sealed252_{n}", (models.Model,), {
         "__module__": "tests",
         "v": Encrypted(models.CharField(max_length=100), column_uuid=UUID,
@@ -353,7 +208,7 @@ def test_the_private_schema_editor_method_it_replaces_is_still_there():
 
 @postgres_only
 def test_migrate_refuses_a_plain_alter_field_into_bytea_before_any_ddl(case):
-    c = case(CHAR, _alter(_encrypted("models.CharField(max_length=100)")))
+    c = case(CHAR, alter(_encrypted("models.CharField(max_length=100)")))
     c.migrate("0001")
     c.insert("a\\101b")
     with pytest.raises(FieldsealNotSupported) as e:
@@ -369,7 +224,7 @@ def test_migrate_refuses_a_plain_alter_field_into_bytea_before_any_ddl(case):
 @postgres_only
 def test_migrate_refusal_for_a_non_string_column_names_two_columns(case):
     c = case("models.IntegerField(null=True)",
-             _alter(_encrypted("models.IntegerField()")))
+             alter(_encrypted("models.IntegerField()")))
     c.migrate("0001")
     with pytest.raises(FieldsealNotSupported) as e:
         c.migrate("0002")
@@ -381,7 +236,7 @@ def test_migrate_refusal_for_a_non_string_column_names_two_columns(case):
 def test_migrate_refuses_base64_to_binary(case):
     c = case(_encrypted("models.CharField(max_length=100)",
                         storage='"base64"'),
-             _alter(_encrypted("models.CharField(max_length=100)")))
+             alter(_encrypted("models.CharField(max_length=100)")))
     c.migrate("0001")
     with pytest.raises(FieldsealNotSupported, match="two-column shape"):
         c.migrate("0002")
@@ -389,7 +244,7 @@ def test_migrate_refuses_base64_to_binary(case):
 
 @postgres_only
 def test_migrate_refuses_the_plain_alter_field_out_of_bytea(case):
-    c = case(_encrypted("models.CharField(max_length=100)"), _alter(CHAR))
+    c = case(_encrypted("models.CharField(max_length=100)"), alter(CHAR))
     c.migrate("0001")
     with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted") \
             as e:
@@ -400,7 +255,7 @@ def test_migrate_refuses_the_plain_alter_field_out_of_bytea(case):
 
 @postgres_only
 def test_migrate_refuses_unapplying_a_plain_alter_field(case):
-    c = case(CHAR, _alter(_encrypted("models.CharField(max_length=100)")))
+    c = case(CHAR, alter(_encrypted("models.CharField(max_length=100)")))
     with guard_off():
         c.migrate("0002")
     with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted"):
@@ -412,8 +267,8 @@ def test_migrate_refuses_unapplying_a_plain_alter_field(case):
 def test_migrate_looks_inside_separate_database_and_state(case):
     field = _encrypted("models.CharField(max_length=100)")
     c = case(CHAR, textwrap.dedent(f"""[migrations.SeparateDatabaseAndState(
-        database_operations={_alter(field)},
-        state_operations={_alter(field)},
+        database_operations={alter(field)},
+        state_operations={alter(field)},
     )]"""))
     c.migrate("0001")
     with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted"):
@@ -423,7 +278,7 @@ def test_migrate_looks_inside_separate_database_and_state(case):
 @postgres_only
 def test_migrate_lets_a_bytea_column_through(case):
     c = case("models.BinaryField(null=True)",
-             _alter(_encrypted("models.BinaryField()")))
+             alter(_encrypted("models.BinaryField()")))
     c.migrate("0001")
     c.insert(b"\\x41")
     c.migrate("0002")
@@ -442,7 +297,7 @@ def test_migrate_lets_a_raw_sql_conversion_through(case):
                 "USING convert_from(v, 'UTF8')")
         return textwrap.dedent(f"""[migrations.SeparateDatabaseAndState(
             database_operations=[migrations.RunSQL({sql!r}, {back!r})],
-            state_operations={_alter(field)},
+            state_operations={alter(field)},
         )]""")
 
     c = case("models.CharField(max_length=100, null=True)", change)
@@ -454,7 +309,7 @@ def test_migrate_lets_a_raw_sql_conversion_through(case):
 
 @sqlite_only
 def test_sqlite_is_not_refused(case):
-    c = case(CHAR, _alter(_encrypted("models.CharField(max_length=100)")))
+    c = case(CHAR, alter(_encrypted("models.CharField(max_length=100)")))
     c.migrate("0001")
     c.insert("a\\101b")
     c.migrate("0002")
@@ -466,7 +321,7 @@ def test_migrate_fake_is_refused_too(case):
     """`pre_migrate` does not say the run is fake, so the receiver cannot
     tell; `docs/12` §7 states this cost and the `SeparateDatabaseAndState`
     route around it."""
-    c = case(CHAR, _alter(_encrypted("models.CharField(max_length=100)")))
+    c = case(CHAR, alter(_encrypted("models.CharField(max_length=100)")))
     c.migrate("0001")
     with pytest.raises(FieldsealNotSupported):
         call_command("migrate", "app252", "0002", fake=True, verbosity=0)
@@ -481,7 +336,7 @@ def test_migrate_refuses_a_bytea_column_into_base64(case):
     """Neither side is `binary`, but `bytea::text` writes hex: `AB` would be
     stored as `\\x4142` and read back as those six characters' bytes."""
     c = case("models.BinaryField(null=True)",
-             _alter(_encrypted("models.BinaryField()", storage='"base64"')))
+             alter(_encrypted("models.BinaryField()", storage='"base64"')))
     c.migrate("0001")
     c.insert(b"AB")
     with pytest.raises(FieldsealNotSupported, match="two-column shape"):
@@ -497,8 +352,8 @@ def test_migrate_refuses_a_fresh_plan_through_the_state_it_builds(case):
     This is also the stated cost: a historical plain `AlterField` is refused
     on a fresh database, test databases included."""
     enc = _encrypted("models.CharField(max_length=100)")
-    c = case(CHAR, "[" + _alter("models.CharField(max_length=50, null=True)")
-             [1:-1] + ", " + _alter(enc)[1:-1] + "]")
+    c = case(CHAR, "[" + alter("models.CharField(max_length=50, null=True)")
+             [1:-1] + ", " + alter(enc)[1:-1] + "]")
     with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted"):
         c.migrate("0002")
     assert c.applied() == set()
@@ -517,7 +372,7 @@ def test_rolling_back_to_a_migration_a_squash_replaced(case):
     c = case(graph=lambda t: {
         "0001_initial": create(t, CHAR),
         "0002_convert": mig(["0001_initial"], _convert(enc)),
-        "0003_out": mig(["0002_convert"], _alter(CHAR)),
+        "0003_out": mig(["0002_convert"], alter(CHAR)),
         "0001_squashed_0003": create(
             t, CHAR, replaces="[('app252', '0001_initial'), "
             "('app252', '0002_convert'), ('app252', '0003_out')]"),
@@ -544,7 +399,7 @@ def test_rolling_back_a_merged_branch_is_refused(case):
     c = case(graph=lambda t: {
         "0001_initial": create(t, CHAR),
         "0002_a": mig(["0001_initial"],
-                      _alter("models.CharField(max_length=200, null=True)")),
+                      alter("models.CharField(max_length=200, null=True)")),
         "0002_b": mig(["0001_initial"], _convert(enc)),
         "0003_merge": mig(["0002_a", "0002_b"], "[]"),
     })
@@ -578,7 +433,7 @@ class _ModelHintRouter:
 
 @postgres_only
 def test_a_model_routed_away_is_not_refused(case):
-    c = case(CHAR, _alter(_encrypted("models.CharField(max_length=100)")))
+    c = case(CHAR, alter(_encrypted("models.CharField(max_length=100)")))
     with override_settings(DATABASE_ROUTERS=[_ModelHintRouter()]):
         c.migrate("0002")
         assert c.applied() == {"0001_initial", "0002_change"}
@@ -686,7 +541,7 @@ def test_rolling_back_a_conversion_after_a_write_fails_and_keeps_bytea(case):
     c.migrate("0001")
     c.insert("ada@example.com")
     c.migrate("0002")
-    Sealed = type(f"Sealed252_{next(_serial)}", (models.Model,), {
+    Sealed = type(f"Sealed252_{next(serial)}", (models.Model,), {
         "__module__": "tests",
         "v": Encrypted(models.CharField(max_length=100), column_uuid=UUID,
                        null=True),
@@ -723,3 +578,38 @@ def test_a_refused_conversion_stops_the_plan_on_every_backend(case):
                        match="0003_convert.*one side must be"):
         c.migrate("0003")
     assert c.applied() == {"0001_initial"}
+
+
+def test_fake_records_a_hand_converted_column_on_an_unmeasured_backend(
+        case, monkeypatch):
+    """On a backend nothing is measured on, `ConvertToEncrypted` refuses when
+    it runs, but the `pre_migrate` walk raises only the declaration's own
+    refusals, so `migrate --fake` can still record a column the operator
+    converted by hand (PR #287 review). The vendor is relabelled on the
+    test connection: `--fake` runs no DDL, only the recorder's insert."""
+    c = case("models.CharField(max_length=100, null=True)",
+             _convert(_encrypted("models.CharField(max_length=100)")))
+    c.migrate("0001")
+    if connection.vendor == "postgresql":
+        # The operator's own conversion, which `--fake` then records.
+        with connection.cursor() as cur:
+            cur.execute(f"ALTER TABLE {c.table} ALTER COLUMN v TYPE bytea "
+                        "USING convert_to(v, 'UTF8')")
+    with monkeypatch.context() as mp:
+        mp.setattr(connection, "vendor", "unmeasured")
+        call_command("migrate", "app252", "0002", fake=True, verbosity=0)
+    assert "0002_change" in c.applied()
+
+
+def test_fake_still_refuses_a_wrong_declaration_on_an_unmeasured_backend(
+        case, monkeypatch):
+    c = case(_encrypted("models.CharField(max_length=100)"),
+             _convert(_encrypted("models.CharField(max_length=100)",
+                                 storage='"base64"')))
+    c.migrate("0001")
+    with monkeypatch.context() as mp:
+        mp.setattr(connection, "vendor", "unmeasured")
+        with pytest.raises(FieldsealNotSupported, match="one side must be"):
+            call_command("migrate", "app252", "0002", fake=True,
+                         verbosity=0)
+    assert "0002_change" not in c.applied()
