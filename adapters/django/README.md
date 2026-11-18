@@ -294,13 +294,9 @@ your settings: stored index bytes are then unchanged and nothing needs
 rebuilding. Migrations you have already generated keep loading as they are:
 a `BlindIndex(...)` serialized without a suite reads as "not stated", which is
 refused on a model and harmless in a historical migration. The next
-`makemigrations` writes an `AlterField` that records the suite. On PostgreSQL
-that migration is a no-op. On SQLite it rebuilds the table: the rows are
-copied as they are, so no value changes, but it is one table copy for each
-table with an indexed encrypted column, on the first `migrate` after
-upgrading (measured on the patient-directory demo, Django 6.1.3, PostgreSQL 17
-and SQLite 3.53.1). The rebuild is not particular to the suite: on SQLite any
-`AlterField` on an `Encrypted` column rebuilds its table.
+`makemigrations` writes an `AlterField` that records the suite. It changes no
+column, so it runs no SQL, on PostgreSQL or SQLite (#283; before that, SQLite
+rebuilt the table for it).
 If you supply your own `CLIENT`, `fieldseal.E006` compares the declared suite
 too.
 

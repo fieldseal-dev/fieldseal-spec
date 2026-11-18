@@ -111,6 +111,19 @@ class Encrypted(models.Field):
 
     description = "fieldseal-encrypted value"
 
+    #: What the schema editor may ignore when it asks whether an `AlterField`
+    #: changes the column (`_field_should_be_altered`, the only reader of
+    #: `non_db_attrs` in Django). The column is `bytea` (`text` for `base64`)
+    #: whatever the inner field is, so the inner field and everything this
+    #: class adds about the plaintext and its keys are not the column's.
+    #: `storage`, `null`, `unique`, `db_column` and Django's other column
+    #: attributes still count. Without this, two identical declarations
+    #: compared unequal, because the inner field is a `Field` instance and
+    #: `Field.__eq__` compares creation order, and SQLite rebuilt the table
+    #: for every `AlterField` on an encrypted column (#283).
+    non_db_attrs = (*models.Field.non_db_attrs, "inner", "column_uuid",
+                    "index", "tenant_bound", "unindexable_noun")
+
     def __init__(
         self,
         inner: models.Field[Any, Any],
@@ -169,9 +182,15 @@ class Encrypted(models.Field):
         The UUIDs must survive into the migration file, because that is what
         makes a rename safe: the column can be renamed, the model can be
         renamed, and the identifier the key derivation binds to does not move.
+
+        The inner field is a keyword argument, not a positional one, so the
+        schema editor can drop it with `non_db_attrs` when it compares two
+        declarations (#283): it removes keyword arguments only. A migration
+        written with the inner field first still loads, because `__init__`
+        takes it either way.
         """
         name, path, args, kwargs = super().deconstruct()
-        args = [self.inner, *args]
+        kwargs["inner"] = self.inner
         kwargs["column_uuid"] = self.column_uuid_raw
         if self.index is not None:
             kwargs["index"] = self.index
