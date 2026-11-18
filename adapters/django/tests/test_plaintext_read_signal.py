@@ -3,9 +3,10 @@
 
 Spec §10.3: `permissive` and `readonly` return non-envelope input as it is
 and SHOULD count those reads. The core counts them for the whole client;
-`tools/backfill/PROCEDURE.md` §8 gates the switch to `strict` on the count
-per model and field. These tests hold the adapter's signal and counter to
-the core's count, read for read: once per value passed through, including a
+the adapter counts them per model and field, so that a count
+`tools/backfill/PROCEDURE.md` §8 needs at zero names its column. These
+tests hold the adapter's signal and counter to the core's count, read for
+read: once per value passed through, including a
 value the codec then refuses (#253), and never for an envelope or for a read
 the core refuses.
 
@@ -208,12 +209,49 @@ def test_the_counts_reset_with_the_client():
         reset_client()
         assert plaintext_read_counts() == {}
         assert get_client().plaintext_reads == 0
+        Patient.objects.get(pk=pk)
+        assert plaintext_read_counts() == {NOTE: 1}
 
 
-def test_a_raising_receiver_propagates_and_the_read_is_still_counted():
-    """The count is taken before the signal is sent, so a receiver that
-    fails cannot hide the read from the metric. Its exception reaches the
-    caller, as Django's `send` delivers it."""
+def test_a_supplied_client_keeps_its_counts_across_a_reset():
+    """`reset_client` hands a `FIELDSEAL["CLIENT"]` instance back unchanged,
+    with its core count. The per-field counts belong to the client object,
+    so they are kept with it rather than wiped under it."""
+    pk = patient(note="seen")
+    plant(pk, "note", b"legacy")
+    with read_mode("permissive") as client:
+        cfg = dict(settings.FIELDSEAL)
+        cfg["READ_MODE"] = "permissive"
+        cfg["CLIENT"] = client
+        with override_settings(FIELDSEAL=cfg):
+            assert get_client() is client
+            Patient.objects.get(pk=pk)
+            reset_client()
+            assert get_client() is client
+            Patient.objects.get(pk=pk)
+            assert client.plaintext_reads == 2
+            assert plaintext_read_counts() == {NOTE: 2}
+
+
+def test_a_read_through_a_dropped_client_is_not_counted_for_the_new_one():
+    """A read that began on the old client and is recorded after a reset
+    counts against the old client, which is what the core counted."""
+    from fieldseal_django.signals import record_plaintext_read
+
+    with read_mode("permissive"):
+        old = get_client()
+        reset_client()
+        new = get_client()
+        assert new is not old
+        record_plaintext_read(old, Patient, "note")
+        assert plaintext_read_counts() == {}
+
+
+def test_a_raising_receiver_is_logged_and_the_read_goes_on(caplog):
+    """A metrics hook that fails must not turn a legacy row into an error,
+    nor a backfill's in-place read into `INTERNAL`: the signal is sent with
+    `send_robust`, the exception is logged, and the count was taken
+    first."""
     pk = patient(note="seen")
     plant(pk, "note", b"legacy")
 
@@ -221,14 +259,18 @@ def test_a_raising_receiver_propagates_and_the_read_is_still_counted():
         pass
 
     def receiver(**kwargs):
-        raise Boom
+        raise Boom("metrics backend down")
 
     plaintext_read.connect(receiver, weak=False)
     try:
-        with read_mode("permissive") as client:
-            with pytest.raises(Boom):
-                Patient.objects.get(pk=pk)
+        with read_mode("permissive") as client, caplog.at_level(
+                "ERROR", logger="fieldseal_django"):
+            assert Patient.objects.get(pk=pk).note == "legacy"
             assert client.plaintext_reads == 1
             assert plaintext_read_counts() == {NOTE: 1}
     finally:
         plaintext_read.disconnect(receiver)
+    [record] = [r for r in caplog.records if r.name == "fieldseal_django"]
+    assert "tests.Patient.note" in record.getMessage()
+    assert isinstance(record.exc_info[1], Boom)
+    assert "legacy" not in record.getMessage()

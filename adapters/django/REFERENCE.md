@@ -337,8 +337,8 @@ cannot enumerate them.
 In `permissive` and `readonly` a value that is not an envelope is returned as
 it is (spec §10.3). The core counts those reads for the whole client in
 `get_client().plaintext_reads`; the adapter counts them per model and field,
-which is what the cut-over to `strict` is gated on
-(`tools/backfill/PROCEDURE.md` §8):
+so that when the cut-over to `strict` waits on a count of zero
+(`tools/backfill/PROCEDURE.md` §8), a non-zero count names the column:
 
 ```python
 from django.dispatch import receiver
@@ -352,10 +352,12 @@ def count_plaintext(sender, field, **kwargs):
 plaintext_read_counts()  # {("clinic.Patient", "email"): 3, ...}
 ```
 
-The signal's `sender` is the model the field is declared on and `field` is
-the field's name. It never carries the value. `plaintext_read_counts()` is a
+The signal's `sender` is the concrete model that owns the field
+(`field.model`; for a field inherited from an abstract base, the subclass)
+and `field` is the field's name. It never carries the value. `plaintext_read_counts()` is a
 snapshot since the client was built, and a field with no plaintext read is
-absent from it.
+absent from it. The counts belong to the client, as its
+`plaintext_reads` does: a rebuilt client starts both at zero.
 
 Both count reads, not rows: a legacy value read twice counts twice. A value
 that is counted and then refused (`FieldsealNotSupported`, because the inner
@@ -363,8 +365,17 @@ field cannot read it) still counts, as it does in the core, because it is a
 row still to migrate. A read the core refuses (`NOT_CIPHERTEXT` in `strict`,
 `UNKNOWN_FORMAT_VERSION`) does not count. `fieldseal_backfill`'s in-place
 reads count too, so choose a window for the cut-over that does not overlap a
-backfill run. A receiver that raises makes the read raise; the count has
-already been taken.
+backfill run. A receiver that raises does not break the read: its exception
+is logged on the `fieldseal_django` logger, and the count has already been
+taken.
+
+**The counts are per process**, like the core's. A `manage.py shell` opened
+to check the gate has its own client and reads `{}`, and each worker of a
+multi-process server counts its own reads and loses them when it is
+recycled. For the cut-over, export the signal to a shared metrics backend,
+as above, and read the count there. In the two-column backfill shape the
+encrypted column only ever holds NULL or envelopes, so its count stays at
+zero and says nothing about that shape's progress.
 
 ## Known gaps
 

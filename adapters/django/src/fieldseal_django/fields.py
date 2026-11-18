@@ -603,7 +603,7 @@ class Encrypted(models.Field):
                     # `PROCEDURE.md` §8), and this row must show in it,
                     # and in this field's signal and count (#246).
                     client.decrypt(b"", ctx)
-                    record_plaintext_read(self.model, self.name)
+                    record_plaintext_read(client, self.model, self.name)
                     raise FieldsealNotSupported(
                         f"a {type(value).__name__} value in base64 column "
                         f"{self.name!r} is not text, so it is not an "
@@ -639,7 +639,7 @@ class Encrypted(models.Field):
                     # pass-through, counted there, and signalled for this
                     # field (#246).
                     client.decrypt(b"", ctx)
-                    record_plaintext_read(self.model, self.name)
+                    record_plaintext_read(client, self.model, self.name)
                     raise
         else:
             blob = _to_bytes_from_db(value)
@@ -651,7 +651,7 @@ class Encrypted(models.Field):
         # runs, so a value it refuses still shows. Strict never passes
         # plaintext through, so the steady state pays no second recognition.
         if client.read_mode != "strict" and not client.is_ciphertext(blob):
-            record_plaintext_read(self.model, self.name)
+            record_plaintext_read(client, self.model, self.name)
         return codec.from_bytes(self.inner, plain)
 
     def _render_legacy(self, value: Any, connection: Any) -> bytes:
