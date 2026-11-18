@@ -217,7 +217,14 @@ the bytes as hex text. On SQLite the plain `AlterField` is fine.
 The refusal also applies to migrations written before this release, and on a
 fresh database too, test databases included: edit such a migration to use
 `ConvertToEncrypted`. `sqlmigrate` is not checked, so do not apply its
-output for a plain `AlterField` by hand.
+output for a plain `AlterField` by hand. Nor is a cast done outside an
+`AlterField`: a `RunPython` that calls `schema_editor.alter_field`, a
+third-party operation, or `MigrationExecutor.migrate()` called directly.
+
+Unapplying `ConvertToEncrypted` turns the bytes back into text, so it works
+only while nothing has written to the column through the field: an encrypted
+value is not UTF-8 text, and the rollback fails and leaves the column
+`bytea`.
 
 ## Blind indexes
 

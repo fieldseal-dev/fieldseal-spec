@@ -32,11 +32,11 @@ way to supply its own `USING` expression.
 - `refuse_unsafe_alter_fields`, a `pre_migrate` receiver. Before `migrate`
   runs any DDL it walks the plan with the states Django's executor will use,
   and on PostgreSQL it refuses a plain `AlterField` that would cast a column
-  between `bytea` and another type with an `Encrypted` field on either side.
-  Spec §10.2: where a path would silently return wrong
-  results, the adapter MUST throw. `makemigrations` writes the plain
-  `AlterField`, so without the receiver the default path is the corrupting
-  one.
+  between `bytea` and another type with an `Encrypted` field on either side,
+  and a `ConvertToEncrypted` that would refuse when it runs. Spec §10.2:
+  where a path would silently return wrong results, the adapter MUST throw.
+  `makemigrations` writes the plain `AlterField`, so without the receiver
+  the default path is the corrupting one.
 
 Neither runs any cryptography: the conversion is the database's own text
 encoding, and the backfill (`tools/backfill/PROCEDURE.md`) does the
@@ -51,7 +51,11 @@ from collections.abc import Iterator
 from typing import Any
 
 from django.db import connections
-from django.db.migrations.operations import AlterField, SeparateDatabaseAndState
+from django.db.migrations.operations import (
+    AlterField,
+    RenameField,
+    SeparateDatabaseAndState,
+)
 from django.db.models import NOT_PROVIDED
 
 from .codec import logical_type
@@ -120,8 +124,10 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
       `USING convert_to(col, 'UTF8')`, which yields the value's UTF-8 bytes,
       spec §3.6's `string` rendering, whatever the text holds. Backwards,
       `convert_from(col, 'UTF8')` restores the text, and fails loudly on a
-      value that is not UTF-8 -- which every envelope the backfill wrote is
-      likely to be, so backwards is for a column not yet backfilled. Any other
+      value that is not UTF-8 -- which an envelope is likely to be, so
+      backwards is for a column nothing has written to through the field
+      yet: one `save()` after the conversion stores an envelope, and the
+      rollback then fails and leaves the column `bytea`. Any other
       inner type is refused: PostgreSQL's text form of a date, a timestamp or
       a numeric is not §3.6's rendering, and no cast from an integer is. Use
       the two-column shape for those (`docs/12` §7).
@@ -140,6 +146,13 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
     `_like` index before the type change, the nullability, the defaults --
     stays Django's. `tests/test_convert_to_encrypted.py` pins the method's
     shape, so a Django release that renames it fails there rather than here.
+    An installed Django is not this repository's CI, so the operation also
+    checks at run time: it refuses when the method is gone, and when
+    `alter_field` returns without having consulted the replacement for the
+    field -- a Django that still has the method but no longer calls it, whose
+    `::bytea` cast would then have run. That refusal is raised inside the
+    migration's transaction, so on PostgreSQL the `ALTER` rolls back with it
+    (unless the migration sets `atomic = False`).
     """
 
     def describe(self) -> str:
@@ -155,10 +168,21 @@ class ConvertToEncrypted(AlterField):  # type: ignore[misc]
         the cast this operation exists to avoid (refused on PostgreSQL at
         `migrate`, but the squash would be unusable there). Returning False
         tells the optimizer it cannot reduce across the pair.
+
+        A later `RenameField` of the same field is moved ahead of the
+        conversion, as `AlterField.reduce` does, but the conversion keeps its
+        class: Django 5.2 rebuilds it as a hard-coded `AlterField(...)`, which
+        would leave the same plain `AlterField` (6.1 keeps the subclass).
         """
         if (isinstance(operation, AlterField)
                 and self.is_same_field_operation(operation)):
             return False
+        if (isinstance(operation, RenameField)
+                and self.is_same_field_operation(operation)
+                and self.field.db_column is None):
+            return [operation, ConvertToEncrypted(
+                model_name=self.model_name, name=operation.new_name,
+                field=self.field, preserve_default=self.preserve_default)]
         return super().reduce(operation, app_label)
 
     def database_forwards(self, app_label: str, schema_editor: Any,
@@ -246,8 +270,12 @@ def _using_sql(schema_editor: Any, field: Any,
             "conversion. Refusing rather than letting Django's ::bytea cast "
             f"run ({_ISSUE}).")
 
+    consulted = False
+
     def using_sql(new_field: Any, old_field: Any) -> str:
+        nonlocal consulted
         if new_field is field:
+            consulted = True
             return f" USING {expression}"
         return str(original(new_field, old_field))
 
@@ -256,6 +284,16 @@ def _using_sql(schema_editor: Any, field: Any,
         yield
     finally:
         del schema_editor._using_sql
+    if not consulted:
+        # Reached only when `alter_field` returned normally. The type change
+        # ran without the conversion, so with Django's own cast: #252. The
+        # migration's transaction rolls the ALTER back with this raise.
+        raise FieldsealNotSupported(
+            "ConvertToEncrypted: this Django's PostgreSQL schema editor did "
+            "not consult _using_sql while altering the column, so the "
+            "conversion was not applied and Django's own cast ran instead. "
+            "Refusing; in an atomic migration the change is rolled back "
+            f"({_ISSUE}).")
 
 
 # -- the migrate-time refusal ------------------------------------------------
@@ -270,7 +308,8 @@ def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
                                **kwargs: Any) -> None:
     """`pre_migrate` receiver: refuse the plan before any DDL runs if a plain
     `AlterField` in it would cast an `Encrypted` column into or out of
-    `bytea` on PostgreSQL (#252)."""
+    `bytea` on PostgreSQL, or a `ConvertToEncrypted` in it would refuse when
+    it ran (#252)."""
     global _last_plan
     if not plan or plan is _last_plan:
         return
@@ -278,19 +317,18 @@ def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
     connection = connections[using]
     if connection.vendor != "postgresql":
         return
-    if not any(_has_plain_alter_field(m.operations) for m, _ in plan):
+    if not any(_has_alter_field(m.operations) for m, _ in plan):
         return
     for problem in _unsafe_alter_fields(plan, connection):
         raise FieldsealNotSupported(problem)
 
 
-def _has_plain_alter_field(operations: list[Any]) -> bool:
+def _has_alter_field(operations: list[Any]) -> bool:
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
-            if _has_plain_alter_field(op.database_operations):
+            if _has_alter_field(op.database_operations):
                 return True
-        elif isinstance(op, AlterField) and not isinstance(
-                op, ConvertToEncrypted):
+        elif isinstance(op, AlterField):
             return True
     return False
 
@@ -360,12 +398,50 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             for state_op in op.state_operations:
                 state_op.state_forwards(app_label, state)
             continue
-        if isinstance(op, AlterField) and not isinstance(
-                op, ConvertToEncrypted):
+        if isinstance(op, ConvertToEncrypted):
+            problem = _check_conversion(migration, op, state, connection)
+        elif isinstance(op, AlterField):
             problem = _check(migration, op, state, connection)
-            if problem:
-                yield problem
+        else:
+            problem = None
+        if problem:
+            yield problem
         op.state_forwards(app_label, state)
+
+
+def _allowed(op: AlterField, app_label: str, state: Any,
+             connection: Any) -> bool:
+    """As `AlterField.database_forwards`: a model Django would not migrate on
+    this database (unmanaged, proxy, swapped, another vendor, or routed away,
+    with the `model` hint routers receive) gets no DDL. Rendering is the
+    expensive part, so callers ask only for an operation they would refuse.
+    """
+    model = state.clone().apps.get_model(app_label, op.model_name)
+    return bool(op.allow_migrate_model(connection.alias, model))
+
+
+def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
+                      connection: Any) -> str | None:
+    """The refusal `op` would raise when it ran, raised before the plan
+    starts instead, so no earlier migration in it has committed.
+
+    Checked forwards only: `_using_expression`'s refusals do not depend on
+    the direction, and backwards swaps the two fields."""
+    app_label = migration.app_label
+    model_state = state.models.get((app_label, op.model_name_lower))
+    if model_state is None:
+        return None
+    old = model_state.fields.get(op.name)
+    if old is None:
+        return None
+    try:
+        op._using_expression(app_label, old, op.field, connection)
+    except FieldsealNotSupported as e:
+        if not _allowed(op, app_label, state, connection):
+            return None
+        return (f"{app_label}.{migration.name}: {e} Nothing has run: "
+                "migrate refused the plan before any DDL.")
+    return None
 
 
 def _check(migration: Any, op: AlterField, state: Any,
@@ -378,12 +454,7 @@ def _check(migration: Any, op: AlterField, state: Any,
     new = op.field
     if old is None or not casts_into_or_out_of_bytea(old, new, connection):
         return None
-    # As `AlterField.database_forwards`: a model Django would not migrate on
-    # this database (unmanaged, proxy, swapped, another vendor, or routed
-    # away, with the `model` hint routers receive) gets no DDL. Rendering is
-    # the expensive part, so it is done only for a pair that would cast.
-    model = state.clone().apps.get_model(app_label, op.model_name)
-    if not op.allow_migrate_model(connection.alias, model):
+    if not _allowed(op, app_label, state, connection):
         return None
     where = (f"{app_label}.{migration.name}: AlterField {op.name} on "
              f"{op.model_name}")
@@ -392,10 +463,14 @@ def _check(migration: Any, op: AlterField, state: Any,
     if (not _is_encrypted(plain) and _encrypted_binary(sealed)
             and logical_type(sealed.inner) == "string"
             and _PG_TEXT_TYPE.match(plain.db_type(connection) or "")):
+        # The same pair is checked when the migration is unapplied, so the
+        # remedy names both directions rather than guess which one runs.
         fix = ("Replace it with fieldseal_django.operations."
-               "ConvertToEncrypted, with the same arguments: it converts "
-               "the text with convert_to(col, 'UTF8'), which is the value's "
-               "spec §3.6 bytes.")
+               "ConvertToEncrypted, with the same arguments: into bytea it "
+               "converts the text with convert_to(col, 'UTF8'), the value's "
+               "spec §3.6 bytes, and out of bytea with convert_from(col, "
+               "'UTF8'), which fails loudly on a value that is not UTF-8, as "
+               "an envelope written through the field is likely to be.")
     else:
         fix = ("There is no in-place route for this column on PostgreSQL: "
                "use the two-column shape (docs/12 §7).")

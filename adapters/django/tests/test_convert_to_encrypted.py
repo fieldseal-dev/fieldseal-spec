@@ -391,8 +391,11 @@ def test_migrate_refuses_base64_to_binary(case):
 def test_migrate_refuses_the_plain_alter_field_out_of_bytea(case):
     c = case(_encrypted("models.CharField(max_length=100)"), _alter(CHAR))
     c.migrate("0001")
-    with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted"):
+    with pytest.raises(FieldsealNotSupported, match="ConvertToEncrypted") \
+            as e:
         c.migrate("0002")
+    # Out of bytea the operation runs convert_from, so the remedy says so.
+    assert "convert_from(col, 'UTF8')" in str(e.value)
 
 
 @postgres_only
@@ -596,3 +599,94 @@ def test_squashing_keeps_the_conversion():
            AlterField(model_name="thing", name="v", field=second)]
     out = MigrationOptimizer().optimize(ops, "app252")
     assert [type(o) for o in out] == [ConvertToEncrypted, AlterField]
+
+
+# -- review of PR #286 --------------------------------------------------------
+
+
+@postgres_only
+def test_convert_refuses_when_django_does_not_consult_the_replacement(
+        case, monkeypatch):
+    """A Django that keeps `_using_sql` but stops calling it would run its
+    own `::bytea` cast under `ConvertToEncrypted`: #252 again. Simulated by
+    hiding the instance's replacement from `_alter_column_type_sql`."""
+    from django.db.backends.postgresql.schema import DatabaseSchemaEditor
+
+    original = DatabaseSchemaEditor._alter_column_type_sql
+
+    def ignores_the_replacement(self, *args, **kwargs):
+        replacement = self.__dict__.pop("_using_sql", None)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if replacement is not None:
+                self._using_sql = replacement
+
+    c = case(CHAR, _convert(_encrypted("models.CharField(max_length=100)")))
+    c.migrate("0001")
+    c.insert("a\\101b")
+    # A context of its own: undoing the fixture's monkeypatch would drop the
+    # migration package from sys.path before teardown.
+    with monkeypatch.context() as mp:
+        mp.setattr(DatabaseSchemaEditor, "_alter_column_type_sql",
+                   ignores_the_replacement)
+        with pytest.raises(FieldsealNotSupported, match="did not consult"):
+            c.migrate("0002")
+    # The ALTER ran with Django's cast and was rolled back with the raise.
+    assert c.column_type() == "character varying"
+    assert c.values() == ["a\\101b"]
+    assert "0002_change" not in c.applied()
+
+
+def test_squashing_a_conversion_then_a_rename_keeps_the_conversion():
+    """`AlterField.reduce` moves a same-field `RenameField` ahead; on Django
+    5.2 it rebuilt the conversion as a plain `AlterField`."""
+    from django.db import models as m
+    from django.db.migrations.operations import RenameField
+    from django.db.migrations.optimizer import MigrationOptimizer
+
+    field = Encrypted(m.CharField(max_length=100), column_uuid=UUID)
+    ops = [ConvertToEncrypted(model_name="thing", name="v", field=field),
+           RenameField(model_name="thing", old_name="v", new_name="u")]
+    out = MigrationOptimizer().optimize(ops, "app252")
+    assert [type(o) for o in out] == [RenameField, ConvertToEncrypted]
+    assert out[1].name == "u"
+    assert out[1].field is field
+
+
+@postgres_only
+def test_a_refused_conversion_stops_the_plan_before_earlier_migrations(case):
+    """`ConvertToEncrypted`'s own refusal comes from the `pre_migrate` walk,
+    so a migration ahead of it in the plan has not committed."""
+    c = case(graph=lambda table: {
+        "0001_initial": create(table, "models.IntegerField(null=True)"),
+        "0002_widen": mig(["0001_initial"], '[migrations.AlterField('
+                          'model_name="thing", name="w", '
+                          'field=models.BigIntegerField(null=True))]'),
+        "0003_convert": mig(["0002_widen"],
+                            _convert(_encrypted("models.IntegerField()"))),
+    })
+    c.migrate("0001")
+    with pytest.raises(FieldsealNotSupported,
+                       match="0003_convert.*before any DDL"):
+        c.migrate("0003")
+    assert c.applied() == {"0001_initial"}
+
+
+@postgres_only
+def test_rolling_back_a_conversion_after_a_write_fails_and_keeps_bytea(case):
+    """Backwards is for a column nothing has written to through the field:
+    an envelope is not UTF-8, so `convert_from` refuses it."""
+    from django.db import DataError
+
+    c = case(CHAR, _convert(_encrypted("models.CharField(max_length=100)")))
+    c.migrate("0001")
+    c.insert("ada@example.com")
+    c.migrate("0002")
+    c.insert(b"\xff\x00envelope")
+    with pytest.raises(DataError, match="UTF8"):
+        c.migrate("0001")
+    assert c.column_type() == "bytea"
+    assert "0002_change" in c.applied()
+    with connection.cursor() as cur:  # so teardown can unapply
+        cur.execute(f"DELETE FROM {c.table}")
