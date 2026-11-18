@@ -22,6 +22,8 @@ INSTALLED_APPS = [
     "django.contrib.auth",
     "fieldseal_django",
     "tests",
+    # Model-less; the #252 migration tests give it migrations per case.
+    "tests.app252",
 ]
 
 if os.environ.get("FIELDSEAL_TEST_DB") == "postgres":

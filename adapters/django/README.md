@@ -179,6 +179,53 @@ follow from storing one canonical form per value:
 - A stored value that is not in canonical form raises on read rather than
   being coerced.
 
+### Encrypting an existing column
+
+Changing a plain field to `Encrypted(...)` makes `makemigrations` write an
+`AlterField`. The existing values stay plaintext until the backfill
+(`manage.py fieldseal_backfill`) encrypts them, and the migration itself must
+not change them.
+
+**On PostgreSQL, replace that `AlterField` for a `binary` column.** Django
+converts the column to `bytea` with a `::bytea` cast, which decodes
+backslash escapes and a leading `\x` as `bytea` input: `a\101b` would be
+stored as `aAb` with no error. `migrate` refuses such a migration before
+running any SQL. For a `CharField` or `TextField` (or a subclass), use
+`ConvertToEncrypted` with the same arguments; it stores each value's UTF-8
+bytes:
+
+```python
+import fieldseal_django.operations
+
+operations = [
+    fieldseal_django.operations.ConvertToEncrypted(
+        model_name="patient",
+        name="email",
+        field=fieldseal_django.fields.Encrypted(
+            models.EmailField(max_length=254), column_uuid="..."),
+    ),
+]
+```
+
+Any other inner field has no in-place route on PostgreSQL: add the
+encrypted column beside the plaintext one and backfill from it
+(`--source FIELD=LEGACY_FIELD`). The exception is a `BinaryField`, whose
+column is `bytea` already, so its `AlterField` needs no conversion. A
+`BinaryField` changed into `storage="base64"` is refused: Django would write
+the bytes as hex text. On SQLite the plain `AlterField` is fine.
+
+The refusal also applies to migrations written before this release, and on a
+fresh database too, test databases included: edit such a migration to use
+`ConvertToEncrypted`. `sqlmigrate` is not checked, so do not apply its
+output for a plain `AlterField` by hand. Nor is a cast done outside an
+`AlterField`: a `RunPython` that calls `schema_editor.alter_field`, a
+third-party operation, or `MigrationExecutor.migrate()` called directly.
+
+Unapplying `ConvertToEncrypted` turns the bytes back into text, so it works
+only while nothing has written to the column through the field: an encrypted
+value is not UTF-8 text, and the rollback fails and leaves the column
+`bytea`.
+
 ## Blind indexes
 
 A blind index is what makes an encrypted column searchable. Next to the
