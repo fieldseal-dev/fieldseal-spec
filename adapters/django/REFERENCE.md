@@ -332,6 +332,40 @@ unreachable is a worse failure than a cold cache. Tenant-bound columns need
 their tenants named (`--tenant`, or `FIELDSEAL["WARM_TENANTS"]`) — the adapter
 cannot enumerate them.
 
+### Counting plaintext reads
+
+In `permissive` and `readonly` a value that is not an envelope is returned as
+it is (spec §10.3). The core counts those reads for the whole client in
+`get_client().plaintext_reads`; the adapter counts them per model and field,
+which is what the cut-over to `strict` is gated on
+(`tools/backfill/PROCEDURE.md` §8):
+
+```python
+from django.dispatch import receiver
+from fieldseal_django.signals import plaintext_read, plaintext_read_counts
+
+@receiver(plaintext_read)
+def count_plaintext(sender, field, **kwargs):
+    metrics.increment("fieldseal.plaintext_read",
+                      tags={"model": sender._meta.label, "field": field})
+
+plaintext_read_counts()  # {("clinic.Patient", "email"): 3, ...}
+```
+
+The signal's `sender` is the model the field is declared on and `field` is
+the field's name. It never carries the value. `plaintext_read_counts()` is a
+snapshot since the client was built, and a field with no plaintext read is
+absent from it.
+
+Both count reads, not rows: a legacy value read twice counts twice. A value
+that is counted and then refused (`FieldsealNotSupported`, because the inner
+field cannot read it) still counts, as it does in the core, because it is a
+row still to migrate. A read the core refuses (`NOT_CIPHERTEXT` in `strict`,
+`UNKNOWN_FORMAT_VERSION`) does not count. `fieldseal_backfill`'s in-place
+reads count too, so choose a window for the cut-over that does not overlap a
+backfill run. A receiver that raises makes the read raise; the count has
+already been taken.
+
 ## Known gaps
 
 - **`dumpdata` re-encrypts** rather than emitting the stored bytes, so a dump

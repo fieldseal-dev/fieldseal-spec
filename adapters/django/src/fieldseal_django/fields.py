@@ -33,6 +33,7 @@ from . import codec, unindexable
 from .context import build_context
 from .declarations import BlindIndex, parse_uuid
 from .errors import FieldsealConfigurationError, FieldsealNotSupported
+from .signals import record_plaintext_read
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fieldseal import FieldContext
@@ -599,8 +600,10 @@ class Encrypted(models.Field):
                 else:
                     # Still a plaintext read: the core's count (spec §10.3)
                     # is the cut-over gate (spec §11.1, `docs/15` §1.1,
-                    # `PROCEDURE.md` §8), and this row must show in it.
+                    # `PROCEDURE.md` §8), and this row must show in it,
+                    # and in this field's signal and count (#246).
                     client.decrypt(b"", ctx)
+                    record_plaintext_read(self.model, self.name)
                     raise FieldsealNotSupported(
                         f"a {type(value).__name__} value in base64 column "
                         f"{self.name!r} is not text, so it is not an "
@@ -633,12 +636,23 @@ class Encrypted(models.Field):
                     # is what says a backfill is done (spec §11.1, `docs/15`
                     # §1.1, `PROCEDURE.md` §8), and these are the rows it
                     # must not hide. An empty operand is the core's
-                    # pass-through, counted there.
+                    # pass-through, counted there, and signalled for this
+                    # field (#246).
                     client.decrypt(b"", ctx)
+                    record_plaintext_read(self.model, self.name)
                     raise
         else:
             blob = _to_bytes_from_db(value)
-        return codec.from_bytes(self.inner, client.decrypt(blob, ctx))
+        plain = client.decrypt(blob, ctx)
+        # Spec §10.3's pass-through, per model and field (`docs/12` §4,
+        # #246): `decrypt` returned, and its operand was not an envelope, is
+        # exactly the read the core just counted -- a reserved version
+        # raised above, so it never gets here. Signalled before the codec
+        # runs, so a value it refuses still shows. Strict never passes
+        # plaintext through, so the steady state pays no second recognition.
+        if client.read_mode != "strict" and not client.is_ciphertext(blob):
+            record_plaintext_read(self.model, self.name)
+        return codec.from_bytes(self.inner, plain)
 
     def _render_legacy(self, value: Any, connection: Any) -> bytes:
         """A `binary` column's value that is not bytes, as spec §3.6 bytes.

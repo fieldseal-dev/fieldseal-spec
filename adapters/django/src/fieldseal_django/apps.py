@@ -222,9 +222,16 @@ def get_client() -> Fieldseal:
 
 
 def reset_client() -> None:
-    """Drop the cached client. For tests and `setting_changed`."""
+    """Drop the cached client. For tests and `setting_changed`.
+
+    The per-field plaintext-read counts go with it (`signals`, #246), so
+    they and the core's `plaintext_reads` always cover the same client.
+    """
+    from .signals import reset_counts
+
     global _client
     _client = None
+    reset_counts()
 
 
 @receiver(class_prepared)
