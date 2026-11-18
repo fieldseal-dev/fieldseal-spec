@@ -45,6 +45,74 @@ def key_field(model: Any) -> tuple[Any, str]:
     return pk, kind
 
 
+def tenant_type(field: Any) -> str:
+    """The §5.5 type of a tenant column, or a refusal.
+
+    The frontend's mapping of the column's declared type, as `key_field`'s
+    is, and not the operator's statement. A foreign key is its target's.
+    """
+    from ..fields import Encrypted, EncryptedIndex
+
+    name = f"{field.model.__name__}.{field.name}"
+    if isinstance(field, Encrypted | EncryptedIndex):
+        raise BackfillError(
+            f"{name} is a column the adapter encrypts, so it stores an "
+            "envelope or an index value and not a tenant (PROCEDURE §5.5).")
+    seen = field
+    while isinstance(seen, models.ForeignKey):
+        seen = seen.target_field
+    if isinstance(seen, models.UUIDField):
+        return "uuid"
+    if isinstance(seen, models.IntegerField):
+        return "int"
+    if isinstance(seen, models.CharField | models.TextField):
+        return "text"
+    if isinstance(seen, models.BinaryField):
+        return "binary"
+    raise BackfillError(
+        f"{name} is a {type(seen).__name__}. PROCEDURE §5.5 takes a tenant "
+        "column of type text, binary, int or uuid.")
+
+
+def tenant_bytes(kind: str, value: Any) -> bytes | None:
+    """The `tenant_id` of PROCEDURE §5.5's table, from a stored value.
+
+    NULL has no tenant: None. Nor does a stored value that is not of the
+    column's type: SQLite keeps a value's old storage class after an
+    `AlterField`, and coercing it (`bytes(5)` is five zero bytes,
+    `str(b"abc")` is `"b'abc'"`) would bind a tenant nobody has. Only these
+    are taken, so the caller records `CONTEXT_UNAVAILABLE` for the rest:
+
+    - binary: bytes, bytearray or memoryview;
+    - text: str;
+    - int: int, but not bool;
+    - uuid: `uuid.UUID`, or a str that is a UUID in SQLite's 32-hex form or
+      the hyphenated form.
+    """
+    if value is None:
+        return None
+    if kind == "binary":
+        if isinstance(value, bytes | bytearray | memoryview):
+            return bytes(value)
+        return None
+    if kind == "text":
+        return value.encode("utf-8") if isinstance(value, str) else None
+    if kind == "int":
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value).encode("ascii")
+        return None
+    if kind == "uuid":
+        if isinstance(value, uuid.UUID):
+            return str(value).encode("ascii")
+        if isinstance(value, str) and len(value) in (32, 36):
+            try:
+                return str(uuid.UUID(value)).encode("ascii")
+            except ValueError:
+                return None
+        return None
+    return None
+
+
 def encode(kind: str, value: Any) -> str:
     """One key value in §5.1's encoding."""
     if kind == "int":
@@ -80,6 +148,9 @@ class Row:
     #: For each target, whether its legacy source column is NULL (None when
     #: the target is in place).
     source_null: tuple[bool | None, ...]
+    #: The stored value of the tenant column, as the driver returned it
+    #: (None when the run has no tenant column, or the row's is NULL).
+    tenant: Any = None
 
 
 def select_batch(
@@ -91,6 +162,7 @@ def select_batch(
     after: Any,
     limit: int,
     lock: bool,
+    tenant: Any = None,
 ) -> list[Row]:
     """Up to `limit` rows with key greater than `after`, in key order.
 
@@ -99,6 +171,10 @@ def select_batch(
     locked against concurrent writers until commit where the database has
     `SELECT ... FOR UPDATE`, and locked rows are waited for, never skipped;
     on SQLite the batch's `BEGIN IMMEDIATE` is the lock.
+
+    `tenant` is the run's tenant column (PROCEDURE §5.5), selected once, in
+    this same locked statement, so a row's tenant cannot change between the
+    read and the write.
 
     Only a legacy source column's NULL-ness is read here. Its value is read
     through the ORM (PROCEDURE §6.3 rule 1).
@@ -110,6 +186,8 @@ def select_batch(
         if source is not None:
             select.append(
                 f"CASE WHEN {q(source.column)} IS NULL THEN 1 ELSE 0 END")
+    if tenant is not None:
+        select.append(q(tenant.column))
     sql = f"SELECT {', '.join(select)} FROM {q(model._meta.db_table)}"
     params: list[Any] = []
     if after is not None:
@@ -130,7 +208,8 @@ def select_batch(
             source_null.append(
                 None if source is None else bool(next(values)))
         rows.append(Row(pk.to_python(record[0]), tuple(stored),
-                        tuple(source_null)))
+                        tuple(source_null),
+                        None if tenant is None else next(values)))
     return rows
 
 

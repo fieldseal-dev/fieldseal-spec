@@ -1,6 +1,6 @@
 # The backfill procedure
 
-**Procedure version:** 1 · **Date:** 2026-09-30, corrected in place 2026-11-17 ([#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281); §12 says why the version did not change) · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). One frontend implements part of it: the Django adapter's `fieldseal_backfill` implements the `encrypt` job, and neither `rotate` nor `verify`; the scenarios it passes are listed in that adapter's `REFERENCE.md`. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
+**Procedure version:** 2 · **Date:** 2026-11-18 (version 2, [#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244): the row's tenant, §5.5; §12 says what changed from version 1, which was dated 2026-09-30 and corrected in place on 2026-11-17 by [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281)) · **Status:** Draft 1, revised after review round 1 of [#239](https://github.com/fieldseal-dev/fieldseal-spec/pull/239). One frontend implements part of it: the Django adapter's `fieldseal_backfill` implements the `encrypt` job, and neither `rotate` nor `verify`; the scenarios it passes are listed in that adapter's `REFERENCE.md`. It is versioned, not frozen: nothing in this project is frozen before Gate 0b (`docs/01-prd.md` §8).
 
 This is the one procedure every backfill frontend implements: the state tables, the cursor, the batch, the two jobs, `verify`, what the tool must print, and the scenarios a frontend's tests must pass. The design it makes concrete is [`docs/15-tooling.md`](../../docs/15-tooling.md) §1. A frontend is a thin program in one language over one adapter (`docs/26` §5 item 4). A frontend that needs this document changed files an issue and waits; it does not diverge locally (`docs/26` §6).
 
@@ -19,7 +19,7 @@ Two jobs, one mechanism:
 
 And one check, `verify` (§8), which reads and never writes.
 
-**Not in version 1:**
+**Not in this version:**
 
 - **Rebuilding a blind index.** A changed index parameter or a rotated index key is a new index column and a full backfill of it (spec §7.8, §5.8). That is a third job, and this version does not define it.
 - **Re-rendering a column whose declared type changed** (spec §3.6).
@@ -51,6 +51,8 @@ The tool cannot check most of these. They are stated because each one, if false,
 | `rotate` | `strict` or `permissive` | `rotate` raises `MODE_VIOLATION` in `readonly` |
 | `verify` | `readonly` | The check cannot write, by construction (`docs/15` §3) |
 
+5. **Every write of a tenant-bound column binds, for each row, the §5.5 rendering of that row's tenant column.** The tool takes a row's tenant from a column of the row (§5.5), and the application takes it from wherever it binds it (a request, a session, a callback). Where the two disagree for a row, the tool writes that row under a tenant the application does not read it under, and the read fails at decryption, with no error at the write. The tool cannot check this.
+
 ## 3. State tables
 
 Two tables, in the **target** database, so that a batch's data writes and its progress record commit in one transaction (§5). A frontend creates them only on an explicit `init` subcommand, or the deployment creates them by its own migration. A frontend MUST refuse to run when either table is missing or lacks a column below.
@@ -58,7 +60,7 @@ Two tables, in the **target** database, so that a batch's data writes and its pr
 ```sql
 CREATE TABLE fieldseal_backfill_runs (
     run_id             VARCHAR(36)   NOT NULL PRIMARY KEY,  -- UUID, lowercase, hyphenated
-    procedure_version  INTEGER       NOT NULL,              -- 1
+    procedure_version  INTEGER       NOT NULL,              -- 2
     job                VARCHAR(16)   NOT NULL,              -- 'encrypt' | 'rotate'
     table_uuid         CHAR(32)      NOT NULL,              -- the table's identity, lowercase hex; also in config
     running_table_uuid CHAR(32),                            -- = table_uuid while status = 'running', else NULL
@@ -94,7 +96,7 @@ CREATE TABLE fieldseal_backfill_failures (
 
 Types may be spelled as the database requires (`TEXT` for `VARCHAR` on SQLite, for instance); names, nullability, the unique constraint and meanings may not change. Timestamps are text so that every database and every frontend stores the same bytes.
 
-**Version 1 targets Postgres, SQLite and H2**, the databases the shipped adapters and the Hibernate adapter are tested on. MySQL is out of scope: InnoDB refuses a `TEXT` column in a key, and `row_key` is one. A frontend for it needs a sized `row_key` and an issue against this document.
+**This version targets Postgres, SQLite and H2**, the databases the shipped adapters and the Hibernate adapter are tested on. MySQL is out of scope: InnoDB refuses a `TEXT` column in a key, and `row_key` is one. A frontend for it needs a sized `row_key` and an issue against this document.
 
 **Neither table ever holds a plaintext value, an envelope, an index value, or key material.** `row_key` is the row's primary key. A deployment whose primary key is itself sensitive should know that it is copied here.
 
@@ -114,7 +116,7 @@ The inputs are what decides the bytes a run stores, and nothing operational. Bat
 
 | Member | Value |
 |---|---|
-| `procedure_version` | `1` |
+| `procedure_version` | `2` |
 | `job` | `"encrypt"` or `"rotate"` |
 | `table_uuid` | The table's UUID, 32 lowercase hex digits |
 | `write_suite` | The client's write suite as an integer, read from the client (`docs/09` §2). It decides the envelopes a run writes and no index: each index records its own declared suite (below; spec §7.2) |
@@ -130,6 +132,9 @@ Each `columns` element:
 | `storage` | `"binary"` or `"base64"` (spec §3.3) |
 | `source` | `null` for an in-place column; the legacy column's name for the two-column shape (§6.1). Always `null` for `rotate` |
 | `indexes` | For `encrypt`: one object per blind index declared on the column, sorted by `index_id`. For `rotate`: `[]`, because rotation does not touch indexes (spec §5.8) |
+| `tenant` | `null` for a column the adapter binds without a tenant. For a tenant-bound column, where each row's tenant comes from (§5.5): `{"column": <the tenant column's SQL name>, "type": <"text", "binary", "int" or "uuid">}`. Both jobs |
+
+`tenant` is recorded because it decides the key and the AAD of every envelope the run writes in the column (spec §6), and for an indexed column the index key too (spec §5.2). A run resumed under another tenant column, or another type for it, would write the rest of the table under other tenants' contexts and pass a comparison that did not include it ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244)). It is per column rather than per table so that a column declared tenant-bound since the run started, or no longer, is a changed member too: that also changes the context of every value written.
 
 Each `indexes` element, taken from the client's **validated** registry (`docs/09` §2), never from the declaration as written:
 
@@ -148,29 +153,31 @@ Each `indexes` element, taken from the client's **validated** registry (`docs/09
 
 The projected population and the override records are left out: they decide whether a declaration is accepted, not what is stored.
 
-**Serialization.** Members sorted by name in ascending byte order at every level; no whitespace; integers in decimal with no sign, fraction or exponent; `null` for null. Every string MUST consist of ASCII characters `0x20`–`0x7E` other than `"` and `\`, so no escape is ever written; a frontend MUST refuse a `source` or cursor column name outside that set. The result is encoded as ASCII. `config_hash` is the SHA-256 of those bytes, in lowercase hex. The hash is a change detector over public configuration. It is not a cryptographic control, and computing it is not cryptographic code in the sense of AD-1 (spec §11.3).
+**Serialization.** Members sorted by name in ascending byte order at every level; no whitespace; integers in decimal with no sign, fraction or exponent; `null` for null. Every string MUST consist of ASCII characters `0x20`–`0x7E` other than `"` and `\`, so no escape is ever written; a frontend MUST refuse a `source`, cursor or tenant column name outside that set. The result is encoded as ASCII. `config_hash` is the SHA-256 of those bytes, in lowercase hex. The hash is a change detector over public configuration. It is not a cryptographic control, and computing it is not cryptographic code in the sense of AD-1 (spec §11.3).
 
 **Worked example.** A frontend's tests MUST reproduce this hash from these inputs:
 
 ```json
-{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary"}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
+{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id","index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":"refuse","storage":"binary","suite_id":65282,"truncate_bits":24}],"logical_type":"string","source":null,"storage":"binary","tenant":{"column":"tenant_id","type":"int"}},{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e10","indexes":[],"logical_type":"date","source":"birth_date_legacy","storage":"base64","tenant":null}],"cursor":[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":2,"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}
 ```
 
 ```
-960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419
+7f5e7f264f8af0c1ce5740eeab6d9d95e68c5fbf814a327cd047317633ccb92b
 ```
 
-The numbers in the example are arbitrary inputs to the serialization. They are not recommended parameters. The index's `suite_id` (`0xFF02`) differs from `write_suite` (`0xFF01`) on purpose, so a frontend that records the write suite in its place does not reproduce the hash.
+The numbers and names in the example are arbitrary inputs to the serialization. They are not recommended parameters. The index's `suite_id` (`0xFF02`) differs from `write_suite` (`0xFF01`) on purpose, so a frontend that records the write suite in its place does not reproduce the hash. The second column is there for its `"tenant":null` and its empty `indexes`: a frontend that leaves out a null member, or an empty array, does not reproduce the hash either.
+
+Version 1's example, `960b6022…aa419`, is the same first column with no `tenant` member and `procedure_version` 1. A version-2 frontend does not need to reproduce it.
 
 **On resume**, the frontend rebuilds `config` from the live client and declarations, and compares it to the stored one. If they differ it MUST refuse, and name each member that differs. What is present in only one of the two is named as such: a member the stored `config` was recorded without (§12) as not recorded, so it does not read as a changed value, and a column or index as added or removed. It prints names and parameters only; there is nothing secret in `config`.
 
-**On a new `encrypt` run**, the comparison also runs against earlier runs, because abandoning a refused run and starting a new one would otherwise walk around it. A value an earlier run converted is `current` to every later run and is never rewritten (§6.2), and this version has no job that re-derives its index (§1). So a new run under a changed index declaration would leave index values derived under two declarations in one column, and lookups would miss one half with nothing raised. Before inserting its run row, the frontend MUST compare its `config` with that of every earlier `encrypt` run on the same `table_uuid` whose `values_written` is above zero, whatever that run's status. For each column both contain, it compares the column's `indexes` as on resume. If any member differs, or an index or member is present in only one of the two, it MUST refuse to start, name the earlier run and each such member, and insert nothing. An earlier run that wrote no value converted nothing, so it does not count. A changed index declaration over a table this tool has converted is §1's index rebuild, which this version does not define.
+**On a new `encrypt` run**, the comparison also runs against earlier runs, because abandoning a refused run and starting a new one would otherwise walk around it. A value an earlier run converted is `current` to every later run and is never rewritten (§6.2), and this version has no job that re-derives its index (§1). So a new run under a changed index declaration would leave index values derived under two declarations in one column, and lookups would miss one half with nothing raised. Before inserting its run row, the frontend MUST compare its `config` with that of every earlier `encrypt` run on the same `table_uuid` whose `values_written` is above zero, whatever that run's status. For each column both contain, it compares the column's `indexes` and its `tenant` as on resume. If any member differs, or an index or member is present in only one of the two, it MUST refuse to start, name the earlier run and each such member, and insert nothing. An earlier run that wrote no value converted nothing, so it does not count. A changed index declaration over a table this tool has converted is §1's index rebuild, which this version does not define. A changed `tenant` is the same problem for contexts: the values the earlier run wrote stay under the tenants it bound, and a new run would bind others in the same column. Whichever binding the application does not use leaves its values unreadable to it, and nothing is raised until a read. An earlier run recorded under version 1 has no `tenant` member; §12 says how it is compared. **[flag: the comparison is per run, not per column, for `indexes` and `tenant` alike: `values_written` counts a run's values over all its columns. An earlier run that wrote values in one column and none in another still fixes the other column's indexes and tenant, so a run whose tenant column was NULL on every row, which wrote only its other columns, blocks a different tenant column for that column for good, and abandoning it does not release it. This version records no per-column count and has no subcommand that releases a column; telling the two apart needs a change to the state tables (§12).]**
 
 ## 5. The cursor and the batch
 
 ### 5.1 Cursor
 
-Keyset pagination over the table's **primary key**, ascending, all key columns in their declared order. Never `OFFSET` (`docs/15` §1.1). Version 1 supports key columns of three types:
+Keyset pagination over the table's **primary key**, ascending, all key columns in their declared order. Never `OFFSET` (`docs/15` §1.1). This version supports key columns of three types:
 
 | Type | Encoding in `cursor_value` and `row_key` |
 |---|---|
@@ -180,7 +187,7 @@ Keyset pagination over the table's **primary key**, ascending, all key columns i
 
 `cursor_value` and `row_key` are a JSON array of strings, one per key column, e.g. `["4182"]` or `["eu","4182"]`. Ordinary JSON string escaping applies here; these values are stored and read back, never hashed.
 
-A table with no primary key, or a key column of another type, MUST be refused at start. `docs/15` §1.1 also allows "created-at + PK tiebreak"; version 1 does not, because a primary key is the one column set every database guarantees unique, indexed and present. **[flag: a primary key that the application updates breaks the cursor. The tool cannot detect it.]**
+A table with no primary key, or a key column of another type, MUST be refused at start. `docs/15` §1.1 also allows "created-at + PK tiebreak"; this version does not, because a primary key is the one column set every database guarantees unique, indexed and present. **[flag: a primary key that the application updates breaks the cursor. The tool cannot detect it.]**
 
 Ordering and comparison are the database's. The cursor is only ever compared by the database that produced it, so a collation or a UUID byte order that differs from the frontend language's does not matter.
 
@@ -191,7 +198,7 @@ One batch is one transaction. In order:
 1. **Wait** for the rate limiter to grant one batch of `n` rows (§5.3).
 2. **Begin** a transaction. On SQLite it MUST take the write lock at the start (`BEGIN IMMEDIATE`).
 3. **Claim the batch:** `UPDATE fieldseal_backfill_runs SET batch_seq = batch_seq + 1 WHERE run_id = ? AND batch_seq = ? AND status = 'running'`, with the `batch_seq` this process last read or wrote: the post-increment value after a batch it committed, the stored value after one it rolled back (§5.4). If it changes no row, another process owns the run or the run has ended: roll back and exit with an error. This statement also locks the run row until commit, so two processes cannot interleave.
-4. **Select** up to `n` rows with key greater than `cursor_value`, in key order, **locked against concurrent writers until commit** (`SELECT … FOR UPDATE` where the database has it; on SQLite, step 2's lock). The select reads the stored bytes of each target column, not the adapter's decoded value. It MUST NOT skip locked rows. The locks are held through steps 5 to 8, derivations included, so the hold is `n` times the per-value cost: at the defaults, 2–20 seconds over an Argon2id-indexed column, and on SQLite that is the whole database (§1). `batch_size` is the bound.
+4. **Select** up to `n` rows with key greater than `cursor_value`, in key order, **locked against concurrent writers until commit** (`SELECT … FOR UPDATE` where the database has it; on SQLite, step 2's lock). The select reads the stored bytes of each target column, not the adapter's decoded value, and the stored value of each tenant column (§5.5). It MUST NOT skip locked rows. The locks are held through steps 5 to 8, derivations included, so the hold is `n` times the per-value cost: at the defaults, 2–20 seconds over an Argon2id-indexed column, and on SQLite that is the whole database (§1). `batch_size` is the bound.
 5. **Classify** each value from its stored bytes (§6.2 or §7.1).
 6. **Act** on each `pending` value as the job says. An error raised by the core or the adapter for one value is a value failure (§7.4), and the batch continues. An error from the database aborts the batch (§5.4).
 7. **Record:** insert the batch's failure rows; update the run row's counts, `cursor_value` (the key of the last row selected) and `updated_at`. If the select returned fewer than `n` rows, also set `status = 'complete'` and `completed_at`.
@@ -216,11 +223,35 @@ There is always a limit. A frontend has no "unlimited" setting.
 
 The measured rate a run reports (§9) MUST NOT exceed `rows_per_second` over the run, beyond one batch of burst.
 
-**Replication lag (OPTIONAL in version 1).** On Postgres a frontend MAY pause while the largest `replay_lag` in `pg_stat_replication` exceeds a configured threshold. **[flag: not verified against a replicated deployment; the view shows other sessions' rows only to a role with `pg_monitor` or equivalent.]** A frontend that does not implement it, or cannot read the view, MUST say so at start. For every other database the operator throttles by `rows_per_second` (`docs/15` §1.1).
+**Replication lag (OPTIONAL in this version).** On Postgres a frontend MAY pause while the largest `replay_lag` in `pg_stat_replication` exceeds a configured threshold. **[flag: not verified against a replicated deployment; the view shows other sessions' rows only to a role with `pg_monitor` or equivalent.]** A frontend that does not implement it, or cannot read the view, MUST say so at start. For every other database the operator throttles by `rows_per_second` (`docs/15` §1.1).
 
 ### 5.4 Database errors
 
 On a database error inside a batch: roll back, wait, and retry the same batch. The wait is `min(60 s, 1 s × 2^k)` for the `k`-th consecutive failure, starting at `k = 0`. After 8 consecutive failures the process exits with an error and the run stays `running`. A rolled-back batch changed nothing, so the retry starts from the same cursor with the same `batch_seq`.
+
+### 5.5 The row's tenant
+
+A tenant-bound column, one the adapter encrypts under a tenant (spec §6; L3 in spec §10), is written under the tenant the application's write of that row would bind (§6.3). The shipped adapters take that tenant from the operation, not from the row: Django from a context variable (`docs/12` §4), Prisma from a callback or an `AsyncLocalStorage` (`docs/13` §5), Hibernate from the session's tenant identifier (`docs/29` §4). So a frontend has to be told where each row's tenant is. In this version it is a column of the same row, the **tenant column**, which the operator names for each tenant-bound column of the run, and which §4 records as that column's `tenant`.
+
+- A frontend MUST refuse to start a run in which a tenant-bound column has no tenant column, or a column that is not tenant-bound has one.
+- The tenant column MUST NOT be a target column of the run, or any column the adapter encrypts: what it stores there is an envelope, not the tenant.
+- Its `type` is the frontend's mapping of the column's declared type, as the cursor's is (§5.1), and not the operator's statement. A column of a type outside the table below MUST be refused at start.
+- It is read in §5.2 step 4's select, from its stored value, under the same lock as the target columns, so a row's tenant cannot change between the tool's read and its write.
+
+The tenant, the `tenant_id` of the value's context (spec §6.2), is computed from the stored value alone:
+
+| `type` | `tenant_id` |
+|---|---|
+| `text` | The value's UTF-8 bytes |
+| `binary` | The stored bytes, unchanged |
+| `int` | §5.1's `int` rendering, in ASCII: decimal, with a leading `-` for a negative value and no leading zeros |
+| `uuid` | §5.1's `uuid` rendering, in ASCII: 36 characters, lowercase and hyphenated |
+
+The first two rows are what every shipped adapter does with a tenant it is given: a string becomes its UTF-8 bytes, and bytes are used as they are (Django: `set_tenant` in `adapters/django/src/fieldseal_django/context.py`; Prisma: `toBytes` in `adapters/prisma/src/context.ts`; Hibernate: `docs/29` §4). No shipped adapter takes an integer or a UUID object as a tenant, so an application whose tenant column holds one renders it before binding it, and `int` and `uuid` assume it renders it as §5.1 does. **That is the operator's statement, and the tool cannot check it** (§2 item 5). An application that binds a UUID's 16 raw bytes, or a zero-padded integer, binds a different tenant from the one this table computes. Its table cannot be backfilled under this version.
+
+A row whose tenant column is NULL has no tenant, and its context cannot be established. Nor does a row whose stored value is not of the column's `type`, which SQLite allows after a column's type changes, because it keeps each value's storage class (`docs/12` §2, [#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)): an INTEGER in a `binary` column is not rendered as bytes, and it is treated as NULL here. In `encrypt`, each of its tenant-bound `pending` values is a failure with `CONTEXT_UNAVAILABLE` (§7.4) and is left as it was; classification there reads stored bytes only (§6.2), so its `current` and `null` values are counted as usual. In `rotate`, telling `current` from `pending` needs the write key id for the row's context (§7.1, §7.2), so each of its tenant-bound envelopes is that failure instead, and its NULL and non-envelope values are classified as usual. An empty text or binary value is not NULL: it is a present, empty `tenant_id`, which spec §6.2 tells apart from an absent one, and it is used as one.
+
+**Not in this version:** a tenant that is not in the row, such as a database or a schema per tenant, or a tenant reached through a join. A tenant-bound column in such a deployment cannot be backfilled under this version, and a frontend MUST NOT stand in a constant for it. **[flag: not decided whether a later version records a per-run tenant in `config`. That would put a tenant identifier in `config`, which holds names and parameters only (§4).]**
 
 ## 6. The `encrypt` job
 
@@ -232,6 +263,8 @@ On a database error inside a batch: roll back, wait, and retry the same batch. T
 | **Two columns** | A legacy plaintext column (`source` in §4) | A separate encrypted column | Everything else. This is `docs/04` §11's shape |
 
 Which shape an adapter supports for which column types is that adapter's statement, in its binding doc, not this document's.
+
+**In place reads what the migration left.** The in-place shape encrypts each value as the column stores it when the run reaches it, so it depends on the migration that changed the column's type having kept the value. Some conversions do not: on PostgreSQL, Django's own `AlterField` into `bytea` decodes backslash escapes in the legacy text without an error ([#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252)). A run cannot detect that afterwards, because the original value is gone before it starts. So an adapter's binding doc names the columns, by storage form and database, where a conversion that rewrites values without an error exists and its documented route around it can be bypassed. Before a new in-place `encrypt` run over a column it names, on a table with at least one row, a frontend MUST print §9 item 6's text and the columns concerned, and refuse to proceed without `--acknowledge-in-place-conversion`. The flag is required on the run that starts, not on a resume. It is an acknowledgement and not a control: the adapter's migration guard is the control, and this covers what the guard cannot see. It is operational and not in `config` (§4).
 
 ### 6.2 Classification
 
@@ -257,7 +290,7 @@ Rule 1 is what keeps the tool out of spec §3.4's double-encryption case. A rese
 
 Rule 1 also means a legacy value that is not the canonical spec §3.6 rendering of its type fails in place, because readers are as strict as writers. Those rows are failures the operator resolves, or the column is migrated in the two-column shape, where the ORM reads the legacy type and the adapter renders it.
 
-The context of each write is the adapter's own, for that row: the tenant the application's write of that row would bind (spec §6). The frontend establishes it the way the adapter documents, and a row whose context cannot be established is a failure with code `CONTEXT_UNAVAILABLE`. A frontend MUST NOT write a row under a context it guessed.
+The context of each write is the adapter's own, for that row: the tenant the application's write of that row would bind (spec §6). For a tenant-bound column that tenant is computed from the row's tenant column (§5.5), and the frontend binds it the way the adapter documents, for that value's write only. A row whose context cannot be established is a failure with code `CONTEXT_UNAVAILABLE`. A frontend MUST NOT write a row under a context it guessed, and a tenant carried over from another row, or from a binding the process already had, is a guess.
 
 ## 7. The `rotate` job
 
@@ -290,7 +323,7 @@ The probe uses public operations only and never touches the provider, which the 
 
 ### 7.3 Rotating a pending value
 
-1. `out = rotate(T, c)` on the core client, with the adapter's context for that row and column.
+1. `out = rotate(T, c)` on the core client, with the adapter's context for that row and column, its tenant taken from the row as §5.5 says.
 2. Check `is_ciphertext(out)`. If false, that is a failure with code `INTERNAL`, and nothing is written. Check that `out`'s header `key_id` equals the write key id of §7.2 for this context: if it does not, the provider's key id depends on something the probe does not carry, this run can never classify a row `current`, and the process MUST stop with an error, leaving the run `running` and this value unwritten. This is a process stop, not a value failure: nothing is recorded for it (§7.4). `out`'s header is read with the core's header accessor (`docs/09` §4), like the rest of this job.
 3. Write `out`, in the column's storage form, to that row and column only, as a bound parameter, in the batch's transaction.
 
@@ -307,7 +340,7 @@ A failure is recorded in `fieldseal_backfill_failures` and counted; the value is
 | Code | Meaning |
 |---|---|
 | `RENDERING_REFUSED` | The adapter refused the value under spec §3.6, on read or on write |
-| `CONTEXT_UNAVAILABLE` | The row's context could not be established (§6.3) |
+| `CONTEXT_UNAVAILABLE` | The row's context could not be established (§6.3), including a NULL tenant column (§5.5) |
 | `INTERNAL` | Anything else, including §7.3 step 2 |
 
 No message text is stored, only the code. An error message can carry part of a value, and this table is not a place for one.
@@ -325,7 +358,7 @@ Reads only, under a `readonly` client (§2). It has two parts and reports both.
 
 A value the census counts as a non-envelope may be an envelope of a newer format version (spec §3.4; §7.1). It is not counted under any `(suite_id, key_id)`.
 
-**Sample.** `N` rows (default 1000, or every row if there are fewer), chosen uniformly at random among the rows scanned; the frontend states its method and `N` in the report. Each sampled envelope is decrypted through the adapter's read path. In the two-column shape, while the legacy column still exists, the result is compared with the legacy value. The report gives counts of decrypted, failed (by error code) and mismatched. It never prints a value.
+**Sample.** `N` rows (default 1000, or every row if there are fewer), chosen uniformly at random among the rows scanned; the frontend states its method and `N` in the report. Each sampled envelope is decrypted through the adapter's read path, under the row's tenant for a tenant-bound column, taken from the tenant column the operator names as in §5.5. `verify` stores no `config`, so nothing compares that column with the one the runs used: a wrong one shows as failures in the sample. In the two-column shape, while the legacy column still exists, the result is compared with the legacy value. The report gives counts of decrypted, failed (by error code) and mismatched. It never prints a value.
 
 The census goes further than `docs/15` §1.1, which asked for a sample only. A sample cannot show that no plaintext remains, and the plaintext-read metric (spec §10.3) counts only rows that something reads. The census is the direct measurement, and it costs one header-only pass over the table.
 
@@ -338,7 +371,7 @@ The census goes further than `docs/15` §1.1, which asked for a sample only. A s
 | Switch to `strict` (`docs/04` §11 step 4) | Census: zero non-envelopes in every column. Sample: zero failures and zero mismatches. And the adapter's plaintext-read count at zero over a window the operator chooses |
 | Drop the legacy column (step 5) | The above, with `strict` deployed |
 | Retire an old DEK version after a `rotate` run (spec §5.8, §8.2) | Census: zero envelopes under that `key_id`, in **every** table and column that key's scope covers, not only the table just swept. This retires one data-key version and nothing else: index keys are siblings of the DEK (spec §5.2), a rotation leaves every index valid, and this row does not speak to them |
-| Crypto-shred a scope, a tenant (spec §5.2, PRD SP-18) | **This procedure cannot gate it.** Shredding destroys the tenant's DEK *and* its index keys, and SP-18 requires an inventory of every derived artifact with a shred procedure for each. `verify` gives one line of that inventory: the census for the DEK, as in the row above. It does not read index columns, and version 1 has no job that rebuilds or clears one (§1), so after the DEK is gone every index value in the scope still stands and still confirms that a plaintext is present to anyone holding the index key. Caches, queues, replicas, exports and backups are not visible to it either. An operator shreds on an inventory this tool does not produce |
+| Crypto-shred a scope, a tenant (spec §5.2, PRD SP-18) | **This procedure cannot gate it.** Shredding destroys the tenant's DEK *and* its index keys, and SP-18 requires an inventory of every derived artifact with a shred procedure for each. `verify` gives one line of that inventory: the census for the DEK, as in the row above. It does not read index columns, and this version has no job that rebuilds or clears one (§1), so after the DEK is gone every index value in the scope still stands and still confirms that a plaintext is present to anyone holding the index key. Caches, queues, replicas, exports and backups are not visible to it either. An operator shreds on an inventory this tool does not produce |
 | Remove a retired suite from the allow-list (spec §5.9) | Census: zero envelopes under that `suite_id`, in every table and column |
 
 Destroying a key also makes every backup that holds envelopes under it undecryptable for those values. That is the purpose when the goal is erasure, and a loss when it is not. `verify` cannot see backups.
@@ -380,6 +413,20 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 
 **5. Never:** a plaintext value, an envelope, an index value, or key material, in any output, log line or error.
 
+**6. Before a new in-place `encrypt` run over a column its adapter names (§6.1)**, on a table that has at least one row, this text, verbatim, then the columns concerned by name, and a refusal to proceed without `--acknowledge-in-place-conversion`:
+
+```
+This run encrypts the columns listed below in place, from the values they
+store now. If the migration that changed a column's type converted its values,
+the conversion may have rewritten some of them without an error, and this run
+would encrypt and index the rewritten value. The original would not be
+recoverable from this table. Confirm that each column was converted by a route
+its adapter's documentation says keeps the value, then re-run with
+--acknowledge-in-place-conversion to proceed.
+```
+
+The flag is required on the run that starts, not on a resume. Where text 1 is also due, both are printed before the refusal.
+
 ## 10. Shared scenarios
 
 `docs/26` §6 requires every frontend to run one shared set of scenarios against a live database, and P2-M5 names resumability, idempotence and rate limit. A frontend's test suite MUST contain a test for each id below and cite the id in the test's name, so a coverage report can score them as the adapters' matrices are scored. "Bytes unchanged" means the stored bytes of the column compare equal before and after.
@@ -404,11 +451,16 @@ A frontend for an adapter that offers lazy on-read re-encryption MUST also resta
 | BF-15k ⏸ | `verify` over envelopes under two key versions and two suites, and a reserved-version (`fmt_ver 0x02`) value | The census by `(suite_id, key_id)` reports each count; the reserved-version value counts as a non-envelope and under no `(suite_id, key_id)` |
 | BF-16 | Any scenario above that produced output | No plaintext value, envelope or index value appears in any output or in either state table |
 | BF-17 | The §4 worked example | The frontend's serializer and hash reproduce it |
-| BF-18 | A run row with `procedure_version` 2 | Refused |
+| BF-18 | A run row with a `procedure_version` other than the frontend's: 1 and 3, for a version-2 frontend | Resuming either is refused |
 | BF-19 | Two processes start a new run on one table at once | Exactly one run row exists; the other start is refused by the unique constraint and names the run that holds the table |
 | BF-20 | A run stopped by `max_failures` mid-way through a batch's worth of failing rows, then resumed with the same setting | The stop leaves the run `running`, with the failing batch committed: its failure rows are recorded and `cursor_value` is past every row that failed. The resume starts beyond them, and completes when the failures do not continue |
 | BF-21 | `encrypt`, killed, then resumed with one index's declared `suite_id` changed and `write_suite` unchanged | Refused, naming that index's `suite_id`; nothing written |
 | BF-22 | `encrypt`, killed and abandoned after writing values, then a new run with one index's declared `suite_id` changed; again after an abandoned run that wrote nothing | The first new run is refused before a run row is inserted, naming the abandoned run and that index's `suite_id`; nothing written. The second starts |
+| BF-23 | `encrypt` over a tenant-bound column, indexed, on rows of two tenants and one row whose tenant column is NULL | Each value of the two tenants' rows decrypts to its original under its own row's tenant, and fails under the other's; an equality lookup under a row's tenant finds it, and under the other tenant does not; the NULL-tenant row's value is a failure with `CONTEXT_UNAVAILABLE`, bytes unchanged |
+| BF-24 | `encrypt`, killed, then resumed with the tenant column's `type` changed; again with the column no longer tenant-bound | Refused, naming that column's `tenant`; nothing written |
+| BF-25 | `encrypt` over a tenant-bound column, killed and abandoned after writing values, then a new run whose tenant column differs | Refused before a run row is inserted, naming the abandoned run and that column's `tenant`; nothing written |
+| BF-26 | A start with a tenant-bound column and no tenant column for it; with a tenant column named for a run that has no tenant-bound column; with a tenant column the adapter encrypts | Each refused at start; no run row created |
+| BF-27 | A new in-place `encrypt` on a populated table, over a column the adapter names under §6.1, without `--acknowledge-in-place-conversion`; then with it | §9 item 6's text and the column printed; nothing written; no run row created. With the flag (and BF-10's), the run starts. **Not applicable** for an adapter that names no column |
 
 A frontend reports each scenario in one of three states. **Passed.** **Not applicable**, with the reason, for a scenario its adapter cannot express (an adapter with one shape only, for BF-08's other half). **Blocked**, for a scenario that cannot be built yet for a reason outside the adapter: the rows marked ⏸ (BF-11, BF-12, BF-13 and BF-15k) need the core's header accessor (`docs/09` §4; D-1 in §11, decided by [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241)) and are blocked in a frontend until that frontend's core ships it. A blocked scenario is not a pass and not a gap in the frontend; a coverage report scores it separately so that `docs/26` §6's drift check can tell the two apart.
 
@@ -426,6 +478,12 @@ Recorded here so that a frontend is not built on an assumption.
 ## 12. Changing this document
 
 `procedure_version` increases when a change alters what is stored in either state table, what a run writes, or how `config` is built. A clarification that changes none of those does not. Every change is an issue first, and updates the shared scenarios with it.
+
+**Version 2 ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244), 2026-11-18).** Each `columns` element gained `tenant`, and a new `encrypt` run's comparison with earlier runs compares it (§4, §5.5). That changes how `config` is built, so the version increased; the exception below was not taken again. It also added §2 item 5, §6.1's acknowledgement with §9 item 6, and the scenarios BF-23 to BF-27, and changed BF-17's worked example and BF-18. What it means for runs recorded under version 1:
+
+- **Resuming one is refused** (§3, BF-18). The operator abandons it and starts a new run, which skips every value the old run converted (§6.2).
+- **In a new run's comparison with earlier runs** (§4), a version-1 run has no `tenant` member, and its `tenant` is not compared; its `indexes` are, as before. The one frontend that implemented version 1, the Django frontend, recorded every tenant-bound value as `CONTEXT_UNAVAILABLE` and wrote none (in every revision of `backfill/encrypt.py` from `c61410e`, its first, to version 2), so no value a version-1 run wrote was bound under a tenant column that a new run could disagree with. Comparing would refuse anyway: the member is absent from every column of a version-1 `config`, tenant-bound or not, so every table such a run converted would be refused, with nothing for the operator to change. What the version-1 `config` cannot say is whether a column was tenant-bound when the run wrote it. A column that is tenant-bound now, over values a version-1 run wrote without a tenant, holds values the application cannot read under its binding, and this comparison does not detect it.
+- **An earlier run that converted values, recorded under a version the frontend does not implement**, other than version 1 for a version-2 frontend, cannot be compared, and a new run on its table is refused. One that converted nothing does not count, as in §4.
 
 **One exception, taken once.** [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281) changed how `config` is built (§4 gained each index's `suite_id`, and a new `encrypt` run's comparison with earlier runs) and kept version 1. Version 1 therefore names two constructions of `config`: the one before #281, whose index elements have no `suite_id`, and the one after. The version exists so that a frontend can tell runs recorded under another procedure, and refuse them (§3, BF-18). When #281 was made, no release had carried a frontend: the Django frontend reached `main` on 2026-10-16 ([#255](https://github.com/fieldseal-dev/fieldseal-spec/pull/255)), and no tag contains it; the last release is `v0.1.3`. So no released program could have recorded a version-1 run under the old `config`, though a build from `main` could have. Such a run is told apart by the comparison rather than the version, and only where it matters:
 

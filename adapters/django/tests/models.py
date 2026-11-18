@@ -348,3 +348,77 @@ class SuiteTwoDoc(models.Model):
     handle_bidx = Encrypted.index_column("handle")
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_SUITE_TWO)
+
+
+TABLE_TENANT_IN_PLACE = "018f3c2e-0000-7000-8000-0000000000f0"
+COL_TENANT_IN_PLACE_SECRET = "018f3c2e-0000-7000-8000-0000000000f1"
+
+
+class TenantInPlace(models.Model):
+    """A tenant-bound, in-place, `binary`, HMAC-indexed column, with the
+    tenant in a plain nullable integer column of the same row (PROCEDURE
+    §5.5). The backfill's tenant-binding scenarios (BF-23 to BF-27) run
+    over it; the legacy bytes are planted with raw SQL, as in
+    `LegacyInPlace`.
+    """
+
+    tenant = models.IntegerField(null=True)
+    #: A second integer column, so that a new run can name another tenant
+    #: column (BF-25), and one that is not a supported type (BF-26).
+    region = models.IntegerField(null=True)
+    stamp = models.DateTimeField(null=True)
+    secret = Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=COL_TENANT_IN_PLACE_SECRET,
+        null=True,
+        index=BlindIndex(
+            suite_id=0xFF01,
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+    secret_bidx = Encrypted.index_column("secret")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_IN_PLACE,
+                              tenant_bound=True)
+
+
+TABLE_TENANT_UUID = "018f3c2e-0000-7000-8000-0000000000f2"
+COL_TENANT_UUID_SECRET = "018f3c2e-0000-7000-8000-0000000000f3"
+
+
+class TenantUuidInPlace(models.Model):
+    """`TenantInPlace` with a UUID tenant column, for the one type whose
+    stored form differs between the two databases (32 hex digits on SQLite,
+    `uuid.UUID` on PostgreSQL)."""
+
+    tenant = models.UUIDField(null=True)
+    secret = Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=COL_TENANT_UUID_SECRET,
+        null=True,
+    )
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_UUID,
+                              tenant_bound=True)
+
+
+TABLE_TENANT_TWO_COLUMN = "018f3c2e-0000-7000-8000-0000000000f4"
+COL_TENANT_TWO_COLUMN_SECRET = "018f3c2e-0000-7000-8000-0000000000f5"
+
+
+class TenantTwoColumn(models.Model):
+    """The two-column shape over a tenant-bound column: the legacy
+    plaintext sits beside the encrypted column, and the tenant is the
+    row's `tenant`."""
+
+    tenant = models.IntegerField(null=True)
+    secret_legacy = models.CharField(max_length=100, null=True)
+    secret = Encrypted(models.CharField(max_length=100),
+                       column_uuid=COL_TENANT_TWO_COLUMN_SECRET, null=True)
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_TWO_COLUMN,
+                              tenant_bound=True)

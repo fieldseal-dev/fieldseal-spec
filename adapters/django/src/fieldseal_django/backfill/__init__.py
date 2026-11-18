@@ -1,4 +1,4 @@
-"""The Django backfill frontend (`tools/backfill/PROCEDURE.md`, version 1).
+"""The Django backfill frontend (`tools/backfill/PROCEDURE.md`, version 2).
 
 A frontend is a thin program over one adapter. Everything that decides what a
 run stores is the procedure's; what is here is the Django spelling of it: the
@@ -14,7 +14,7 @@ built.
 from __future__ import annotations
 
 #: The `procedure_version` this frontend implements and writes.
-PROCEDURE_VERSION = 1
+PROCEDURE_VERSION = 2
 
 
 class BackfillError(Exception):

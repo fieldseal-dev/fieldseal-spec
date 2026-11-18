@@ -23,17 +23,19 @@ def build(
     table_uuid: bytes,
     write_suite: int,
     cursor: list[tuple[str, str]],
-    targets: list[tuple[Any, str | None]],
+    targets: list[tuple[Any, str | None, dict[str, str] | None]],
     indexes: Any,
 ) -> dict[str, Any]:
     """The `config` object for a run.
 
-    `targets` is `(Encrypted field, legacy column name or None)`; `indexes`
-    is the client's **validated** registry, which is where an index's
+    `targets` is `(Encrypted field, legacy column name or None, tenant or
+    None)`, where a tenant is `{"column": <SQL name>, "type": <§5.5 type>}`
+    for a tenant-bound column and None otherwise (PROCEDURE §4, §5.5);
+    `indexes` is the client's **validated** registry, which is where an index's
     resolved parameters are read from, never the declaration as written.
     """
     columns = []
-    for field, source in targets:
+    for field, source, tenant in targets:
         entries = []
         if job == "encrypt" and field.index is not None:
             validated = indexes[index_registry_key(
@@ -64,6 +66,7 @@ def build(
             "storage": field.storage,
             "source": source,
             "indexes": sorted(entries, key=lambda e: str(e["index_id"])),
+            "tenant": None if tenant is None else dict(tenant),
         })
     return {
         "procedure_version": PROCEDURE_VERSION,

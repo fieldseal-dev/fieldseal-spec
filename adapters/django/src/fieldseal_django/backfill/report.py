@@ -23,6 +23,16 @@ predates this migration. NIST SP 800-88r2 section 3.2.2 allows cryptographic
 erase only where no sensitive data was previously stored in plaintext form.
 Re-run with --acknowledge-preexisting-backups to proceed."""
 
+#: PROCEDURE §9 text 6, verbatim.
+IN_PLACE_CONVERSION = """\
+This run encrypts the columns listed below in place, from the values they
+store now. If the migration that changed a column's type converted its values,
+the conversion may have rewritten some of them without an error, and this run
+would encrypt and index the rewritten value. The original would not be
+recoverable from this table. Confirm that each column was converted by a route
+its adapter's documentation says keeps the value, then re-run with
+--acknowledge-in-place-conversion to proceed."""
+
 NOT_CONVERTED = ("The table is NOT fully converted: this run left values it "
                  "did not encrypt.")
 

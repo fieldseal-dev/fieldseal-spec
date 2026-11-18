@@ -6,11 +6,12 @@ the pending values through `FieldsealQuerySet.bulk_update` so the envelope
 and its blind index go in one statement, and record the counts and the
 cursor. A process killed at any point leaves the whole batch or none of it.
 
-**What this frontend does not do.** A tenant-bound column's values are
-recorded as `CONTEXT_UNAVAILABLE` and left as they were: the adapter takes
-the tenant from a context variable, and the procedure does not yet say how a
-run records where a row's tenant comes from (#244). Replication-lag
-throttling is not implemented.
+**What this frontend does not do.** It takes a tenant only from a column of
+the row (PROCEDURE §5.5, #244): one tenant field per run, named by the
+operator and applied to every tenant-bound target. A tenant that is not in
+the row (a schema per tenant, a join) cannot be backfilled, and a tenant the
+process already had bound is never used, since one carried over from
+elsewhere is a guess (§6.3). Replication-lag throttling is not implemented.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from fieldseal.errors import FieldsealError, InvalidArgument
 
 from .. import __version__
 from ..apps import get_client
+from ..context import tenant_scope
 from ..errors import FieldsealNotSupported
 from ..fields import Encrypted
 from ..query import FieldsealManager, FieldsealQuerySet
@@ -92,6 +94,10 @@ class Plan:
     config: dict[str, Any]
     config_text: str
     config_hash: str
+    #: The run's tenant column (a model field) and its §5.5 type, or None
+    #: when no target is tenant-bound.
+    tenant: Any = None
+    tenant_kind: str | None = None
 
 
 @dataclass
@@ -107,8 +113,21 @@ class Outcome:
 
 
 def plan(model: Any, columns: list[str] | None,
-         sources: dict[str, str]) -> Plan:
-    """Resolve and check what a run over `model` would do. Writes nothing."""
+         sources: dict[str, str], tenant: str | None = None) -> Plan:
+    """Resolve and check what a run over `model` would do. Writes nothing.
+
+    `tenant` is the model field that holds each row's tenant (PROCEDURE
+    §5.5). This frontend takes one per run and applies it to every
+    tenant-bound target.
+    """
+    return _plan(model, columns, sources, tenant, strict=True)
+
+
+def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
+          tenant: str | None, *, strict: bool) -> Plan:
+    """`plan`; with `strict` False, the §5.5 start refusals that say a
+    tenant is missing or unused are left to the resume's comparison, which
+    names the member (`plan_for`)."""
     name = model.__name__
     meta = getattr(model, "fieldseal", None)
     if meta is None:
@@ -168,13 +187,35 @@ def plan(model: Any, columns: list[str] | None,
             "this process, or name a legacy column with --source "
             "(PROCEDURE §2 item 4).")
 
+    tenant_field, tenant_kind = _tenant_field(model, tenant)
+    bound = [f.name for f, _ in targets if f._is_tenant_bound()]
+    if strict:
+        if bound and tenant_field is None:
+            raise BackfillError(
+                f"{', '.join(bound)} of {name} is tenant-bound, and this run "
+                "names no tenant column for it. A tenant-bound column is "
+                "written under each row's own tenant, which the procedure "
+                "takes from a column of the row: name it with "
+                "--tenant FIELD (PROCEDURE §5.5).")
+        if tenant_field is not None and not bound:
+            raise BackfillError(
+                f"--tenant {tenant}: no column of this run is tenant-bound, "
+                "and a column that is not tenant-bound has no tenant column "
+                "(PROCEDURE §5.5).")
+    if tenant_field is not None and not bound:
+        tenant_field = tenant_kind = None
+    recorded = (None if tenant_field is None else
+                {"column": tenant_field.column, "type": tenant_kind})
+
     pk, key_type = cursor.key_field(model)
     document = config.build(
         job="encrypt",
         table_uuid=meta.table_uuid_bytes,
         write_suite=client.write_suite,
         cursor=[(pk.column, key_type)],
-        targets=[(f, None if s is None else s.column) for f, s in targets],
+        targets=[(f, None if s is None else s.column,
+                  recorded if f._is_tenant_bound() else None)
+                 for f, s in targets],
         indexes=client.indexes,
     )
     text = config.serialize(document)
@@ -187,7 +228,39 @@ def plan(model: Any, columns: list[str] | None,
         config=document,
         config_text=text,
         config_hash=config.digest(text),
+        tenant=tenant_field,
+        tenant_kind=tenant_kind,
     )
+
+
+def _tenant_field(model: Any, tenant: str | None) -> tuple[Any, str | None]:
+    """The tenant column named by the operator, and its §5.5 type."""
+    if tenant is None:
+        return None, None
+    name = model.__name__
+    fields = {f.name: f for f in model._meta.concrete_fields}
+    field = fields.get(tenant)
+    if field is None:
+        raise BackfillError(
+            f"--tenant {tenant}: {tenant} is not a column of {name}.")
+    return field, cursor.tenant_type(field)
+
+
+def in_place_conversion_columns(p: Plan) -> list[str]:
+    """The targets PROCEDURE §6.1 and §9 item 6 name for this binding.
+
+    On PostgreSQL, Django's own `AlterField` into `bytea` decodes backslash
+    escapes in legacy text without an error (#252), so an in-place run
+    reads what that migration left, which a run cannot check. Every
+    in-place target is named, whatever its `storage`: a `base64` column
+    converted from `bytea` by a path the `pre_migrate` guard cannot see (a
+    `RunPython` calling `alter_field`, hand-applied `sqlmigrate` SQL) holds
+    `\\x4142`-style text, and the run would encrypt that. Nothing is named
+    on SQLite, whose conversion keeps the value.
+    """
+    if connections[p.alias].vendor != "postgresql":
+        return []
+    return [f.name for f, source in p.targets if source is None]
 
 
 def plan_for(run: state.Run, models: list[Any]) -> Plan:
@@ -219,6 +292,7 @@ def plan_for(run: state.Run, models: list[Any]) -> Plan:
                if isinstance(f, Encrypted)}
     by_column = {f.column: f for f in model._meta.concrete_fields}
     columns, sources, gone = [], {}, []
+    tenant_columns: list[str] = []
     for entry in stored["columns"]:
         target = by_uuid.get(entry["column_uuid"])
         if target is None:
@@ -231,10 +305,39 @@ def plan_for(run: state.Run, models: list[Any]) -> Plan:
                 gone.append(f"columns[{entry['column_uuid']}].source")
                 continue
             sources[target.name] = source.name
+        recorded = entry.get("tenant")
+        if recorded is not None:
+            # The tenant column is the run's own, as `source` is: never the
+            # operator's (PROCEDURE §5.5), so a resume cannot rebind it.
+            column = by_column.get(recorded.get("column"))
+            member = f"columns[{entry['column_uuid']}].tenant"
+            if column is None:
+                gone.append(member)
+            else:
+                try:
+                    cursor.tenant_type(column)
+                except BackfillError:
+                    # Encrypted now, or of a type §5.5 does not take: a
+                    # changed member, named as such.
+                    gone.append(member)
+                else:
+                    tenant_columns.append(column.name)
     if gone:
         raise BackfillError(_refusal(run.run_id, gone))
-    live = plan(model, columns, sources)
+    # One tenant field per run. Were the stored run to name two, the live
+    # build applies the first to every column, and the comparison names the
+    # column whose recorded tenant differs.
+    live = _plan(model, columns, sources,
+                 tenant_columns[0] if tenant_columns else None,
+                 strict=False)
     differing = config.differences(stored, live.config)
+    # A column tenant-bound now that was recorded without a tenant has no
+    # tenant to rebuild; the live document says null, as the stored one does.
+    for entry in stored["columns"]:
+        field = by_uuid[entry["column_uuid"]]
+        if entry.get("tenant") is None and field._is_tenant_bound():
+            differing.append(f"columns[{entry['column_uuid']}].tenant")
+    differing = sorted(set(differing))
     if differing or live.config_hash != run.config_hash:
         raise BackfillError(_refusal(run.run_id, differing or ["config"]))
     return live
@@ -250,17 +353,34 @@ def _refusal(run_id: str, members: list[str]) -> str:
 
 def check_earlier_runs(p: Plan) -> None:
     """PROCEDURE §4, *On a new `encrypt` run*: refuse a new run whose index
-    declarations differ from those of an earlier run that converted values.
+    declarations or tenant columns differ from those of an earlier run that
+    converted values.
 
     A value an earlier run converted is `current` to this one and is never
     rewritten (§6.2), and no job re-derives its index (§1). So without this
     check, abandoning a run that a resume refused, then starting a new one,
     would walk around the refusal and leave index values under two
-    declarations in one column.
+    declarations, or values under two tenants' contexts, in one column.
+
+    What is compared depends on the earlier run's `procedure_version` (§12):
+    version 2, each shared column's `indexes` and `tenant`; version 1, which
+    recorded no `tenant`, its `indexes` only; any other version cannot be
+    compared, and the new run is refused.
     """
-    live = {c["column_uuid"]: c["indexes"] for c in p.config["columns"]}
+    live = {c["column_uuid"]: c for c in p.config["columns"]}
     connection = connections[p.alias]
     for run in state.converting_runs(connection, p.config["table_uuid"]):
+        if run.procedure_version not in (1, PROCEDURE_VERSION):
+            raise BackfillError(
+                f"refused: run {run.run_id} ({run.status}) converted "
+                f"{run.values_written} values of this table under procedure "
+                f"version {run.procedure_version}. This frontend implements "
+                f"version {PROCEDURE_VERSION} and compares earlier runs of "
+                "version 1 and of its own, so it cannot tell whether this "
+                "run would write the index values and the tenant contexts "
+                "that run did (PROCEDURE §4, §12). Nothing was written.")
+        compared = (("indexes",) if run.procedure_version == 1
+                    else ("indexes", "tenant"))
         try:
             stored = json.loads(run.config)
             columns = stored["columns"]
@@ -268,24 +388,27 @@ def check_earlier_runs(p: Plan) -> None:
             raise BackfillError(
                 f"refused: run {run.run_id} converted values of this table "
                 "and its recorded configuration cannot be read, so whether "
-                "this run would index under the same declarations cannot be "
-                "checked (PROCEDURE §4). Nothing was written.") from None
+                "this run would write what it did cannot be checked "
+                "(PROCEDURE §4). Nothing was written.") from None
         members: list[str] = []
         for column in columns:
             uuid_hex = column.get("column_uuid")
             if uuid_hex in live:
                 members.extend(config.differences(
-                    column.get("indexes"), live[uuid_hex],
-                    f"columns[{uuid_hex}].indexes"))
+                    {k: column[k] for k in compared if k in column},
+                    {k: live[uuid_hex][k] for k in compared},
+                    f"columns[{uuid_hex}]"))
         if members:
             raise BackfillError(
                 f"refused: run {run.run_id} ({run.status}) converted "
                 f"{run.values_written} values of this table under index "
-                "declarations that differ from the live ones. A converted "
-                "value is never rewritten and its index is never re-derived "
-                "(PROCEDURE §6.2, §1), so a new run would leave index values "
-                "under two declarations in one column, and lookups would "
-                f"miss one half (PROCEDURE §4). Differs: {', '.join(members)}."
+                "declarations or a tenant column that differ from the live "
+                "ones. A converted value is never rewritten, its index is "
+                "never re-derived (PROCEDURE §6.2, §1), and its tenant is "
+                "never rebound, so a new run would leave index values "
+                "under two declarations, or values under two tenants' "
+                "contexts, in one column, and reads or lookups would miss "
+                f"one half (PROCEDURE §4). Differs: {', '.join(members)}."
                 + config.unrecorded_note(members)
                 + " Changing an index declaration over a converted table is "
                 "a new index (spec §7.8), which this tool does not build. "
@@ -452,7 +575,7 @@ class Runner:
             seq = self._batch_seq + 1
             rows = cursor.select_batch(
                 self._connection, p.model, p.pk, p.targets,
-                after=self._after, limit=n, lock=True)
+                after=self._after, limit=n, lock=True, tenant=p.tenant)
             if self.hooks.after_select is not None:
                 self.hooks.after_select(rows)
             counts, failures = self._process(rows)
@@ -541,35 +664,45 @@ class Runner:
         A database error is not caught: it aborts the batch (§5.2 step 6).
         """
         p = self.plan
-        if target._is_tenant_bound():
-            # The frontend has no way to learn the row's tenant, and a row is
-            # never written under a context that was guessed (§6.3, #244).
-            return "CONTEXT_UNAVAILABLE"
         try:
-            if source is None:
-                # In place: the adapter's own permissive read, applied to the
-                # bytes this batch selected and locked.
-                value = target.from_db_value(
-                    row.stored[i], None, self._connection)
-            else:
-                names = [s.name for _, s in p.targets if s is not None]
-                record = legacy.get(row.key)
-                if record is None:
-                    return "INTERNAL"
-                value = record[names.index(source.name)]
-            obj = p.model(pk=row.key)
-            setattr(obj, target.attname, value)
-            # A savepoint, because Django's `bulk_update` runs in
-            # `atomic(savepoint=False)`: without one, a refusal raised while
-            # the statement is compiled would mark the whole batch for
-            # rollback.
-            with transaction.atomic(using=p.alias):
-                updated = self._queryset.bulk_update([obj], [target.name])
-            return None if updated == 1 else "INTERNAL"
+            if not target._is_tenant_bound():
+                return self._write(row, i, target, source, legacy)
+            # The row's own tenant, from the row's own column (§5.5). A
+            # tenant the process already had bound is never used: one
+            # carried over from elsewhere is a guess (§6.3).
+            tenant = cursor.tenant_bytes(p.tenant_kind or "", row.tenant)
+            if tenant is None:
+                return "CONTEXT_UNAVAILABLE"
+            with tenant_scope(tenant):
+                return self._write(row, i, target, source, legacy)
         except DatabaseError:
             raise
         except Exception as e:  # noqa: BLE001 - a value failure, by its code
             return _error_code(e)
+
+    def _write(self, row: cursor.Row, i: int, target: Any, source: Any,
+               legacy: dict[Any, tuple[Any, ...]]) -> str | None:
+        p = self.plan
+        if source is None:
+            # In place: the adapter's own permissive read, applied to the
+            # bytes this batch selected and locked.
+            value = target.from_db_value(
+                row.stored[i], None, self._connection)
+        else:
+            names = [s.name for _, s in p.targets if s is not None]
+            record = legacy.get(row.key)
+            if record is None:
+                return "INTERNAL"
+            value = record[names.index(source.name)]
+        obj = p.model(pk=row.key)
+        setattr(obj, target.attname, value)
+        # A savepoint, because Django's `bulk_update` runs in
+        # `atomic(savepoint=False)`: without one, a refusal raised while
+        # the statement is compiled would mark the whole batch for
+        # rollback.
+        with transaction.atomic(using=p.alias):
+            updated = self._queryset.bulk_update([obj], [target.name])
+        return None if updated == 1 else "INTERNAL"
 
 
 def _error_code(e: Exception) -> str:
