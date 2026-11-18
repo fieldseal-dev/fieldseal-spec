@@ -338,6 +338,18 @@ def plan_for(run: state.Run, models: list[Any]) -> Plan:
     # tenant-bound now takes the run's, and with none recorded at all it has
     # nothing to take, which is itself the difference.
     shared = next((m for _, m in entries if m is not None), None)
+    # The runner reads one tenant per row for every target, so a stored run
+    # whose columns name two tenant columns (another frontend's, or a hand
+    # edit) would have its later columns written under the first one's.
+    split = sorted(f"columns[{t.column_uuid.hex()}].tenant"
+                   for t, own in entries
+                   if own is not None and own != shared)
+    if split:
+        raise BackfillError(
+            f"run {run.run_id} cannot be resumed: its columns record more "
+            "than one tenant column, and this frontend binds one tenant "
+            "column per run, so it would write them under the first one's "
+            f"tenant (PROCEDURE §5.5). Differs: {', '.join(split)}.")
     for target, own in entries:
         uuid_hex = target.column_uuid.hex()
         if not target._is_tenant_bound():
@@ -385,7 +397,7 @@ def check_earlier_runs(p: Plan) -> list[str]:
     warning and not a refusal, which would block every such column for good.
     """
     warnings: list[str] = []
-    bound = [f.name for f, _ in p.targets if f._is_tenant_bound()]
+    bound = [f for f, _ in p.targets if f._is_tenant_bound()]
     live = {c["column_uuid"]: c for c in p.config["columns"]}
     connection = connections[p.alias]
     for run in state.converting_runs(connection, p.config["table_uuid"]):
@@ -400,25 +412,29 @@ def check_earlier_runs(p: Plan) -> list[str]:
                 "that run did (PROCEDURE §4, §12). Nothing was written.")
         compared = (("indexes",) if run.procedure_version == 1
                     else ("indexes", "tenant"))
-        if run.procedure_version == 1 and bound:
-            warnings.append(
-                f"warning: run {run.run_id} ({run.status}) is a procedure "
-                f"version 1 run that converted {run.values_written} values "
-                "of this table, and this run covers the tenant-bound "
-                f"column(s) {', '.join(bound)}. A version 1 run recorded no "
-                "tenant, so the tool cannot tell whether that run wrote "
-                "these columns without one. Values it wrote that way cannot "
-                "be read under the application's tenant binding, and this "
-                "run does not rewrite them (PROCEDURE §12).")
         try:
             stored = json.loads(run.config)
             columns = stored["columns"]
-        except (ValueError, TypeError, KeyError):
+            covered = {c.get("column_uuid") for c in columns}
+        except (ValueError, TypeError, KeyError, AttributeError):
             raise BackfillError(
                 f"refused: run {run.run_id} converted values of this table "
                 "and its recorded configuration cannot be read, so whether "
                 "this run would write what it did cannot be checked "
                 "(PROCEDURE §4). Nothing was written.") from None
+        # Only the tenant-bound columns that run covered: one it never
+        # covered, it cannot have written.
+        named = [f.name for f in bound if f.column_uuid.hex() in covered]
+        if run.procedure_version == 1 and named:
+            warnings.append(
+                f"warning: run {run.run_id} ({run.status}) is a procedure "
+                f"version 1 run that converted {run.values_written} values "
+                "of this table, and covered the tenant-bound column(s) "
+                f"{', '.join(named)}, which this run covers too. A version 1 "
+                "run recorded no tenant, so the tool cannot tell whether that "
+                "run wrote these columns without one. Values it wrote that "
+                "way cannot be read under the application's tenant binding, "
+                "and this run does not rewrite them (PROCEDURE §12).")
         members: list[str] = []
         for column in columns:
             uuid_hex = column.get("column_uuid")

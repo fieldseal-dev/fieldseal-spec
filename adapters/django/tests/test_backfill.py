@@ -2402,3 +2402,80 @@ def test_a_version_1_run_warns_nothing_when_no_target_is_tenant_bound(shape):
     assert error is None
     assert "warning:" not in out
     assert json.loads(out.splitlines()[-1])["status"] == "complete"
+
+
+def test_a_version_1_run_warns_only_for_columns_it_covered(permissive):
+    """The stored version-1 `columns` list the run's columns. A tenant-bound
+    column of the new run that the version-1 run never covered is one it
+    cannot have written, so it is not named (PROCEDURE §12)."""
+    run_id = killed_tenant_run()
+    _as_version_1(run_id)
+    document = json.loads(state.load_run(connection, run_id).config)
+    for column in document["columns"]:
+        column["column_uuid"] = "0" * 32  # a column of another declaration
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, config.digest(text), run_id])
+
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    assert error is None
+    assert "warning:" not in out
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+
+
+@isolate_apps("tests")
+def test_resume_of_a_run_recording_two_tenant_columns_is_refused(permissive):
+    """This frontend binds one tenant column per run and reads one tenant per
+    row for every target. A stored run whose columns name two (another
+    frontend's, or a hand edit) is refused, naming the column whose tenant
+    is not the first one's, rather than writing it under the first's."""
+    from django.db import models
+
+    from fieldseal_django import BlindIndex
+
+    run_id = killed_tenant_run()
+    second = "018f3c2e00007000800000000000ff01"
+    document = json.loads(state.load_run(connection, run_id).config)
+    extra = dict(document["columns"][0], column_uuid=second, indexes=[],
+                 tenant={"column": "region", "type": "int"})
+    document["columns"] = sorted(document["columns"] + [extra],
+                                 key=lambda c: c["column_uuid"])
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, config.digest(text), run_id])
+    before = tenant_snapshot(run_id)
+    alt = type("TenantInPlace", (models.Model,), {
+        "__module__": "tests.models",
+        "tenant": models.IntegerField(null=True),
+        "region": models.IntegerField(null=True),
+        "secret": Encrypted(
+            models.CharField(max_length=100),
+            column_uuid="018f3c2e-0000-7000-8000-0000000000f1", null=True,
+            index=BlindIndex(
+                suite_id=0xFF01, index_id="exact", idf="hmac-sha512",
+                normalize="nfc-casefold-v1", truncate_bits=15,
+                projected_population=100_000)),
+        "secret_bidx": Encrypted.index_column("secret"),
+        "other": Encrypted(models.CharField(max_length=100),
+                           column_uuid=str(uuid.UUID(second)), null=True),
+        "fieldseal": FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-0000000000f0",
+            tenant_bound=True),
+    })
+
+    with pytest.raises(BackfillError) as refused:
+        encrypt.plan_for(state.load_run(connection, run_id), [alt])
+
+    message = str(refused.value)
+    assert f"columns[{second}].tenant" in message
+    assert f"columns[{_tenant_uuid_hex()}].tenant" not in message
+    assert tenant_snapshot(run_id) == before
