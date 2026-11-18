@@ -53,7 +53,9 @@ from tests.models import (
     LegacyTwoColumn,
     LegacyUuidKey,
     Patient,
+    TenantBinaryInPlace,
     TenantInPlace,
+    TenantTextInPlace,
     TenantTwoColumn,
     TenantUuidInPlace,
 )
@@ -2059,14 +2061,12 @@ def test_tenant_rendering_of_each_type():
     one = uuid.UUID("0123456789abcdef0123456789ABCDEF")
     hyphenated = b"01234567-89ab-cdef-0123-456789abcdef"
 
-    # text: UTF-8; empty is present and empty, not NULL.
+    # text: UTF-8. Empty has no tenant (below).
     assert cursor.tenant_bytes("text", "t\u00e9nant") == b"t\xc3\xa9nant"
-    assert cursor.tenant_bytes("text", "") == b""
     # binary: the stored bytes, whatever the driver wraps them in.
     for stored in (b"\x00\xff\x10", bytearray(b"\x00\xff\x10"),
                    memoryview(b"\x00\xff\x10")):
         assert cursor.tenant_bytes("binary", stored) == b"\x00\xff\x10"
-    assert cursor.tenant_bytes("binary", memoryview(b"")) == b""
     # int: decimal ASCII, a sign only when negative, no leading zeros.
     assert cursor.tenant_bytes("int", 42) == b"42"
     assert cursor.tenant_bytes("int", -7) == b"-7"
@@ -2080,6 +2080,26 @@ def test_tenant_rendering_of_each_type():
     # NULL has no tenant, for every type.
     for kind in ("text", "binary", "int", "uuid"):
         assert cursor.tenant_bytes(kind, None) is None
+
+
+def test_an_empty_tenant_is_no_tenant():
+    """§5.5: a provider may map `b""` to the scope of no tenant, so an
+    empty text or binary value fails closed like NULL."""
+    assert cursor.tenant_bytes("text", "") is None
+    for empty in (b"", bytearray(), memoryview(b"")):
+        assert cursor.tenant_bytes("binary", empty) is None
+
+
+def test_uuid_text_is_32_hex_or_canonical_and_nothing_else():
+    good = "0123456789abcdef0123456789abcdef"
+    assert cursor.tenant_bytes("uuid", good) is not None
+    for bad in ("0x0123456789abcdef0123456789abcd",
+                " 0123456789abcdef0123456789abcde",
+                "urn:0123456789abcdef0123456789abcdef",
+                "0123-4567-89ab-cdef0123-456789abcdef",
+                "{01234567-89ab-cdef-0123-456789abcdef}",
+                good + "\n", good[:-1] + "g"):
+        assert cursor.tenant_bytes("uuid", bad) is None, bad
 
 
 def test_a_stored_value_of_the_wrong_type_has_no_tenant():
@@ -2294,3 +2314,91 @@ def test_resume_with_the_tenant_column_now_encrypted_or_unsupported_is_refused(
         encrypt.plan_for(run, [_alt_tenant_model(field)])
 
     assert str(refused.value).count(member) == 1
+
+
+# -- text and binary tenant columns, end to end (BF-23) ------------------------
+
+@pytest.mark.parametrize("model, one, two, empty", [
+    (TenantTextInPlace, "acme", "Zürich", ""),
+    (TenantBinaryInPlace, b"\x00\x01\xfe", b"\xff\x10", b""),
+], ids=["text", "binary"])
+def test_bf23_a_text_or_binary_tenant_is_written_as_stored(
+        permissive, model, one, two, empty):
+    """`str` is its UTF-8 bytes and bytes are as stored (§5.5). NULL and
+    empty tenants are failures with the bytes unchanged."""
+    shared = "Shared-Value"
+    rows = [(one, shared), (two, shared), (one, "only-one"),
+            (two, "only-two"), (None, "nobody"), (empty, "empty-tenant")]
+    keys = []
+    for tenant, value in rows:
+        obj = model.objects.create(tenant=tenant)
+        plant(model, obj.pk, "secret", value.encode())
+        keys.append(obj.pk)
+    unchanged = {pk: raw(model, pk, "secret") for pk in keys[4:]}
+
+    outcome = go(model, columns=["secret"], tenant="tenant")
+
+    assert outcome.run.values_written == 4
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 2}
+    for pk, stored in unchanged.items():
+        assert raw(model, pk, "secret") == stored
+        assert raw(model, pk, "secret_bidx") is None
+    for (tenant, value), pk in zip(rows[:4], keys[:4], strict=True):
+        other = two if tenant == one else one
+        with tenant_scope(tenant):
+            assert model.objects.get(pk=pk).secret == value
+            assert [o.pk for o in model.objects.filter(secret=value)] == [pk]
+        with tenant_scope(other):
+            with pytest.raises(FieldsealError):
+                model.objects.get(pk=pk)
+            assert pk not in [o.pk for o in model.objects.filter(secret=value)]
+
+
+# -- §12: the version-1 warning ------------------------------------------------
+
+def _as_version_1(run_id):
+    document = json.loads(state.load_run(connection, run_id).config)
+    document["procedure_version"] = 1
+    for column in document["columns"]:
+        del column["tenant"]
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s, "
+            "procedure_version = 1 WHERE run_id = %s",
+            [text, config.digest(text), run_id])
+    assert state.abandon(connection, run_id)
+
+
+def test_a_version_1_run_that_converted_values_warns_for_a_tenant_bound_column(
+        permissive):
+    run_id = killed_tenant_run()
+    _as_version_1(run_id)
+
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    assert error is None
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+    (warning,) = [ln for ln in out.splitlines() if ln.startswith("warning:")]
+    assert run_id in warning and "secret" in warning
+    assert "cannot tell whether" in warning and "PROCEDURE §12" in warning
+
+
+def test_a_version_1_run_warns_nothing_when_no_target_is_tenant_bound(shape):
+    run_id = _killed_run(shape)
+    _as_version_1(run_id)
+    args = [f"--source={k}={v}" for k, v in shape.sources.items()]
+
+    out, _, error = command(
+        "encrypt", f"tests.{shape.model.__name__}", "--columns",
+        ",".join(shape.columns), "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
+
+    assert error is None
+    assert "warning:" not in out
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"

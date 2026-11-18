@@ -15,7 +15,7 @@ that process (spec §2.2).
 A tenant-bound column is written under each row's own tenant, which the
 procedure takes from a column of the row (§5.5): `encrypt` takes it with
 `--tenant FIELD`, and `resume` reads it from the stored run. On PostgreSQL, an
-in-place run over a `binary` column also needs
+in-place run over any column also needs
 `--acknowledge-in-place-conversion` (PROCEDURE §6.1, §9 item 6), since a
 Django `AlterField` into `bytea` can rewrite legacy text without an error and
 the run cannot see the original.
@@ -146,7 +146,7 @@ class Command(BaseCommand):  # type: ignore[misc]
                     f"refused: the table holds rows and {' and '.join(missing)}"
                     f" {'was' if len(missing) == 1 else 'were'} not given. "
                     "Nothing was written.")
-        run = encrypt.new_run(plan)
+        run = encrypt.new_run(plan, warn=self.stdout.write)
         self._run(encrypt.Runner(plan, run, limits), run, limits)
 
     def _resume(self, options: dict[str, Any]) -> None:

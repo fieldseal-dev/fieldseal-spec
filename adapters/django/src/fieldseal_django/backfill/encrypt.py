@@ -120,14 +120,16 @@ def plan(model: Any, columns: list[str] | None,
     §5.5). This frontend takes one per run and applies it to every
     tenant-bound target.
     """
-    return _plan(model, columns, sources, tenant, strict=True)
+    return _plan(model, columns, sources, tenant)
 
 
 def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
-          tenant: str | None, *, strict: bool) -> Plan:
-    """`plan`; with `strict` False, the §5.5 start refusals that say a
-    tenant is missing or unused are left to the resume's comparison, which
-    names the member (`plan_for`)."""
+          tenant: str | None,
+          members: dict[str, dict[str, str] | None] | None = None) -> Plan:
+    """`plan`. A resume passes `members`, each column's `tenant` member as
+    `plan_for` computed it from the live fields; the start refusals that say
+    a tenant is missing or unused are then not made, because the comparison
+    names the member."""
     name = model.__name__
     meta = getattr(model, "fieldseal", None)
     if meta is None:
@@ -189,7 +191,7 @@ def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
 
     tenant_field, tenant_kind = _tenant_field(model, tenant)
     bound = [f.name for f, _ in targets if f._is_tenant_bound()]
-    if strict:
+    if members is None:
         if bound and tenant_field is None:
             raise BackfillError(
                 f"{', '.join(bound)} of {name} is tenant-bound, and this run "
@@ -202,10 +204,13 @@ def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
                 f"--tenant {tenant}: no column of this run is tenant-bound, "
                 "and a column that is not tenant-bound has no tenant column "
                 "(PROCEDURE §5.5).")
-    if tenant_field is not None and not bound:
+    if members is None:
+        recorded = (None if tenant_field is None else
+                    {"column": tenant_field.column, "type": tenant_kind})
+        members = {f.column_uuid.hex(): recorded if f._is_tenant_bound()
+                   else None for f, _ in targets}
+    if not any(members.values()):
         tenant_field = tenant_kind = None
-    recorded = (None if tenant_field is None else
-                {"column": tenant_field.column, "type": tenant_kind})
 
     pk, key_type = cursor.key_field(model)
     document = config.build(
@@ -214,7 +219,7 @@ def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
         write_suite=client.write_suite,
         cursor=[(pk.column, key_type)],
         targets=[(f, None if s is None else s.column,
-                  recorded if f._is_tenant_bound() else None)
+                  members[f.column_uuid.hex()])
                  for f, s in targets],
         indexes=client.indexes,
     )
@@ -292,52 +297,59 @@ def plan_for(run: state.Run, models: list[Any]) -> Plan:
                if isinstance(f, Encrypted)}
     by_column = {f.column: f for f in model._meta.concrete_fields}
     columns, sources, gone = [], {}, []
-    tenant_columns: list[str] = []
+    members: dict[str, dict[str, str] | None] = {}
+    unplaced: list[str] = []
+    tenant_name: str | None = None
+    entries: list[tuple[Any, dict[str, str] | None]] = []
     for entry in stored["columns"]:
-        target = by_uuid.get(entry["column_uuid"])
+        uuid_hex = entry["column_uuid"]
+        target = by_uuid.get(uuid_hex)
         if target is None:
-            gone.append(f"columns[{entry['column_uuid']}]")
+            gone.append(f"columns[{uuid_hex}]")
             continue
         columns.append(target.name)
         if entry["source"] is not None:
             source = by_column.get(entry["source"])
             if source is None:
-                gone.append(f"columns[{entry['column_uuid']}].source")
+                gone.append(f"columns[{uuid_hex}].source")
                 continue
             sources[target.name] = source.name
         recorded = entry.get("tenant")
-        if recorded is not None:
-            # The tenant column is the run's own, as `source` is: never the
-            # operator's (PROCEDURE §5.5), so a resume cannot rebind it.
-            column = by_column.get(recorded.get("column"))
-            member = f"columns[{entry['column_uuid']}].tenant"
+        if recorded is None:
+            entries.append((target, None))
+            continue
+        # The tenant column is the run's own, as `source` is: never the
+        # operator's (PROCEDURE §5.5), so a resume cannot rebind it.
+        column = by_column.get(recorded.get("column"))
+        try:
             if column is None:
-                gone.append(member)
-            else:
-                try:
-                    cursor.tenant_type(column)
-                except BackfillError:
-                    # Encrypted now, or of a type §5.5 does not take: a
-                    # changed member, named as such.
-                    gone.append(member)
-                else:
-                    tenant_columns.append(column.name)
+                raise BackfillError("gone")
+            kind = cursor.tenant_type(column)
+        except BackfillError:
+            # Gone, `Encrypted` now, or of a type §5.5 does not take: a
+            # changed member, named as such.
+            gone.append(f"columns[{uuid_hex}].tenant")
+            continue
+        tenant_name = tenant_name or column.name
+        entries.append((target, {"column": column.column, "type": kind}))
     if gone:
         raise BackfillError(_refusal(run.run_id, gone))
-    # One tenant field per run. Were the stored run to name two, the live
-    # build applies the first to every column, and the comparison names the
-    # column whose recorded tenant differs.
-    live = _plan(model, columns, sources,
-                 tenant_columns[0] if tenant_columns else None,
-                 strict=False)
-    differing = config.differences(stored, live.config)
-    # A column tenant-bound now that was recorded without a tenant has no
-    # tenant to rebuild; the live document says null, as the stored one does.
-    for entry in stored["columns"]:
-        field = by_uuid[entry["column_uuid"]]
-        if entry.get("tenant") is None and field._is_tenant_bound():
-            differing.append(f"columns[{entry['column_uuid']}].tenant")
-    differing = sorted(set(differing))
+    # One tenant field per run: a column recorded without a tenant that is
+    # tenant-bound now takes the run's, and with none recorded at all it has
+    # nothing to take, which is itself the difference.
+    shared = next((m for _, m in entries if m is not None), None)
+    for target, own in entries:
+        uuid_hex = target.column_uuid.hex()
+        if not target._is_tenant_bound():
+            members[uuid_hex] = None
+        elif own or shared:
+            members[uuid_hex] = own or shared
+        else:
+            members[uuid_hex] = None
+            unplaced.append(f"columns[{uuid_hex}].tenant")
+    live = _plan(model, columns, sources, tenant_name, members)
+    differing = sorted(set(config.differences(stored, live.config)
+                           + unplaced))
     if differing or live.config_hash != run.config_hash:
         raise BackfillError(_refusal(run.run_id, differing or ["config"]))
     return live
@@ -351,7 +363,7 @@ def _refusal(run_id: str, members: list[str]) -> str:
             + config.unrecorded_note(members))
 
 
-def check_earlier_runs(p: Plan) -> None:
+def check_earlier_runs(p: Plan) -> list[str]:
     """PROCEDURE §4, *On a new `encrypt` run*: refuse a new run whose index
     declarations or tenant columns differ from those of an earlier run that
     converted values.
@@ -366,7 +378,14 @@ def check_earlier_runs(p: Plan) -> None:
     version 2, each shared column's `indexes` and `tenant`; version 1, which
     recorded no `tenant`, its `indexes` only; any other version cannot be
     compared, and the new run is refused.
+
+    Returns the warnings to print (§12): a version-1 run that converted
+    values cannot say whether it wrote a column that is tenant-bound now
+    without a tenant, so each such run is named with those columns. It is a
+    warning and not a refusal, which would block every such column for good.
     """
+    warnings: list[str] = []
+    bound = [f.name for f, _ in p.targets if f._is_tenant_bound()]
     live = {c["column_uuid"]: c for c in p.config["columns"]}
     connection = connections[p.alias]
     for run in state.converting_runs(connection, p.config["table_uuid"]):
@@ -381,6 +400,16 @@ def check_earlier_runs(p: Plan) -> None:
                 "that run did (PROCEDURE §4, §12). Nothing was written.")
         compared = (("indexes",) if run.procedure_version == 1
                     else ("indexes", "tenant"))
+        if run.procedure_version == 1 and bound:
+            warnings.append(
+                f"warning: run {run.run_id} ({run.status}) is a procedure "
+                f"version 1 run that converted {run.values_written} values "
+                "of this table, and this run covers the tenant-bound "
+                f"column(s) {', '.join(bound)}. A version 1 run recorded no "
+                "tenant, so the tool cannot tell whether that run wrote "
+                "these columns without one. Values it wrote that way cannot "
+                "be read under the application's tenant binding, and this "
+                "run does not rewrite them (PROCEDURE §12).")
         try:
             stored = json.loads(run.config)
             columns = stored["columns"]
@@ -413,6 +442,7 @@ def check_earlier_runs(p: Plan) -> None:
                 + " Changing an index declaration over a converted table is "
                 "a new index (spec §7.8), which this tool does not build. "
                 "Nothing was written.")
+    return warnings
 
 
 def table_has_rows(p: Plan) -> bool:
@@ -423,13 +453,17 @@ def table_has_rows(p: Plan) -> bool:
         return cur.fetchone() is not None
 
 
-def new_run(p: Plan) -> state.Run:
+def new_run(p: Plan, warn: Callable[[str], None] | None = None) -> state.Run:
     """Insert the run row. Raises `state.RunHeld` if the table is taken.
 
     Refuses first, inserting nothing, if an earlier run converted values of
-    the table under other index declarations (`check_earlier_runs`).
+    the table under other index declarations or another tenant column
+    (`check_earlier_runs`). Its warnings, about a version-1 run (§12), go to
+    `warn` before the run row is inserted.
     """
-    check_earlier_runs(p)
+    for line in check_earlier_runs(p):
+        if warn is not None:
+            warn(line)
     at = state.now()
     run = state.Run(
         run_id=str(uuid.uuid4()),

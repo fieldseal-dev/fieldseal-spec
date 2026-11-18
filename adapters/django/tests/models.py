@@ -422,3 +422,47 @@ class TenantTwoColumn(models.Model):
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_TWO_COLUMN,
                               tenant_bound=True)
+
+
+TABLE_TENANT_TEXT = "018f3c2e-0000-7000-8000-0000000000f6"
+COL_TENANT_TEXT_SECRET = "018f3c2e-0000-7000-8000-0000000000f7"
+TABLE_TENANT_BINARY = "018f3c2e-0000-7000-8000-0000000000fa"
+COL_TENANT_BINARY_SECRET = "018f3c2e-0000-7000-8000-0000000000fb"
+
+
+def _tenant_secret(column_uuid: str) -> "Encrypted":
+    return Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=column_uuid,
+        null=True,
+        index=BlindIndex(
+            suite_id=0xFF01,
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+
+
+class TenantTextInPlace(models.Model):
+    """`TenantInPlace` with a text tenant column (UTF-8 bytes, §5.5)."""
+
+    tenant = models.CharField(max_length=50, null=True)
+    secret = _tenant_secret(COL_TENANT_TEXT_SECRET)
+    secret_bidx = Encrypted.index_column("secret")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_TEXT,
+                              tenant_bound=True)
+
+
+class TenantBinaryInPlace(models.Model):
+    """`TenantInPlace` with a binary tenant column (bytes as stored)."""
+
+    tenant = models.BinaryField(null=True)
+    secret = _tenant_secret(COL_TENANT_BINARY_SECRET)
+    secret_bidx = Encrypted.index_column("secret")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_BINARY,
+                              tenant_bound=True)
