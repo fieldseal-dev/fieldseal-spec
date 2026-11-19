@@ -178,12 +178,13 @@ not the target matrix in `docs/12` §6.
 | `on_unindexable="refuse"` | ✅ field-level `ValidationError`, §10.2 wording | `TestRefuse`, `TestTheMessage` |
 | `on_unindexable="bucket"` | ✅ row saves, stays findable by its own value | `TestBucket` |
 | Two different unindexable values | ✅ do not match each other (§7.5 does the work) | `test_two_different_unindexable_values_do_not_match_each_other` |
-| An `AlterField` that leaves an `Encrypted` column as it is (an index's suite, the inner field, `column_uuid`), or an `EncryptedIndex` column (its `source`, on a rename) | ✅ no SQL on SQLite and PostgreSQL (measured, Django 5.2.19 and 6.1.3); a change to `storage`, `null`, `unique` or `db_column` is still altered ([#283](https://github.com/fieldseal-dev/fieldseal-spec/issues/283)). ⚠️ A changed `column_uuid` or inner logical type applies silently ([#288](https://github.com/fieldseal-dev/fieldseal-spec/issues/288)) | `test_a_change_that_leaves_the_column_is_not_altered`, `test_renaming_the_indexed_field_does_not_alter_its_index_column`, `test_migrate_issues_no_sql_for_an_unchanged_column`, `test_a_rebuild_keeps_each_legacy_values_storage_class` |
+| An `AlterField` that leaves an `Encrypted` column as it is (an index's suite, the inner field, `column_uuid`), or an `EncryptedIndex` column (its `source`, on a rename) | ✅ no SQL on SQLite and PostgreSQL (measured, Django 5.2.19 and 6.1.3); a change to `storage`, `null`, `unique` or `db_column` is still altered ([#283](https://github.com/fieldseal-dev/fieldseal-spec/issues/283)). ⚠️ A changed `column_uuid`, inner logical type, `tenant_bound` or `storage` is refused by `migrate` since 2026-11-19, on every backend ([#288](https://github.com/fieldseal-dev/fieldseal-spec/issues/288)), see the next row but one; a change that keeps the logical type (`max_length`, `EmailField` to `CharField`) and a change to `index` or `unindexable_noun` still pass | `test_a_change_that_leaves_the_column_is_not_altered`, `test_renaming_the_indexed_field_does_not_alter_its_index_column`, `test_migrate_issues_no_sql_for_an_unchanged_column`, `test_a_rebuild_keeps_each_legacy_values_storage_class` |
 | A plain `AlterField` that changes an `Encrypted` column's type to or from `bytea`, on PostgreSQL | 🛑 `migrate` refuses the plan before any DDL: Django's cast would rewrite or refuse the legacy text, or write bytes as hex text, forwards or on rollback, through squashed and merged graphs ([#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252)) | `test_migrate_refuses_a_plain_alter_field_into_bytea_before_any_ddl`, `test_migrate_refuses_a_bytea_column_into_base64`, `test_rolling_back_a_merged_branch_is_refused`, `test_rolling_back_to_a_migration_a_squash_replaced` |
+| An `AlterField` between two `Encrypted` declarations that changes the `column_uuid`, the inner field's spec §3.6 logical type, `tenant_bound` or `storage` | 🛑 `migrate` refuses the plan before any DDL, on every backend, forwards or unapplied, and under `--fake`; the message names the app, migration, model and field and the old and new value. A `SeparateDatabaseAndState` whose `state_operations` carry the `AlterField` passes, as the operator's statement that the values were re-encrypted another way; the two-column shape (`docs/12` §7) is the other route ([#288](https://github.com/fieldseal-dev/fieldseal-spec/issues/288), 2026-11-19). A fresh database, test databases included, runs the whole history and so refuses a historical change of this kind although the table is empty; wrap it in a `SeparateDatabaseAndState` with the `AlterField` in `state_operations`, or squash (the optimizer folds it into the `CreateModel`; pinned for that case). The refusal guards `migrate` only: a declaration shipped without running `migrate`, or without a migration, is not stopped. `EncryptedIndex` and `BlindIndex` changes are not refused ([#303](https://github.com/fieldseal-dev/fieldseal-spec/issues/303); `docs/12` §6) | `test_migrate_refuses_the_change_before_any_ddl`, `test_migrate_refuses_unapplying_the_change`, `test_migrate_fake_is_refused_too`, `test_storage_base64_to_binary_is_refused_too`, `test_the_escape_hatch_state_operations_let_the_change_through`, `test_a_fresh_database_is_refused_for_a_history_with_an_identity_change`, `test_a_value_written_under_one_tenant_bound_setting_does_not_read_under_the_other` |
 | `ConvertToEncrypted` on PostgreSQL | ✅ a `CharField`/`TextField` value becomes its UTF-8 bytes, and back; 🛑 any other inner type | `test_convert_stores_the_values_utf8_bytes_and_undoes_it`, `test_convert_refuses_a_non_string_column_on_postgres` |
 | `manage.py fieldseal_gen_uuids` | ✅ prints surrogates; never edits source | `tests/test_gen_uuids.py` |
 | `manage.py fieldseal_warm` | ✅ primes data **and** index keys (spec §5.2) | `tests/test_warm.py` |
-| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v2, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-27 (since [#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244): BF-23 to BF-26, tenant-bound columns, and BF-27, the in-place conversion acknowledgement; since [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281): BF-21, a resume across a changed declared suite, and BF-22, a new run after an abandoned one, refused when an earlier run converted values under other index declarations); two-column shape for every column, in place for `binary` storage, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)), and for `base64` storage, where legacy text reads back as stored and a non-string column converts only §3.6 canonical text ([#245](https://github.com/fieldseal-dev/fieldseal-spec/issues/245)); on Postgres, in place on a `binary` column needs the column converted by `ConvertToEncrypted` (string inner fields only; every other type uses two columns, [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252)), and a new in-place run on Postgres, `binary` or `base64`, on a table with rows, needs `--acknowledge-in-place-conversion` (PROCEDURE §6.1, §9 item 6) | `tests/test_backfill.py` (`test_bfNN_…`) |
+| `manage.py fieldseal_backfill` (`init`, `encrypt`, `resume`, `abandon`) | ✅ `tools/backfill/PROCEDURE.md` v3, scenarios BF-01 to BF-10, BF-14, BF-16 to BF-31 (since [#291](https://github.com/fieldseal-dev/fieldseal-spec/issues/291): BF-28 to BF-31, per-column counts in a third state table, `fieldseal_backfill_columns`, so a column an earlier run covered and never wrote no longer blocks a new run (a new run is refused first while any run on the table is `running`, and a version-3 run whose column counts do not add up is compared per run with a warning), and a version-2 run is still compared per run; since [#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244): BF-23 to BF-26, tenant-bound columns, and BF-27, the in-place conversion acknowledgement; since [#281](https://github.com/fieldseal-dev/fieldseal-spec/issues/281): BF-21, a resume across a changed declared suite, and BF-22, a new run after an abandoned one, refused when an earlier run converted values under other index declarations); two-column shape for every column, in place for `binary` storage, including SQLite legacy values in the storage class `AlterField` leaves ([#251](https://github.com/fieldseal-dev/fieldseal-spec/issues/251)), and for `base64` storage, where legacy text reads back as stored and a non-string column converts only §3.6 canonical text ([#245](https://github.com/fieldseal-dev/fieldseal-spec/issues/245)); on Postgres, in place on a `binary` column needs the column converted by `ConvertToEncrypted` (string inner fields only; every other type uses two columns, [#252](https://github.com/fieldseal-dev/fieldseal-spec/issues/252)), and a new in-place run on Postgres, `binary` or `base64`, on a table with rows, needs `--acknowledge-in-place-conversion` (PROCEDURE §6.1, §9 item 6) | `tests/test_backfill.py` (`test_bfNN_…`) |
 | `fieldseal_backfill` on a tenant-bound column | ✅ with `--tenant FIELD`, a column of the same row: each value is written under its own row's tenant, rendered as PROCEDURE §5.5 says (an integer or UUID key as `str()` of it), never under one the process had bound; a NULL or empty tenant, or one stored in another storage class than the field's type, is `CONTEXT_UNAVAILABLE`; a tenant that is not in the row (a schema or database per tenant) cannot be backfilled ([#244](https://github.com/fieldseal-dev/fieldseal-spec/issues/244)). All four §5.5 types end to end (int, uuid, text, binary) | `test_bf23_…` to `test_bf26_…`, `test_tenant_rendering_of_each_type`, `test_an_empty_tenant_is_no_tenant`, `test_uuid_text_is_32_hex_or_canonical_and_nothing_else` |
 | `fieldseal_backfill` `rotate`, `verify` | ❌ not built: `rotate` and BF-11, BF-12, BF-13, BF-15k are blocked on [#241](https://github.com/fieldseal-dev/fieldseal-spec/issues/241); `verify` (BF-15) is next | — |
 | `FIELDSEAL["WARM_ON_READY"]` | ✅ opt-in; warns rather than dying | `TestReadyHook` |
@@ -342,7 +343,11 @@ so that when the cut-over to `strict` waits on a count of zero
 
 ```python
 from django.dispatch import receiver
-from fieldseal_django.signals import plaintext_read, plaintext_read_counts
+from fieldseal_django.signals import (
+    plaintext_read,
+    plaintext_read_counts,
+    plaintext_read_receiver_failures,
+)
 
 @receiver(plaintext_read)
 def count_plaintext(sender, field, **kwargs):
@@ -350,6 +355,7 @@ def count_plaintext(sender, field, **kwargs):
                       tags={"model": sender._meta.label, "field": field})
 
 plaintext_read_counts()  # {("clinic.Patient", "email"): 3, ...}
+plaintext_read_receiver_failures()  # {"metrics.hooks.count_plaintext": 3}
 ```
 
 The signal's `sender` is the concrete model that owns the field
@@ -365,9 +371,29 @@ field cannot read it) still counts, as it does in the core, because it is a
 row still to migrate. A read the core refuses (`NOT_CIPHERTEXT` in `strict`,
 `UNKNOWN_FORMAT_VERSION`) does not count. `fieldseal_backfill`'s in-place
 reads count too, so choose a window for the cut-over that does not overlap a
-backfill run. A receiver that raises does not break the read: its exception
-is logged on the `fieldseal_django` logger, and the count has already been
-taken.
+backfill run. A receiver that raises does not break the read, and the count
+has already been taken. Its **first** failure for the client is logged on the
+`fieldseal_django` logger at ERROR with the traceback; later failures of that
+receiver are counted, not logged (a receiver that is down fails on every
+read, and a traceback per read is unbounded, #295). That is the only log:
+Django's own per-failure log on `django.dispatch` is switched off for this
+signal (a private `Signal` subclass overriding `_log_robust_failure`; a test
+fails if Django renames it), which also keeps a receiver with no
+`__qualname__`, such as a `functools.partial`, from breaking the read.
+"First" is per receiver object while it lives (held weakly, so a freed
+receiver is forgotten): two instances of one class are logged once each.
+`plaintext_read_receiver_failures()` returns `{receiver name: failures}` for
+the current client, the logged first failure included. The name is
+`"{module}.{qualname}"` of the receiver function (of the function a
+`functools.partial` wraps), or of the receiver's type for a callable
+instance; never its `repr`, which can carry a secret or raise. Receivers that
+share a name are summed under it. A receiver that has not failed is absent.
+Like the counts it is per client and per process: a rebuilt client logs a
+failing receiver again. A receiver that raises does not break the read for
+synchronous receivers and for `async def` receivers called outside a running
+event loop; from a thread with a running loop, an `async def` receiver makes
+Django's own `send_robust` raise `RuntimeError` (AsyncToSync; reproduced on
+Django 6.1.3), which is not caught.
 
 **The counts are per process**, like the core's. A `manage.py shell` opened
 to check the gate has its own client and reads `{}`, and each worker of a

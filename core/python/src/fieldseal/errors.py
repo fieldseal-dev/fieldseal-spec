@@ -24,7 +24,27 @@ class FieldsealError(Exception):
 
 
 class FieldsealWarning(UserWarning):
+    """What the client warns about (spec §10.3, §8; docs/09 §2 `on_warning`).
+
+    A `UserWarning` subclass, so the default route is `warnings.warn` and the
+    standard filters apply. It is also what `on_warning` is handed: one
+    instance per warning, with `.kind` naming it and `str(w)` the message.
+    Messages never carry key material or a plaintext (docs/10 §4).
+    """
+
+    kind: str = "WARNING"
+
+
+class ReadModeWarning(FieldsealWarning):
     """Spec §10.3: `permissive` and `readonly` MUST warn while active."""
+
+    kind = "READ_MODE_PASS_THROUGH"
+
+
+class StaticKeyProviderWarning(FieldsealWarning):
+    """Spec §8: `StaticKeyProvider` MUST warn outside test configuration."""
+
+    kind = "STATIC_KEY_PROVIDER"
 
 
 class UnknownFormatVersion(FieldsealError):
@@ -80,3 +100,13 @@ class InvalidArgument(FieldsealError):
     refusals (`unindexable-bucket`, and `refuse` since suite 0.8.0)."""
 
     code = "INVALID_ARGUMENT"
+
+
+class MetricsHookWarning(FieldsealWarning):
+    """A `metrics` hook raised and the client contained it (docs/10 §4).
+
+    Its own class so that silencing `ReadModeWarning` or
+    `StaticKeyProviderWarning` does not hide a metric that has stopped
+    counting; silencing the base `FieldsealWarning` hides all three."""
+
+    kind = "METRICS_HOOK_FAILED"

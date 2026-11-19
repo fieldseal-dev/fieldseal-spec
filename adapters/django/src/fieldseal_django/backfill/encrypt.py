@@ -110,6 +110,8 @@ class Outcome:
     process_rows: int
     process_seconds: float
     failures_by_code: dict[str, int] = field(default_factory=dict)
+    #: The run's per-column counts (§3), by `column_uuid`.
+    column_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def plan(model: Any, columns: list[str] | None,
@@ -144,6 +146,12 @@ def _plan(model: Any, columns: list[str] | None, sources: dict[str, str],
     if unknown:
         raise BackfillError(
             f"{', '.join(unknown)}: not an Encrypted column of {name}.")
+    repeated = sorted({c for c in names if names.count(c) > 1})
+    if repeated:
+        raise BackfillError(
+            f"{', '.join(repeated)}: named more than once in the columns of "
+            "this run. A column is converted once per run (PROCEDURE §3 keys "
+            "its counts by column).")
     stray = sorted(set(sources) - set(names))
     if stray:
         raise BackfillError(
@@ -386,12 +394,21 @@ def check_earlier_runs(p: Plan) -> list[str]:
     would walk around the refusal and leave index values under two
     declarations, or values under two tenants' contexts, in one column.
 
-    What is compared depends on the earlier run's `procedure_version` (§12):
-    version 2, each shared column's `indexes` and `tenant`; version 1, which
-    recorded no `tenant`, its `indexes` only; any other version cannot be
-    compared, and the new run is refused.
+    What is compared depends on the earlier run's `procedure_version` (§4,
+    §12): version 3, `indexes` and `tenant` of each shared column in which
+    that run's own per-column `values_written` is above zero, so a column it
+    covered but never wrote fixes nothing; version 2, which recorded no
+    per-column count, each shared column, per run; version 1, which recorded
+    no `tenant`, `indexes` only; any other version cannot be compared, and
+    the new run is refused.
 
-    Returns the warnings to print (§12): a version-1 run that converted
+    Only terminal runs are compared: `new_run` refuses first when any run is
+    `running` on the table, since that run could still write a column this
+    comparison skipped (§4).
+
+    Returns the warnings to print: a version-3 run whose per-column counts do
+    not add up to its own is compared per run and named (§4); and (§12) a
+    version-1 run that converted
     values cannot say whether it wrote a column that is tenant-bound now
     without a tenant, so each such run is named with those columns. It is a
     warning and not a refusal, which would block every such column for good.
@@ -401,15 +418,16 @@ def check_earlier_runs(p: Plan) -> list[str]:
     live = {c["column_uuid"]: c for c in p.config["columns"]}
     connection = connections[p.alias]
     for run in state.converting_runs(connection, p.config["table_uuid"]):
-        if run.procedure_version not in (1, PROCEDURE_VERSION):
+        if run.procedure_version not in (1, 2, PROCEDURE_VERSION):
             raise BackfillError(
                 f"refused: run {run.run_id} ({run.status}) converted "
                 f"{run.values_written} values of this table under procedure "
                 f"version {run.procedure_version}. This frontend implements "
                 f"version {PROCEDURE_VERSION} and compares earlier runs of "
-                "version 1 and of its own, so it cannot tell whether this "
-                "run would write the index values and the tenant contexts "
-                "that run did (PROCEDURE §4, §12). Nothing was written.")
+                f"versions 1, 2 and {PROCEDURE_VERSION}, so it cannot tell "
+                "whether this run would write the index values and the "
+                "tenant contexts that run did (PROCEDURE §4, §12). Nothing "
+                "was written.")
         compared = (("indexes",) if run.procedure_version == 1
                     else ("indexes", "tenant"))
         try:
@@ -422,6 +440,23 @@ def check_earlier_runs(p: Plan) -> list[str]:
                 "and its recorded configuration cannot be read, so whether "
                 "this run would write what it did cannot be checked "
                 "(PROCEDURE §4). Nothing was written.") from None
+        written: dict[str, int] | None = None
+        if run.procedure_version == PROCEDURE_VERSION:
+            per_column = state.load_column_counts(connection, run.run_id)
+            total = sum(c["values_written"] for c in per_column.values())
+            if total != run.values_written:
+                # Damage (a re-created columns table, a partial restore, a
+                # bug): which columns it wrote cannot be told, so it is
+                # compared per run, as a version-2 run is (§4).
+                warnings.append(
+                    f"warning: run {run.run_id} ({run.status}) recorded "
+                    f"{run.values_written} values written, but its "
+                    f"per-column counts add up to {total}. Which columns it "
+                    "wrote cannot be told, so it was compared per run, as a "
+                    "version 2 run is (PROCEDURE §4).")
+            else:
+                written = {u: c["values_written"]
+                           for u, c in per_column.items()}
         # Only the tenant-bound columns that run covered: one it never
         # covered, it cannot have written.
         named = [f.name for f in bound if f.column_uuid.hex() in covered]
@@ -438,6 +473,8 @@ def check_earlier_runs(p: Plan) -> list[str]:
         members: list[str] = []
         for column in columns:
             uuid_hex = column.get("column_uuid")
+            if written is not None and written.get(uuid_hex, 0) == 0:
+                continue  # covered, never written: it fixes nothing (§4)
             if uuid_hex in live:
                 members.extend(config.differences(
                     {k: column[k] for k in compared if k in column},
@@ -477,6 +514,13 @@ def new_run(p: Plan, warn: Callable[[str], None] | None = None) -> state.Run:
     (`check_earlier_runs`). Its warnings, about a version-1 run (§12), go to
     `warn` before the run row is inserted.
     """
+    # §4: before comparing anything. A `running` run can still write
+    # columns after a comparison passed over them, so only runs whose counts
+    # are frozen are compared. A start that slips in between this check and
+    # the insert is refused by the unique constraint.
+    holder = state.running_run(connections[p.alias], p.config["table_uuid"])
+    if holder is not None:
+        raise state.RunHeld(holder)
     for line in check_earlier_runs(p):
         if warn is not None:
             warn(line)
@@ -504,7 +548,8 @@ def new_run(p: Plan, warn: Callable[[str], None] | None = None) -> state.Run:
         completed_at=None,
         frontend=f"django/{__version__}",
     )
-    state.insert_run(connections[p.alias], run)
+    state.insert_run(connections[p.alias], run,
+                     [c["column_uuid"] for c in p.config["columns"]])
     return run
 
 
@@ -611,6 +656,8 @@ class Runner:
             process_seconds=seconds,
             failures_by_code=state.failures_by_code(
                 self._connection, self._run_id),
+            column_counts=state.load_column_counts(
+                self._connection, self._run_id),
         )
 
     # -- one batch (PROCEDURE §5.2 steps 2 to 8) ----------------------------
@@ -628,13 +675,14 @@ class Runner:
                 after=self._after, limit=n, lock=True, tenant=p.tenant)
             if self.hooks.after_select is not None:
                 self.hooks.after_select(rows)
-            counts, failures = self._process(rows)
+            counts, column_counts, failures = self._process(rows)
             done = len(rows) < n
             last = rows[-1].key if rows else None
             state.record(
                 self._connection, self._run_id,
                 batch_seq=seq,
                 counts=counts,
+                column_counts=column_counts,
                 cursor_value=(None if last is None
                               else cursor.encode_key(p.key_type, last)),
                 failures=failures,
@@ -653,10 +701,15 @@ class Runner:
 
     def _process(
         self, rows: list[cursor.Row],
-    ) -> tuple[dict[str, int], list[tuple[str, str, str]]]:
+    ) -> tuple[dict[str, int], dict[str, dict[str, int]],
+               list[tuple[str, str, str]]]:
         p = self.plan
         counts = dict.fromkeys(state.COUNTS, 0)
         counts["rows_scanned"] = len(rows)
+        # The same five counts per column (§3): every value counted below is
+        # counted once in each, so the sums agree at the commit.
+        by_column = {t.column_uuid.hex(): dict.fromkeys(state.VALUE_COUNTS, 0)
+                     for t, _ in p.targets}
         failures: list[tuple[str, str, str]] = []
 
         # §6.2, from the stored bytes alone: no decrypt and no key.
@@ -668,18 +721,23 @@ class Runner:
                     pending.append((row, i))
                 else:
                     counts[f"values_{kind}"] += 1
+                    by_column[target.column_uuid.hex()][
+                        f"values_{kind}"] += 1
 
         legacy = self._legacy_values(pending)
         for row, i in pending:
             target, source = p.targets[i]
             code = self._encrypt(row, i, target, source, legacy)
+            column = by_column[target.column_uuid.hex()]
             if code is None:
                 counts["values_written"] += 1
+                column["values_written"] += 1
             else:
                 counts["values_failed"] += 1
+                column["values_failed"] += 1
                 failures.append((cursor.encode_key(p.key_type, row.key),
                                  target.column_uuid.hex(), code))
-        return counts, failures
+        return counts, by_column, failures
 
     def _classify(self, row: cursor.Row, i: int, target: Any,
                   source: Any) -> str:

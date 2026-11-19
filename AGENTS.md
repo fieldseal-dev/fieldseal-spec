@@ -75,7 +75,7 @@ tools/
                           www/static/ from one geometry; never hand-edit those files
   leakage-estimator/      measures actual vs. assumed column distribution skew (placeholder)
   backfill/               resumable migration tooling: PROCEDURE.md, the shared procedure
-                          every frontend implements (version 2); the Django frontend is in
+                          every frontend implements (version 3); the Django frontend is in
                           adapters/django (`encrypt` job only)
 bench/                    published benchmarks and migration cost model
 docs/

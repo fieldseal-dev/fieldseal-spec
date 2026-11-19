@@ -14,7 +14,7 @@
  * one (measured 2026-11-18, Prisma 7.10.0, SQLite and Postgres alike).
  */
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   KeyUnavailableError,
@@ -23,10 +23,15 @@ import {
   UnknownFormatVersionError,
   type KeyProvider,
   type ReadMode,
-  type Warning,
 } from "@fieldseal/core";
 
-import { FieldsealConfigurationError, FieldsealNotSupported, type FieldsealExtensionOptions } from "../src/index.ts";
+import {
+  FieldsealConfigurationError,
+  FieldsealNotSupported,
+  plaintextReadHookFailures,
+  type FieldsealExtensionOptions,
+  type ExtensionWarning,
+} from "../src/index.ts";
 import { clearDb, DEK, INDEX_KEY, KEY_ID, loose, makeClient, setColumn } from "./helpers.ts";
 
 const { base, prisma } = makeClient();
@@ -46,8 +51,10 @@ function counted(readMode: ReadMode, over: Partial<FieldsealExtensionOptions> = 
   const { base: b, prisma: p } = makeClient({
     ...over,
     readMode,
-    onPlaintextRead: (model, field) => hook.push(`${model}.${field}`),
-    onWarning: (w: Warning) => {
+    onPlaintextRead: (model, field) => {
+      hook.push(`${model}.${field}`);
+    },
+    onWarning: (w: ExtensionWarning) => {
       if (w.kind === "plaintext-read") core += 1;
     },
   });
@@ -283,6 +290,207 @@ describe("onPlaintextRead agrees with the core's plaintext-read count (#293)", (
       expect(c.core()).toBe(2);
     } finally {
       await c.close();
+    }
+  });
+});
+
+describe("a throwing onPlaintextRead never fails the read (#298)", () => {
+  /** Three legacy rows, so three failed calls. */
+  async function legacyRows() {
+    await plant("note", Buffer.from("legacy one", "utf8"));
+    await plant("note", Buffer.from("legacy two", "utf8"));
+    await plant("note", Buffer.from("legacy three", "utf8"));
+  }
+
+  it("a throwing hook over several legacy rows: values returned, one warning, every failure counted", async () => {
+    await legacyRows();
+    const warnings: ExtensionWarning[] = [];
+    let core = 0;
+    const calls: string[] = [];
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: (model, field) => {
+        calls.push(`${model}.${field}`);
+        throw new Error("metrics down");
+      },
+      onWarning: (w) => {
+        if (w.kind === "plaintext-read") core += 1;
+        warnings.push(w);
+      },
+    });
+    try {
+      const rows = await p.patient.findMany({});
+      expect([...rows.map((r) => r.note)].sort()).toEqual(["legacy one", "legacy three", "legacy two"]);
+      const failed = warnings.filter((w) => w.kind === "plaintext-read-hook-failed");
+      expect(failed).toHaveLength(1);
+      const first = failed[0] as Extract<ExtensionWarning, { kind: "plaintext-read-hook-failed" }>;
+      expect((first.error as Error).message).toBe("metrics down");
+      expect(first.message).toContain("Patient.note");
+      expect(first.message).toContain("counted");
+      expect(JSON.stringify(first.message)).not.toMatch(/legacy/);
+      expect(calls).toHaveLength(3);
+      expect(plaintextReadHookFailures(extension)).toBe(3);
+      expect(core).toBe(3);
+      expect(plaintextReadHookFailures({})).toBe(0);
+    } finally {
+      await b.$disconnect();
+    }
+  });
+
+  it("with no onWarning the first failure goes to console.error, once", async () => {
+    await legacyRows();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: () => {
+        throw new Error("metrics down");
+      },
+      onWarning: undefined,
+    });
+    try {
+      const rows = await p.patient.findMany({});
+      expect(rows).toHaveLength(3);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(spy.mock.calls)).not.toMatch(/legacy/);
+      expect(String(spy.mock.calls[0]![0])).toContain("Patient.note");
+      expect(plaintextReadHookFailures(extension)).toBe(3);
+    } finally {
+      spy.mockRestore();
+      await b.$disconnect();
+    }
+  });
+
+  it("an async hook that rejects is counted and reported once, and leaves no unhandled rejection", async () => {
+    await plant("note", Buffer.from("legacy one", "utf8"));
+    await plant("note", Buffer.from("legacy two", "utf8"));
+    const warnings: ExtensionWarning[] = [];
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: async () => {
+        throw new Error("async metrics down");
+      },
+      onWarning: (w) => warnings.push(w),
+    });
+    try {
+      const rows = await p.patient.findMany({});
+      expect(rows.map((r) => r.note).sort()).toEqual(["legacy one", "legacy two"]);
+      await vi.waitFor(() => expect(plaintextReadHookFailures(extension)).toBe(2));
+      const failed = warnings.filter((w) => w.kind === "plaintext-read-hook-failed");
+      expect(failed).toHaveLength(1);
+      expect(((failed[0] as { error: Error }).error).message).toBe("async metrics down");
+      // Let any unhandled rejection surface to vitest before the test ends.
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      await b.$disconnect();
+    }
+  });
+
+  it("an onWarning that throws on the adapter's warning does not fail the read", async () => {
+    await legacyRows();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: () => {
+        throw new Error("hook error");
+      },
+      onWarning: (w) => {
+        if (w.kind === "plaintext-read-hook-failed") throw new Error("warning sink error");
+      },
+    });
+    try {
+      const rows = await p.patient.findMany({});
+      expect(rows).toHaveLength(3);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const args = spy.mock.calls[0]!;
+      expect((args[1] as Error).message).toBe("hook error");
+      expect((args[2] as Error).message).toBe("warning sink error");
+      expect(plaintextReadHookFailures(extension)).toBe(3);
+    } finally {
+      spy.mockRestore();
+      await b.$disconnect();
+    }
+  });
+
+  it("an async onWarning that rejects on the adapter's warning is caught, not left unhandled", async () => {
+    await legacyRows();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      onPlaintextRead: () => {
+        throw new Error("hook error");
+      },
+      onWarning: async (w) => {
+        if (w.kind === "plaintext-read-hook-failed") throw new Error("async sink error");
+      },
+    });
+    try {
+      const rows = await p.patient.findMany({});
+      expect(rows).toHaveLength(3);
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(spy).toHaveBeenCalledTimes(1);
+      const args = spy.mock.calls[0]!;
+      expect((args[1] as Error).message).toBe("hook error");
+      expect((args[2] as Error).message).toBe("async sink error");
+      expect(plaintextReadHookFailures(extension)).toBe(3);
+    } finally {
+      spy.mockRestore();
+      await b.$disconnect();
+    }
+  });
+
+  it("counts are per extension: a second extension starts at zero", async () => {
+    await legacyRows();
+    const mk = () =>
+      makeClient({
+        readMode: "permissive",
+        onPlaintextRead: () => {
+          throw new Error("x");
+        },
+      });
+    const a = mk();
+    const b2 = mk();
+    try {
+      await a.prisma.patient.findMany({});
+      expect(plaintextReadHookFailures(a.extension)).toBe(3);
+      expect(plaintextReadHookFailures(b2.extension)).toBe(0);
+    } finally {
+      await a.base.$disconnect();
+      await b2.base.$disconnect();
+    }
+  });
+
+  it("a hook that throws on a read retried after a key miss (L4) still returns the value; each failed call counts", async () => {
+    const row = await lp["patient"]!["create"]!({ data: patient() });
+    await setColumn(base, "Patient", "email", row.id as string, Buffer.from("legacy@example.com", "utf8"));
+    const inner = new StaticKeyProvider({ dek: DEK, indexKey: INDEX_KEY, keyId: KEY_ID });
+    let cold = true;
+    const provider: KeyProvider = {
+      encryptionKey: (ctx) => inner.encryptionKey(ctx),
+      decryptionKeys: (header) => {
+        if (cold) throw new KeyUnavailableError(header.keyId, "staged: cold");
+        return inner.decryptionKeys(header);
+      },
+      warm: async () => {
+        cold = false;
+      },
+    };
+    const warnings: ExtensionWarning[] = [];
+    const { base: b, prisma: p, extension } = makeClient({
+      readMode: "permissive",
+      keyProvider: provider,
+      onPlaintextRead: () => {
+        throw new Error("x");
+      },
+      onWarning: (w) => warnings.push(w),
+    });
+    try {
+      const back = await p.patient.findUnique({ where: { id: row.id as string } });
+      expect(back?.email).toBe("legacy@example.com");
+      expect(plaintextReadHookFailures(extension)).toBe(2);
+      expect(warnings.filter((w) => w.kind === "plaintext-read-hook-failed")).toHaveLength(1);
+    } finally {
+      await b.$disconnect();
     }
   });
 });

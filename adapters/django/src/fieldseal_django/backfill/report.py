@@ -71,6 +71,8 @@ def final(outcome: Outcome) -> dict[str, Any]:
         "values_anomalous": run.values_anomalous,
         "values_failed": run.values_failed,
         "failures_by_code": outcome.failures_by_code,
+        # §3: the five value counts per column, by `column_uuid`.
+        "columns": outcome.column_counts,
         "process": {
             "rows_scanned": outcome.process_rows,
             "seconds": round(outcome.process_seconds, 3),
@@ -108,6 +110,11 @@ def final_lines(outcome: Outcome) -> list[str]:
         f"{doc['values_failed']}")
     for code, n in doc["failures_by_code"].items():
         lines.append(f"  failed with {code}: {n}")
+    for column, c in doc["columns"].items():
+        lines.append(
+            f"  column {column}: written {c['values_written']}, current "
+            f"{c['values_current']}, null {c['values_null']}, anomalous "
+            f"{c['values_anomalous']}, failed {c['values_failed']}")
     for label in ("process", "run"):
         part = doc[label]
         rate = part["rows_per_second"]
