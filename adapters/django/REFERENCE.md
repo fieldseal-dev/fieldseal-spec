@@ -343,7 +343,11 @@ so that when the cut-over to `strict` waits on a count of zero
 
 ```python
 from django.dispatch import receiver
-from fieldseal_django.signals import plaintext_read, plaintext_read_counts
+from fieldseal_django.signals import (
+    plaintext_read,
+    plaintext_read_counts,
+    plaintext_read_receiver_failures,
+)
 
 @receiver(plaintext_read)
 def count_plaintext(sender, field, **kwargs):
@@ -351,6 +355,7 @@ def count_plaintext(sender, field, **kwargs):
                       tags={"model": sender._meta.label, "field": field})
 
 plaintext_read_counts()  # {("clinic.Patient", "email"): 3, ...}
+plaintext_read_receiver_failures()  # {"metrics.hooks.count_plaintext": 3}
 ```
 
 The signal's `sender` is the concrete model that owns the field
@@ -366,9 +371,29 @@ field cannot read it) still counts, as it does in the core, because it is a
 row still to migrate. A read the core refuses (`NOT_CIPHERTEXT` in `strict`,
 `UNKNOWN_FORMAT_VERSION`) does not count. `fieldseal_backfill`'s in-place
 reads count too, so choose a window for the cut-over that does not overlap a
-backfill run. A receiver that raises does not break the read: its exception
-is logged on the `fieldseal_django` logger, and the count has already been
-taken.
+backfill run. A receiver that raises does not break the read, and the count
+has already been taken. Its **first** failure for the client is logged on the
+`fieldseal_django` logger at ERROR with the traceback; later failures of that
+receiver are counted, not logged (a receiver that is down fails on every
+read, and a traceback per read is unbounded, #295). That is the only log:
+Django's own per-failure log on `django.dispatch` is switched off for this
+signal (a private `Signal` subclass overriding `_log_robust_failure`; a test
+fails if Django renames it), which also keeps a receiver with no
+`__qualname__`, such as a `functools.partial`, from breaking the read.
+"First" is per receiver object while it lives (held weakly, so a freed
+receiver is forgotten): two instances of one class are logged once each.
+`plaintext_read_receiver_failures()` returns `{receiver name: failures}` for
+the current client, the logged first failure included. The name is
+`"{module}.{qualname}"` of the receiver function (of the function a
+`functools.partial` wraps), or of the receiver's type for a callable
+instance; never its `repr`, which can carry a secret or raise. Receivers that
+share a name are summed under it. A receiver that has not failed is absent.
+Like the counts it is per client and per process: a rebuilt client logs a
+failing receiver again. A receiver that raises does not break the read for
+synchronous receivers and for `async def` receivers called outside a running
+event loop; from a thread with a running loop, an `async def` receiver makes
+Django's own `send_robust` raise `RuntimeError` (AsyncToSync; reproduced on
+Django 6.1.3), which is not caught.
 
 **The counts are per process**, like the core's. A `manage.py shell` opened
 to check the gate has its own client and reads `{}`, and each worker of a
