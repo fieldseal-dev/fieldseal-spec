@@ -112,11 +112,12 @@ export function makeClient(
     onWarning: () => {},
     ...overrides,
   };
-  const prisma = base.$extends(fieldsealExtension(opts)) as ReturnType<
+  const extension = fieldsealExtension(opts);
+  const prisma = base.$extends(extension) as ReturnType<
     PrismaClient["$extends"]
   > &
     PrismaClient;
-  return { base, prisma };
+  return { base, prisma, extension };
 }
 
 /**

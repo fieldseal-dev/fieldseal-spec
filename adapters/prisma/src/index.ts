@@ -22,8 +22,13 @@
  * production adoption (PRD §8).
  */
 
-export { fieldsealExtension } from "./extension.ts";
-export type { FieldsealExtensionOptions, QueryExtension } from "./extension.ts";
+export { fieldsealExtension, plaintextReadHookFailures } from "./extension.ts";
+export type {
+  FieldsealExtensionOptions,
+  ExtensionWarning,
+  PlaintextReadHookFailure,
+  QueryExtension,
+} from "./extension.ts";
 
 export { candidateScope } from "./candidates.ts";
 export { sharedEnvelopeScope } from "./multiwrite.ts";
