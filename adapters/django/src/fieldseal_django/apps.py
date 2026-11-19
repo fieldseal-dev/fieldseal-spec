@@ -222,9 +222,20 @@ def get_client() -> Fieldseal:
 
 
 def reset_client() -> None:
-    """Drop the cached client. For tests and `setting_changed`."""
+    """Drop the cached client. For tests and `setting_changed`.
+
+    The per-field plaintext-read counts are kept per client object
+    (`signals`, #246), so they go with the client exactly as its core
+    `plaintext_reads` does, and a `FIELDSEAL["CLIENT"]` instance, which the
+    next `get_client` hands back, keeps both.
+    """
     global _client
     _client = None
+
+
+def current_client() -> Fieldseal | None:
+    """The process-wide client if one is built, without building one."""
+    return _client
 
 
 @receiver(class_prepared)

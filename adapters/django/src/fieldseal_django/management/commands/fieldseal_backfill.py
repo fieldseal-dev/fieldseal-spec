@@ -1,6 +1,6 @@
 """`manage.py fieldseal_backfill` -- the backfill frontend (`docs/12` §7).
 
-The procedure is `tools/backfill/PROCEDURE.md`, version 1, and this command
+The procedure is `tools/backfill/PROCEDURE.md`, version 2, and this command
 implements it unchanged. Built so far: `init`, `encrypt`, `resume` and
 `abandon`. `rotate` waits on a header accessor no core exports yet
 (PROCEDURE §11, D-1), and `verify` is not built.
@@ -11,6 +11,14 @@ new run on a populated table prints PROCEDURE §9's text and refuses to
 proceed without `--acknowledge-preexisting-backups`. The command runs inside
 an application process that holds the keys, and protects nothing against
 that process (spec §2.2).
+
+A tenant-bound column is written under each row's own tenant, which the
+procedure takes from a column of the row (§5.5): `encrypt` takes it with
+`--tenant FIELD`, and `resume` reads it from the stored run. On PostgreSQL, an
+in-place run over any column also needs
+`--acknowledge-in-place-conversion` (PROCEDURE §6.1, §9 item 6), since a
+Django `AlterField` into `bytea` can rewrite legacy text without an error and
+the run cannot see the original.
 """
 
 from __future__ import annotations
@@ -48,6 +56,16 @@ class Command(BaseCommand):  # type: ignore[misc]
         encrypt.add_argument(
             "--acknowledge-preexisting-backups", action="store_true",
             help="Required to start a run on a table that holds rows.")
+        encrypt.add_argument(
+            "--acknowledge-in-place-conversion", action="store_true",
+            help="Required to start an in-place run over a column whose "
+                 "type was converted on PostgreSQL, on a table that holds "
+                 "rows (PROCEDURE §6.1).")
+        encrypt.add_argument(
+            "--tenant", metavar="FIELD",
+            help="The model field that holds each row's tenant, for the "
+                 "tenant-bound columns of the run (PROCEDURE §5.5). Required "
+                 "when one is tenant-bound, refused otherwise.")
         _add_limits(encrypt)
 
         resume = sub.add_parser(
@@ -108,18 +126,27 @@ class Command(BaseCommand):  # type: ignore[misc]
                    else [c for c in options["columns"].split(",") if c])
         limits = _limits(options)
 
-        plan = encrypt.plan(model, columns, sources)
+        plan = encrypt.plan(model, columns, sources, options["tenant"])
         connection = connections[plan.alias]
         encrypt.check_connection(connection)
         state.require_tables(connection)
-        if (encrypt.table_has_rows(plan)
-                and not options["acknowledge_preexisting_backups"]):
-            self.stdout.write(report.PREEXISTING_BACKUPS)
-            raise BackfillError(
-                "refused: the table holds rows and "
-                "--acknowledge-preexisting-backups was not given. Nothing "
-                "was written.")
-        run = encrypt.new_run(plan)
+        if encrypt.table_has_rows(plan):
+            missing = []
+            if not options["acknowledge_preexisting_backups"]:
+                self.stdout.write(report.PREEXISTING_BACKUPS)
+                missing.append("--acknowledge-preexisting-backups")
+            concerned = encrypt.in_place_conversion_columns(plan)
+            if concerned and not options["acknowledge_in_place_conversion"]:
+                self.stdout.write(report.IN_PLACE_CONVERSION)
+                for name in concerned:
+                    self.stdout.write(f"  {model._meta.label}.{name}")
+                missing.append("--acknowledge-in-place-conversion")
+            if missing:
+                raise BackfillError(
+                    f"refused: the table holds rows and {' and '.join(missing)}"
+                    f" {'was' if len(missing) == 1 else 'were'} not given. "
+                    "Nothing was written.")
+        run = encrypt.new_run(plan, warn=self.stdout.write)
         self._run(encrypt.Runner(plan, run, limits), run, limits)
 
     def _resume(self, options: dict[str, Any]) -> None:
@@ -165,7 +192,8 @@ class Command(BaseCommand):  # type: ignore[misc]
             f"run {options['run_id']} is abandoned. The rows it converted "
             "stay converted; a new run skips them and does not re-derive "
             "their indexes, so a new run is refused if its index "
-            "declarations differ from this run's (PROCEDURE §4).")
+            "declarations or tenant column differ from this run's "
+            "(PROCEDURE §4).")
 
     def _run(self, runner: Any, run: Any, limits: Any) -> None:
         from ...backfill import report

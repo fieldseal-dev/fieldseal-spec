@@ -36,20 +36,28 @@ from django.core.management.base import CommandError
 from django.db import OperationalError, connection, connections, transaction
 from django.test.utils import isolate_apps, override_settings
 from fieldseal import ValidatedIndex, index_registry_key
+from fieldseal.errors import FieldsealError
 
 from fieldseal_django import Encrypted, FieldsealMeta, tenant_scope
 from fieldseal_django.apps import get_client, reset_client
 from fieldseal_django.backfill import BackfillError, config, cursor, encrypt, state
 from fieldseal_django.backfill.census import census
 from fieldseal_django.backfill.ratelimit import TokenBucket
-from fieldseal_django.backfill.report import PREEXISTING_BACKUPS
+from fieldseal_django.backfill.report import (
+    IN_PLACE_CONVERSION,
+    PREEXISTING_BACKUPS,
+)
 from fieldseal_django.query import FieldsealManager
 from tests.models import (
     LegacyInPlace,
     LegacyTwoColumn,
     LegacyUuidKey,
     Patient,
-    TenantDoc,
+    TenantBinaryInPlace,
+    TenantInPlace,
+    TenantTextInPlace,
+    TenantTwoColumn,
+    TenantUuidInPlace,
 )
 
 pytestmark = [
@@ -203,13 +211,13 @@ def emails(n, tag="row"):
     return [f"{tag}-{i:03d}@backfill.example" for i in range(n)]
 
 
-def begin(shape_or_model, *, columns=None, sources=None):
+def begin(shape_or_model, *, columns=None, sources=None, tenant=None):
     """Plan and insert a run, as `fieldseal_backfill encrypt` does."""
     if isinstance(shape_or_model, InPlace | TwoColumn):
         p = encrypt.plan(shape_or_model.model, shape_or_model.columns,
                          shape_or_model.sources)
     else:
-        p = encrypt.plan(shape_or_model, columns, sources or {})
+        p = encrypt.plan(shape_or_model, columns, sources or {}, tenant)
     return p, encrypt.new_run(p)
 
 
@@ -220,7 +228,7 @@ def drive(p, run, *, limits=FAST, hooks=None, resumed=False, clock=None):
 
 
 def go(shape_or_model, **kwargs):
-    plan_kwargs = {k: kwargs.pop(k) for k in ("columns", "sources")
+    plan_kwargs = {k: kwargs.pop(k) for k in ("columns", "sources", "tenant")
                    if k in kwargs}
     p, run = begin(shape_or_model, **plan_kwargs)
     return drive(p, run, **kwargs)
@@ -377,7 +385,8 @@ def test_bf01_through_the_command(shape):
     out, _, error = command(
         "encrypt", f"tests.{shape.model.__name__}", "--columns",
         ",".join(shape.columns), "--batch-size", "5", "--rows-per-second",
-        "100000", "--acknowledge-preexisting-backups", *args)
+        "100000", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
     assert error is None
     report = json.loads(out.splitlines()[-1])
     assert report["status"] == "complete" and report["fully_converted"]
@@ -585,43 +594,37 @@ def _record_pre_281(shape, run_id):
     assert hashlib.sha256(text.encode("ascii")).hexdigest() == digest
     with connection.cursor() as cur:
         cur.execute(
-            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
-            "WHERE run_id = %s", [text, digest, run_id])
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s, "
+            "procedure_version = 1 WHERE run_id = %s",
+            [text, digest, run_id])
 
 
-def test_bf21_a_run_recorded_before_281_is_refused_and_says_why(shape):
-    """PROCEDURE §12 kept version 1 on the ground that a run recorded before
-    #281 is refused by the comparison, naming the member; this pins that
-    ground against the document such a run actually stored. The refusal
-    marks the member as not recorded, so an operator who only upgraded does
-    not go looking for a suite change that never happened."""
+def test_bf21_a_run_recorded_before_281_is_refused_on_resume(shape):
+    """A run recorded before #281 is a version-1 run, and since version 2
+    (PROCEDURE §12) every version-1 run is refused on resume by its version:
+    the exception #281 took is not taken again. What makes it a refusal is
+    the version, and the document it stored is no longer compared."""
     run_id = _killed_run(shape)
     _record_pre_281(shape, run_id)
     before = _snapshot(shape, run_id)
-    field = shape.model._meta.get_field(shape.field)
 
-    with pytest.raises(BackfillError) as refused:
+    with pytest.raises(BackfillError, match="procedure version 1"):
         resume(run_id)
 
-    message = str(refused.value)
-    assert (f"columns[{field.column_uuid.hex()}].indexes[exact].suite_id"
-            f"{config.NOT_RECORDED}") in message
-    assert "under a construction of the configuration without that member" \
-        in message
-    assert "#281" not in message
     assert _snapshot(shape, run_id) == before
 
 
 def test_the_old_worked_example_is_a_pre_281_document():
-    """The worked example before #281, by its own published hash: a
+    """Version 1's worked example before #281, by its own published hash: a
     document without `suite_id` is what a version-1 run recorded then."""
-    old = WORKED_EXAMPLE.replace('"suite_id":65282,', "")
-    assert old != WORKED_EXAMPLE
+    old = V1_WORKED_EXAMPLE.replace('"suite_id":65282,', "")
+    assert old != V1_WORKED_EXAMPLE
     assert hashlib.sha256(old.encode("ascii")).hexdigest() == (
         "8d437f03246bc98fba1a649865059069f8f171aadbc7fcf1ce2cec53575682a0")
-    assert config.differences(json.loads(old), json.loads(WORKED_EXAMPLE)) \
-        == ["columns[018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f].indexes[exact]"
-            f".suite_id{config.NOT_RECORDED}"]
+    assert config.differences(
+        json.loads(old), json.loads(V1_WORKED_EXAMPLE)
+    ) == ["columns[018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f].indexes[exact]"
+          f".suite_id{config.NOT_RECORDED}"]
 
 
 def test_bf21_the_suite_is_read_from_the_validated_registry(shape):
@@ -638,7 +641,8 @@ def test_bf21_the_suite_is_read_from_the_validated_registry(shape):
 
     built = config.build(
         job="encrypt", table_uuid=table, write_suite=0xFF01,
-        cursor=[("id", "int")], targets=[(field, None)], indexes=registry)
+        cursor=[("id", "int")], targets=[(field, None, None)],
+        indexes=registry)
 
     (column,) = built["columns"]
     assert column["indexes"][0]["suite_id"] == 0xFF02
@@ -833,7 +837,8 @@ def test_bf22_the_command_names_the_run_and_member_and_writes_nothing(
             "encrypt", f"tests.{shape.model.__name__}",
             "--columns", ",".join(shape.columns),
             "--rows-per-second", "100000",
-            "--acknowledge-preexisting-backups", *args)
+            "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
     finally:
         monkeypatch.undo()
         reset_client()
@@ -855,19 +860,22 @@ def test_bf05_the_command_names_the_member_and_writes_nothing(
     assert _snapshot(shape, run_id) == before
 
 
-def test_bf18_a_run_row_of_procedure_version_2_is_refused(shape):
+@pytest.mark.parametrize("version", [1, 3])
+def test_bf18_a_run_row_of_another_procedure_version_is_refused(
+        shape, version):
     run_id = _killed_run(shape)
     with connection.cursor() as cur:
         cur.execute(
-            f"UPDATE {state.RUNS} SET procedure_version = 2 "
-            "WHERE run_id = %s", [run_id])
+            f"UPDATE {state.RUNS} SET procedure_version = %s "
+            "WHERE run_id = %s", [version, run_id])
     before = _snapshot(shape, run_id)
 
-    with pytest.raises(BackfillError, match="procedure version 2"):
+    with pytest.raises(BackfillError,
+                       match=f"procedure version {version}"):
         resume(run_id)
     _, _, error = command("resume", run_id)
 
-    assert "procedure version 2" in str(error)
+    assert f"procedure version {version}" in str(error)
     assert _snapshot(shape, run_id) == before
 
 
@@ -1011,7 +1019,8 @@ def test_bf09_the_report_says_the_table_is_not_fully_converted(in_place):
 
     out, _, error = command(
         "encrypt", "tests.LegacyInPlace", "--columns", "secret",
-        "--rows-per-second", "100000", "--acknowledge-preexisting-backups")
+        "--rows-per-second", "100000", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
 
     assert error is None
     lines = out.splitlines()
@@ -1021,6 +1030,34 @@ def test_bf09_the_report_says_the_table_is_not_fully_converted(in_place):
     report = json.loads(lines[-1])
     assert report["status"] == "complete" and not report["fully_converted"]
     assert report["failures_by_code"] == {"UNKNOWN_FORMAT_VERSION": 1}
+
+
+def test_in_place_reads_are_plaintext_reads_and_a_raising_receiver_is_harmless(
+        in_place):
+    """#246: the in-place read is the adapter's permissive read, so each
+    legacy value it converts is one plaintext read for its column, in the
+    per-field count as in the core's (`docs/12` §4). A `plaintext_read`
+    receiver that raises is logged, not raised: it must not turn every row
+    into `INTERNAL` and convert nothing."""
+    from fieldseal_django.signals import plaintext_read, plaintext_read_counts
+
+    in_place.seed(emails(3))
+    key = (LegacyInPlace._meta.label, "secret")
+    before = plaintext_read_counts().get(key, 0)
+    core_before = get_client().plaintext_reads
+
+    def receiver(**kwargs):
+        raise RuntimeError("metrics backend down")
+
+    plaintext_read.connect(receiver, weak=False)
+    try:
+        outcome = go(in_place)
+    finally:
+        plaintext_read.disconnect(receiver)
+
+    assert (outcome.run.values_written, outcome.run.values_failed) == (3, 0)
+    assert plaintext_read_counts().get(key, 0) - before == 3
+    assert get_client().plaintext_reads - core_before == 3
 
 
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
@@ -1150,21 +1187,7 @@ def test_a_value_the_index_refuses_is_invalid_argument():
         "ok@backfill.example")
 
 
-def test_a_tenant_bound_column_is_context_unavailable(permissive):
-    """The frontend cannot learn a row's tenant, and a row is never written
-    under a context it guessed (PROCEDURE §6.3, #244). Not even when a
-    tenant happens to be set in the process."""
-    with tenant_scope("t1"):
-        docs = [TenantDoc.objects.create(body="x") for _ in range(3)]
-    for doc in docs:
-        plant(TenantDoc, doc.pk, "body", b"legacy body")
-
-    with tenant_scope("t1"):
-        outcome = go(TenantDoc, columns=["body"])
-
-    assert outcome.run.values_failed == 3 and outcome.run.values_written == 0
-    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 3}
-    assert all(raw(TenantDoc, d.pk, "body") == b"legacy body" for d in docs)
+# (the tenant-bound scenarios, BF-23 to BF-27, are at the end of the file)
 
 
 # -- BF-10: the acknowledgement ------------------------------------------------
@@ -1180,9 +1203,10 @@ def test_bf10_a_populated_table_needs_the_acknowledgement(shape):
     before = all_raw(shape.model, shape.field)
     args = [f"--source={k}={v}" for k, v in shape.sources.items()]
 
+    # Text 6 is BF-27's: acknowledged here, so that this prints text 1 alone.
     out, _, error = command(
         "encrypt", f"tests.{shape.model.__name__}", "--columns",
-        ",".join(shape.columns), *args)
+        ",".join(shape.columns), "--acknowledge-in-place-conversion", *args)
 
     assert error is not None
     assert PREEXISTING_BACKUPS == _procedure_text_1()
@@ -1277,10 +1301,12 @@ def test_bf16_no_value_envelope_or_index_in_output_or_state(shape):
                       ",".join(shape.columns), *args)
     ran = command("encrypt", model, "--columns", ",".join(shape.columns),
                   "--batch-size", "5", "--rows-per-second", "100000",
-                  "--acknowledge-preexisting-backups", *args)
+                  "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
     again = command("encrypt", model, "--columns", ",".join(shape.columns),
                     "--rows-per-second", "100000",
-                    "--acknowledge-preexisting-backups", *args)
+                    "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
 
     assert json.loads(ran[0].splitlines()[-1])["values_failed"] == 1
     text = "\n".join(str(part) for result in (refused, ran, again)
@@ -1347,7 +1373,19 @@ def test_a_database_error_retries_the_same_batch(shape, monkeypatch):
 
 # -- BF-17: the configuration hash --------------------------------------------
 
-WORKED_EXAMPLE = (
+def _procedure_worked_example():
+    """The §4 worked example and its hash, read out of PROCEDURE.md."""
+    text = PROCEDURE.read_text(encoding="utf-8")
+    after = text[text.index("**Worked example.**"):]
+    example = re.search(r"```json\n(.*?)\n```", after, re.S).group(1)
+    digest = re.search(r"```\n([0-9a-f]{64})\n```", after).group(1)
+    return example, digest
+
+
+WORKED_EXAMPLE, WORKED_HASH = _procedure_worked_example()
+
+#: Version 1's example, which version 2 does not reproduce (§4, §12).
+V1_WORKED_EXAMPLE = (
     '{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":'
     '[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id",'
     '"index_id":"exact","normalize":"nfc-casefold-v1","on_unindexable":'
@@ -1355,19 +1393,28 @@ WORKED_EXAMPLE = (
     '"logical_type":"string","source":null,"storage":"binary"}],"cursor":'
     '[{"name":"id","type":"int"}],"job":"encrypt","procedure_version":1,'
     '"table_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e00","write_suite":65281}')
-WORKED_HASH = (
-    "960b60226b4f5649e704f4a386dac623197bcf7ac185ff67d2b6ced5807aa419")
 
 
 def test_bf17_the_worked_example():
-    procedure = PROCEDURE.read_text(encoding="utf-8")
-    assert WORKED_EXAMPLE in procedure and WORKED_HASH in procedure
+    # The pins are literal as well, so that a change to the document that
+    # moves the example and its hash together cannot pass unseen.
+    assert WORKED_HASH == (
+        "7f5e7f264f8af0c1ce5740eeab6d9d95e68c5fbf814a327cd047317633ccb92b")
+    assert '"procedure_version":2' in WORKED_EXAMPLE
+    assert hashlib.sha256(WORKED_EXAMPLE.encode("ascii")).hexdigest() \
+        == WORKED_HASH
 
     class Field:
         column_uuid = bytes.fromhex("018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f")
         logical_type = "string"
         storage = "binary"
         index = type("Decl", (), {"index_id": "exact"})
+
+    class Plain:
+        column_uuid = bytes.fromhex("018f3c2e7a1b7c3d8e4f5a6b7c8d9e10")
+        logical_type = "date"
+        storage = "base64"
+        index = None
 
     class Validated:
         index_id = "exact"
@@ -1382,7 +1429,11 @@ def test_bf17_the_worked_example():
     registry = {f"{table.hex()}/{Field.column_uuid.hex()}/exact": Validated}
     built = config.build(
         job="encrypt", table_uuid=table, write_suite=65281,
-        cursor=[("id", "int")], targets=[(Field, None)], indexes=registry)
+        cursor=[("id", "int")],
+        # Listed out of order: the document sorts its columns.
+        targets=[(Plain, "birth_date_legacy", None),
+                 (Field, None, {"column": "tenant_id", "type": "int"})],
+        indexes=registry)
 
     assert config.serialize(built) == WORKED_EXAMPLE
     assert config.digest(config.serialize(built)) == WORKED_HASH
@@ -1390,6 +1441,10 @@ def test_bf17_the_worked_example():
     shuffled = json.loads(WORKED_EXAMPLE, object_pairs_hook=lambda p: dict(
         reversed(p)))
     assert config.serialize(shuffled) == WORKED_EXAMPLE
+    # A frontend that leaves out a null `tenant` does not reproduce it.
+    without = json.loads(WORKED_EXAMPLE)
+    del without["columns"][1]["tenant"]
+    assert config.digest(config.serialize(without)) != WORKED_HASH
 
 
 def test_the_run_row_stores_the_document_its_hash_is_of(shape):
@@ -1454,7 +1509,8 @@ def test_bf20_the_command_exits_nonzero_when_stopped(in_place):
     out, _, error = command(
         "encrypt", "tests.LegacyInPlace", "--columns", "secret",
         "--batch-size", "10", "--max-failures", "5", "--rows-per-second",
-        "100000", "--acknowledge-preexisting-backups")
+        "100000", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
 
     assert error is not None and "still `running`" in str(error)
     report = json.loads(out.splitlines()[-1])
@@ -1628,3 +1684,826 @@ def test_differences_name_each_member():
         "write_suite",
     ]
     assert config.differences(stored, json.loads(WORKED_EXAMPLE)) == []
+
+
+# -- the row's tenant (PROCEDURE §5.5; #244) -----------------------------------
+
+class TenantShape:
+    """`TenantInPlace`: the tenant is the row's `tenant` column."""
+
+    name = "tenant_in_place"
+    model = TenantInPlace
+    field = "secret"
+    index = "secret_bidx"
+    columns = ["secret"]
+    sources: dict[str, str] = {}
+
+
+TENANT_RUN = {"columns": ["secret"], "tenant": "tenant"}
+
+
+def seed_tenants(model, rows):
+    """`(tenant, legacy value or None)` rows, legacy bytes planted raw."""
+    keys = []
+    for tenant, value in rows:
+        obj = model.objects.create(tenant=tenant)
+        if value is not None:
+            plant(model, obj.pk, "secret", value.encode("utf-8"))
+        keys.append(obj.pk)
+    return keys
+
+
+def tenant_rows(n=25):
+    """Two tenants, alternating, with every value distinct."""
+    return [((1, 2)[i % 2], f"tenant-secret-{i:03d}") for i in range(n)]
+
+
+def tenant_snapshot(run_id):
+    return (all_raw(TenantInPlace, "secret"),
+            all_raw(TenantInPlace, "secret_bidx"),
+            state.load_run(connection, run_id))
+
+
+def killed_tenant_run(rows=None):
+    seed_tenants(TenantInPlace, rows or tenant_rows())
+    p, run = begin(TenantInPlace, **TENANT_RUN)
+    with pytest.raises(Kill):
+        drive(p, run, hooks=kill_after_batch(1))
+    return run.run_id
+
+
+def run_rows():
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.RUNS}")
+        return cur.fetchone()[0]
+
+
+def _tenant_uuid_hex():
+    return TenantInPlace._meta.get_field("secret").column_uuid.hex()
+
+
+def test_bf23_each_value_is_written_under_its_own_rows_tenant(permissive):
+    """Two tenants and a NULL-tenant row, with a tenant bound in the process
+    around the whole run: the bound one is never used (§6.3), so every value
+    decrypts under its own row's tenant and not under another's."""
+    shared = "Shared-Value"
+    rows = [(1, shared), (2, shared), (1, "only-one"), (2, "only-two"),
+            (None, "nobody"), (1, None)]
+    keys = seed_tenants(TenantInPlace, rows)
+    legacy_null = raw(TenantInPlace, keys[4], "secret")
+
+    with tenant_scope("other"):
+        outcome = go(TenantInPlace, **TENANT_RUN)
+
+    run = outcome.run
+    assert run.status == "complete"
+    assert (run.rows_scanned, run.values_written, run.values_failed,
+            run.values_null) == (6, 4, 1, 1)
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 1}
+    assert raw(TenantInPlace, keys[4], "secret") == legacy_null
+    assert raw(TenantInPlace, keys[4], "secret_bidx") is None
+    for (tenant, value), pk in zip(rows, keys, strict=True):
+        if tenant is None or value is None:
+            continue
+        other = str(3 - tenant)
+        with tenant_scope(str(tenant)):
+            assert TenantInPlace.objects.get(pk=pk).secret == value
+            assert [o.pk for o in
+                    TenantInPlace.objects.filter(secret=value)] == [pk]
+        with tenant_scope(other):
+            with pytest.raises(FieldsealError):
+                TenantInPlace.objects.get(pk=pk)
+            assert pk not in [o.pk for o in
+                              TenantInPlace.objects.filter(secret=value)]
+
+
+def test_bf23_a_uuid_tenant_is_written_under_its_hyphenated_form(permissive):
+    """SQLite stores a UUID as 32 hex digits and PostgreSQL has a type for
+    it; the tenant is the same 36 characters from either (§5.5)."""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    keys = []
+    for tenant, value in ((a, "uuid-one"), (b, "uuid-two"), (None, "none")):
+        obj = TenantUuidInPlace.objects.create(tenant=tenant)
+        plant(TenantUuidInPlace, obj.pk, "secret", value.encode())
+        keys.append(obj.pk)
+
+    outcome = go(TenantUuidInPlace, columns=["secret"], tenant="tenant")
+
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 1}
+    assert outcome.run.values_written == 2
+    with tenant_scope(str(a)):
+        assert TenantUuidInPlace.objects.get(pk=keys[0]).secret == "uuid-one"
+    with tenant_scope(str(b)):
+        assert TenantUuidInPlace.objects.get(pk=keys[1]).secret == "uuid-two"
+        with pytest.raises(FieldsealError):
+            TenantUuidInPlace.objects.get(pk=keys[0])
+    document = json.loads(state.load_run(connection, outcome.run.run_id).config)
+    assert document["columns"][0]["tenant"] == {
+        "column": "tenant", "type": "uuid"}
+
+
+def test_a_tenant_run_killed_and_resumed_keeps_the_stored_tenant(permissive):
+    """The resume takes the tenant column from the stored `config` and has
+    no `--tenant` of its own (§5.5)."""
+    rows = tenant_rows()
+    run_id = killed_tenant_run(rows)
+    keys = sorted(all_raw(TenantInPlace, "secret"))
+
+    out, _, error = command("resume", run_id, "--batch-size", "10",
+                            "--rows-per-second", "100000")
+
+    assert error is None
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+    for (tenant, value), pk in zip(rows, keys, strict=True):
+        with tenant_scope(str(tenant)):
+            assert TenantInPlace.objects.get(pk=pk).secret == value
+    _, _, error = command("resume", run_id, "--tenant", "region")
+    assert error is not None  # `resume` has no `--tenant`: the run's own
+
+
+def test_config_records_the_tenant_per_column(permissive):
+    p = encrypt.plan(TenantInPlace, ["secret"], {}, "tenant")
+    assert p.config["columns"][0]["tenant"] == {
+        "column": "tenant", "type": "int"}
+    assert p.tenant is TenantInPlace._meta.get_field("tenant")
+    # A column that is not tenant-bound records `null`.
+    plain = encrypt.plan(LegacyInPlace, ["secret"], {})
+    assert plain.config["columns"][0]["tenant"] is None
+    assert plain.tenant is None
+
+
+# -- BF-24: resume with the tenant changed -------------------------------------
+
+def _alt_tenant_model(tenant_field):
+    """`TenantInPlace`'s declaration, with the tenant column replaced (or,
+    for None, absent): the live code after a change to the model."""
+    from django.db import models
+
+    from fieldseal_django import BlindIndex
+
+    attrs = {
+        "__module__": "tests.models",
+        "secret": Encrypted(
+            models.CharField(max_length=100),
+            column_uuid="018f3c2e-0000-7000-8000-0000000000f1", null=True,
+            index=BlindIndex(
+                suite_id=0xFF01, index_id="exact", idf="hmac-sha512",
+                normalize="nfc-casefold-v1", truncate_bits=15,
+                projected_population=100_000)),
+        "secret_bidx": Encrypted.index_column("secret"),
+        "fieldseal": FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-0000000000f0",
+            tenant_bound=True),
+    }
+    if tenant_field is not None:
+        attrs["tenant"] = tenant_field
+    return type("TenantInPlace", (models.Model,), attrs)
+
+
+@isolate_apps("tests")
+def test_bf24_resume_with_the_tenant_columns_type_changed_is_refused(
+        permissive):
+    from django.db import models
+
+    run_id = killed_tenant_run()
+    before = tenant_snapshot(run_id)
+    alt = _alt_tenant_model(models.CharField(max_length=20, null=True))
+    run = state.load_run(connection, run_id)
+
+    with pytest.raises(BackfillError) as refused:
+        encrypt.plan_for(run, [alt])
+
+    assert f"columns[{_tenant_uuid_hex()}].tenant" in str(refused.value)
+    assert tenant_snapshot(run_id) == before
+
+
+@isolate_apps("tests")
+def test_bf24_resume_with_the_tenant_column_gone_is_refused(permissive):
+    run_id = killed_tenant_run()
+    before = tenant_snapshot(run_id)
+    run = state.load_run(connection, run_id)
+
+    with pytest.raises(BackfillError) as refused:
+        encrypt.plan_for(run, [_alt_tenant_model(None)])
+
+    assert f"columns[{_tenant_uuid_hex()}].tenant" in str(refused.value)
+    assert tenant_snapshot(run_id) == before
+
+
+def test_bf24_resume_with_the_column_no_longer_tenant_bound_is_refused(
+        permissive, monkeypatch):
+    run_id = killed_tenant_run()
+    before = tenant_snapshot(run_id)
+    field = TenantInPlace._meta.get_field("secret")
+    monkeypatch.setattr(field, "tenant_bound", False)
+
+    with pytest.raises(BackfillError) as refused:
+        resume(run_id)
+    _, _, error = command("resume", run_id)
+
+    assert f"columns[{_tenant_uuid_hex()}].tenant" in str(refused.value)
+    assert f"columns[{_tenant_uuid_hex()}].tenant" in str(error)
+    assert tenant_snapshot(run_id) == before
+
+
+def test_bf24_resume_with_a_column_tenant_bound_since_is_refused(
+        in_place, monkeypatch):
+    """The other direction: recorded without a tenant, tenant-bound now."""
+    in_place.seed(emails(25))
+    p, run = begin(in_place)
+    with pytest.raises(Kill):
+        drive(p, run, hooks=kill_after_batch(1))
+    before = _snapshot(in_place, run.run_id)
+    field = LegacyInPlace._meta.get_field("secret")
+    monkeypatch.setattr(field, "tenant_bound", True)
+
+    with pytest.raises(BackfillError) as refused:
+        resume(run.run_id)
+
+    assert (f"columns[{field.column_uuid.hex()}].tenant"
+            in str(refused.value))
+    assert _snapshot(in_place, run.run_id) == before
+
+
+# -- BF-25: a new run after an abandoned one, tenant column changed ------------
+
+def test_bf25_a_new_run_with_another_tenant_column_is_refused(permissive):
+    run_id = killed_tenant_run()
+    assert state.load_run(connection, run_id).values_written > 0
+    _, _, error = command("abandon", run_id)
+    assert error is None
+    before = (tenant_snapshot(run_id)[:2], run_rows())
+
+    with pytest.raises(BackfillError) as refused:
+        begin(TenantInPlace, columns=["secret"], tenant="region")
+    _, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "region", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    for message in (str(refused.value), str(error)):
+        assert run_id in message and "(abandoned)" in message
+        assert f"columns[{_tenant_uuid_hex()}].tenant" in message
+    assert (tenant_snapshot(run_id)[:2], run_rows()) == before
+
+
+def test_bf25_a_new_run_with_the_same_tenant_column_starts(permissive):
+    run_id = killed_tenant_run()
+    assert state.abandon(connection, run_id)
+    p, run = begin(TenantInPlace, **TENANT_RUN)
+    outcome = drive(p, run)
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written + outcome.run.values_current == 25
+
+
+def test_a_new_run_after_a_version_1_run_compares_indexes_only(shape):
+    """PROCEDURE §12: a version-1 run recorded no `tenant`, so its `tenant`
+    is not compared. Its indexes are, and match."""
+    run_id = _killed_run(shape)
+    assert state.load_run(connection, run_id).values_written > 0
+    document = json.loads(state.load_run(connection, run_id).config)
+    document["procedure_version"] = 1
+    for column in document["columns"]:
+        del column["tenant"]
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s, "
+            "procedure_version = 1 WHERE run_id = %s",
+            [text, config.digest(text), run_id])
+    assert state.abandon(connection, run_id)
+
+    p, run = begin(shape)
+    outcome = drive(p, run)
+
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written + outcome.run.values_current == 25
+
+
+def test_a_new_run_after_a_run_of_another_version_is_refused(shape):
+    run_id = _killed_run(shape)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET procedure_version = 3 "
+            "WHERE run_id = %s", [run_id])
+    assert state.abandon(connection, run_id)
+    rows = _run_rows(shape)
+
+    with pytest.raises(BackfillError) as refused:
+        begin(shape)
+
+    assert run_id in str(refused.value)
+    assert "procedure version 3" in str(refused.value)
+    assert _run_rows(shape) == rows
+
+
+# -- BF-26: refusals at start --------------------------------------------------
+
+def _refused_at_start(*args, match):
+    before = run_rows()
+    _, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret", *args)
+    assert isinstance(error, CommandError) and match in str(error)
+    assert run_rows() == before == 0
+
+
+def test_bf26_a_tenant_bound_column_without_a_tenant_column(permissive):
+    seed_tenants(TenantInPlace, tenant_rows(3))
+    with pytest.raises(BackfillError, match="names no tenant column"):
+        encrypt.plan(TenantInPlace, ["secret"], {})
+    _refused_at_start("--acknowledge-preexisting-backups",
+                      "--acknowledge-in-place-conversion",
+                      match="names no tenant column")
+
+
+def test_bf26_a_tenant_column_for_a_run_with_no_tenant_bound_column(
+        permissive):
+    in_place = InPlace()
+    in_place.seed(emails(3))
+    with pytest.raises(BackfillError, match="tenant-bound"):
+        encrypt.plan(LegacyInPlace, ["secret"], {}, "id")
+    _, _, error = command(
+        "encrypt", "tests.LegacyInPlace", "--columns", "secret",
+        "--tenant", "id", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+    assert isinstance(error, CommandError) and "tenant-bound" in str(error)
+    assert run_rows() == 0
+
+
+def test_bf26_a_tenant_column_the_adapter_encrypts(permissive):
+    seed_tenants(TenantInPlace, tenant_rows(3))
+    for name in ("secret", "secret_bidx"):
+        with pytest.raises(BackfillError, match="encrypts"):
+            encrypt.plan(TenantInPlace, ["secret"], {}, name)
+        _refused_at_start("--tenant", name,
+                          "--acknowledge-preexisting-backups",
+                          "--acknowledge-in-place-conversion",
+                          match="encrypts")
+
+
+def test_bf26_an_unknown_or_unsupported_tenant_column(permissive):
+    with pytest.raises(BackfillError, match="not a column"):
+        encrypt.plan(TenantInPlace, ["secret"], {}, "nope")
+    with pytest.raises(BackfillError, match="DateTimeField"):
+        encrypt.plan(TenantInPlace, ["secret"], {}, "stamp")
+    _refused_at_start("--tenant", "stamp", match="DateTimeField")
+
+
+# -- the tenant column's type, and its rendering (§5.5) ------------------------
+
+def test_tenant_type_maps_the_declared_type():
+    assert cursor.tenant_type(TenantInPlace._meta.get_field("tenant")) == "int"
+    assert cursor.tenant_type(
+        TenantUuidInPlace._meta.get_field("tenant")) == "uuid"
+    assert cursor.tenant_type(
+        LegacyTwoColumn._meta.get_field("email_legacy")) == "text"
+    assert cursor.tenant_type(LegacyInPlace._meta.get_field("id")) == "int"
+
+
+@isolate_apps("tests")
+def test_tenant_type_maps_binary_and_a_foreign_key_through_its_target():
+    from django.db import models
+
+    class Org(models.Model):
+        id = models.UUIDField(primary_key=True)
+
+    class Code(models.Model):
+        code = models.CharField(max_length=5, primary_key=True)
+
+    class Blob(models.Model):
+        raw = models.BinaryField()
+        org = models.ForeignKey(Org, on_delete=models.CASCADE)
+        code = models.ForeignKey(Code, on_delete=models.CASCADE)
+        when = models.DateField()
+        flag = models.BooleanField()
+
+    assert cursor.tenant_type(Blob._meta.get_field("raw")) == "binary"
+    assert cursor.tenant_type(Blob._meta.get_field("org")) == "uuid"
+    assert cursor.tenant_type(Blob._meta.get_field("code")) == "text"
+    for name in ("when", "flag"):
+        with pytest.raises(BackfillError):
+            cursor.tenant_type(Blob._meta.get_field(name))
+
+
+def test_tenant_rendering_of_each_type():
+    one = uuid.UUID("0123456789abcdef0123456789ABCDEF")
+    hyphenated = b"01234567-89ab-cdef-0123-456789abcdef"
+
+    # text: UTF-8. Empty has no tenant (below).
+    assert cursor.tenant_bytes("text", "t\u00e9nant") == b"t\xc3\xa9nant"
+    # binary: the stored bytes, whatever the driver wraps them in.
+    for stored in (b"\x00\xff\x10", bytearray(b"\x00\xff\x10"),
+                   memoryview(b"\x00\xff\x10")):
+        assert cursor.tenant_bytes("binary", stored) == b"\x00\xff\x10"
+    # int: decimal ASCII, a sign only when negative, no leading zeros.
+    assert cursor.tenant_bytes("int", 42) == b"42"
+    assert cursor.tenant_bytes("int", -7) == b"-7"
+    assert cursor.tenant_bytes("int", 0) == b"0"
+    # uuid: lowercase and hyphenated from a `uuid.UUID` (PostgreSQL), from
+    # SQLite's 32 hex digits, and from the hyphenated text.
+    assert cursor.tenant_bytes("uuid", one) == hyphenated
+    assert cursor.tenant_bytes("uuid", one.hex) == hyphenated
+    assert cursor.tenant_bytes("uuid", str(one)) == hyphenated
+    assert cursor.tenant_bytes("uuid", one.hex.upper()) == hyphenated
+    # NULL has no tenant, for every type.
+    for kind in ("text", "binary", "int", "uuid"):
+        assert cursor.tenant_bytes(kind, None) is None
+
+
+def test_an_empty_tenant_is_no_tenant():
+    """§5.5: a provider may map `b""` to the scope of no tenant, so an
+    empty text or binary value fails closed like NULL."""
+    assert cursor.tenant_bytes("text", "") is None
+    for empty in (b"", bytearray(), memoryview(b"")):
+        assert cursor.tenant_bytes("binary", empty) is None
+
+
+def test_uuid_text_is_32_hex_or_canonical_and_nothing_else():
+    good = "0123456789abcdef0123456789abcdef"
+    assert cursor.tenant_bytes("uuid", good) is not None
+    for bad in ("0x0123456789abcdef0123456789abcd",
+                " 0123456789abcdef0123456789abcde",
+                "urn:0123456789abcdef0123456789abcdef",
+                "0123-4567-89ab-cdef0123-456789abcdef",
+                "{01234567-89ab-cdef-0123-456789abcdef}",
+                good + "\n", good[:-1] + "g"):
+        assert cursor.tenant_bytes("uuid", bad) is None, bad
+
+
+def test_a_stored_value_of_the_wrong_type_has_no_tenant():
+    """SQLite keeps a value's old storage class after an `AlterField`;
+    coercing it would bind a tenant nobody has (§5.5)."""
+    wrong = {
+        "binary": [5, "abc", 7.9, True],
+        "text": [b"abc", memoryview(b"abc"), 5, 7.9],
+        "int": [7.9, "7", b"7", True, False],
+        "uuid": [5, b"0123", 7.9, "not-a-uuid", "0123", "{" + "a" * 30 + "}",
+                 uuid.uuid4().bytes],
+    }
+    for kind, values in wrong.items():
+        for value in values:
+            assert cursor.tenant_bytes(kind, value) is None, (kind, value)
+
+
+# -- BF-27: a conversion the adapter names (§6.1, §9 item 6) -------------------
+
+def _procedure_text_6():
+    text = PROCEDURE.read_text(encoding="utf-8")
+    after = text[text.index("**6. Before a new in-place `encrypt` run"):]
+    return re.search(r"```\n(.*?)\n```", after, re.S).group(1)
+
+
+def test_the_in_place_conversion_text_is_the_procedures():
+    assert IN_PLACE_CONVERSION == _procedure_text_6()
+
+
+@pytest.mark.skipif(connection.vendor != "postgresql",
+                    reason="PostgreSQL only: the conversion route PROCEDURE "
+                           "§6.1 names is Django's AlterField into bytea "
+                           "(#252); SQLite names no column")
+def test_bf27_an_in_place_binary_column_needs_the_conversion_flag(permissive):
+    seed_tenants(TenantInPlace, tenant_rows(5))
+    before = all_raw(TenantInPlace, "secret")
+    base = ("encrypt", "tests.TenantInPlace", "--columns", "secret",
+            "--tenant", "tenant", "--rows-per-second", "100000")
+
+    # Text 1 acknowledged, text 6 not.
+    out, _, error = command(*base, "--acknowledge-preexisting-backups")
+    assert error is not None
+    assert "--acknowledge-in-place-conversion" in str(error)
+    assert IN_PLACE_CONVERSION in out and PREEXISTING_BACKUPS not in out
+    assert "tests.TenantInPlace.secret" in out
+    assert (all_raw(TenantInPlace, "secret"), run_rows()) == (before, 0)
+
+    # Neither: both printed before the refusal, both flags named.
+    out, _, error = command(*base)
+    assert PREEXISTING_BACKUPS in out and IN_PLACE_CONVERSION in out
+    assert "--acknowledge-preexisting-backups" in str(error)
+    assert "--acknowledge-in-place-conversion" in str(error)
+    assert (all_raw(TenantInPlace, "secret"), run_rows()) == (before, 0)
+
+    # Both flags: the run starts.
+    out, _, error = command(*base, "--acknowledge-preexisting-backups",
+                            "--acknowledge-in-place-conversion")
+    assert error is None
+    assert json.loads(out.splitlines()[-1])["values_written"] == 5
+
+
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="PostgreSQL only")
+def test_bf27_an_empty_table_and_a_two_column_run_need_no_flag(permissive):
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant")
+    assert error is None and IN_PLACE_CONVERSION not in out
+    LegacyTwoColumn.objects.create(email_legacy="a@b.example")
+    out, _, error = command(
+        "encrypt", "tests.LegacyTwoColumn", "--columns", "email",
+        "--source", "email=email_legacy", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups")
+    assert error is None and IN_PLACE_CONVERSION not in out
+
+
+@pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
+def test_bf27_is_not_applicable_on_sqlite(permissive):
+    """SQLite's conversion keeps the value (§6.1 names no column there), so
+    the flag is not asked for, and the run starts without it."""
+    seed_tenants(TenantInPlace, tenant_rows(5))
+    assert encrypt.in_place_conversion_columns(
+        encrypt.plan(TenantInPlace, ["secret"], {}, "tenant")) == []
+
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups")
+
+    assert error is None
+    assert IN_PLACE_CONVERSION not in out
+    assert json.loads(out.splitlines()[-1])["values_written"] == 5
+
+
+@isolate_apps("tests")
+def test_in_place_conversion_columns_name_every_in_place_target_on_postgres(
+        permissive, monkeypatch):
+    """The binding's rule, whichever database the suite runs on: every
+    in-place target, `base64` included (a `base64` column converted from
+    `bytea` by a path the guard cannot see holds `\\x41`-style text)."""
+    from django.db import models
+
+    class Text(models.Model):
+        name = Encrypted(models.CharField(max_length=50), storage="base64",
+                         column_uuid="018f3c2e-0000-7000-8000-0000000000a1")
+        fieldseal = FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-0000000000a0")
+
+    binary = encrypt.plan(TenantInPlace, ["secret"], {}, "tenant")
+    base64_plan = encrypt.plan(Text, None, {})
+    two = encrypt.plan(LegacyTwoColumn, ["email"], {"email": "email_legacy"})
+    real = connections[binary.alias].vendor
+    assert real != "sqlite" or encrypt.in_place_conversion_columns(
+        base64_plan) == []
+
+    monkeypatch.setattr(type(connections[binary.alias]), "vendor",
+                        "postgresql")
+    assert encrypt.in_place_conversion_columns(binary) == ["secret"]
+    assert encrypt.in_place_conversion_columns(base64_plan) == ["name"]
+    assert encrypt.in_place_conversion_columns(two) == []
+    monkeypatch.setattr(type(connections[binary.alias]), "vendor", "sqlite")
+    assert encrypt.in_place_conversion_columns(base64_plan) == []
+
+
+# -- the tenant in the two-column shape; NULL tenants; wrong types -------------
+
+def test_bf23_the_two_column_shape_writes_under_each_rows_tenant():
+    rows = [(1, "a-one"), (2, "a-two"), (1, "b-one"), (2, "b-two")]
+    keys = [TenantTwoColumn.objects.create(tenant=t, secret_legacy=v).pk
+            for t, v in rows]
+
+    outcome = go(TenantTwoColumn, columns=["secret"],
+                 sources={"secret": "secret_legacy"}, tenant="tenant")
+
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written == 4 and outcome.run.values_failed == 0
+    for (tenant, value), pk in zip(rows, keys, strict=True):
+        with tenant_scope(str(tenant)):
+            assert TenantTwoColumn.objects.get(pk=pk).secret == value
+        with tenant_scope(str(3 - tenant)):
+            with pytest.raises(FieldsealError):
+                TenantTwoColumn.objects.get(pk=pk)
+
+
+def test_a_null_tenant_row_with_nothing_pending_is_not_a_failure(permissive):
+    """§5.5: a NULL tenant fails only a tenant-bound `pending` value. A
+    value already an envelope is `current`, a NULL value is `null`."""
+    with tenant_scope("1"):
+        sealed = TenantInPlace.objects.create(tenant=None, secret="sealed")
+    TenantInPlace.objects.create(tenant=None)
+    envelope = raw(TenantInPlace, sealed.pk, "secret")
+    assert get_client().is_ciphertext(envelope)
+
+    outcome = go(TenantInPlace, **TENANT_RUN)
+
+    run = outcome.run
+    assert (run.values_current, run.values_null) == (1, 1)
+    assert run.values_failed == run.values_written == 0
+    assert raw(TenantInPlace, sealed.pk, "secret") == envelope
+
+
+@pytest.mark.skipif(connection.vendor != "sqlite",
+                    reason="SQLite keeps a value's storage class")
+def test_bf23_a_tenant_of_the_wrong_storage_class_is_context_unavailable(
+        permissive):
+    """A column converted by an `AlterField` keeps its old values' storage
+    class on SQLite. A text or a real in an integer tenant column has no
+    tenant, and is a failure with the bytes unchanged, not a coerced one."""
+    keys = seed_tenants(TenantInPlace, [
+        (1, "fine"), (1, "text-tenant"), (1, "real-tenant")])
+    plant(TenantInPlace, keys[1], "tenant", "abc")
+    plant(TenantInPlace, keys[2], "tenant", 7.9)
+    legacy = {pk: raw(TenantInPlace, pk, "secret") for pk in keys[1:]}
+
+    outcome = go(TenantInPlace, **TENANT_RUN)
+
+    assert outcome.run.values_written == 1
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 2}
+    for pk, stored in legacy.items():
+        assert raw(TenantInPlace, pk, "secret") == stored
+
+
+@pytest.mark.skipif(connection.vendor != "sqlite",
+                    reason="SQLite keeps a value's storage class")
+def test_an_integer_in_a_uuid_tenant_column_is_context_unavailable(
+        permissive):
+    obj = TenantUuidInPlace.objects.create(tenant=uuid.uuid4())
+    plant(TenantUuidInPlace, obj.pk, "secret", b"legacy")
+    plant(TenantUuidInPlace, obj.pk, "tenant", 5)
+
+    outcome = go(TenantUuidInPlace, columns=["secret"], tenant="tenant")
+
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 1}
+    assert raw(TenantUuidInPlace, obj.pk, "secret") == b"legacy"
+
+
+@pytest.mark.parametrize("unsupported", ["datetime", "encrypted"])
+@isolate_apps("tests")
+def test_resume_with_the_tenant_column_now_encrypted_or_unsupported_is_refused(
+        permissive, unsupported):
+    """The recorded tenant column is now an `Encrypted` field, or a type
+    §5.5 does not take: a refusal naming the member, not `tenant_type`'s."""
+    from django.db import models
+
+    run_id = killed_tenant_run()
+    run = state.load_run(connection, run_id)
+    member = f"columns[{_tenant_uuid_hex()}].tenant"
+    field = (models.DateTimeField(null=True) if unsupported == "datetime"
+             else Encrypted(models.IntegerField(), null=True,
+                            column_uuid="018f3c2e-0000-7000-8000-0000000000f9"))
+
+    with pytest.raises(BackfillError) as refused:
+        encrypt.plan_for(run, [_alt_tenant_model(field)])
+
+    assert str(refused.value).count(member) == 1
+
+
+# -- text and binary tenant columns, end to end (BF-23) ------------------------
+
+@pytest.mark.parametrize("model, one, two, empty", [
+    (TenantTextInPlace, "acme", "Zürich", ""),
+    (TenantBinaryInPlace, b"\x00\x01\xfe", b"\xff\x10", b""),
+], ids=["text", "binary"])
+def test_bf23_a_text_or_binary_tenant_is_written_as_stored(
+        permissive, model, one, two, empty):
+    """`str` is its UTF-8 bytes and bytes are as stored (§5.5). NULL and
+    empty tenants are failures with the bytes unchanged."""
+    shared = "Shared-Value"
+    rows = [(one, shared), (two, shared), (one, "only-one"),
+            (two, "only-two"), (None, "nobody"), (empty, "empty-tenant")]
+    keys = []
+    for tenant, value in rows:
+        obj = model.objects.create(tenant=tenant)
+        plant(model, obj.pk, "secret", value.encode())
+        keys.append(obj.pk)
+    unchanged = {pk: raw(model, pk, "secret") for pk in keys[4:]}
+
+    outcome = go(model, columns=["secret"], tenant="tenant")
+
+    assert outcome.run.values_written == 4
+    assert outcome.failures_by_code == {"CONTEXT_UNAVAILABLE": 2}
+    for pk, stored in unchanged.items():
+        assert raw(model, pk, "secret") == stored
+        assert raw(model, pk, "secret_bidx") is None
+    for (tenant, value), pk in zip(rows[:4], keys[:4], strict=True):
+        other = two if tenant == one else one
+        with tenant_scope(tenant):
+            assert model.objects.get(pk=pk).secret == value
+            assert [o.pk for o in model.objects.filter(secret=value)] == [pk]
+        with tenant_scope(other):
+            with pytest.raises(FieldsealError):
+                model.objects.get(pk=pk)
+            assert pk not in [o.pk for o in model.objects.filter(secret=value)]
+
+
+# -- §12: the version-1 warning ------------------------------------------------
+
+def _as_version_1(run_id):
+    document = json.loads(state.load_run(connection, run_id).config)
+    document["procedure_version"] = 1
+    for column in document["columns"]:
+        del column["tenant"]
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s, "
+            "procedure_version = 1 WHERE run_id = %s",
+            [text, config.digest(text), run_id])
+    assert state.abandon(connection, run_id)
+
+
+def test_a_version_1_run_that_converted_values_warns_for_a_tenant_bound_column(
+        permissive):
+    run_id = killed_tenant_run()
+    _as_version_1(run_id)
+
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    assert error is None
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+    (warning,) = [ln for ln in out.splitlines() if ln.startswith("warning:")]
+    assert run_id in warning and "secret" in warning
+    assert "cannot tell whether" in warning and "PROCEDURE §12" in warning
+
+
+def test_a_version_1_run_warns_nothing_when_no_target_is_tenant_bound(shape):
+    run_id = _killed_run(shape)
+    _as_version_1(run_id)
+    args = [f"--source={k}={v}" for k, v in shape.sources.items()]
+
+    out, _, error = command(
+        "encrypt", f"tests.{shape.model.__name__}", "--columns",
+        ",".join(shape.columns), "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion", *args)
+
+    assert error is None
+    assert "warning:" not in out
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+
+
+def test_a_version_1_run_warns_only_for_columns_it_covered(permissive):
+    """The stored version-1 `columns` list the run's columns. A tenant-bound
+    column of the new run that the version-1 run never covered is one it
+    cannot have written, so it is not named (PROCEDURE §12)."""
+    run_id = killed_tenant_run()
+    _as_version_1(run_id)
+    document = json.loads(state.load_run(connection, run_id).config)
+    for column in document["columns"]:
+        column["column_uuid"] = "0" * 32  # a column of another declaration
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, config.digest(text), run_id])
+
+    out, _, error = command(
+        "encrypt", "tests.TenantInPlace", "--columns", "secret",
+        "--tenant", "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    assert error is None
+    assert "warning:" not in out
+    assert json.loads(out.splitlines()[-1])["status"] == "complete"
+
+
+@isolate_apps("tests")
+def test_resume_of_a_run_recording_two_tenant_columns_is_refused(permissive):
+    """This frontend binds one tenant column per run and reads one tenant per
+    row for every target. A stored run whose columns name two (another
+    frontend's, or a hand edit) is refused, naming the column whose tenant
+    is not the first one's, rather than writing it under the first's."""
+    from django.db import models
+
+    from fieldseal_django import BlindIndex
+
+    run_id = killed_tenant_run()
+    second = "018f3c2e00007000800000000000ff01"
+    document = json.loads(state.load_run(connection, run_id).config)
+    extra = dict(document["columns"][0], column_uuid=second, indexes=[],
+                 tenant={"column": "region", "type": "int"})
+    document["columns"] = sorted(document["columns"] + [extra],
+                                 key=lambda c: c["column_uuid"])
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s "
+            "WHERE run_id = %s", [text, config.digest(text), run_id])
+    before = tenant_snapshot(run_id)
+    alt = type("TenantInPlace", (models.Model,), {
+        "__module__": "tests.models",
+        "tenant": models.IntegerField(null=True),
+        "region": models.IntegerField(null=True),
+        "secret": Encrypted(
+            models.CharField(max_length=100),
+            column_uuid="018f3c2e-0000-7000-8000-0000000000f1", null=True,
+            index=BlindIndex(
+                suite_id=0xFF01, index_id="exact", idf="hmac-sha512",
+                normalize="nfc-casefold-v1", truncate_bits=15,
+                projected_population=100_000)),
+        "secret_bidx": Encrypted.index_column("secret"),
+        "other": Encrypted(models.CharField(max_length=100),
+                           column_uuid=str(uuid.UUID(second)), null=True),
+        "fieldseal": FieldsealMeta(
+            table_uuid="018f3c2e-0000-7000-8000-0000000000f0",
+            tenant_bound=True),
+    })
+
+    with pytest.raises(BackfillError) as refused:
+        encrypt.plan_for(state.load_run(connection, run_id), [alt])
+
+    message = str(refused.value)
+    assert f"columns[{second}].tenant" in message
+    assert f"columns[{_tenant_uuid_hex()}].tenant" not in message
+    assert tenant_snapshot(run_id) == before

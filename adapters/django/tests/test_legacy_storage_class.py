@@ -29,6 +29,7 @@ from fieldseal.errors import NotCiphertext, UnknownFormatVersion
 from fieldseal_django import Encrypted, FieldsealMeta
 from fieldseal_django.apps import get_client, reset_client
 from fieldseal_django.errors import FieldsealNotSupported
+from fieldseal_django.signals import plaintext_read_counts
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -150,6 +151,8 @@ def test_a_pass_through_mode_reads_what_the_plain_field_read(
         with read_mode(mode) as client:
             assert Sealed.objects.get(pk=pk).v == before
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
 
 
 @sqlite_only
@@ -193,6 +196,8 @@ def test_text_the_inner_field_cannot_read_is_refused_and_counted(
                                match=f"{name} could not read it"):
                 Sealed.objects.get(pk=pk)
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
         with read_mode("strict"), pytest.raises(NotCiphertext):
             Sealed.objects.get(pk=pk)
 
@@ -211,6 +216,8 @@ def test_text_in_a_bytes_column_is_not_base64_decoded():
                                match="takes bytes, not str"):
                 Sealed.objects.get(pk=pk)
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
 
 
 @sqlite_only

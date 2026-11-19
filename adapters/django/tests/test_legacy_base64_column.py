@@ -35,6 +35,7 @@ from fieldseal.errors import NotCiphertext
 from fieldseal_django import Encrypted, FieldsealMeta
 from fieldseal_django.apps import get_client, reset_client
 from fieldseal_django.errors import FieldsealNotSupported
+from fieldseal_django.signals import plaintext_read_counts
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -131,6 +132,8 @@ def test_a_pass_through_mode_reads_legacy_text_as_stored(mode, literal):
         with read_mode(mode) as client:
             assert Sealed.objects.get(pk=pk).v == literal
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
 
 
 @isolate_apps("tests")
@@ -158,6 +161,8 @@ def test_an_envelope_reads_in_every_mode(mode):
         with read_mode(mode) as client:
             assert Sealed.objects.get(pk=pk).v == "Ada Lovelace"
             assert client.plaintext_reads == 0
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {}
 
 
 @isolate_apps("tests")
@@ -187,6 +192,8 @@ def test_a_stored_text_whose_decode_is_a_reserved_version_blob_passes():
         with read_mode("permissive") as client:
             assert Sealed.objects.get(pk=pk).v == RESERVED
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
         with read_mode("strict"), pytest.raises(NotCiphertext):
             Sealed.objects.get(pk=pk)
 
@@ -201,6 +208,8 @@ def test_a_bytes_inner_field_reads_the_texts_utf8():
         with read_mode("permissive") as client:
             assert Sealed.objects.get(pk=pk).v == b"Anna"
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
 
 
 @isolate_apps("tests")
@@ -217,6 +226,8 @@ def test_a_non_canonical_int_text_is_refused_and_still_counted():
                                match="canonical `int` rendering"):
                 Sealed.objects.get(pk=pk)
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
         with read_mode("strict"), pytest.raises(NotCiphertext):
             Sealed.objects.get(pk=pk)
 
@@ -234,3 +245,5 @@ def test_a_non_text_value_is_refused():
             with pytest.raises(FieldsealNotSupported, match="#245"):
                 Sealed.objects.get(pk=pk)
             assert client.plaintext_reads == 1
+            # Per model and field, the same reads (#246).
+            assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
