@@ -31,8 +31,9 @@ class TestContexts:
         # Patient.email, Patient.note, Patient.age, Patient.nickname,
         # Person.legal_name, Visit.reason, TwoIndexColumns.email, and the
         # backfill fixtures: LegacyInPlace.secret and .memo,
-        # LegacyTwoColumn.email and .age, LegacyUuidKey.name, SuiteTwoDoc.handle.
-        assert len(columns) == 13
+        # LegacyTwoColumn.email and .age, LegacyUuidKey.name, SuiteTwoDoc.handle,
+        # and TenantMixed.a (#291; its tenant-bound `b` is not warmed).
+        assert len(columns) == 14
 
     def test_an_indexed_column_warms_its_index_key_too(self):
         """spec §5.2: the index key is a **sibling** of the tenant DEK, not
