@@ -1,4 +1,5 @@
-"""Changing a column into an `Encrypted(..., storage="binary")` one (#252).
+"""Changing a column into an `Encrypted(..., storage="binary")` one (#252), and
+refusing a change of an `Encrypted` column's identity (#288).
 
 **What goes wrong without this module.** A migration's plain `AlterField` from
 `CharField(...)` to `Encrypted(CharField(...))` changes the column type to
@@ -31,13 +32,51 @@ way to supply its own `USING` expression.
   the field already reads (#251).
 - `refuse_unsafe_alter_fields`, a `pre_migrate` receiver. Before `migrate`
   runs any DDL it walks the plan with the states Django's executor will use,
-  and on PostgreSQL it refuses a plain `AlterField` that would cast a column
-  between `bytea` and another type with an `Encrypted` field on either side;
-  on every backend it refuses a `ConvertToEncrypted` that would refuse when
-  it runs. Spec §10.2:
-  where a path would silently return wrong results, the adapter MUST throw.
-  `makemigrations` writes the plain `AlterField`, so without the receiver
-  the default path is the corrupting one.
+  forwards or backwards, and refuses (spec §10.2: where a path would silently
+  return wrong results, the adapter MUST throw):
+
+  - on every backend, an `AlterField` between two `Encrypted` declarations
+    that changes the `column_uuid`, the inner field's spec §3.6 logical type,
+    `tenant_bound` or `storage` (#288), and a `ConvertToEncrypted` that would
+    refuse when it runs;
+  - on PostgreSQL, a plain `AlterField` that would cast a column between
+    `bytea` and another type with an `Encrypted` field on either side (#252).
+    `makemigrations` writes the plain `AlterField`, so without the receiver
+    the default path is the corrupting one.
+
+**What #288 adds.** Four attributes are the stored value's identity, and an
+`AlterField` that changes one leaves every envelope written under an identity
+the field no longer has. Since #283 a change to the first three runs no SQL
+at all (`column_uuid`, `tenant_bound` and the inner field are in
+`non_db_attrs`); a `storage` change does run SQL (a table rebuild on SQLite,
+the bytea/text cast of #252 on PostgreSQL), which converts no value into the
+new form: a changed `column_uuid` is a key the
+field no longer derives (spec §6.1), a changed logical type is a different
+rendering (§3.6), a changed `tenant_bound` a different tenant in the key and
+context (§6; docs/12 §4), a changed `storage` a different §3.3 form. The
+receiver refuses them under `migrate --fake` as well, since `pre_migrate` does
+not say the run is fake, and when a migration is unapplied, which is the same
+change reversed. What passes: a change that keeps the logical type
+(`max_length`, `EmailField` to `CharField`) and a change to `index`,
+`unindexable_noun` or any other attribute the stored bytes and the decrypt
+context do not depend on; and a `SeparateDatabaseAndState` whose
+`state_operations` carry the `AlterField`, the operator's statement that the
+values were re-encrypted some other way (only its database operations are
+checked). `EncryptedIndex` and `BlindIndex` changes are not refused here
+(#303). `tenant_bound` is compared as declared, so a change between unstated
+and a value is refused: the model's `FieldsealMeta` decides an unstated one,
+and a migration state does not carry it.
+
+The walk starts only for a plan with a `ConvertToEncrypted` in it, or an
+`AlterField` on PostgreSQL, or elsewhere an `AlterField` to an `Encrypted`
+field, since the identity check needs one on the new side.
+
+**Scope.** The refusal guards `migrate` only. A deployment that ships a new
+declaration without running `migrate`, or a declaration change with no
+migration generated for it, is not stopped: the refusal prevents the loss only
+when a failed `migrate` stops the deploy. A fresh database, test databases
+included, runs the whole history, so a historical `AlterField` that changed
+one of the four is refused there although the table is empty (docs/12 §6).
 
 Neither runs any cryptography: the conversion is the database's own text
 encoding, and the backfill (`tools/backfill/PROCEDURE.md`) does the
@@ -48,7 +87,8 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterator
+import uuid as _uuid
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from django.db import connections
@@ -63,6 +103,7 @@ from .codec import logical_type
 from .errors import FieldsealNotSupported
 
 _ISSUE = "https://github.com/fieldseal-dev/fieldseal-spec/issues/252"
+_ISSUE_288 = "https://github.com/fieldseal-dev/fieldseal-spec/issues/288"
 
 #: The PostgreSQL column types `convert_to` reads as characters: what
 #: Django's `CharField` family (`varchar(n)`, or `varchar` with no length)
@@ -315,43 +356,70 @@ _last_plan: list[Any] | None = None
 def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
                                plan: list[Any] | None = None,
                                **kwargs: Any) -> None:
-    """`pre_migrate` receiver: refuse the plan before any DDL runs if a plain
-    `AlterField` in it would cast an `Encrypted` column into or out of
-    `bytea` on PostgreSQL, or a `ConvertToEncrypted` in it would refuse when
-    it ran, on any backend (#252)."""
+    """`pre_migrate` receiver: refuse the plan before any DDL runs if
+
+    - on any backend, an `AlterField` in it changes an `Encrypted` column's
+      `column_uuid`, its inner field's spec §3.6 logical type, its
+      `tenant_bound` or its `storage`, between two `Encrypted` declarations,
+      in either direction (#288);
+    - on PostgreSQL, a plain `AlterField` in it would cast an `Encrypted`
+      column into or out of `bytea` (#252);
+    - on any backend, a `ConvertToEncrypted` in it would refuse when it ran
+      (#252).
+    """
     global _last_plan
     if not plan or plan is _last_plan:
         return
     _last_plan = plan
     connection = connections[using]
-    # The one place the backend decides what is checked: on PostgreSQL every
-    # `AlterField`, `ConvertToEncrypted` included; elsewhere a plain
-    # `AlterField` casts nothing, so only conversions are worth the walk.
-    checked = (AlterField if connection.vendor == "postgresql"
-               else ConvertToEncrypted)
-    if not any(_has_operation(m.operations, checked) for m, _ in plan):
+    worth = _worth_a_walk(connection)
+    if not any(_has_operation(m.operations, worth) for m, _ in plan):
         return
-    for problem in _unsafe_alter_fields(plan, connection, checked):
+    for problem in _unsafe_alter_fields(plan, connection):
         raise FieldsealNotSupported(problem)
 
 
-def _has_operation(operations: list[Any], checked: type) -> bool:
+def _worth_a_walk(connection: Any) -> Callable[[Any], bool]:
+    """Which operations make the plan worth walking, on this backend.
+
+    The one place the backend decides what is walked. A `ConvertToEncrypted`
+    always is, since `_check_conversion` raises its own refusals before the
+    plan starts (#252). On PostgreSQL every `AlterField` can be a bytea cast,
+    so every one is. Elsewhere only the identity check applies to a plain
+    `AlterField` (#288), and it needs an `Encrypted` declaration on the new
+    side, so an `AlterField` to a plain field does not start a walk. The walk
+    itself is cheap (it renders a state only in `_allowed`, for an operation
+    it is about to refuse); this keeps it off plans that cannot need it.
+    """
+    postgresql = connection.vendor == "postgresql"
+
+    def worth(op: Any) -> bool:
+        return isinstance(op, ConvertToEncrypted) or (
+            isinstance(op, AlterField)
+            and (postgresql or _is_encrypted(op.field)))
+
+    return worth
+
+
+def _has_operation(operations: list[Any],
+                   worth: Callable[[Any], bool]) -> bool:
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
-            if _has_operation(op.database_operations, checked):
+            if _has_operation(op.database_operations, worth):
                 return True
-        elif isinstance(op, checked):
+        elif worth(op):
             return True
     return False
 
 
-def _unsafe_alter_fields(plan: list[Any], connection: Any,
-                         checked: type) -> Iterator[str]:
+def _unsafe_alter_fields(plan: list[Any],
+                         connection: Any) -> Iterator[str]:
     """Walk `plan` with the states Django's executor will give each
     migration, and describe each unsafe `AlterField` in it."""
     from django.db.migrations.executor import MigrationExecutor
     from django.db.migrations.state import ProjectState
 
+    backwards = bool(plan[0][1])
     executor = MigrationExecutor(connection)
     loader = executor.loader
     if any((m.app_label, m.name) not in loader.graph.nodes for m, _ in plan):
@@ -366,7 +434,7 @@ def _unsafe_alter_fields(plan: list[Any], connection: Any,
                if key in loader.graph.nodes}
     to_run = {m for m, _ in plan}
     state = ProjectState(real_apps=loader.unmigrated_apps)
-    if plan[0][1]:
+    if backwards:
         # As `_migrate_all_backwards`: each migration is unapplied against
         # the state before it in `full_plan` order, built from every applied
         # migration ahead of it, including those on other branches.
@@ -378,7 +446,7 @@ def _unsafe_alter_fields(plan: list[Any], connection: Any,
                 state = migration.mutate_state(state, preserve=True)
                 to_run.remove(migration)
                 yield from _scan(migration, migration.operations, before,
-                                 connection, checked)
+                                 connection, backwards)
             elif migration in applied:
                 migration.mutate_state(state, preserve=False)
         return
@@ -394,11 +462,11 @@ def _unsafe_alter_fields(plan: list[Any], connection: Any,
         if migration in to_run:
             to_run.remove(migration)
             yield from _scan(migration, migration.operations, state,
-                             connection, checked)
+                             connection, backwards)
 
 
 def _scan(migration: Any, operations: list[Any], state: Any,
-          connection: Any, checked: type) -> Iterator[str]:
+          connection: Any, backwards: bool) -> Iterator[str]:
     """Check each operation against `state`, advancing it as Django does."""
     app_label = migration.app_label
     for op in operations:
@@ -406,15 +474,15 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             # The database operations run against a copy of the state, and
             # only the state operations move the real one.
             yield from _scan(migration, op.database_operations,
-                             state.clone(), connection, checked)
+                             state.clone(), connection, backwards)
             for state_op in op.state_operations:
                 state_op.state_forwards(app_label, state)
             continue
         problem = None
         if isinstance(op, ConvertToEncrypted):
             problem = _check_conversion(migration, op, state, connection)
-        elif isinstance(op, checked):
-            problem = _check(migration, op, state, connection)
+        elif isinstance(op, AlterField):
+            problem = _check(migration, op, state, connection, backwards)
         if problem:
             yield problem
         op.state_forwards(app_label, state)
@@ -461,19 +529,139 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
     return None
 
 
-def _check(migration: Any, op: AlterField, state: Any,
-           connection: Any) -> str | None:
+def _check(migration: Any, op: AlterField, state: Any, connection: Any,
+           backwards: bool) -> str | None:
+    """Both refusals for a plain `AlterField`: the identity change, on every
+    backend (#288), and the bytea cast, on PostgreSQL only (#252). When both
+    apply the message carries both."""
     app_label = migration.app_label
     model_state = state.models.get((app_label, op.model_name_lower))
     if model_state is None:
         return None
     old = model_state.fields.get(op.name)
     new = op.field
-    if old is None or not casts_into_or_out_of_bytea(old, new, connection):
+    if old is None:
+        return None
+    changes = _identity_changes(old, new)
+    casts = (connection.vendor == "postgresql"
+             and casts_into_or_out_of_bytea(old, new, connection))
+    if not changes and not casts:
         return None
     if not _allowed(op, app_label, state, connection):
         return None
-    where = (f"{app_label}.{migration.name}: AlterField {op.name} on "
+    problems = []
+    if changes:
+        problems.append(_identity_message(migration, op, changes, backwards))
+    if casts:
+        problems.append(_cast_message(migration, op, old, connection,
+                                      backwards))
+    return " ".join(problems)
+
+
+def _uuid_text(field: Any) -> str:
+    return str(_uuid.UUID(bytes=field.column_uuid))
+
+
+def _identity_changes(old: Any, new: Any) -> list[tuple[str, str, str, str]]:
+    """What an `AlterField` from `old` to `new` changes of the identity the
+    stored values were written under, as (attribute, old, new, why).
+
+    Only between two `Encrypted` declarations: from or to a plain field is
+    the conversion (#252), whose rows hold no envelope or are being made into
+    one by the backfill. Each attribute here is one the stored bytes or the
+    decrypt context depend on (#288):
+
+    - `column_uuid` is the key-derivation and AAD identity (spec §6.1); it
+      is compared as the 16 bytes parsed, not as the string written.
+    - the inner field's spec §3.6 logical type is the rendering the
+      envelopes hold. A change inside one type (`max_length`, `EmailField` to
+      `CharField`) keeps the rendering and is not a change here.
+    - `storage`, the spec §3.3 form the envelope is stored in. It always
+      holds a resolved value (`Encrypted.__init__` defaults it to `"binary"`).
+    - `tenant_bound`, as declared: the tenant is part of the key and AAD
+      context (spec §6; docs/12 §4). `None` means the model's
+      `FieldsealMeta` decides, which a migration state does not carry, so a
+      change between `None` and a value is refused too: it may be a change,
+      and the refusal has an escape hatch where a silent pass has none.
+    """
+    if not (_is_encrypted(old) and _is_encrypted(new)):
+        return []
+    changes = []
+    if old.column_uuid != new.column_uuid:
+        changes.append((
+            "column_uuid", _uuid_text(old), _uuid_text(new),
+            "spec §6.1 binds each value's key derivation and context to "
+            "column_uuid, so every stored value, written under the old one, "
+            "no longer decrypts (fieldseal_gen_uuids calls a changed "
+            "column_uuid a data-loss event)"))
+    old_type, new_type = logical_type(old.inner), logical_type(new.inner)
+    if old_type != new_type:
+        changes.append((
+            "inner logical type",
+            f"{old_type} ({type(old.inner).__name__})",
+            f"{new_type} ({type(new.inner).__name__})",
+            "spec §3.6 fixes each type's rendering, and the stored envelopes "
+            "hold the old type's, so a read fails or misreads them"))
+    if old.tenant_bound != new.tenant_bound:
+        changes.append((
+            "tenant_bound",
+            _tenant_text(old.tenant_bound), _tenant_text(new.tenant_bound),
+            "the tenant is part of the key and context a value is encrypted "
+            "under (spec §6; docs/12 §4), so values written under one "
+            "setting do not decrypt under the other"))
+    if old.storage != new.storage:
+        changes.append((
+            "storage", old.storage, new.storage,
+            "spec §3.3 gives the envelope a binary or a base64 text form, "
+            "and nothing converts the stored values into the new one: on "
+            "SQLite the table rebuild copies each value in its old storage "
+            "class, "
+            "so every read fails with NOT_CIPHERTEXT in strict, and in "
+            "permissive a column changed from base64 to binary returns the "
+            "envelope's base64 text as the plaintext value"))
+    return changes
+
+
+def _tenant_text(declared: bool | None) -> str:
+    return ("not declared (the model's FieldsealMeta decides)"
+            if declared is None else str(declared))
+
+
+def _identity_message(migration: Any, op: AlterField,
+                      changes: list[tuple[str, str, str, str]],
+                      backwards: bool) -> str:
+    where = (f"{migration.app_label}.{migration.name}: "
+             f"{'unapplying ' if backwards else ''}AlterField {op.name} on "
+             f"{op.model_name}")
+    # Backwards, the migration's declaration is the state the column leaves
+    # and the state before it the one it arrives at.
+    parts = []
+    for attribute, before, after, why in changes:
+        if backwards:
+            before, after = after, before
+        parts.append(f"{attribute} from {before} to {after}: {why}")
+    return (
+        f"{where} changes an Encrypted column's identity: "
+        f"{'; and '.join(parts)}. Nothing converts the stored values into "
+        "the new identity, and migrate --fake would record the change "
+        "without running anything, so the values already written would be "
+        "silently lost to reads, where spec §10.2 says the adapter MUST "
+        "throw. If the values were "
+        "re-encrypted by other means, record the change in a "
+        "SeparateDatabaseAndState whose state_operations carry this "
+        "AlterField, which is your statement that they were; otherwise use "
+        "the two-column shape (docs/12 §7). Nothing has run: migrate refused "
+        f"the plan before any DDL ({_ISSUE_288}).")
+
+
+def _cast_message(migration: Any, op: AlterField, before: Any,
+                  connection: Any, backwards: bool) -> str:
+    """The #252 message. `before` is the field in the state ahead of the
+    migration; unapplying, the column goes from `op.field` back to it."""
+    app_label = migration.app_label
+    old, new = (op.field, before) if backwards else (before, op.field)
+    where = (f"{app_label}.{migration.name}: "
+             f"{'unapplying ' if backwards else ''}AlterField {op.name} on "
              f"{op.model_name}")
     sealed = new if _is_encrypted(new) else old
     plain = old if sealed is new else new
