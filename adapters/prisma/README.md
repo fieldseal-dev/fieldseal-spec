@@ -266,6 +266,7 @@ Node event loop, and every other request in the process, for that time. See
 | `writeSuite` | **required** | The suite new values are written under: `0xff01`. |
 | `armProvisionalSuites` | `false` | `true` to allow writing under a provisional suite. Setting `FIELDSEAL_ARM_PROVISIONAL_SUITES=1` in the environment does the same. Reading never needs it. |
 | `readMode` | `"strict"` | `"permissive"` or `"readonly"` pass non-envelope values through, for migrating a column that still holds plaintext; `onPlaintextRead` is called for each. |
+| `onPlaintextRead` | none | Called with the model and field name (never the value) for each value the core passed through. It agrees with the core's plaintext-read count read for read: never in `strict`, and not for a read the core refused, such as a reserved format version in a `Bytes` column, or one refused before the core, such as a tenant-bound read with no tenant. The extension does not expose the core's `metrics`; the core's own count reaches you as the `"plaintext-read"` kind of `onWarning`. A read retried after a key miss (`warmOnKeyMiss`) counts again, in both. A hook that throws fails the query. |
 | `tenant` | none | A function `(args, model, operation) => tenant` resolving the tenant from the query, as an alternative to `tenantScope`. |
 | `warmOnKeyMiss` | `true` | Fetch a missing key and retry, instead of failing; see *Keys* below. |
 | `strictRaw` | `false` | `true` makes `$queryRaw` and `$executeRaw` throw; see *Raw SQL* below. |
