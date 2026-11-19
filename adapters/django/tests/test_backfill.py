@@ -1032,6 +1032,34 @@ def test_bf09_the_report_says_the_table_is_not_fully_converted(in_place):
     assert report["failures_by_code"] == {"UNKNOWN_FORMAT_VERSION": 1}
 
 
+def test_in_place_reads_are_plaintext_reads_and_a_raising_receiver_is_harmless(
+        in_place):
+    """#246: the in-place read is the adapter's permissive read, so each
+    legacy value it converts is one plaintext read for its column, in the
+    per-field count as in the core's (`docs/12` §4). A `plaintext_read`
+    receiver that raises is logged, not raised: it must not turn every row
+    into `INTERNAL` and convert nothing."""
+    from fieldseal_django.signals import plaintext_read, plaintext_read_counts
+
+    in_place.seed(emails(3))
+    key = (LegacyInPlace._meta.label, "secret")
+    before = plaintext_read_counts().get(key, 0)
+    core_before = get_client().plaintext_reads
+
+    def receiver(**kwargs):
+        raise RuntimeError("metrics backend down")
+
+    plaintext_read.connect(receiver, weak=False)
+    try:
+        outcome = go(in_place)
+    finally:
+        plaintext_read.disconnect(receiver)
+
+    assert (outcome.run.values_written, outcome.run.values_failed) == (3, 0)
+    assert plaintext_read_counts().get(key, 0) - before == 3
+    assert get_client().plaintext_reads - core_before == 3
+
+
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
 def test_in_place_on_sqlite_a_text_class_value_is_converted(in_place):
     """SQLite keeps a value's storage class whatever the column is declared
