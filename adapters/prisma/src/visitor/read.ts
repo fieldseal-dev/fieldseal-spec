@@ -30,7 +30,7 @@ export interface ReadCtx {
   readonly exposeIndexColumns: boolean;
   /** Every mutation below is recorded before it is applied -- `journal.ts`. */
   readonly journal: Journal;
-  /** Reported per plaintext read in non-strict modes (spec §10.3). */
+  /** Reported per value the core passed through (spec §10.3); never in strict. */
   readonly onPlaintextRead?: ((model: string, field: string) => void) | undefined;
 }
 
@@ -74,18 +74,28 @@ export function applyReads(model: ResolvedModel, result: unknown, ctx: ReadCtx):
       envelope = Buffer.from(stored as string, "utf8");
     }
 
-    // In `permissive`, the core returns a plaintext value unchanged rather than
-    // raising; the hook reports model and field, never the value (spec §10.3).
-    if (ctx.onPlaintextRead !== undefined && !ctx.client.isCiphertext(envelope)) {
+    const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
+    const plain = ctx.client.decrypt(envelope, fieldCtx);
+
+    // The per-field form of the core's plaintext-read count (spec §10.3): model
+    // and field, never the value. It fires at the core's own point, so the two
+    // agree read for read (#293). Once `decrypt` has returned, a non-envelope
+    // operand is exactly the core's pass-through branch: `strict` raised
+    // NOT_CIPHERTEXT, a reserved version raised UNKNOWN_FORMAT_VERSION, and a
+    // read `buildContext` refused never reached the core -- none of them
+    // counted. It fires before the codec renders the value, as the core counts
+    // before the adapter sees it, so a passed-through value the codec then
+    // refuses is still a plaintext read. A successful strict read is always an
+    // envelope, so strict skips the second recognition.
+    if (
+      ctx.onPlaintextRead !== undefined &&
+      ctx.client.readMode !== "strict" &&
+      !ctx.client.isCiphertext(envelope)
+    ) {
       ctx.onPlaintextRead(model.model, enc.field);
     }
 
-    const fieldCtx = buildContext(model, enc, ctx.rootArgs, ctx.operation, ctx.context);
-    ctx.journal.set(
-      result,
-      enc.field,
-      fromBytes(ctx.client.decrypt(envelope, fieldCtx), enc, `${model.model}.${enc.field}`),
-    );
+    ctx.journal.set(result, enc.field, fromBytes(plain, enc, `${model.model}.${enc.field}`));
   }
 
   if (!ctx.exposeIndexColumns) {
