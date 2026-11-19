@@ -379,6 +379,7 @@ the target matrix in `docs/13` §6.
 | Malformed declaration | 🛑 fails `prisma generate` | `fails the generate on a malformed declaration…` |
 | `@unique`/`@id`/`@@unique` on an encrypted column or sibling | 🛑 fails `prisma generate` (spec §7.10) — a unique sibling is delayed data loss under §7.4 collisions | `uniqueness refusals (spec §7.10)` |
 | Legacy plaintext row on a base64 column | 🛑 strict raises NOT_CIPHERTEXT / ⚠️ permissive returns the actual value and fires `onPlaintextRead` | `a stored value that is not an envelope…` |
+| `onPlaintextRead` against the core's plaintext-read count | ✅ agrees read for read (#293): fires after `decrypt` passed a non-envelope through, before the codec; never in `strict`, not on a reserved version in a `Bytes` column, not on a read refused before the core; counted again, in both, when an L4 retry repeats the pass | `onPlaintextRead agrees with the core's plaintext-read count…` |
 | Unindexable value, `on_unindexable: "refuse"` | 🛑 `FieldsealUnindexable` carrying the code point and offset | `refuse mode raises FieldsealUnindexable…` |
 | Unindexable value, `on_unindexable: "bucket"` | ✅ real value stored; the §7.2 reserved marker's index derived | `bucket mode stores the real value…` |
 | `on_unindexable: "bucket"` without the §7.2 ceremony | 🛑 refused at construction, naming the column | `refuses \`on_unindexable: "bucket"\` without the §7.2 ceremony`, `constructs once the ceremony is supplied in code` |
