@@ -33,7 +33,13 @@ from django.apps import apps as django_apps
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import OperationalError, connection, connections, transaction
+from django.db import (
+    IntegrityError,
+    OperationalError,
+    connection,
+    connections,
+    transaction,
+)
 from django.test.utils import isolate_apps, override_settings
 from fieldseal import ValidatedIndex, index_registry_key
 from fieldseal.errors import FieldsealError
@@ -55,6 +61,7 @@ from tests.models import (
     Patient,
     TenantBinaryInPlace,
     TenantInPlace,
+    TenantMixed,
     TenantTextInPlace,
     TenantTwoColumn,
     TenantUuidInPlace,
@@ -105,8 +112,8 @@ def state_tables():
     state.init(connection)
     yield
     with connection.cursor() as cur:
-        cur.execute(f"DROP TABLE {state.RUNS}")
-        cur.execute(f"DROP TABLE {state.FAILURES}")
+        for table in (state.RUNS, state.FAILURES, state.COLUMNS):
+            cur.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 @pytest.fixture
@@ -276,7 +283,7 @@ def in_thread(fn):
 def state_dump():
     out = []
     with connection.cursor() as cur:
-        for table in (state.RUNS, state.FAILURES):
+        for table in (state.RUNS, state.FAILURES, state.COLUMNS):
             cur.execute(f"SELECT * FROM {table}")
             out.extend(repr(row) for row in cur.fetchall())
     return "\n".join(out)
@@ -287,7 +294,7 @@ _RUN_ID = re.compile(
 
 
 def assert_no_leak(text, model, plaintexts, columns):
-    """PROCEDURE §9 item 5, over output and both state tables."""
+    """PROCEDURE §9 item 5, over output and every state table."""
     # A run id is a random UUID the tool makes up, and a 15-bit index is two
     # bytes: its four hex digits turn up inside one by chance (seen: `9be8`).
     # A run id carries no value, so run ids are taken out before the search.
@@ -860,7 +867,7 @@ def test_bf05_the_command_names_the_member_and_writes_nothing(
     assert _snapshot(shape, run_id) == before
 
 
-@pytest.mark.parametrize("version", [1, 3])
+@pytest.mark.parametrize("version", [1, 2, 4])
 def test_bf18_a_run_row_of_another_procedure_version_is_refused(
         shape, version):
     run_id = _killed_run(shape)
@@ -1384,7 +1391,8 @@ def _procedure_worked_example():
 
 WORKED_EXAMPLE, WORKED_HASH = _procedure_worked_example()
 
-#: Version 1's example, which version 2 does not reproduce (§4, §12).
+#: Version 1's example, which a version-3 frontend does not reproduce
+#: (§4, §12).
 V1_WORKED_EXAMPLE = (
     '{"columns":[{"column_uuid":"018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f","indexes":'
     '[{"argon2":{"memory_kib":19456,"time_cost":2},"idf":"argon2id",'
@@ -1399,10 +1407,17 @@ def test_bf17_the_worked_example():
     # The pins are literal as well, so that a change to the document that
     # moves the example and its hash together cannot pass unseen.
     assert WORKED_HASH == (
-        "7f5e7f264f8af0c1ce5740eeab6d9d95e68c5fbf814a327cd047317633ccb92b")
-    assert '"procedure_version":2' in WORKED_EXAMPLE
+        "2e58854bc411b68fb134d81996fd9a7f94966f4d1898e816a0067d26888e6408")
+    assert '"procedure_version":3' in WORKED_EXAMPLE
     assert hashlib.sha256(WORKED_EXAMPLE.encode("ascii")).hexdigest() \
         == WORKED_HASH
+    # Version 2's example, by its own published hash: `config` gained no
+    # member in version 3, so only this value, and the hash, changed.
+    v2 = WORKED_EXAMPLE.replace('"procedure_version":3',
+                                '"procedure_version":2')
+    assert v2 != WORKED_EXAMPLE
+    assert hashlib.sha256(v2.encode("ascii")).hexdigest() == (
+        "7f5e7f264f8af0c1ce5740eeab6d9d95e68c5fbf814a327cd047317633ccb92b")
 
     class Field:
         column_uuid = bytes.fromhex("018f3c2e7a1b7c3d8e4f5a6b7c8d9e0f")
@@ -1655,6 +1670,59 @@ def test_missing_state_tables_are_named():
     assert error is None and state.FAILURES in out
     out, _, _ = command("init")
     assert "already exist" in out
+
+
+def test_require_tables_refuses_a_missing_columns_table_and_names_init():
+    """PROCEDURE §3: a database that holds only the two version-2 tables is
+    refused, and the refusal names the way to upgrade it."""
+    with connection.cursor() as cur:
+        cur.execute(f"DROP TABLE {state.COLUMNS}")
+    with pytest.raises(BackfillError) as refused:
+        state.require_tables(connection)
+    assert state.COLUMNS in str(refused.value)
+    assert "init" in str(refused.value)
+    _, _, error = command(
+        "encrypt", "tests.LegacyTwoColumn", "--source", "email=email_legacy",
+        "--columns", "email")
+    assert state.COLUMNS in str(error) and "init" in str(error)
+
+
+def test_require_tables_refuses_a_columns_table_that_lacks_a_column():
+    with connection.cursor() as cur:
+        cur.execute(f"DROP TABLE {state.COLUMNS}")
+        cur.execute(
+            f"CREATE TABLE {state.COLUMNS} (run_id VARCHAR(36) NOT NULL, "
+            "column_uuid CHAR(32) NOT NULL, values_written BIGINT NOT NULL, "
+            "values_current BIGINT NOT NULL, values_null BIGINT NOT NULL, "
+            "values_anomalous BIGINT NOT NULL, "
+            "PRIMARY KEY (run_id, column_uuid))")
+    with pytest.raises(BackfillError) as refused:
+        state.require_tables(connection)
+    assert "values_failed" in str(refused.value)
+    assert state.COLUMNS in str(refused.value)
+    # `init` does not alter a table that exists, and says what to do.
+    assert state.init(connection) == []
+    with pytest.raises(BackfillError, match="values_failed"):
+        state.require_tables(connection)
+
+
+def test_init_creates_the_columns_table_on_a_database_with_the_two_old_ones():
+    """The upgrade path (PROCEDURE §3, §12): `init` creates the table that
+    is missing and leaves the other two, and what they hold, as they are."""
+    shape = TwoColumn()
+    shape.seed(emails(3))
+    p, run = begin(shape)
+    with connection.cursor() as cur:
+        cur.execute(f"DROP TABLE {state.COLUMNS}")
+
+    out, _, error = command("init")
+
+    assert error is None and state.COLUMNS in out
+    assert state.RUNS not in out and state.FAILURES not in out
+    state.require_tables(connection)
+    assert state.load_column_counts(connection, run.run_id) == {}
+    # Nothing in the run row changed: the run is as it was.
+    assert state.load_run(connection, run.run_id) == run
 
 
 def test_a_plain_manager_is_refused():
@@ -1984,7 +2052,7 @@ def test_a_new_run_after_a_run_of_another_version_is_refused(shape):
     run_id = _killed_run(shape)
     with connection.cursor() as cur:
         cur.execute(
-            f"UPDATE {state.RUNS} SET procedure_version = 3 "
+            f"UPDATE {state.RUNS} SET procedure_version = 4 "
             "WHERE run_id = %s", [run_id])
     assert state.abandon(connection, run_id)
     rows = _run_rows(shape)
@@ -1993,7 +2061,7 @@ def test_a_new_run_after_a_run_of_another_version_is_refused(shape):
         begin(shape)
 
     assert run_id in str(refused.value)
-    assert "procedure version 3" in str(refused.value)
+    assert "procedure version 4" in str(refused.value)
     assert _run_rows(shape) == rows
 
 
@@ -2507,3 +2575,511 @@ def test_resume_of_a_run_recording_two_tenant_columns_is_refused(permissive):
     assert f"columns[{second}].tenant" in message
     assert f"columns[{_tenant_uuid_hex()}].tenant" not in message
     assert tenant_snapshot(run_id) == before
+
+
+# -- #291: per-column counts (BF-28 to BF-31) ----------------------------------
+
+MIXED_BOTH = {"columns": ["a", "b"], "tenant": "tenant"}
+
+
+def seed_mixed(n=25, *, tenant=1, region=None):
+    """`n` rows: `a` and `b` hold legacy bytes, `tenant` is `tenant` on
+    every row (NULL for None), and `region` is `region` (or 1, 2 alternately
+    for None)."""
+    keys = []
+    for i in range(n):
+        obj = TenantMixed.objects.create(
+            tenant=tenant, region=(1, 2)[i % 2] if region is None else region)
+        plant(TenantMixed, obj.pk, "a", f"a-value-{i:03d}".encode())
+        plant(TenantMixed, obj.pk, "b", f"b-value-{i:03d}".encode())
+        keys.append(obj.pk)
+    return keys
+
+
+def column_hex(name):
+    return TenantMixed._meta.get_field(name).column_uuid.hex()
+
+
+def mixed_runs():
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.RUNS}")
+        return cur.fetchone()[0]
+
+
+def assert_column_sums(run_id):
+    """§3: for each of the five counts, the sum over the run's column rows
+    equals the run row's."""
+    run = state.load_run(connection, run_id)
+    columns = state.load_column_counts(connection, run_id)
+    assert columns
+    for name in state.VALUE_COUNTS:
+        assert sum(c[name] for c in columns.values()) == getattr(run, name), \
+            name
+
+
+def written_by_column(run_id):
+    return {k: v["values_written"]
+            for k, v in state.load_column_counts(connection, run_id).items()}
+
+
+def abandoned_unwritten_b_run(n=25):
+    """A run over `a` and `b`, killed after one batch and abandoned: every
+    row's `tenant` is NULL, so `a` was written and every `b` value failed
+    with `CONTEXT_UNAVAILABLE`."""
+    seed_mixed(n, tenant=None)
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+    with pytest.raises(Kill):
+        drive(p, run, hooks=kill_after_batch(1))
+    _, _, error = command("abandon", run.run_id)
+    assert error is None
+    return run.run_id
+
+
+def test_bf28_a_column_a_run_covered_and_never_wrote_is_not_held(permissive):
+    """#291's example. `a` is not tenant-bound and is written; `b` is, its
+    tenant column is NULL on every row, and every value fails. The run's
+    own `values_written` is above zero, but `b` was never written, so
+    abandoning the run releases `b`'s tenant column."""
+    run_id = abandoned_unwritten_b_run()
+    first = state.load_run(connection, run_id)
+    assert first.values_written == 10 and first.values_failed == 10
+    assert written_by_column(run_id) == {
+        column_hex("a"): 10, column_hex("b"): 0}
+    assert state.failures_by_code(connection, run_id) == {
+        "CONTEXT_UNAVAILABLE": 10}
+
+    # Both columns, under another tenant column for `b`.
+    p, second = begin(TenantMixed, **{**MIXED_BOTH, "tenant": "region"})
+    outcome = drive(p, second)
+    assert outcome.run.status == "complete"
+    # `a`'s first ten values are `current` now; `b` was never converted.
+    assert written_by_column(second.run_id) == {
+        column_hex("a"): 15, column_hex("b"): 25}
+    assert outcome.run.values_current == 10
+    assert_column_sums(second.run_id)
+    for pk, region in TenantMixed.objects.values_list("pk", "region"):
+        with tenant_scope(str(region).encode()):
+            assert TenantMixed.objects.get(pk=pk).b.startswith("b-value-")
+
+
+def test_bf28_b_alone_starts_under_another_tenant_column(permissive):
+    run_id = abandoned_unwritten_b_run()
+    p, run = begin(TenantMixed, columns=["b"], tenant="region")
+    outcome = drive(p, run)
+    assert outcome.run.status == "complete"
+    assert outcome.run.values_written == 25
+    assert state.load_run(connection, run_id).status == "abandoned"
+    # The tenant column is the one the run now writes under: each value
+    # reads back under its row's `region`.
+    for pk, region in TenantMixed.objects.values_list("pk", "region"):
+        with tenant_scope(str(region).encode()):
+            assert TenantMixed.objects.get(pk=pk).b.startswith("b-value-")
+
+
+def killed_mixed_run(n=25):
+    seed_mixed(n)
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+    with pytest.raises(Kill):
+        drive(p, run, hooks=kill_after_batch(1))
+    return run.run_id
+
+
+def mixed_snapshot():
+    return (all_raw(TenantMixed, "a"), all_raw(TenantMixed, "b"),
+            all_raw(TenantMixed, "b_bidx"), mixed_runs(),
+            repr(state_dump()))
+
+
+def test_bf29_a_written_columns_tenant_is_still_refused(permissive):
+    run_id = killed_mixed_run()
+    assert written_by_column(run_id) == {
+        column_hex("a"): 10, column_hex("b"): 10}
+    assert state.abandon(connection, run_id)
+    before = mixed_snapshot()
+
+    with pytest.raises(BackfillError) as refused:
+        begin(TenantMixed, columns=["b"], tenant="region")
+    _, _, error = command(
+        "encrypt", "tests.TenantMixed", "--columns", "b", "--tenant",
+        "region", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    for message in (str(refused.value), str(error)):
+        assert run_id in message and "(abandoned)" in message
+        assert f"columns[{column_hex('b')}].tenant" in message
+    assert mixed_snapshot() == before
+
+
+def test_bf29_a_written_columns_index_is_still_refused(permissive,
+                                                       monkeypatch):
+    run_id = killed_mixed_run()
+    assert state.abandon(connection, run_id)
+    before = mixed_snapshot()
+    field = TenantMixed._meta.get_field("b")
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        with pytest.raises(BackfillError) as refused:
+            begin(TenantMixed, **MIXED_BOTH)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    message = str(refused.value)
+    assert run_id in message
+    assert f"columns[{column_hex('b')}].indexes[exact].suite_id" in message
+    assert mixed_snapshot() == before
+
+
+def test_bf29_a_changed_index_on_a_covered_unwritten_column_starts(
+        permissive, monkeypatch):
+    """`b` was covered and nothing in it was written (its tenant column is
+    NULL), so another index declaration for it is not refused."""
+    abandoned_unwritten_b_run()
+    field = TenantMixed._meta.get_field("b")
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        p, second = begin(TenantMixed, **{**MIXED_BOTH, "tenant": "region"})
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    assert second.status == "running"
+    assert mixed_runs() == 2
+
+
+def test_bf30_the_per_column_counts_sum_to_the_runs_at_every_commit(
+        permissive):
+    """Checked inside the transaction just before each commit, and after it,
+    over a run killed between batches and resumed (BF-02's shape), then a
+    second run over the finished table (every value `current`)."""
+    # Rows of three kinds: both columns written; `tenant` NULL, so `b`
+    # fails and `a` is written; `a` NULL and `b` written. Then NULLs in b.
+    keys = []
+    for i in range(25):
+        obj = TenantMixed.objects.create(
+            tenant=None if i % 5 == 3 else 1, region=1)
+        if i % 7 != 0:
+            plant(TenantMixed, obj.pk, "a", f"a-{i:03d}".encode())
+        if i % 4 != 0:
+            plant(TenantMixed, obj.pk, "b", f"b-{i:03d}".encode())
+        keys.append(obj.pk)
+
+    seen = []
+
+    def check(_seq):
+        assert_column_sums(p_run.run_id)
+        seen.append(state.load_run(connection, p_run.run_id).batch_seq)
+
+    p, p_run = begin(TenantMixed, **MIXED_BOTH)
+    # The hook runs inside the batch's transaction, before the commit.
+    killing = encrypt.Hooks(
+        before_commit=lambda seq: check(seq),
+        between_batches=lambda seq: (check(seq), kill_after_batch(2)
+                                     .between_batches(seq)))
+    with pytest.raises(Kill):
+        drive(p, p_run, hooks=killing)
+    # Two batches committed, and the sums agree after both.
+    assert state.load_run(connection, p_run.run_id).batch_seq == 2
+    assert_column_sums(p_run.run_id)
+    assert len(seen) >= 4
+
+    resumed = resume(p_run.run_id, hooks=encrypt.Hooks(
+        before_commit=lambda seq: assert_column_sums(p_run.run_id),
+        between_batches=lambda seq: assert_column_sums(p_run.run_id)))
+    assert resumed.run.status == "complete"
+    assert_column_sums(p_run.run_id)
+    totals = state.load_column_counts(connection, p_run.run_id)
+    # Every kind of count is exercised, so a column left out of the sum
+    # would show: written, null and failed are all above zero somewhere.
+    for name in ("values_written", "values_null", "values_failed"):
+        assert sum(c[name] for c in totals.values()) > 0, name
+    assert totals[column_hex("b")]["values_failed"] > 0
+    assert totals[column_hex("a")]["values_failed"] == 0
+
+    # The follow-up run: every converted value is `current` to it, and the
+    # sums are checked inside and after each of its commits too.
+    p2, second = begin(TenantMixed, **MIXED_BOTH)
+    again = drive(p2, second, hooks=encrypt.Hooks(
+        before_commit=lambda seq: assert_column_sums(second.run_id),
+        between_batches=lambda seq: assert_column_sums(second.run_id)))
+    assert again.run.values_current > 0
+    assert_column_sums(second.run_id)
+
+
+def test_bf30_the_column_rows_exist_from_the_insert_with_zero_counts(
+        permissive):
+    seed_mixed(3)
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+    assert state.load_column_counts(connection, run.run_id) == {
+        column_hex("a"): dict.fromkeys(state.VALUE_COUNTS, 0),
+        column_hex("b"): dict.fromkeys(state.VALUE_COUNTS, 0)}
+
+
+def test_bf30_a_batch_killed_before_commit_moves_no_column_count(permissive):
+    """BF-03's shape: the per-column update is in the batch's transaction."""
+    seed_mixed(25)
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+
+    def die(_seq):
+        raise Kill
+
+    with pytest.raises(Kill):
+        drive(p, run, hooks=encrypt.Hooks(before_commit=die))
+
+    assert state.load_column_counts(connection, run.run_id) == {
+        column_hex("a"): dict.fromkeys(state.VALUE_COUNTS, 0),
+        column_hex("b"): dict.fromkeys(state.VALUE_COUNTS, 0)}
+    assert state.load_run(connection, run.run_id).values_written == 0
+
+
+def test_a_batch_whose_column_row_is_missing_is_rolled_back(permissive):
+    seed_mixed(5)
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+    with connection.cursor() as cur:
+        cur.execute(f"DELETE FROM {state.COLUMNS} WHERE column_uuid = %s",
+                    [column_hex("b")])
+    before = all_raw(TenantMixed, "a")
+    with pytest.raises(BackfillError, match="no fieldseal_backfill_columns"):
+        drive(p, run)
+    assert all_raw(TenantMixed, "a") == before
+    assert state.load_run(connection, run.run_id).batch_seq == 0
+
+
+def test_a_refused_start_leaves_no_orphan_column_rows(shape):
+    """BF-19's shape: the second start is refused by the unique constraint,
+    and the column rows are in the same transaction as the run row, so
+    nothing of it is left."""
+    shape.seed(emails(3))
+    p, run = begin(shape)
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.COLUMNS}")
+        rows = cur.fetchone()[0]
+
+    with pytest.raises(state.RunHeld) as held:
+        encrypt.new_run(p)
+
+    assert held.value.holder == run.run_id
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.COLUMNS}")
+        assert cur.fetchone()[0] == rows == len(shape.columns)
+        cur.execute(f"SELECT COUNT(*) FROM {state.COLUMNS} WHERE run_id NOT "
+                    f"IN (SELECT run_id FROM {state.RUNS})")
+        assert cur.fetchone()[0] == 0
+
+
+def test_the_run_row_and_its_column_rows_are_one_transaction(shape):
+    """If a column row cannot be inserted, the run row goes with it."""
+    shape.seed(emails(3))
+    p = encrypt.plan(shape.model, shape.columns, shape.sources)
+    at = state.now()
+    run = state.Run(
+        run_id=str(uuid.uuid4()), procedure_version=3, job="encrypt",
+        table_uuid=p.config["table_uuid"],
+        running_table_uuid=p.config["table_uuid"], table_name="t",
+        config_hash=p.config_hash, config=p.config_text, status="running",
+        batch_seq=0, cursor_value=None, rows_scanned=0, values_written=0,
+        values_current=0, values_null=0, values_anomalous=0, values_failed=0,
+        started_at=at, updated_at=at, completed_at=None, frontend="test")
+    twice = [c["column_uuid"] for c in p.config["columns"]] * 2
+
+    # A column row's failure is what it is, not "the table is held".
+    with pytest.raises(IntegrityError):
+        state.insert_run(connection, run, twice)
+
+    assert state.load_run(connection, run.run_id) is None
+    assert state.load_column_counts(connection, run.run_id) == {}
+
+
+def plant_version_2(run_id):
+    """A version-2 run's state: a version-2 `config`, no column rows."""
+    document = json.loads(state.load_run(connection, run_id).config)
+    document["procedure_version"] = 2
+    text = config.serialize(document)
+    with connection.cursor() as cur:
+        cur.execute(
+            f"UPDATE {state.RUNS} SET config = %s, config_hash = %s, "
+            "procedure_version = 2 WHERE run_id = %s",
+            [text, config.digest(text), run_id])
+        cur.execute(f"DELETE FROM {state.COLUMNS} WHERE run_id = %s",
+                    [run_id])
+
+
+def test_bf31_a_version_2_run_is_still_compared_per_run(permissive):
+    """The run wrote `a` only (its tenant column was NULL on every row), but
+    a version-2 run has no per-column count, so it still fixes `b`'s tenant
+    column: the limit PROCEDURE §12 states."""
+    run_id = abandoned_unwritten_b_run()
+    plant_version_2(run_id)
+    assert state.load_column_counts(connection, run_id) == {}
+    before = mixed_snapshot()
+
+    with pytest.raises(BackfillError) as refused:
+        begin(TenantMixed, **{**MIXED_BOTH, "tenant": "region"})
+
+    message = str(refused.value)
+    assert run_id in message and "(abandoned)" in message
+    assert f"columns[{column_hex('b')}].tenant" in message
+    assert mixed_snapshot() == before
+
+
+def test_bf31_a_version_2_run_with_the_same_declarations_starts(permissive):
+    run_id = abandoned_unwritten_b_run()
+    plant_version_2(run_id)
+
+    p, second = begin(TenantMixed, **MIXED_BOTH)
+
+    assert second.status == "running"
+
+
+def damage_column_rows(run_id):
+    """The columns table re-created by `init` after a run: no rows for it."""
+    with connection.cursor() as cur:
+        cur.execute(f"DELETE FROM {state.COLUMNS} WHERE run_id = %s", [run_id])
+
+
+def test_a_version_3_run_whose_column_counts_do_not_add_up_is_compared_per_run(
+        permissive):
+    """PROCEDURE §4: not refused, which would be the dead end #291 removed.
+    Compared per run, as version 2, and warned about."""
+    run_id = abandoned_unwritten_b_run()
+    damage_column_rows(run_id)
+    warnings = []
+
+    # The same declarations: starts, with the warning.
+    p = encrypt.plan(TenantMixed, **{"columns": ["a", "b"], "sources": {},
+                                     "tenant": "tenant"})
+    second = encrypt.new_run(p, warnings.append)
+
+    assert second.status == "running"
+    (warning,) = warnings
+    assert run_id in warning and "add up to 0" in warning
+    assert "recorded 10 values written" in warning
+    assert "compared per run" in warning
+    # Per run: `b`'s tenant column is held again, by the run's total.
+    state.abandon(connection, second.run_id)
+    p = encrypt.plan(TenantMixed, ["a", "b"], {}, "region")
+    with pytest.raises(BackfillError) as refused:
+        encrypt.new_run(p)
+    assert f"columns[{column_hex('b')}].tenant" in str(refused.value)
+
+
+def test_the_report_gives_the_counts_per_column(permissive):
+    seed_mixed(12, tenant=None)
+    out, _, error = command(
+        "encrypt", "tests.TenantMixed", "--columns", "a,b", "--tenant",
+        "tenant", "--rows-per-second", "100000",
+        "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+    assert error is None
+    document = json.loads(out.splitlines()[-1])
+    assert document["columns"] == {
+        column_hex("a"): {"values_written": 12, "values_current": 0,
+                          "values_null": 0, "values_anomalous": 0,
+                          "values_failed": 0},
+        column_hex("b"): {"values_written": 0, "values_current": 0,
+                          "values_null": 0, "values_anomalous": 0,
+                          "values_failed": 12}}
+    assert f"column {column_hex('b')}: written 0" in out
+    assert_no_leak(out, TenantMixed, [f"a-value-{i:03d}" for i in range(12)],
+                   ["a", "b"])
+
+
+def test_bf31_a_version_2_runs_index_declaration_is_compared_too(
+        permissive, monkeypatch):
+    """The `indexes` half of BF-31. The run wrote nothing in `b`, but with no
+    per-column count a version-2 run still fixes `b`'s index declaration."""
+    run_id = abandoned_unwritten_b_run()
+    plant_version_2(run_id)
+    before = mixed_snapshot()
+    field = TenantMixed._meta.get_field("b")
+    monkeypatch.setattr(
+        field, "index", dataclasses.replace(field.index, suite_id=0xFF02))
+    reset_client()
+    try:
+        with pytest.raises(BackfillError) as refused:
+            begin(TenantMixed, **MIXED_BOTH)
+    finally:
+        monkeypatch.undo()
+        reset_client()
+    message = str(refused.value)
+    assert run_id in message
+    assert f"columns[{column_hex('b')}].indexes[exact].suite_id" in message
+    assert mixed_snapshot() == before
+
+
+def running_mixed_run():
+    """Run R: `a` written, `b` not yet (the first ten rows have no tenant),
+    killed after one batch, so it is still `running`."""
+    for i in range(25):
+        obj = TenantMixed.objects.create(
+            tenant=None if i < 10 else 1, region=2)
+        plant(TenantMixed, obj.pk, "a", f"a-value-{i:03d}".encode())
+        plant(TenantMixed, obj.pk, "b", f"b-value-{i:03d}".encode())
+    p, run = begin(TenantMixed, **MIXED_BOTH)
+    with pytest.raises(Kill):
+        drive(p, run, hooks=kill_after_batch(1))
+    assert written_by_column(run.run_id) == {
+        column_hex("a"): 10, column_hex("b"): 0}
+    return run.run_id
+
+
+def test_a_running_run_refuses_a_new_start_before_any_comparison(
+        permissive, monkeypatch):
+    run_id = running_mixed_run()
+
+    def never(*args):
+        raise AssertionError("compared while a run was running")
+
+    monkeypatch.setattr(state, "converting_runs", never)
+    before = mixed_runs()
+
+    with pytest.raises(state.RunHeld) as held:
+        begin(TenantMixed, columns=["b"], tenant="region")
+    _, _, error = command(
+        "encrypt", "tests.TenantMixed", "--columns", "b", "--tenant",
+        "region", "--acknowledge-preexisting-backups",
+        "--acknowledge-in-place-conversion")
+
+    assert held.value.holder == run_id
+    assert run_id in str(held.value) and run_id in str(error)
+    assert mixed_runs() == before
+
+
+def test_a_run_that_finishes_after_the_check_cannot_be_walked_around(
+        permissive, monkeypatch):
+    """The interleaving: R (`--tenant tenant`) is running and has written
+    `a` and not `b`; a new run under `region` passes a per-column check;
+    R then finishes, writing `b` under `tenant`; the new run inserts and
+    writes the rest of `b` under `region`. The new run is refused before
+    it compares anything, so R's finishing cannot be raced."""
+    run_id = running_mixed_run()
+    real = state.converting_runs
+    finished = []
+
+    def finish_after_the_check(connection, table_uuid):
+        runs = real(connection, table_uuid)  # R's `b` count is 0 here
+        finished.append(resume(run_id).run)  # R now writes `b` under `tenant`
+        return runs
+
+    monkeypatch.setattr(state, "converting_runs", finish_after_the_check)
+
+    with pytest.raises(state.RunHeld) as held:
+        begin(TenantMixed, columns=["b"], tenant="region")
+
+    assert held.value.holder == run_id
+    assert not finished  # R was never run to its end by the interleaving
+    assert state.load_run(connection, run_id).status == "running"
+    assert written_by_column(run_id)[column_hex("b")] == 0
+
+
+def test_a_column_named_twice_is_refused_at_plan():
+    with pytest.raises(BackfillError, match="more than once"):
+        encrypt.plan(TenantMixed, ["a", "a"], {}, None)
+    before = run_rows()
+    _, _, error = command(
+        "encrypt", "tests.TenantMixed", "--columns", "a,a")
+    assert isinstance(error, CommandError)
+    assert "more than once" in str(error) and "already running" not in str(error)
+    assert run_rows() == before == 0

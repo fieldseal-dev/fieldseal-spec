@@ -1,6 +1,6 @@
 """`manage.py fieldseal_backfill` -- the backfill frontend (`docs/12` §7).
 
-The procedure is `tools/backfill/PROCEDURE.md`, version 2, and this command
+The procedure is `tools/backfill/PROCEDURE.md`, version 3, and this command
 implements it unchanged. Built so far: `init`, `encrypt`, `resume` and
 `abandon`. `rotate` waits on a header accessor no core exports yet
 (PROCEDURE §11, D-1), and `verify` is not built.
@@ -36,7 +36,8 @@ class Command(BaseCommand):  # type: ignore[misc]
         sub = parser.add_subparsers(dest="subcommand", required=True)
 
         init = sub.add_parser(
-            "init", help="Create the two state tables (PROCEDURE §3).")
+            "init",
+            help="Create the state tables that are missing (PROCEDURE §3).")
         init.add_argument(
             "--database", default="default",
             help="The database to create them in: the table's own.")
@@ -101,7 +102,7 @@ class Command(BaseCommand):  # type: ignore[misc]
             self.stdout.write(self.style.SUCCESS(
                 f"Created {', '.join(created)}."))
         else:
-            self.stdout.write("Both state tables already exist.")
+            self.stdout.write("All three state tables already exist.")
 
     def _encrypt(self, options: dict[str, Any]) -> None:
         from django.apps import apps as django_apps

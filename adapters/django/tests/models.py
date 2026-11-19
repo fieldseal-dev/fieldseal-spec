@@ -466,3 +466,41 @@ class TenantBinaryInPlace(models.Model):
 
     fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_BINARY,
                               tenant_bound=True)
+
+
+TABLE_TENANT_MIXED = "018f3c2e-0000-7000-8000-0000000000fc"
+COL_TENANT_MIXED_A = "018f3c2e-0000-7000-8000-0000000000fd"
+COL_TENANT_MIXED_B = "018f3c2e-0000-7000-8000-0000000000fe"
+
+
+def _mixed_column(column_uuid: str, *, tenant_bound: bool) -> "Encrypted":
+    return Encrypted(
+        models.CharField(max_length=100),
+        column_uuid=column_uuid,
+        null=True,
+        tenant_bound=tenant_bound,
+        index=BlindIndex(
+            suite_id=0xFF01,
+            index_id="exact",
+            idf="hmac-sha512",
+            normalize="nfc-casefold-v1",
+            truncate_bits=15,
+            projected_population=100_000,
+        ),
+    )
+
+
+class TenantMixed(models.Model):
+    """Two in-place columns in one run, one tenant-bound (`b`) and one not
+    (`a`), with two integer tenant candidates, as in #291: a run over both
+    whose `tenant` is NULL on every row writes `a` and none of `b`. BF-28 to
+    BF-31 run over it."""
+
+    tenant = models.IntegerField(null=True)
+    region = models.IntegerField(null=True)
+    a = _mixed_column(COL_TENANT_MIXED_A, tenant_bound=False)
+    a_bidx = Encrypted.index_column("a")
+    b = _mixed_column(COL_TENANT_MIXED_B, tenant_bound=True)
+    b_bidx = Encrypted.index_column("b")
+
+    fieldseal = FieldsealMeta(table_uuid=TABLE_TENANT_MIXED)
