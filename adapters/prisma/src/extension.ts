@@ -58,6 +58,41 @@ import { verifyResult } from "./visitor/verify.ts";
 import { applyWrites, type WriteCtx } from "./visitor/write.ts";
 import { ContextLedger, providerCanWarm, runPass } from "./warm.ts";
 
+/**
+ * The first time `onPlaintextRead` threw or rejected, once per `fieldsealExtension()` call
+ * (#298). The read went on. Later failures are counted
+ * (`plaintextReadHookFailures`), not reported. Never carries the value.
+ */
+export interface PlaintextReadHookFailure {
+  readonly kind: "plaintext-read-hook-failed";
+  readonly message: string;
+  /** What the hook threw or rejected with. */
+  readonly error: unknown;
+}
+
+/** What the extension's `onWarning` receives: the core's warnings and the adapter's. */
+export type ExtensionWarning = Warning | PlaintextReadHookFailure;
+
+const hookFailures = new WeakMap<object, { count: number }>();
+
+function isThenable(v: unknown): v is PromiseLike<unknown> {
+  return (
+    (typeof v === "object" || typeof v === "function") &&
+    v !== null &&
+    typeof (v as { then?: unknown }).then === "function"
+  );
+}
+
+/**
+ * How many times `onPlaintextRead` failed for the extension
+ * `fieldsealExtension()` returned, the reported first failure included: a
+ * throw counts at once, an async hook's rejection when it settles. A read
+ * retried by L4 counts each failed call. Zero for anything else.
+ */
+export function plaintextReadHookFailures(extension: object): number {
+  return hookFailures.get(extension)?.count ?? 0;
+}
+
 export interface FieldsealExtensionOptions {
   /** The generated field map (see `generator/`). */
   readonly fieldMap: FieldMap;
@@ -77,8 +112,19 @@ export interface FieldsealExtensionOptions {
    */
   readonly strictRaw?: boolean | undefined;
   readonly onRawOperation?: ((operation: string) => void) | undefined;
-  readonly onPlaintextRead?: ((model: string, field: string) => void) | undefined;
-  readonly onWarning?: ((w: Warning) => void) | undefined;
+  /**
+   * Called with the model and field (never the value) per plaintext read. It
+   * may be async. A throw or a rejection does not fail the read (#298). The
+   * return type is `unknown`, not `void | Promise<void>`, so a hook whose body
+   * is an expression (`(m, f) => seen.push(...)`) still typechecks; a
+   * returned thenable is the only return value the extension looks at.
+   */
+  readonly onPlaintextRead?: ((model: string, field: string) => unknown) | undefined;
+  /**
+   * Core warnings, plus the adapter's own `"plaintext-read-hook-failed"`
+   * (`ExtensionWarning`). The core client is handed only the core's kinds.
+   */
+  readonly onWarning?: ((w: ExtensionWarning) => void) | undefined;
   /** Leave index sibling columns in returned objects. Off by default. */
   readonly exposeIndexColumns?: boolean | undefined;
   /**
@@ -128,7 +174,64 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
   // capability check on the value path for no gain.
   const l4 = opts.warmOnKeyMiss !== false && providerCanWarm(opts.keyProvider);
 
-  return {
+  // A hook that fails must not fail a read the core already counted (#298),
+  // whether it throws or returns a promise that rejects. First failure
+  // reported, the rest counted; never the value.
+  const failures = { count: 0 };
+  const userHook = opts.onPlaintextRead;
+  const hookFailed = (model: string, field: string, error: unknown): void => {
+    failures.count += 1;
+    if (failures.count > 1) return;
+    const failure: PlaintextReadHookFailure = {
+      kind: "plaintext-read-hook-failed",
+      message:
+        `fieldseal: onPlaintextRead failed for ${model}.${field}; the read ` +
+        `went on and was counted. Later failures of the hook are counted ` +
+        `(plaintextReadHookFailures), not reported.`,
+      error,
+    };
+    // The core's default `onWarning` is a silent no-op, which would swallow
+    // this. `console.error` works in every runtime.
+    if (opts.onWarning === undefined) {
+      console.error(failure.message, error);
+      return;
+    }
+    try {
+      const returned: unknown = opts.onWarning(failure);
+      if (isThenable(returned)) {
+        returned.then(undefined, (reportError: unknown) => {
+          console.error(failure.message, error, reportError);
+        });
+      }
+    } catch (reportError) {
+      // This guard covers the adapter's own warning only, whether `onWarning`
+      // throws or is async and rejects. A throwing `onWarning` on a core
+      // warning (such as "plaintext-read") still rejects the query, and a
+      // rejecting one is left as it was: that is the core's behaviour,
+      // unchanged.
+      console.error(failure.message, error, reportError);
+    }
+  };
+  const onPlaintextRead =
+    userHook === undefined
+      ? undefined
+      : (model: string, field: string): void => {
+          try {
+            const returned: unknown = userHook(model, field);
+            if (isThenable(returned)) {
+              // An async hook's failure arrives later, off the read. It goes
+              // through the same count and report path, and the handler also
+              // keeps it from becoming an unhandled rejection.
+              returned.then(undefined, (error: unknown) => {
+                hookFailed(model, field, error);
+              });
+            }
+          } catch (error) {
+            hookFailed(model, field, error);
+          }
+        };
+
+  const extension: QueryExtension = {
     name: "fieldseal",
     query: {
       async $allOperations({ model, operation, args, query }) {
@@ -274,7 +377,7 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
                 rootArgs: args,
                 context: readPass.context,
                 exposeIndexColumns,
-                onPlaintextRead: opts.onPlaintextRead,
+                onPlaintextRead,
                 journal: resultJournal,
               });
               // 8. Discharge the obligations: a blind index is a filter, never
@@ -291,6 +394,8 @@ export function fieldsealExtension(opts: FieldsealExtensionOptions): QueryExtens
       },
     },
   };
+  hookFailures.set(extension, failures);
+  return extension;
 }
 
 function validateMap(fieldMap: FieldMap): ReturnType<typeof resolveMap> {
