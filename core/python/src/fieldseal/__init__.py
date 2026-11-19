@@ -7,7 +7,13 @@ must not import it. `tests/test_arming_gates.py` enforces both.
 from __future__ import annotations
 
 from . import errors
-from .api import Fieldseal
+from .api import (
+    DecryptErrorMetrics,
+    Fieldseal,
+    Metrics,
+    NullMetrics,
+    PlaintextReadMetrics,
+)
 from .blindindex import (
     NORMALIZER_IDS,
     Argon2Params,
@@ -35,7 +41,9 @@ from .registry import SUITES, is_provisional
 # of its own is how two copies drift apart.
 from .unicode import UNICODE_VERSION, Unassigned, first_unassigned
 
-__all__ = ["Fieldseal", "FieldContext", "IndexDeclaration", "ValidatedIndex",
+__all__ = ["Fieldseal", "Metrics", "NullMetrics",
+           "PlaintextReadMetrics", "DecryptErrorMetrics", "FieldContext",
+           "IndexDeclaration", "ValidatedIndex",
            "Argon2Params", "CardinalityOverride", "index_registry_key",
            "validate_index_declaration", "normalize", "NORMALIZER_IDS",
            "first_unassigned", "Unassigned", "UNICODE_VERSION",

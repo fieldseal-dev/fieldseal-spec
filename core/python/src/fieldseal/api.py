@@ -19,11 +19,13 @@ docs/18 entry that records it.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import secrets
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
+from typing import Protocol, TypeAlias
 
 from cryptography.hazmat.primitives import constant_time
 
@@ -54,17 +56,21 @@ from .envelope import (
 from .errors import (
     CommitmentInvalid,
     ConfigurationError,
+    FieldsealError,
     FieldsealWarning,
     InvalidArgument,
     KeyUnavailable,
     LengthExceeded,
+    MetricsHookWarning,
     ModeViolation,
     NotCiphertext,
+    ReadModeWarning,
+    StaticKeyProviderWarning,
     SuiteNotAllowed,
     SuiteProvisional,
 )
 from .kdf import commitment, index_key, record_key
-from .keyprovider import KeyProvider
+from .keyprovider import KeyProvider, StaticKeyProvider
 from .registry import SUITES, Suite, is_byte_string, is_provisional
 
 # Spec §4.8 constrains the arming mechanism's shape but does not name it
@@ -98,6 +104,49 @@ def _backend(suite_id: int) -> GcmBackend:
             "backend for it") from None
 
 
+def _hook(obj: object, name: str, nargs: int) -> Callable[..., None] | None:
+    """Resolve one metrics method at construction, so a broken hook fails
+    here and not, silently, on every call: a hook whose every call raises is
+    contained at run time, and a metric that reads zero because of it is the
+    failure `PROCEDURE.md` §8's gate would take for success. Refused: a class
+    handed over instead of an instance (its methods are unbound, so every
+    call raises), a non-callable, a signature that does not take `nargs`
+    arguments, and an attribute lookup that raises."""
+    if isinstance(obj, type):
+        raise ConfigurationError(
+            "metrics must be an instance, not a class "
+            f"({obj.__name__}); pass {obj.__name__}()")
+    try:
+        fn = getattr(obj, name, None)
+    except Exception as e:
+        raise ConfigurationError(
+            f"metrics.{name} could not be read ({type(e).__name__})") from None
+    if fn is None:
+        return None
+    if not callable(fn):
+        raise ConfigurationError(f"metrics.{name} is not callable")
+    try:
+        inspect.signature(fn).bind(*([""] * nargs))
+    except TypeError:
+        raise ConfigurationError(
+            f"metrics.{name} must take exactly {nargs} argument(s)"
+            " besides self") from None
+    except ValueError:
+        pass  # no introspectable signature (a builtin); trust it
+    return fn  # type: ignore[no-any-return]
+
+
+def _warn(w: FieldsealWarning,
+          on_warning: Callable[[FieldsealWarning], None] | None) -> None:
+    """Route one warning: to `on_warning` when given -- and then only there,
+    so a handler that raises escalates it (docs/09 §2) -- else the standard
+    `warnings.warn`, attributed to the `Fieldseal(...)` call site."""
+    if on_warning is not None:
+        on_warning(w)
+    else:
+        warnings.warn(w, stacklevel=3)
+
+
 def _require_bytes(operand: object,
                    op: str) -> bytes | bytearray | memoryview:
     """`encrypt`, `decrypt` and `rotate` take bytes (spec §11.1, docs/10 §4;
@@ -113,11 +162,57 @@ def _require_bytes(operand: object,
     return operand
 
 
+TEST_MODE_ENV = "FIELDSEAL_TEST_MODE"
+
+
+class PlaintextReadMetrics(Protocol):
+    """A `metrics` hook that counts spec §10.3 plaintext reads."""
+
+    def plaintext_read(self) -> None:
+        """One non-envelope input returned as-is under `permissive` or
+        `readonly`. Called exactly when `Fieldseal.plaintext_reads` is
+        incremented."""
+
+
+class DecryptErrorMetrics(Protocol):
+    """A `metrics` hook that counts errors out of `decrypt`."""
+
+    def decrypt_error(self, code: str) -> None:
+        """One spec §9 error raised out of `decrypt`; `code` is its `.code`
+        string (for example `"TAG_INVALID"`). Nothing else is passed: no
+        message, no context, no bytes."""
+
+
+# The client's `metrics` hook (docs/09 §2, docs/10 §4): an object with either
+# or both methods, so it is a union of the two single-method protocols --
+# an object with both satisfies either, and one with one typechecks too. A
+# method it lacks is not called. `NullMetrics` is a convenient base. Cache
+# counters are not here: they belong to the provider's cache (docs/09 §8.3).
+Metrics: TypeAlias = PlaintextReadMetrics | DecryptErrorMetrics
+
+
+class NullMetrics:
+    """A `Metrics` that counts nothing; subclass it and override one method."""
+
+    def plaintext_read(self) -> None:
+        pass
+
+    def decrypt_error(self, code: str) -> None:
+        pass
+
+
+# `decrypt` errors that are not §9 codes: implementation-local (docs/09 §9),
+# a caller or configuration fault rather than something about the data.
+_NOT_DECRYPT_ERRORS = (ConfigurationError, InvalidArgument)
+
+
 class Fieldseal:
     def __init__(self, *, key_provider: KeyProvider, allowed_suites: set[int],
                  write_suite: int, read_mode: str = "strict",
                  indexes: Iterable[IndexDeclaration] = (),
-                 arm_provisional_suites: bool = False) -> None:
+                 arm_provisional_suites: bool = False,
+                 on_warning: Callable[[FieldsealWarning], None] | None = None,
+                 metrics: Metrics | None = None) -> None:
         if write_suite not in allowed_suites:
             raise ConfigurationError("write_suite must be in allowed_suites")
         for sid in set(allowed_suites) | {write_suite}:
@@ -134,6 +229,18 @@ class Fieldseal:
                     "extra that provides it or remove it from allowed_suites")
         if read_mode not in READ_MODES:
             raise ConfigurationError(f"unknown read_mode {read_mode!r}")
+        if on_warning is not None and not callable(on_warning):
+            raise ConfigurationError("on_warning must be a callable")
+        self._on_plaintext_read: Callable[[], None] | None = None
+        self._on_decrypt_error: Callable[[str], None] | None = None
+        if metrics is not None:
+            self._on_plaintext_read = _hook(metrics, "plaintext_read", 0)
+            self._on_decrypt_error = _hook(metrics, "decrypt_error", 1)
+            if (self._on_plaintext_read is None
+                    and self._on_decrypt_error is None):
+                raise ConfigurationError(
+                    "metrics must offer plaintext_read() and/or "
+                    "decrypt_error(code); this object offers neither")
 
         self._provider = key_provider
         self._allowed = frozenset(allowed_suites)
@@ -160,10 +267,23 @@ class Fieldseal:
         # export it however they export anything else.
         self.plaintext_reads = 0
         if read_mode != "strict":
-            warnings.warn(
+            _warn(ReadModeWarning(
                 f"Fieldseal read_mode={read_mode!r}: non-envelope input is "
                 "returned as plaintext (spec §10.3). This is a migration "
-                "setting, not a steady state.", FieldsealWarning, stacklevel=2)
+                "setting, not a steady state."), on_warning)
+        # Spec §8: StaticKeyProvider MUST warn outside test configuration.
+        # "Test configuration" is FIELDSEAL_TEST_MODE=1 (docs/08 §6), read
+        # here at construction, not at import. The message does not offer
+        # that variable as a remedy: it also arms `fieldseal.testing`'s
+        # nonce/seed injection. It names no key and no key id.
+        if (isinstance(key_provider, StaticKeyProvider)
+                and os.environ.get(TEST_MODE_ENV) != "1"):
+            _warn(StaticKeyProviderWarning(
+                "StaticKeyProvider holds one key in process memory and is for "
+                "tests and development only (spec §8). Use EnvelopeKeyProvider "
+                "for data that matters. To acknowledge it here, handle it with "
+                "on_warning=, or filter StaticKeyProviderWarning with the "
+                "warnings module."), on_warning)
 
     # -- configuration reflection (docs/09 §2, G18) ------------------------
     #
@@ -272,7 +392,42 @@ class Fieldseal:
         return (serialize_header(suite.suite_id, key_id, msg_seed)
                 + nonce + ct + tag + commitment(rk))
 
+    def _metric(self, fn: Callable[..., None] | None, *args: str) -> None:
+        """Call a metrics hook without letting it change a result. The hook
+        runs on the value path, after the outcome is fixed: letting it raise
+        would turn a successful decrypt into a failure or replace a spec §9
+        error with an unrelated one. A failing hook is contained and
+        reported as a `MetricsHookWarning` carrying the exception's type only
+        (its message is the embedder's text and could hold anything).
+        `warnings` shows a given warning once per location, and the location
+        is this line, so under the default filters the report appears once
+        per process, not once per failing call site. If the report itself
+        raises (`-W error`), that too is dropped: the outcome stays the
+        spec's. `Exception` only: KeyboardInterrupt and SystemExit pass."""
+        if fn is None:
+            return
+        try:
+            fn(*args)
+        except Exception as e:
+            try:
+                warnings.warn(MetricsHookWarning(
+                    f"metrics hook raised {type(e).__name__}; ignored"),
+                    stacklevel=3)
+            except Warning:
+                pass
+
     def decrypt(self, blob: bytes, ctx: FieldContext) -> bytes:
+        try:
+            return self._decrypt(blob, ctx)
+        except FieldsealError as e:
+            # Every spec §9 code raised out of decrypt, including one a
+            # provider raises (KEY_UNAVAILABLE). Not the two
+            # implementation-local codes (docs/09 §9).
+            if not isinstance(e, _NOT_DECRYPT_ERRORS):
+                self._metric(self._on_decrypt_error, e.code)
+            raise
+
+    def _decrypt(self, blob: bytes, ctx: FieldContext) -> bytes:
         # 0. The operand is bytes, refused otherwise in every mode. Without
         #    this the pass-through below coerced it with `bytes()` (#251).
         _require_bytes(blob, "decrypt")
@@ -287,6 +442,7 @@ class Fieldseal:
                 raise NotCiphertext("input is not a recognizable envelope")
             # permissive / readonly: returned as-is (spec §10.3, G6).
             self.plaintext_reads += 1
+            self._metric(self._on_plaintext_read)
             return blob if isinstance(blob, bytes) else bytes(blob)
         suite = SUITES[header.suite_id]
         # 2b. Spec §3.5, decrypt side: a function of the byte count alone,
@@ -495,4 +651,6 @@ class Fieldseal:
             "where it would deadlock rather than block. Await warm() instead.")
 
 
-__all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES"]
+__all__ = ["Fieldseal", "EnvelopeHeader", "PROVISIONAL_ENV", "READ_MODES",
+           "TEST_MODE_ENV", "Metrics", "NullMetrics",
+           "PlaintextReadMetrics", "DecryptErrorMetrics"]

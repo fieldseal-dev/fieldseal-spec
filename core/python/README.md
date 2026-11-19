@@ -171,7 +171,9 @@ them if another implementation will read your data.
 ### Keys
 
 - **`StaticKeyProvider`**: one data key and one index key held in memory, for
-  tests and evaluation. It does not yet warn when used outside tests.
+  tests and evaluation. Built outside test mode (`FIELDSEAL_TEST_MODE` not
+  `1`), a client over it emits a `StaticKeyProviderWarning` (spec §8); pass
+  `on_warning=` to handle it, or filter it with the `warnings` module.
 - **`EnvelopeKeyProvider(wrapper=..., directory=..., cache=...)`**: data keys
   stored wrapped by your KMS. `wrapper` is your object with an async
   `unwrap(wrapped, scope)` method; no KMS client ships with the package.

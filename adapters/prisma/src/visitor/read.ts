@@ -30,7 +30,11 @@ export interface ReadCtx {
   readonly exposeIndexColumns: boolean;
   /** Every mutation below is recorded before it is applied -- `journal.ts`. */
   readonly journal: Journal;
-  /** Reported per value the core passed through (spec §10.3); never in strict. */
+  /**
+   * Reported per value the core passed through (spec §10.3); never in strict.
+   * The extension wraps the user's hook (#298), so a throwing or rejecting
+   * hook never fails a read the core already counted.
+   */
   readonly onPlaintextRead?: ((model: string, field: string) => void) | undefined;
 }
 

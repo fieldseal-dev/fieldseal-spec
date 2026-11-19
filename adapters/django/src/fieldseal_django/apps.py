@@ -227,7 +227,9 @@ def reset_client() -> None:
     The per-field plaintext-read counts are kept per client object
     (`signals`, #246), so they go with the client exactly as its core
     `plaintext_reads` does, and a `FIELDSEAL["CLIENT"]` instance, which the
-    next `get_client` hands back, keeps both.
+    next `get_client` hands back, keeps both. So are the plaintext-read
+    receiver failures and which receivers have had a failure logged (#295):
+    a rebuilt client logs a failing receiver again.
     """
     global _client
     _client = None

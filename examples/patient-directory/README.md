@@ -159,8 +159,10 @@ compared by the checker as `declared_suite_id`.
   it means *omitting* `id` on a write is uncovered behaviour here, not agreed
   behaviour.
 - **The two stacks warn differently about the key provider.** The TypeScript
-  core emits a `static-key-provider` warning on every client it builds; the
-  Python core does not have an equivalent. The Prisma acts record theirs in the
+  core emits a `static-key-provider` warning on every client it builds; since
+  [#223](https://github.com/fieldseal-dev/fieldseal-spec/issues/223) the Python
+  core emits a `StaticKeyProviderWarning` too, in the Django acts, but the Django
+  acts' recorded transcript does not capture it yet (a follow-up). The Prisma acts record theirs in the
   transcript and `check_transcript.py` requires it — which makes "this is not a
   production configuration" a checked fact rather than a sentence here.
 
