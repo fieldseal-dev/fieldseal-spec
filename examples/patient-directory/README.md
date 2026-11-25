@@ -158,13 +158,18 @@ compared by the checker as `declared_suite_id`.
   to make about a tool's behaviour rather than read out of the database — but
   it means *omitting* `id` on a write is uncovered behaviour here, not agreed
   behaviour.
-- **The two stacks warn differently about the key provider.** The TypeScript
-  core emits a `static-key-provider` warning on every client it builds; since
-  [#223](https://github.com/fieldseal-dev/fieldseal-spec/issues/223) the Python
-  core emits a `StaticKeyProviderWarning` too, in the Django acts, but the Django
-  acts' recorded transcript does not capture it yet (a follow-up). The Prisma acts record theirs in the
-  transcript and `check_transcript.py` requires it — which makes "this is not a
-  production configuration" a checked fact rather than a sentence here.
+- **Both stacks warn about the key provider, and the transcript checks it.**
+  Each core warns on every client it builds with a `StaticKeyProvider`: the
+  TypeScript core through `onWarning` (kind `static-key-provider`), the Python
+  core, since [#223](https://github.com/fieldseal-dev/fieldseal-spec/issues/223),
+  as a `StaticKeyProviderWarning` (kind `STATIC_KEY_PROVIDER`), which the Django
+  acts record from `warnings`. The demo leaves `FIELDSEAL["ON_WARNING"]` unset
+  so that `manage.py` commands still print the warning.
+  `check_transcript.py` requires the warning in every act that builds a client,
+  which makes "this is not a production configuration" a checked fact rather
+  than a sentence here. Two Django acts build none and are exempt by name:
+  act 5's writer comparison and act 7's raw SQL read stored bytes through a
+  cursor only, and act 7's point is that no key is reachable from it.
 
 ## Development
 
