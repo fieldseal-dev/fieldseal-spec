@@ -116,14 +116,13 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid as _uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from django.db import connections
 from django.db.migrations.operations import (
     AlterField,
     RenameField,
-    RenameModel,
     SeparateDatabaseAndState,
 )
 from django.db.models import NOT_PROVIDED
@@ -478,7 +477,6 @@ def _unsafe_alter_fields(plan: list[Any],
                if key in loader.graph.nodes}
     to_run = {m for m, _ in plan}
     state = ProjectState(real_apps=loader.unmigrated_apps)
-    renames: _Renames = {}
     if backwards:
         # As `_migrate_all_backwards`: each migration is unapplied against
         # the state before it in `full_plan` order, built from every applied
@@ -488,92 +486,86 @@ def _unsafe_alter_fields(plan: list[Any],
                 break
             if migration in to_run:
                 before = state
-                state = migration.mutate_state(state, preserve=True)
+                state = state.clone()
+                _advance(migration.app_label, migration.operations, state)
                 to_run.remove(migration)
                 yield from _scan(migration, migration.operations, before,
-                                 connection, backwards, renames)
+                                 connection, backwards)
             elif migration in applied:
-                migration.mutate_state(state, preserve=False)
-                _record_renames(migration.app_label, migration.operations,
-                                renames)
+                _advance(migration.app_label, migration.operations, state)
         return
     # As `_create_project_state(with_applied_migrations=True)` and then
     # `_migrate_all_forwards`: every applied migration, then the plan's in
     # `full_plan` order, each advancing the state the next one starts from.
     for migration, _ in full_plan:
         if migration in applied:
-            migration.mutate_state(state, preserve=False)
-            _record_renames(migration.app_label, migration.operations,
-                            renames)
+            _advance(migration.app_label, migration.operations, state)
     for migration, _ in full_plan:
         if not to_run:
             break
         if migration in to_run:
             to_run.remove(migration)
             yield from _scan(migration, migration.operations, state,
-                             connection, backwards, renames)
+                             connection, backwards)
 
 
-#: The fields renamed so far in the walk, per model: {(app_label, lowercased
-#: model name): {name before: name now}}, chains already resolved (#303).
-_Renames = dict[tuple[str, str], dict[str, str]]
+def _advance(app_label: str, operations: list[Any], state: Any) -> None:
+    """Apply `operations` to `state` as `Migration.mutate_state` does, and
+    after each `RenameField` point the model's `EncryptedIndex` fields whose
+    `source` named the old field at the new name.
 
-
-def _record_renames(app_label: str, operations: list[Any],
-                    renames: _Renames) -> None:
-    """Record the renames `operations` make to the state, in order.
-
-    `RenameField` state is not enough for `EncryptedIndex.source`, a custom
-    attribute `RenameField.state_forwards` does not follow, so the index check
-    resolves the old `source` through these (#303, the PR #316 review). A
-    `SeparateDatabaseAndState` moves the state with its `state_operations`
-    only. A chain (v to tmp to x) is stored as v to x, and a `RenameModel`
-    moves its model's renames to the new name.
+    `RenameField.state_forwards` does not follow a custom attribute such as
+    `source`, and makemigrations writes the `RenameField` and then an
+    `AlterField` of the index with the new name. The stored index does not
+    depend on the source's name (`EncryptedIndex.derive`), so with `source`
+    kept current in the walk's state a rename compares as no change, and a
+    name used again later for another field is not confused with the one
+    renamed away from it (#303, the PR #316 reviews). The walk's state is
+    its own, and the moved field is a clone: no migration's field changes.
     """
+    from .fields import EncryptedIndex
+
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
-            _record_renames(app_label, op.state_operations, renames)
-        elif isinstance(op, RenameField):
-            names = renames.setdefault((app_label, op.model_name_lower), {})
-            for before, now in names.items():
-                if now == op.old_name:
-                    names[before] = op.new_name
-            names[op.old_name] = op.new_name
-        elif isinstance(op, RenameModel):
-            moved = renames.pop((app_label, op.old_name_lower), None)
-            if moved is not None:
-                renames[(app_label, op.new_name_lower)] = moved
+            # Its `state_forwards` applies its state operations only.
+            _advance(app_label, op.state_operations, state)
+            continue
+        op.state_forwards(app_label, state)
+        if not isinstance(op, RenameField):
+            continue
+        model_state = state.models.get((app_label, op.model_name_lower))
+        if model_state is None:
+            continue
+        for name, field in list(model_state.fields.items()):
+            if (isinstance(field, EncryptedIndex)
+                    and field.source == op.old_name):
+                moved = field.clone()
+                moved.source = op.new_name
+                AlterField(op.model_name, name, moved).state_forwards(
+                    app_label, state)
 
 
 def _scan(migration: Any, operations: list[Any], state: Any,
-          connection: Any, backwards: bool,
-          renames: _Renames) -> Iterator[str]:
-    """Check each operation against `state`, advancing it as Django does, and
-    record the renames it makes (also those of an operation in a
-    `SeparateDatabaseAndState`'s `state_operations`)."""
+          connection: Any, backwards: bool) -> Iterator[str]:
+    """Check each operation against `state`, advancing it as `_advance`
+    does."""
     app_label = migration.app_label
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
             # The database operations run against a copy of the state, and
             # only the state operations move the real one.
-            # Its renames are not the real state's, so it gets a copy.
             yield from _scan(migration, op.database_operations,
-                             state.clone(), connection, backwards,
-                             {k: dict(v) for k, v in renames.items()})
-            for state_op in op.state_operations:
-                state_op.state_forwards(app_label, state)
-            _record_renames(app_label, op.state_operations, renames)
+                             state.clone(), connection, backwards)
+            _advance(app_label, op.state_operations, state)
             continue
         problem = None
         if isinstance(op, ConvertToEncrypted):
             problem = _check_conversion(migration, op, state, connection)
         elif isinstance(op, AlterField):
-            problem = _check(migration, op, state, connection, backwards,
-                             renames)
+            problem = _check(migration, op, state, connection, backwards)
         if problem:
             yield problem
-        op.state_forwards(app_label, state)
-        _record_renames(app_label, [op], renames)
+        _advance(app_label, [op], state)
 
 
 def _allowed(op: AlterField, app_label: str, state: Any,
@@ -618,7 +610,7 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
 
 
 def _check(migration: Any, op: AlterField, state: Any, connection: Any,
-           backwards: bool, renames: _Renames) -> str | None:
+           backwards: bool) -> str | None:
     """The refusals for a plain `AlterField`: the identity change (#288) and
     the index declaration change (#303), on every backend, and the bytea
     cast, on PostgreSQL only (#252). When more than one applies the message
@@ -632,8 +624,7 @@ def _check(migration: Any, op: AlterField, state: Any, connection: Any,
     if old is None:
         return None
     changes = _identity_changes(old, new)
-    index_changes = _index_changes(
-        old, new, renames.get((app_label, op.model_name_lower), {}))
+    index_changes = _index_changes(old, new)
     casts = (connection.vendor == "postgresql"
              and casts_into_or_out_of_bytea(old, new, connection))
     if not changes and not index_changes and not casts:
@@ -642,7 +633,10 @@ def _check(migration: Any, op: AlterField, state: Any, connection: Any,
         return None
     problems = []
     if changes:
-        problems.append(_identity_message(migration, op, changes, backwards))
+        problems.append(_identity_message(
+            migration, op, changes, backwards,
+            indexed=bool(getattr(old, "index", None)
+                         or getattr(new, "index", None))))
     if index_changes:
         problems.append(_index_message(migration, op, index_changes,
                                        backwards))
@@ -723,7 +717,7 @@ def _tenant_text(declared: bool | None) -> str:
 
 def _identity_message(migration: Any, op: AlterField,
                       changes: list[tuple[str, str, str, str]],
-                      backwards: bool) -> str:
+                      backwards: bool, *, indexed: bool = False) -> str:
     where = (f"{migration.app_label}.{migration.name}: "
              f"{'unapplying ' if backwards else ''}AlterField {op.name} on "
              f"{op.model_name}")
@@ -734,6 +728,15 @@ def _identity_message(migration: Any, op: AlterField,
         if backwards:
             before, after = after, before
         parts.append(f"{attribute} from {before} to {after}: {why}")
+    # The column_uuid and the tenant are in the blind index's key-derivation
+    # context too (`for_index`, spec §7.2), so re-encrypting the values is
+    # not all the escape hatch states.
+    index_note = (
+        " The column's blind index is derived under the same column_uuid "
+        "and tenant, so its stored values must be rebuilt as well, for which "
+        f"no supported route exists yet ({_ISSUE_315})."
+        if indexed and any(c[0] in ("column_uuid", "tenant_bound")
+                           for c in changes) else "")
     return (
         f"{where} changes an Encrypted column's identity: "
         f"{'; and '.join(parts)}. Nothing converts the stored values into "
@@ -744,13 +747,11 @@ def _identity_message(migration: Any, op: AlterField,
         "re-encrypted by other means, record the change in a "
         "SeparateDatabaseAndState whose state_operations carry this "
         "AlterField, which is your statement that they were; otherwise use "
-        "the two-column shape (docs/12 §7). Nothing has run: migrate refused "
-        f"the plan before any DDL ({_ISSUE_288}).")
+        f"the two-column shape (docs/12 §7).{index_note} Nothing has run: "
+        f"migrate refused the plan before any DDL ({_ISSUE_288}).")
 
 
-def _index_changes(old: Any, new: Any,
-                   renamed: Mapping[str, str] | None = None,
-                   ) -> list[tuple[str, str, str]]:
+def _index_changes(old: Any, new: Any) -> list[tuple[str, str, str]]:
     """What an `AlterField` from `old` to `new` changes of a blind index's
     declaration, as (attribute, old, new): the parts of it spec §7.8 says
     MUST NOT change once an index is written (#303).
@@ -758,13 +759,10 @@ def _index_changes(old: Any, new: Any,
     Between two `Encrypted` declarations that both carry a `BlindIndex`: a
     declaration added or removed is not a change here (adding one leaves the
     column to be filled by a backfill; the rebuild of a changed one is #315).
-    Between two `EncryptedIndex` fields: `source`, compared after the renames
-    of the model's fields in the walk (`renamed`: name before to name now) are
-    resolved on the old side. `RenameField` does not follow a custom `source`,
-    and makemigrations writes the `RenameField` and then an `AlterField` with
-    the new name; the stored index does not depend on the source's name
-    (`EncryptedIndex.derive`), so a rename passes. A swap of two names by
-    three renames makes no `AlterField` and is not seen: a known limit.
+    Between two `EncryptedIndex` fields: `source`. The walk's state keeps the
+    old side's `source` following renames of the field it names (`_advance`),
+    so a rename passes and a repoint is refused. A swap of two names by three
+    renames makes no `AlterField` and is not seen: a known limit.
 
     - `index_id`, `idf`, `normalize` and `truncate_bits` are named by §7.8
       or are part of the key-derivation context (§7.2).
@@ -784,9 +782,8 @@ def _index_changes(old: Any, new: Any,
     from .fields import EncryptedIndex
 
     if isinstance(old, EncryptedIndex) and isinstance(new, EncryptedIndex):
-        source = (renamed or {}).get(old.source, old.source)
-        if source != new.source:
-            return [("source", source, new.source)]
+        if old.source != new.source:
+            return [("source", old.source, new.source)]
         return []
     if not (_is_encrypted(old) and _is_encrypted(new)):
         return []
@@ -806,9 +803,15 @@ def _index_changes(old: Any, new: Any,
                                 _declared_text(b)))
     if (before.suite_id is not None and after.suite_id is not None
             and before.suite_id != after.suite_id):
-        changes.append(("suite_id", f"{before.suite_id:#06x}",
-                        f"{after.suite_id:#06x}"))
+        changes.append(("suite_id", _suite_text(before.suite_id),
+                        _suite_text(after.suite_id)))
     return changes
+
+
+def _suite_text(value: object) -> str:
+    """A suite as hex; `BlindIndex` leaves validating it to the core at
+    startup, so a hand-written migration may hold another type."""
+    return f"{value:#06x}" if isinstance(value, int) else repr(value)
 
 
 def _declared_text(value: int | None) -> str:

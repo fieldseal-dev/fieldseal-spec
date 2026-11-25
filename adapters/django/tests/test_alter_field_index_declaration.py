@@ -287,6 +287,37 @@ def test_the_identity_and_the_index_refusals_are_both_in_one_message(case):
     assert "issues/288" in msg and "issues/303" in msg
 
 
+def test_an_identity_change_on_an_indexed_column_names_the_index_too(case):
+    """The column_uuid is in the index's key-derivation context, so the #288
+    escape hatch (re-encrypt, then record) leaves the index stale unless it
+    is rebuilt as well; the message says so."""
+    c = refused(case, enc(index(), uuid=UUID_B))
+    with pytest.raises(FieldsealNotSupported) as e:
+        c.migrate("0002")
+    msg = str(e.value)
+    assert "blind index is derived under the same column_uuid" in msg
+    assert "issues/315" in msg
+    assert "blind index's declaration" not in msg
+
+
+def test_an_identity_change_on_an_unindexed_column_does_not_name_an_index(
+        case):
+    c = refused(case, enc(uuid=UUID_B), old=enc())
+    with pytest.raises(FieldsealNotSupported) as e:
+        c.migrate("0002")
+    assert "blind index" not in str(e.value)
+
+
+def test_a_suite_id_that_is_not_an_integer_is_reported_not_crashed(case):
+    """`BlindIndex` leaves the suite's type to the core at startup, so a
+    hand-written migration may hold a string."""
+    c = refused(case, enc(index(suite_id=0xFF02)),
+                old=enc(index(suite_id="0xFF01")))
+    with pytest.raises(FieldsealNotSupported,
+                       match="suite_id from '0xFF01' to 0xff02"):
+        c.migrate("0002")
+
+
 # -- allowed ------------------------------------------------------------------
 
 OVERRIDE = Raw("fieldseal_django.Override(reason='r', approved_by='a', "
@@ -460,6 +491,87 @@ def test_a_rename_then_a_repoint_to_another_field_is_still_refused(case):
     with pytest.raises(FieldsealNotSupported, match="source from x to u"):
         c.migrate("0002")
     assert c.applied() == {"0001_initial"}
+
+
+#: `0002` renames `v` to `v_old` as makemigrations writes it; `0003` adds a
+#: new `v`, indexed under another `index_id`, and `w_bidx` on it: the name `v`
+#: is used again, now for another column.
+REUSE_V = {
+    "0002_rename": ops(RENAME_V.replace('"x"', '"v_old"'),
+                       REPOINT_V_BIDX % "v_old"),
+    "0003_reuse": ops(f"""
+    migrations.AddField(model_name="thing", name="v",
+        field={enc(index(index_id="exact2"), uuid=UUID_B)}),
+    migrations.AddField(model_name="thing", name="w_bidx",
+        field=fieldseal_django.fields.EncryptedIndex(null=True, source="v")),
+"""),
+}
+
+
+def reuse_graph(last: str):
+    def graph(table: str) -> dict[str, str]:
+        return {"0001_initial": create(table, OLD, extra=EXTRA),
+                "0002_rename": mig(["0001_initial"], REUSE_V["0002_rename"]),
+                "0003_reuse": mig(["0002_rename"], REUSE_V["0003_reuse"]),
+                "0004_change": mig(["0003_reuse"], ops(last))}
+    return graph
+
+
+W_BIDX = """
+    migrations.AlterField(model_name="thing", name="w_bidx",
+        field=fieldseal_django.fields.EncryptedIndex(%s)),
+"""
+
+
+@pytest.mark.parametrize("applied", ["0001", "0003"])
+def test_an_index_on_a_reused_name_repointed_to_the_renamed_field_is_refused(
+        case, applied):
+    """`w_bidx` holds values derived from the new `v`; pointing it at
+    `v_old`, the column that was `v` before the rename, is a real repoint.
+    The earlier rename of `v` must not make it look like no change, whether
+    the rename is applied already or in the plan."""
+    c = case(graph=reuse_graph(W_BIDX % 'null=True, source="v_old"'))
+    c.migrate(applied)
+    with pytest.raises(FieldsealNotSupported,
+                       match="AlterField w_bidx on thing .*source from v to "
+                             "v_old"):
+        c.migrate("0004")
+    assert "0004_change" not in c.applied()
+
+
+@pytest.mark.parametrize("applied", ["0001", "0003"])
+def test_an_index_on_a_reused_name_kept_on_it_is_let_through(case, applied):
+    """A change to `w_bidx` that keeps `source="v"` is no repoint, although
+    `v` was renamed to `v_old` before the name was used again."""
+    c = case(graph=reuse_graph(W_BIDX % 'null=False, default=b"", '
+                                        'source="v"'))
+    c.migrate(applied)
+    c.migrate("0004")
+    assert "0004_change" in c.applied()
+    c.migrate("0003")
+    assert "0004_change" not in c.applied()
+
+
+def test_an_old_rename_from_a_name_does_not_follow_a_later_field_of_it(case):
+    """`u` is renamed to `z`; then `v` is renamed to `u` and `v_bidx` follows
+    it as makemigrations writes it. Pointing `v_bidx` at `z`, the column that
+    was `u`, is a real repoint, which the rename of the old `u` must not
+    hide."""
+    rename_u = ('migrations.RenameField(model_name="thing", old_name="u", '
+                'new_name="z"),')
+
+    def graph(table: str) -> dict[str, str]:
+        return {"0001_initial": create(table, OLD, extra=EXTRA),
+                "0002_rename": mig(["0001_initial"], ops(rename_u)),
+                "0003_rename": mig(["0002_rename"], ops(
+                    RENAME_V.replace('"x"', '"u"'), REPOINT_V_BIDX % "u")),
+                "0004_change": mig(["0003_rename"],
+                                   ops(REPOINT_V_BIDX % "z"))}
+    c = case(graph=graph)
+    c.migrate("0003")
+    with pytest.raises(FieldsealNotSupported, match="source from u to z"):
+        c.migrate("0004")
+    assert "0004_change" not in c.applied()
 
 
 def test_renaming_the_model_and_the_field_is_let_through(case):
