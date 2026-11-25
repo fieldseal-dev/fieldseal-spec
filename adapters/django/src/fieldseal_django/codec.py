@@ -83,22 +83,35 @@ def to_bytes(field: Field[Any, Any], value: Any) -> bytes:
     except FieldsealNotSupported:
         raise
     except Exception as e:  # noqa: BLE001 - Django's coercion failed: typed refusal
+        # Django's own coercion error quotes the input ("'abc' value must be
+        # an integer"), so neither its text nor the exception itself travels
+        # with this one: chained, it would print in every traceback. Spec §9:
+        # an error message never includes plaintext.
         raise FieldsealNotSupported(
-            f"{type(field).__name__} (§3.6 `{kind}`) could not take "
-            f"{type(value).__name__}: {e}"
-        ) from e
+            f"{type(field).__name__} (§3.6 `{kind}`) could not take the "
+            f"{type(value).__name__} it was given ({type(e).__name__}; its "
+            "message is not repeated, since it can quote the value)"
+        ) from None
 
 
-def from_bytes(field: Field[Any, Any], raw: bytes) -> Any:
+def from_bytes(field: Field[Any, Any], raw: bytes, *,
+               label: str | None = None, decrypted: bool = True) -> Any:
     """Inverse of `to_bytes`: refuse anything but the canonical rendering.
 
-    The decrypted value is authentic -- key, context and commitment all
-    verified -- so a refusal here means the bytes were written by something
-    that does not render §3.6, or the column's declared type changed after the
-    row was written. Either way a coerced value would hide it.
+    `decrypted` says what `raw` is. True: the plaintext of an envelope that
+    verified -- key, context and commitment all right -- so a refusal means
+    the bytes were written by something that does not render §3.6, or the
+    column's declared type changed after the row was written. False: the
+    stored value was not an envelope and the core passed it through (spec
+    §10.3), so nothing was decrypted and nothing was authenticated; a refusal
+    means legacy plaintext that is not §3.6's rendering. Either way a coerced
+    value would hide it. The message never carries the value (spec §9).
     """
     kind = _require_type(field)
-    value = _PARSE[kind](raw)
+    try:
+        value = _PARSE[kind](raw)
+    except _NotCanonical:
+        raise _refuse(kind, label, decrypted) from None
     if kind in ("bytes", "string"):
         return value
     # A custom inner field may post-process its own type; the built-in ones
@@ -199,7 +212,7 @@ def render_decimal(d: Decimal) -> bytes:
     """Spec §3.6 canonical decimal. From `as_tuple()`, never `normalize()`,
     which rounds to the 28-digit context precision."""
     if not d.is_finite():
-        raise FieldsealNotSupported(f"a decimal must be finite, not {d}")
+        raise FieldsealNotSupported("a decimal must be finite")
     sign, digit_tuple, exp = d.as_tuple()
     assert isinstance(exp, int)
     digits = "".join(map(str, digit_tuple)).lstrip("0")
@@ -225,7 +238,7 @@ def render_float(x: float) -> bytes:
     and `1e-7`).
     """
     if not math.isfinite(x):
-        raise FieldsealNotSupported(f"a float must be finite, not {x!r}")
+        raise FieldsealNotSupported("a float must be finite")
     if x == 0:
         return b"-0" if math.copysign(1.0, x) < 0 else b"0"
     if x < 0:
@@ -258,51 +271,66 @@ _DATETIME = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
-def _refuse(kind: str, raw: bytes) -> FieldsealNotSupported:
-    shown = raw[:40]
+class _NotCanonical(Exception):
+    """The bytes are not §3.6's rendering. Carries nothing: `from_bytes` words
+    the refusal, because only it knows whether the bytes were decrypted."""
+
+
+def _refuse(kind: str, label: str | None,
+            decrypted: bool) -> FieldsealNotSupported:
+    where = f"{label}: " if label else ""
+    if decrypted:
+        return FieldsealNotSupported(
+            f"{where}the decrypted value is not spec §3.6's canonical "
+            f"`{kind}` rendering. The envelope was authentic, so this is not "
+            "tampering: the row was written by something that does not "
+            "render §3.6, or the column's declared type changed after it was "
+            "written. Changing the type is a new plaintext encoding and "
+            "needs a backfill, not an edit.")
     return FieldsealNotSupported(
-        f"the decrypted value {shown!r} is not spec §3.6's canonical `{kind}` "
-        "rendering. The envelope was authentic, so this is not tampering: the "
-        "row was written by something that does not render §3.6, or the "
-        "column's declared type changed after it was written. Changing the "
-        "type is a new plaintext encoding and needs a backfill, not an edit.")
+        f"{where}the stored value is not an envelope: it is legacy plaintext "
+        "the core passed through under the read mode (spec §10.3), and its "
+        f"bytes are not this column's spec §3.6 `{kind}` rendering. Nothing "
+        "was decrypted. Either the row needs migrating with the backfill "
+        "(`tools/backfill/PROCEDURE.md`), or the column's declared type does "
+        "not match what the legacy column holds.")
 
 
-def _ascii(kind: str, raw: bytes) -> str:
+def _ascii(raw: bytes) -> str:
     try:
         return raw.decode("ascii")
     except UnicodeDecodeError:
-        raise _refuse(kind, raw) from None
+        raise _NotCanonical() from None
 
 
 def _parse_string(raw: bytes) -> str:
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise _refuse("string", raw) from e
+        raise _NotCanonical() from e
 
 
 def _parse_int(raw: bytes) -> int:
-    s = _ascii("int", raw)
+    s = _ascii(raw)
     if not _INT.fullmatch(s):
-        raise _refuse("int", raw)
+        raise _NotCanonical()
     return int(s)
 
 
 def _parse_decimal(raw: bytes) -> Decimal:
-    s = _ascii("decimal", raw)
+    s = _ascii(raw)
     if s == "-0" or not _DECIMAL.fullmatch(s):
-        raise _refuse("decimal", raw)
+        raise _NotCanonical()
     return Decimal(s)
 
 
 def _parse_float(raw: bytes) -> float:
-    s = _ascii("float", raw)
+    s = _ascii(raw)
     if not _FLOAT.fullmatch(s):
-        raise _refuse("float", raw)
+        raise _NotCanonical()
     x = float(s)
     if not math.isfinite(x) or render_float(x) != raw:
-        raise _refuse("float", raw)
+        raise _NotCanonical()
     return x
 
 
@@ -311,29 +339,29 @@ def _parse_boolean(raw: bytes) -> bool:
         return True
     if raw == b"false":
         return False
-    raise _refuse("boolean", raw)
+    raise _NotCanonical()
 
 
 def _parse_date(raw: bytes) -> dt.date:
-    s = _ascii("date", raw)
+    s = _ascii(raw)
     if not _DATE.fullmatch(s):
-        raise _refuse("date", raw)
+        raise _NotCanonical()
     try:
         return dt.date.fromisoformat(s)
     except ValueError as e:
-        raise _refuse("date", raw) from e
+        raise _NotCanonical() from e
 
 
 def _parse_datetime(raw: bytes) -> dt.datetime:
-    s = _ascii("datetime", raw)
+    s = _ascii(raw)
     if not _DATETIME.fullmatch(s):
-        raise _refuse("datetime", raw)
+        raise _NotCanonical()
     try:
         return dt.datetime(int(s[0:4]), int(s[5:7]), int(s[8:10]),
                            int(s[11:13]), int(s[14:16]), int(s[17:19]),
                            int(s[20:26]), tzinfo=dt.UTC)
     except ValueError as e:  # year 0000, hour 24, second 60, February 30
-        raise _refuse("datetime", raw) from e
+        raise _NotCanonical() from e
 
 
 _RENDER = {

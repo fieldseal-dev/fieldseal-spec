@@ -182,3 +182,25 @@ def test_index_operand_keeps_text_as_text_for_a_string_column() -> None:
     field = Encrypted(
         models.TextField(), column_uuid="0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b")
     assert field.index_operand("1.50") == "1.50"
+
+
+@pytest.mark.parametrize(("field", "value", "leaks"), [
+    # Django's own coercion error quotes the input.
+    (models.IntegerField(), "SECRET-42", ["SECRET"]),
+    (models.DecimalField(max_digits=10, decimal_places=2), "SECRET.1", ["SECRET"]),
+    (models.DateField(), "SECRET-date", ["SECRET"]),
+    # Non-finite values: nothing sensitive, but no value at all is the rule.
+    (models.DecimalField(max_digits=10, decimal_places=2), Decimal("NaN"), ["NaN"]),
+    (models.FloatField(), float("inf"), ["inf"]),
+], ids=["int-coercion", "decimal-coercion", "date-coercion", "decimal-nan",
+        "float-inf"])
+def test_a_refused_write_never_carries_the_value(
+        field: models.Field[Any, Any], value: Any, leaks: list[str]) -> None:
+    """Spec §9: an error message never includes plaintext. Not the refusal's
+    own text, and not a chained cause, which every traceback prints."""
+    with pytest.raises(FieldsealNotSupported) as e:
+        codec.to_bytes(field, value)
+    for leak in leaks:
+        assert leak not in str(e.value)
+    assert e.value.__cause__ is None or not any(
+        leak in str(e.value.__cause__) for leak in leaks)

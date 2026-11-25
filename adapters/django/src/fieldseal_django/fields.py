@@ -650,9 +650,14 @@ class Encrypted(models.Field):
         # raised above, so it never gets here. Signalled before the codec
         # runs, so a value it refuses still shows. Strict never passes
         # plaintext through, so the steady state pays no second recognition.
-        if client.read_mode != "strict" and not client.is_ciphertext(blob):
+        passed_through = (client.read_mode != "strict"
+                          and not client.is_ciphertext(blob))
+        if passed_through:
             record_plaintext_read(client, self.model, self.name)
-        return codec.from_bytes(self.inner, plain)
+        return codec.from_bytes(
+            self.inner, plain,
+            label=f"{self.model.__name__}.{self.name}",
+            decrypted=not passed_through)
 
     def _render_legacy(self, value: Any, connection: Any) -> bytes:
         """A `binary` column's value that is not bytes, as spec §3.6 bytes.
