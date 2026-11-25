@@ -449,10 +449,12 @@ def main(argv: list[str]) -> int:
 def recorded_warnings(a: Act) -> Iterator[None]:
     """Record the core's warnings into the act, and pass the rest on.
 
-    The adapter does not expose the core's `on_warning` (#306 item 2), so
-    the core warns through `warnings.warn`, and this is where the act sees
-    it. The client is built on first use, inside the act, so the scope is the
-    runner. Recorded rather than printed, as the Prisma acts do: the narration
+    The demo leaves `FIELDSEAL["ON_WARNING"]` unset, so the core warns
+    through `warnings.warn`, its default route, and this is where the act
+    sees it. Unset on purpose: `manage.py` commands then still print the
+    warning, which says this is not a production configuration. The client
+    is built on first use, inside the act, so the scope is the runner.
+    Recorded rather than printed, as the Prisma acts do: the narration
     is compared to a golden, and the transcript is where the warning is
     checked. Any other warning is shown as it would have been.
     """

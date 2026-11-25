@@ -163,7 +163,8 @@ compared by the checker as `declared_suite_id`.
   TypeScript core through `onWarning` (kind `static-key-provider`), the Python
   core, since [#223](https://github.com/fieldseal-dev/fieldseal-spec/issues/223),
   as a `StaticKeyProviderWarning` (kind `STATIC_KEY_PROVIDER`), which the Django
-  acts record from `warnings` because the adapter does not expose `on_warning`.
+  acts record from `warnings`. The demo leaves `FIELDSEAL["ON_WARNING"]` unset
+  so that `manage.py` commands still print the warning.
   `check_transcript.py` requires the warning in every act that builds a client,
   which makes "this is not a production configuration" a checked fact rather
   than a sentence here. Two Django acts build none and are exempt by name:

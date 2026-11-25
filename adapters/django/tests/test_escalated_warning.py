@@ -50,8 +50,9 @@ def test_an_escalated_static_key_provider_warning_is_E010_not_E003():
 
 def test_an_on_warning_that_raises_is_E010_not_E003():
     """The other escalation route: a hand-built client whose `on_warning`
-    raises. The adapter does not expose `on_warning` (#306 item 2), so
-    `FIELDSEAL["CLIENT"]` is the way to reach it today."""
+    raises, given as `FIELDSEAL["CLIENT"]`. `FIELDSEAL["ON_WARNING"]` is
+    the same route for the client the adapter builds
+    (`test_hook_settings.py`)."""
     from fieldseal import Fieldseal
 
     from fieldseal_django.apps import build_index_registry

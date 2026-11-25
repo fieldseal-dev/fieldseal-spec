@@ -57,6 +57,51 @@ def _refused_field(registry: Any) -> str:
                     f"(BlindIndex {decl.index_id!r}): ")
     return ""
 
+
+_E003_HINT = (
+    "This is one of the core's own gates (the §7.2 declared suite, the §7.4 "
+    "band, the §7.6 cardinality gate, one declaration per index), running "
+    "where it always runs -- at client construction. The adapter does not "
+    "duplicate the rule; fix the declaration named above.")
+
+
+def _index_refusal(registry: Any) -> tuple[str, str | None] | None:
+    """`(message, hint)` for the index declaration the client was refused
+    over, or `None` when every model declaration passes.
+
+    Asked after `build_client` has failed, for the client the adapter builds
+    from the models. Three refusals are E003's: one the adapter makes while
+    assembling the declarations (its message names the field already), one
+    the core's `validate_index_declaration` makes, and two declarations of
+    one index, which the core refuses when it registers them and which a
+    model inheriting an indexed column through multi-table inheritance
+    produces (`docs/12` §6). The verdict is the core's in the second case;
+    the third compares the keys the core's validation returned.
+    """
+    from fieldseal import validate_index_declaration
+
+    from .apps import index_declarations
+
+    try:
+        triples = index_declarations(registry)
+    except FieldsealAdapterError as e:
+        return str(e), None
+    seen: dict[Any, str] = {}
+    for model, field, decl in triples:
+        name = f"{model.__name__}.{field.name} (BlindIndex {decl.index_id!r})"
+        try:
+            v = validate_index_declaration(decl)
+        except ConfigurationError as e:
+            return (f"the core refused an index declaration: {name}: {e}",
+                    _E003_HINT)
+        if v.key in seen:
+            return (f"the core refused an index declaration: {name} "
+                    f"declares the same index as {seen[v.key]} "
+                    f"(duplicate index declaration {v.key})", _E003_HINT)
+        seen[v.key] = name
+    return None
+
+
 @register("fieldseal")
 def check_fieldseal(app_configs: Any = None, apps: Any = None,
                     admin_registry: Any = None,
@@ -289,20 +334,38 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                      "default would mean shipping a key.",
                 obj=None, id="fieldseal.E007"))
             return issues
+        cfg = get_settings()
         try:
             build_client(apps)
-        except FieldsealAdapterError as e:
-            issues.append(Error(str(e), obj=None, id="fieldseal.E003"))
-        except ConfigurationError as e:
-            issues.append(Error(
-                "the core refused an index declaration: "
-                f"{_refused_field(apps)}{e}",
-                hint="This is one of the core's own gates (the §7.2 declared "
-                     "suite, the §7.4 band, the §7.6 cardinality gate), "
-                     "running where it always runs -- at client "
-                     "construction. The adapter does not duplicate the rule; "
-                     "fix the declaration named above.",
-                obj=None, id="fieldseal.E003"))
+        except (FieldsealAdapterError, ConfigurationError) as e:
+            # E003 or E007 -- a refused index declaration, or a refused
+            # client configuration. Both arrive as the same exception types,
+            # so the declarations are asked about directly, and only once the
+            # build has failed, so a passing startup validates once. Until
+            # #306 every one of these was E003, and a refused WRITE_SUITE,
+            # READ_MODE or METRICS read "the core refused an index
+            # declaration".
+            refusal = None if "CLIENT" in cfg else _index_refusal(apps)
+            if refusal is not None:
+                msg, hint = refusal
+                issues.append(Error(msg, hint=hint, obj=None,
+                                    id="fieldseal.E003"))
+            elif "CLIENT" in cfg:
+                issues.append(Error(
+                    f"FIELDSEAL['CLIENT'] could not be built: {e}",
+                    hint="The adapter does not build this client: the "
+                         "error is from the CLIENT setting or the callable "
+                         "it names.",
+                    obj=None, id="fieldseal.E007"))
+            else:
+                issues.append(Error(
+                    "the core refused the client configuration in "
+                    f"FIELDSEAL: {e}",
+                    hint="Every model's index declaration passed the core's "
+                         "validation, so this is the client configuration: "
+                         "KEY_PROVIDER, ALLOWED_SUITES, WRITE_SUITE, "
+                         "READ_MODE, ON_WARNING or METRICS.",
+                    obj=None, id="fieldseal.E007"))
         except FieldsealWarning as e:
             # E010 -- the core warned, and the deployment escalated the
             # warning to an error (`-W error`, a `warnings` filter, or an
@@ -316,20 +379,19 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                 hint="This is not an index refusal. The core warns here "
                      "(spec §8, §10.3) and this process turns the warning "
                      "into an exception: check `-W` / PYTHONWARNINGS, the "
-                     "`warnings` filters and any `on_warning` the client "
-                     "is built with.",
+                     "`warnings` filters and FIELDSEAL['ON_WARNING'] (or the "
+                     "on_warning= of a client given as FIELDSEAL['CLIENT']).",
                 obj=None, id="fieldseal.E010"))
         except Exception as e:  # noqa: BLE001 - e.g. a KEY_PROVIDER that raises
             issues.append(Error(
                 f"building the client failed: {type(e).__name__}: {e}",
-                hint="This is not an index refusal: the core refuses an "
-                     "index declaration with a ConfigurationError (E003). "
-                     "Something else raised while the client was built, "
-                     "such as the KEY_PROVIDER or CLIENT callable.",
+                hint="This is not an index refusal (E003) or a refused "
+                     "configuration (E007): something else raised while the "
+                     "client was built, such as the KEY_PROVIDER or CLIENT "
+                     "callable.",
                 obj=None, id="fieldseal.E010"))
 
         # E006 -- a hand-built client must match the model declarations.
-        cfg = get_settings()
         if "CLIENT" in cfg:
             issues.extend(_check_client_registry(apps))
 

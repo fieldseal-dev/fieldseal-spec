@@ -46,7 +46,13 @@ _client_lock = threading.Lock()
 _SETTING_KEYS = {
     "KEY_PROVIDER", "CLIENT", "READ_MODE", "ALLOWED_SUITES", "WRITE_SUITE",
     "ARM_PROVISIONAL_SUITES", "WARM_ON_READY", "WARM_TENANTS",
+    "ON_WARNING", "METRICS",
 }
+
+#: The core's two hooks (docs/09 §2, #306). Passed to `Fieldseal(...)` as
+#: they are; the core validates them. They configure the client the adapter
+#: builds, so they cannot be combined with a client the deployment built.
+_HOOK_KEYS = ("ON_WARNING", "METRICS")
 
 
 def get_settings() -> dict[str, Any]:
@@ -57,6 +63,17 @@ def get_settings() -> dict[str, Any]:
             f"unknown FIELDSEAL settings: {sorted(unknown)}. Known keys are "
             f"{sorted(_SETTING_KEYS)}."
         )
+    if "CLIENT" in cfg:
+        hooks = [k for k in _HOOK_KEYS if cfg.get(k) is not None]
+        if hooks:
+            # `build_client` returns a supplied client without reading any
+            # other key, so these would change nothing, silently.
+            raise FieldsealConfigurationError(
+                f"FIELDSEAL {hooks} cannot be combined with "
+                "FIELDSEAL['CLIENT']: the adapter does not build that client, "
+                "so it cannot hand the hooks to it. Pass on_warning= and "
+                "metrics= to the Fieldseal(...) your CLIENT builds."
+            )
     return cfg
 
 
@@ -203,6 +220,8 @@ def build_client(registry: Any = None) -> Fieldseal:
         read_mode=cfg.get("READ_MODE", "strict"),
         indexes=build_index_registry(registry),
         arm_provisional_suites=bool(cfg.get("ARM_PROVISIONAL_SUITES", False)),
+        on_warning=cfg.get("ON_WARNING"),
+        metrics=cfg.get("METRICS"),
     )
 
 

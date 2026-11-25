@@ -391,7 +391,9 @@ most columns.
 | `READ_MODE` | no | `"strict"` (default), `"permissive"` or `"readonly"`. The last two are for migrating existing plaintext columns, warn while active, and count each plaintext read per model and field (`fieldseal_django.signals`; see `REFERENCE.md`). `python manage.py fieldseal_backfill` encrypts an existing table's plaintext in resumable, rate-limited batches; see `REFERENCE.md` and `tools/backfill/PROCEDURE.md` for what it does and does not cover. |
 | `WARM_ON_READY` | no | Load keys at startup; see *Keys* below. |
 | `WARM_TENANTS` | no | The tenants to load keys for when warming. |
-| `CLIENT` | no | A `fieldseal.Fieldseal` client you built yourself, instead of the one the adapter builds from your models. |
+| `ON_WARNING` | no | A callable that receives each of the core's warnings (a `FieldsealWarning`: the `StaticKeyProvider` one, and `permissive`/`readonly`'s) instead of `warnings.warn`. A handler that raises makes the warning a hard failure when the client is built. |
+| `METRICS` | no | An object with `plaintext_read()` and/or `decrypt_error(code)`, called by the core. `plaintext_read()` counts the same reads as the `plaintext_read` signal, without the model and field; see `REFERENCE.md`. |
+| `CLIENT` | no | A `fieldseal.Fieldseal` client you built yourself, instead of the one the adapter builds from your models. It cannot be combined with `ON_WARNING` or `METRICS`: pass those to the client you build. |
 
 An unknown key raises at startup, so a typo cannot silently change nothing.
 
