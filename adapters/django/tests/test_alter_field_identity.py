@@ -281,8 +281,11 @@ def test_a_change_that_keeps_the_identity_is_let_through(case, new, old):
 
 def test_an_index_declaration_change_is_let_through(case):
     """`index` is not part of the stored value's identity: the envelope does
-    not depend on it. (Whether the *index column* stays right is the open
-    question #288 records, not decided here.)"""
+    not depend on it. Adding a `BlindIndex` where there was none is not
+    refused by #303 either (it changes no index that was written; filling the
+    new column is the backfill's, and rebuilding a changed one is #315).
+    `test_alter_field_index_declaration.py` covers a change to one that was
+    there."""
     index = ("fieldseal_django.BlindIndex(suite_id=0xFF01, "
              "index_id='exact', idf='hmac-sha512', "
              "normalize='nfc-casefold-v1', truncate_bits=15, "

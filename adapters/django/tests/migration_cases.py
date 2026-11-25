@@ -29,9 +29,12 @@ HEAD = textwrap.dedent("""\
     """)
 
 
-def create(table: str, v: str, *, replaces: str = "") -> str:
+def create(table: str, v: str, *, replaces: str = "",
+           extra: str = "") -> str:
     """A `0001`-style migration creating the table, with an unencrypted
-    integer column `w` beside `v` for changes that do not touch it."""
+    integer column `w` beside `v` for changes that do not touch it. `extra`
+    is more fields, as source of `("name", field),` tuples (the #303 tests
+    add a second `Encrypted` field and `EncryptedIndex` columns)."""
     return textwrap.dedent("""
         class Migration(migrations.Migration):
             initial = True
@@ -44,11 +47,13 @@ def create(table: str, v: str, *, replaces: str = "") -> str:
                                                serialize=False)),
                     ("v", V),
                     ("w", models.IntegerField(null=True)),
+                    EXTRA
                 ],
                 options={"db_table": TABLE},
             )]
         """).replace("REPLACES", f"replaces = {replaces}" if replaces else "") \
-        .replace("V", v).replace("TABLE", repr(table))
+        .replace("V", v).replace("TABLE", repr(table)) \
+        .replace("EXTRA", extra)
 
 
 def mig(deps: list[str], ops: str) -> str:
