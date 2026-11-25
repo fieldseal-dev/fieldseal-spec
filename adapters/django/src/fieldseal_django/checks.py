@@ -65,18 +65,27 @@ _E003_HINT = (
     "duplicate the rule; fix the declaration named above.")
 
 
-def _index_refusal(registry: Any) -> tuple[str, str | None] | None:
+def _index_refusal(registry: Any, *,
+                   duplicates: bool = True) -> tuple[str, str | None] | None:
     """`(message, hint)` for the index declaration the client was refused
     over, or `None` when every model declaration passes.
 
-    Asked after `build_client` has failed, for the client the adapter builds
-    from the models. Three refusals are E003's: one the adapter makes while
-    assembling the declarations (its message names the field already), one
-    the core's `validate_index_declaration` makes, and two declarations of
-    one index, which the core refuses when it registers them and which a
-    model inheriting an indexed column through multi-table inheritance
-    produces (`docs/12` §6). The verdict is the core's in the second case;
-    the third compares the keys the core's validation returned.
+    Asked after `build_client` has failed. Three refusals are E003's: one the
+    adapter makes while assembling the declarations (its message names the
+    field already), one the core's `validate_index_declaration` makes, and two
+    declarations of one index, which the core refuses when it registers them
+    and which a model inheriting an indexed column through multi-table
+    inheritance produces (`docs/12` §6). The verdict is the core's in the
+    second case; the third compares the keys the core's validation returned.
+
+    `duplicates=False` leaves the third out, for a `FIELDSEAL["CLIENT"]`: that
+    client registers what it chooses, and E006 compares the model side by key,
+    so two model declarations of one index are no fault on that path.
+
+    Any exception out of `validate_index_declaration` is a refusal, not only
+    its `ConfigurationError`. A declaration value of the wrong type (an
+    unhashable `normalize`) raises `TypeError` there, and this runs inside the
+    check's handler, so letting it escape would crash `manage.py check`.
     """
     from fieldseal import validate_index_declaration
 
@@ -91,9 +100,11 @@ def _index_refusal(registry: Any) -> tuple[str, str | None] | None:
         name = f"{model.__name__}.{field.name} (BlindIndex {decl.index_id!r})"
         try:
             v = validate_index_declaration(decl)
-        except ConfigurationError as e:
+        except Exception as e:  # noqa: BLE001 - see the docstring
             return (f"the core refused an index declaration: {name}: {e}",
                     _E003_HINT)
+        if not duplicates:
+            continue
         if v.key in seen:
             return (f"the core refused an index declaration: {name} "
                     f"declares the same index as {seen[v.key]} "
@@ -344,8 +355,11 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
             # build has failed, so a passing startup validates once. Until
             # #306 every one of these was E003, and a refused WRITE_SUITE,
             # READ_MODE or METRICS read "the core refused an index
-            # declaration".
-            refusal = None if "CLIENT" in cfg else _index_refusal(apps)
+            # declaration". With a CLIENT, a model declaration the core
+            # refuses is still E003: E006 would report it so had the client
+            # built, and a CLIENT callable that passes the models'
+            # declarations fails over it.
+            refusal = _index_refusal(apps, duplicates="CLIENT" not in cfg)
             if refusal is not None:
                 msg, hint = refusal
                 issues.append(Error(msg, hint=hint, obj=None,
@@ -388,7 +402,8 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                 hint="This is not an index refusal (E003) or a refused "
                      "configuration (E007): something else raised while the "
                      "client was built, such as the KEY_PROVIDER or CLIENT "
-                     "callable.",
+                     "callable, or an ON_WARNING (or on_warning=) handler "
+                     "that escalates a warning by raising another exception.",
                 obj=None, id="fieldseal.E010"))
 
         # E006 -- a hand-built client must match the model declarations.

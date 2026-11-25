@@ -360,8 +360,17 @@ class FieldsealConfig(AppConfig):
         start a process whose cache could not be primed, and a web worker that
         exits on a transient KMS blip takes the deployment down for a
         condition the next request might not even have.
+
+        **Except a warning the deployment escalated** (an `ON_WARNING` that
+        raises, #306). That is not a transient condition but the deployment
+        asking for a hard failure, and the next request would build the client
+        and raise it again. Caught here, it read as a KMS failure. It is
+        re-raised, so the process stops in `ready()` (`docs/12` §7). Under
+        `-W error` the process already stopped, on this method's own warning.
         """
         import warnings
+
+        from fieldseal.errors import FieldsealWarning
 
         cfg = settings.FIELDSEAL if hasattr(settings, "FIELDSEAL") else {}
         if not cfg.get("WARM_ON_READY"):
@@ -373,6 +382,8 @@ class FieldsealConfig(AppConfig):
                 tenants=list(cfg.get("WARM_TENANTS", [])))
             if contexts:
                 get_client().warm_blocking(contexts)
+        except FieldsealWarning:
+            raise
         except Exception as e:  # noqa: BLE001 - startup must not die on this
             warnings.warn(
                 f"FIELDSEAL['WARM_ON_READY'] is set but warming failed: {e}. "

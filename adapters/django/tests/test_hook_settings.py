@@ -196,10 +196,9 @@ def test_a_write_suite_outside_allowed_suites_is_E007_not_E003():
     assert "write_suite must be in allowed_suites" in e007.msg
 
 
-def test_an_index_refused_by_the_core_is_still_E003_with_a_bad_setting():
-    """Both wrong: the index is reported, under E003. The configuration
-    follows once the index is fixed, one refusal at a time, as the core
-    reports them."""
+def _bad_index_apps(**index):
+    """An isolated registry with one model, `Bad`, whose `BlindIndex` takes
+    `index` over a valid declaration."""
     from django.db import models
     from django.test.utils import isolate_apps
 
@@ -211,17 +210,78 @@ def test_an_index_refused_by_the_core_is_still_E003_with_a_bad_setting():
         class Bad(models.Model):
             email = Encrypted(
                 models.EmailField(), column_uuid=COL_EMAIL,
-                index=BlindIndex(suite_id=0xFF01, projected_population=100_000,
-                                 truncate_bits=63))
+                index=BlindIndex(**{"suite_id": 0xFF01,
+                                    "projected_population": 100_000,
+                                    **index}))
             email_bidx = Encrypted.index_column("email")
 
             fieldseal = FieldsealMeta(table_uuid=TABLE_PATIENT)
 
-        with fieldseal(METRICS=Recorder):
-            issues = _issues(apps)
+    return apps
+
+
+def test_an_index_refused_by_the_core_is_still_E003_with_a_bad_setting():
+    """Both wrong: the index is reported, under E003. The configuration
+    follows once the index is fixed, one refusal at a time."""
+    apps = _bad_index_apps(truncate_bits=63)
+    with fieldseal(METRICS=Recorder):
+        issues = _issues(apps)
     [e003] = [i for i in issues if i.id == "fieldseal.E003"]
     assert "Bad.email (BlindIndex 'exact')" in e003.msg
     assert "fieldseal.E007" not in _ids(issues)
+
+
+def test_a_declaration_whose_validation_raises_TypeError_is_E003():
+    """The core refuses the configuration first, so the check re-validates
+    the declarations inside its handler. An unhashable `normalize` raises
+    `TypeError` there, not `ConfigurationError`, and `manage.py check` must
+    still report rather than crash."""
+    apps = _bad_index_apps(normalize=["nfc-casefold-v1"])
+    with fieldseal(METRICS=Recorder):
+        issues = _issues(apps)
+    [e003] = [i for i in issues if i.id == "fieldseal.E003"]
+    assert "Bad.email (BlindIndex 'exact')" in e003.msg
+
+
+def test_a_client_that_fails_over_a_model_declaration_is_E003_not_E007():
+    """A CLIENT callable that passes the models' declarations is refused by
+    the core over the model's index. That is E003's condition, as E006 would
+    report it had the client built, and the message names the field."""
+    apps = _bad_index_apps(truncate_bits=63)
+    with override_settings(
+            FIELDSEAL={"CLIENT": lambda: _client(_model_declarations(apps))}):
+        issues = _issues(apps)
+    [e003] = [i for i in issues if i.id == "fieldseal.E003"]
+    assert "Bad.email (BlindIndex 'exact')" in e003.msg
+    assert "fieldseal.E007" not in _ids(issues)
+
+
+def test_an_inherited_index_is_no_E003_when_a_client_fails():
+    """With CLIENT, two model declarations of one index are no fault (E006
+    compares by key), so a CLIENT that fails for its own reason is E007
+    alone."""
+    apps, _, _ = _mti_models()
+    with override_settings(FIELDSEAL={"CLIENT": lambda: object()}):
+        ids = _ids(_issues(apps))
+    assert "fieldseal.E007" in ids
+    assert "fieldseal.E003" not in ids
+
+
+def test_an_on_warning_that_raises_stops_warm_on_ready():
+    """`docs/12` §7: with WARM_ON_READY the client is built in `ready()`, and
+    the escalated warning stops the process there. Any other warming failure
+    warns and continues, and before #310's review this one did too, reading
+    as a KMS failure."""
+    from fieldseal_django.apps import FieldsealConfig
+
+    def escalate(w):
+        raise w
+
+    with fieldseal(ON_WARNING=escalate, WARM_ON_READY=True,
+                   WARM_TENANTS=["t1"]):
+        app = FieldsealConfig.create("fieldseal_django")
+        with pytest.raises(StaticKeyProviderWarning):
+            app._warm_on_ready()
 
 
 def test_an_index_inherited_through_multi_table_inheritance_is_still_E003():
