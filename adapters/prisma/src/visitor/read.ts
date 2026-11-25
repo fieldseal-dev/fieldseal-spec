@@ -91,15 +91,20 @@ export function applyReads(model: ResolvedModel, result: unknown, ctx: ReadCtx):
     // before the adapter sees it, so a passed-through value the codec then
     // refuses is still a plaintext read. A successful strict read is always an
     // envelope, so strict skips the second recognition.
-    if (
-      ctx.onPlaintextRead !== undefined &&
-      ctx.client.readMode !== "strict" &&
-      !ctx.client.isCiphertext(envelope)
-    ) {
+    // The recognition is also what words a codec refusal: a passed-through
+    // value was never decrypted (#299). Strict never passes one through, so it
+    // skips the recognition.
+    const passedThrough =
+      ctx.client.readMode !== "strict" && !ctx.client.isCiphertext(envelope);
+    if (passedThrough && ctx.onPlaintextRead !== undefined) {
       ctx.onPlaintextRead(model.model, enc.field);
     }
 
-    ctx.journal.set(result, enc.field, fromBytes(plain, enc, `${model.model}.${enc.field}`));
+    ctx.journal.set(
+      result,
+      enc.field,
+      fromBytes(plain, enc, `${model.model}.${enc.field}`, passedThrough),
+    );
   }
 
   if (!ctx.exposeIndexColumns) {

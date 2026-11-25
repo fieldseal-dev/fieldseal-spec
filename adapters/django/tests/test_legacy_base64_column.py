@@ -223,13 +223,61 @@ def test_a_non_canonical_int_text_is_refused_and_still_counted():
         plant(Sealed, pk, "forty-two")
         with read_mode("permissive") as client:
             with pytest.raises(FieldsealNotSupported,
-                               match="canonical `int` rendering"):
+                               match="`int` rendering"):
                 Sealed.objects.get(pk=pk)
             assert client.plaintext_reads == 1
             # Per model and field, the same reads (#246).
             assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}
         with read_mode("strict"), pytest.raises(NotCiphertext):
             Sealed.objects.get(pk=pk)
+
+
+@isolate_apps("tests")
+def test_a_passed_through_refusal_says_legacy_plaintext_not_authentic():
+    """#299. The core passed the value through, so no envelope was read: the
+    message must not claim one was decrypted or authentic, must say the row
+    needs the backfill, and must carry the label and type but not the value
+    (spec §9: no plaintext in an error message)."""
+    with altered(models.IntegerField, 42) as (Sealed, pk):
+        plant(Sealed, pk, "SECRET-legacy-abc")
+        for mode in ("permissive", "readonly"):
+            with read_mode(mode), pytest.raises(FieldsealNotSupported) as ei:
+                Sealed.objects.get(pk=pk)
+            msg = str(ei.value)
+            assert f"{Sealed.__name__}.v: " in msg
+            assert "`int`" in msg
+            assert "not an envelope" in msg
+            assert "legacy plaintext" in msg
+            assert "spec §10.3" in msg
+            assert "backfill" in msg
+            assert "authentic" not in msg
+            assert "decrypted value" not in msg
+            assert "SECRET" not in msg
+            assert "abc" not in msg
+
+
+@isolate_apps("tests")
+def test_a_decrypted_refusal_still_says_the_envelope_was_authentic():
+    """#299. A real envelope whose plaintext is not §3.6's rendering keeps the
+    authentic-envelope diagnosis, and still carries no value."""
+    with altered(models.IntegerField, 42) as (Sealed, pk):
+        field = Sealed._meta.get_field("v")
+        with read_mode("permissive") as client:  # readonly cannot encrypt
+            envelope = client.encrypt(b"SECRET-forty-two",
+                                      field.fieldseal_context())
+        plant(Sealed, pk, base64.b64encode(envelope).decode("ascii"))
+        for mode in ("strict", "permissive", "readonly"):
+            with read_mode(mode):
+                with pytest.raises(FieldsealNotSupported) as ei:
+                    Sealed.objects.get(pk=pk)
+                msg = str(ei.value)
+                assert f"{Sealed.__name__}.v: " in msg
+                assert "the decrypted value is not spec §3.6's canonical " \
+                       "`int` rendering" in msg
+                assert "The envelope was authentic" in msg
+                assert "legacy plaintext" not in msg
+                assert "SECRET" not in msg
+                assert "forty" not in msg
 
 
 @sqlite_only

@@ -193,8 +193,12 @@ def test_text_the_inner_field_cannot_read_is_refused_and_counted(
                  encrypted_inner=inner) as (Sealed, pk, _):
         with read_mode(mode) as client:
             with pytest.raises(FieldsealNotSupported,
-                               match=f"{name} could not read it"):
+                               match=f"{name} could not read it") as e:
                 Sealed.objects.get(pk=pk)
+            # The converter's error may quote the legacy value, so none is
+            # attached to the refusal (spec §9).
+            assert e.value.__cause__ is None
+            assert e.value.__context__ is None
             assert client.plaintext_reads == 1
             # Per model and field, the same reads (#246).
             assert plaintext_read_counts() == {(Sealed._meta.label, "v"): 1}

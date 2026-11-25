@@ -63,7 +63,7 @@ export function toBytes(value: unknown, decl: EncryptedFieldDecl, label: string)
       if (typeof value === "bigint") return enc(value.toString());
       if (typeof value === "number" && Number.isInteger(value)) {
         if (!Number.isSafeInteger(value)) {
-          throw refuseWrite(label, "int", `${value} is beyond 2^53, where a number may already have been rounded; pass a bigint`);
+          throw refuseWrite(label, "int", "the number is beyond 2^53, where it may already have been rounded; pass a bigint");
         }
         return enc(BigInt(value).toString());
       }
@@ -72,12 +72,12 @@ export function toBytes(value: unknown, decl: EncryptedFieldDecl, label: string)
       const text = decimalText(value);
       if (text === null) break;
       const canon = canonicalDecimal(text);
-      if (canon === null) throw refuseWrite(label, "decimal", `${JSON.stringify(text)} is not a finite decimal`);
+      if (canon === null) throw refuseWrite(label, "decimal", "the value is not a finite decimal");
       return enc(canon);
     }
     case "float":
       if (typeof value === "number") {
-        if (!Number.isFinite(value)) throw refuseWrite(label, "float", `${value} is not finite`);
+        if (!Number.isFinite(value)) throw refuseWrite(label, "float", "the number is not finite");
         return enc(renderFloat(value));
       }
       break;
@@ -88,15 +88,15 @@ export function toBytes(value: unknown, decl: EncryptedFieldDecl, label: string)
       if (value instanceof Date && !Number.isNaN(value.getTime())) {
         const iso = value.toISOString();
         if (!iso.endsWith("T00:00:00.000Z")) {
-          throw refuseWrite(label, "date", `${iso} is not exactly UTC midnight, which is how this adapter represents a calendar date; it is refused rather than truncated to a day`);
+          throw refuseWrite(label, "date", "the Date is not exactly UTC midnight, which is how this adapter represents a calendar date; it is refused rather than truncated to a day");
         }
-        if (!inYearRange(value)) throw refuseWrite(label, "date", `${iso} is outside years 0001-9999`);
+        if (!inYearRange(value)) throw refuseWrite(label, "date", "the Date is outside years 0001-9999");
         return enc(iso.slice(0, 10));
       }
       break;
     case "datetime":
       if (value instanceof Date && !Number.isNaN(value.getTime())) {
-        if (!inYearRange(value)) throw refuseWrite(label, "datetime", `${value.toISOString()} is outside years 0001-9999`);
+        if (!inYearRange(value)) throw refuseWrite(label, "datetime", "the Date is outside years 0001-9999");
         const iso = value.toISOString(); // YYYY-MM-DDTHH:MM:SS.sssZ in range
         return enc(`${iso.slice(0, 23)}000Z`);
       }
@@ -112,8 +112,22 @@ export function toBytes(value: unknown, decl: EncryptedFieldDecl, label: string)
   );
 }
 
-/** Plaintext bytes -> application value, under the declared `as:` type. */
-export function fromBytes(plaintext: Uint8Array, decl: EncryptedFieldDecl, label: string): unknown {
+/**
+ * Plaintext bytes -> application value, under the declared `as:` type.
+ *
+ * `passedThrough` says what the bytes are. False (the default): the plaintext
+ * of an envelope that verified. True: the stored value was not an envelope and
+ * the core passed it through under the read mode (spec §10.3), so nothing was
+ * decrypted and nothing authenticated. A refusal words the two differently,
+ * and neither carries the value (spec §9: an error message never includes
+ * plaintext).
+ */
+export function fromBytes(
+  plaintext: Uint8Array,
+  decl: EncryptedFieldDecl,
+  label: string,
+  passedThrough = false,
+): unknown {
   const buf = Buffer.from(plaintext);
   switch (decl.valueType) {
     case "bytes":
@@ -163,15 +177,34 @@ export function fromBytes(plaintext: Uint8Array, decl: EncryptedFieldDecl, label
         // §3.6: a Date holds milliseconds. Truncating .123456 to .123 is what
         // Node would do silently; refuse instead.
         throw new FieldsealNotSupported(
-          `${label}: the stored instant carries microseconds (.${micros}) that a ` +
-            `JavaScript Date cannot hold. Spec §3.6 refuses rather than truncating; ` +
-            `the row was written by a platform with microsecond instants.`,
+          passedThrough
+            ? `${label}: the stored value is not an envelope: it is legacy plaintext ` +
+              `the core passed through under the read mode (spec §10.3), and its ` +
+              `instant carries microseconds that a JavaScript Date cannot hold. ` +
+              `Spec §3.6 refuses rather than truncating. Nothing was decrypted; the ` +
+              `row needs migrating with the backfill (\`tools/backfill/PROCEDURE.md\`), ` +
+              `or the column's declared type does not match what the legacy column holds.`
+            : `${label}: the stored instant carries microseconds that a ` +
+              `JavaScript Date cannot hold. Spec §3.6 refuses rather than truncating; ` +
+              `the row was written by a platform with microsecond instants.`,
         );
       }
       const d = utc(+m[1]!, +m[2]!, +m[3]!, +m[4]!, +m[5]!, +m[6]!, +micros.slice(0, 3));
       if (d === null) break;
       return d;
     }
+  }
+  if (passedThrough) {
+    // No envelope was read, so nothing was authenticated: this is a legacy
+    // plaintext the core handed back unchanged, and it is not §3.6's rendering.
+    throw new FieldsealNotSupported(
+      `${label}: the stored value is not an envelope: it is legacy plaintext the ` +
+        `core passed through under the read mode (spec §10.3), and its bytes are ` +
+        `not this column's spec §3.6 \`${decl.valueType}\` rendering. Nothing was ` +
+        `decrypted. Either the row needs migrating with the backfill ` +
+        `(\`tools/backfill/PROCEDURE.md\`), or the column's declared type does not ` +
+        `match what the legacy column holds.`,
+    );
   }
   // The bytes decrypted -- so the key, the context and the commitment were all
   // right -- and then were not the canonical rendering of the declared type.
