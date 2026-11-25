@@ -579,6 +579,18 @@ def check_connection(connection: Any) -> None:
             "the backfill was started inside a transaction. A batch is one "
             "transaction of its own (PROCEDURE §5.2); run it outside "
             "`atomic()`.")
+    # With autocommit off, Django's `atomic()` outside a block is only a
+    # savepoint inside a transaction the connection opened implicitly, and
+    # it commits nothing on exit. So the start's insert and comparison
+    # (§4, #308) would not be one transaction of their own, a batch would
+    # not be committed when it ends (§5.2), and on PostgreSQL the start's
+    # SET TRANSACTION would run after earlier queries and fail.
+    if not connection.get_autocommit():
+        raise BackfillError(
+            "the backfill needs a connection in autocommit mode, so that each "
+            "transaction it opens is its own and commits when it ends "
+            "(PROCEDURE §4, §5.2). Remove DATABASES[...]['AUTOCOMMIT'] = "
+            "False for this process.")
     if connection.vendor == "sqlite":
         connection.ensure_connection()
         if getattr(connection, "transaction_mode", None) != "IMMEDIATE":

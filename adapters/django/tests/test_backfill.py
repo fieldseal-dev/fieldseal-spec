@@ -1640,6 +1640,17 @@ def test_a_run_inside_a_transaction_is_refused():
             drive(p, run)
 
 
+def test_a_connection_without_autocommit_is_refused(monkeypatch):
+    """With `AUTOCOMMIT = False`, `atomic()` is a savepoint in a transaction
+    the connection opened itself and commits nothing, so the start's insert
+    and comparison (#308) and each batch would not be transactions of their
+    own. Patched on the wrapper, as below, so the proxy is not touched."""
+    wrapper = connections[connection.alias]
+    monkeypatch.setattr(wrapper, "get_autocommit", lambda: False)
+    with pytest.raises(BackfillError, match="autocommit"):
+        encrypt.check_connection(wrapper)
+
+
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
 def test_sqlite_without_begin_immediate_is_refused(monkeypatch):
     p, run = begin(TwoColumn())
@@ -3082,7 +3093,14 @@ def test_bf32_a_run_that_starts_and_completes_during_the_comparison(
     then insert), X existed at neither read and no longer held the table at
     the insert, so R would then write `b` under another tenant column with
     nothing raised. R's run row now goes in first, so X's start is refused
-    by the unique constraint, naming R, and X writes nothing."""
+    by the unique constraint, naming R, and X writes nothing.
+
+    X runs on R's connection, inside R's open transaction, so it sees R's
+    row there. This pins the order (insert, then compare) and not the race
+    itself: another connection waiting on the unique index until R's
+    transaction ends is the database's behaviour and is not exercised here.
+    That the insert and the comparison are one transaction is pinned by
+    `test_bf32_a_refused_comparison_inserts_nothing`."""
     seed_mixed(25, tenant=1, region=2)
     real = state.converting_runs
     interleaved: list = []
@@ -3156,6 +3174,8 @@ def test_bf32_the_comparison_reads_committed_on_postgres(permissive,
 
     monkeypatch.setattr(state, "converting_runs", isolation)
     with connection.cursor() as cur:
+        cur.execute("SHOW default_transaction_isolation")
+        before = cur.fetchone()[0]
         cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION "
                     "ISOLATION LEVEL REPEATABLE READ")
     try:
@@ -3164,9 +3184,11 @@ def test_bf32_the_comparison_reads_committed_on_postgres(permissive,
             cur.execute("SHOW transaction_isolation")
             after = cur.fetchone()[0]
     finally:
+        # The session's own setting, not a fixed level: the connection is
+        # shared with the tests that follow.
         with connection.cursor() as cur:
-            cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION "
-                        "ISOLATION LEVEL READ COMMITTED")
+            cur.execute("SELECT set_config('default_transaction_isolation', "
+                        "%s, false)", [before])
     assert seen == ["read committed"]
     assert after == "repeatable read"  # the session's own setting is kept
 
