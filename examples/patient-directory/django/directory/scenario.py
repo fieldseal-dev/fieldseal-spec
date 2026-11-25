@@ -20,10 +20,13 @@ Randomness appears as lengths and inequalities, never compared to a literal.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import sys
 import uuid
+import warnings
+from collections.abc import Iterator
 from typing import Any
 
 DEMO = pathlib.Path(__file__).resolve().parents[2]
@@ -57,6 +60,11 @@ class Act:
         self.order, self.step, self.act = order, step, act
         self.title, self.proves = title, proves
         self.assertions: list[dict[str, Any]] = []
+        #: The core's warnings during this act, as the Prisma acts record
+        #: theirs: `{"kind": …, "message": …}`. `check_transcript.py`
+        #: requires the StaticKeyProvider one in every act that builds a
+        #: client.
+        self.warnings: list[dict[str, str]] = []
 
     def say(self, line: str = "") -> None:
         print(line)
@@ -85,7 +93,7 @@ class Act:
                     "title": self.title,
                     "proves": self.proves,
                     "assertions": self.assertions,
-                    "warnings": [],
+                    "warnings": self.warnings,
                 },
                 indent=1,
             )
@@ -424,14 +432,47 @@ def main(argv: list[str]) -> int:
     order, act_no, title, proves = STEPS[step]
     a = Act(order, step, act_no, title, proves)
     a.head()
-    try:
-        RUNNERS[step](a)
-    except Failed as e:
-        a.write()
-        print(f"    FAILED: {e}", file=sys.stderr)
-        return 1
+    failed: Failed | None = None
+    with recorded_warnings(a):
+        try:
+            RUNNERS[step](a)
+        except Failed as e:
+            failed = e
     a.write()
+    if failed is not None:
+        print(f"    FAILED: {failed}", file=sys.stderr)
+        return 1
     return 0
+
+
+@contextlib.contextmanager
+def recorded_warnings(a: Act) -> Iterator[None]:
+    """Record the core's warnings into the act, and pass the rest on.
+
+    The demo leaves `FIELDSEAL["ON_WARNING"]` unset, so the core warns
+    through `warnings.warn`, its default route, and this is where the act
+    sees it. Unset on purpose: `manage.py` commands then still print the
+    warning, which says this is not a production configuration. The client
+    is built on first use, inside the act, so the scope is the runner.
+    Recorded rather than printed, as the Prisma acts do: the narration
+    is compared to a golden, and the transcript is where the warning is
+    checked. Any other warning is shown as it would have been.
+    """
+    from fieldseal.errors import FieldsealWarning
+
+    caught: list[warnings.WarningMessage] = []
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", FieldsealWarning)
+            yield
+    finally:
+        for w in caught:
+            if isinstance(w.message, FieldsealWarning):
+                a.warnings.append(
+                    {"kind": w.message.kind, "message": str(w.message)})
+            else:
+                warnings.showwarning(w.message, w.category, w.filename,
+                                     w.lineno)
 
 
 if __name__ == "__main__":

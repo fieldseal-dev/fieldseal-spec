@@ -104,7 +104,7 @@ Nothing above changed a byte of the envelope. **The two that could split cores o
 |---|---|---|
 | S1 | `FieldsealError` is unchecked | An ORM converter method cannot declare a checked exception |
 | S1 | ArchUnit is used as a library inside JUnit 5 tests, not through its engine | One test runner; each rule has a fixture that violates it, and the test asserts the rule reports that fixture and nothing else |
-| S1 | CI uses `setup-gradle` with `cache-provider: basic` | The default, `enhanced`, is a commercial caching service |
+| S1 | CI uses `setup-gradle` with `cache-provider: basic` | The default, `enhanced`, is a commercial caching service. **Replaced 2026-11-25 ([#312](https://github.com/fieldseal-dev/fieldseal-spec/issues/312)):** `basic` kept one entry for every Java job, written only on `main` and never refreshed, so the Hibernate jobs fetched their dependencies from Maven Central on every run. setup-gradle now validates the wrapper with its cache off, and `actions/cache` keeps an entry per project and per job |
 | S2 | BouncyCastle was a test dependency of the testing module, and the audit's HKDF a test-local one | The core held no cryptographic code until S4 and S5; both moved into the core then |
 | S5 | The Unicode tables are a `tools/ucd-gen` target of this core's own, as a text resource, rather than one hashed resource shared by the Phase 2 cores | A shared file would be read by one core from another's tree; a Java string constant is capped at 65,535 bytes, and the folding table is larger |
 

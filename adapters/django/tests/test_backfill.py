@@ -1640,6 +1640,17 @@ def test_a_run_inside_a_transaction_is_refused():
             drive(p, run)
 
 
+def test_a_connection_without_autocommit_is_refused(monkeypatch):
+    """With `AUTOCOMMIT = False`, `atomic()` is a savepoint in a transaction
+    the connection opened itself and commits nothing, so the start's insert
+    and comparison (#308) and each batch would not be transactions of their
+    own. Patched on the wrapper, as below, so the proxy is not touched."""
+    wrapper = connections[connection.alias]
+    monkeypatch.setattr(wrapper, "get_autocommit", lambda: False)
+    with pytest.raises(BackfillError, match="autocommit"):
+        encrypt.check_connection(wrapper)
+
+
 @pytest.mark.skipif(connection.vendor != "sqlite", reason="SQLite only")
 def test_sqlite_without_begin_immediate_is_refused(monkeypatch):
     p, run = begin(TwoColumn())
@@ -3072,6 +3083,114 @@ def test_a_run_that_finishes_after_the_check_cannot_be_walked_around(
     assert not finished  # R was never run to its end by the interleaving
     assert state.load_run(connection, run_id).status == "running"
     assert written_by_column(run_id)[column_hex("b")] == 0
+
+
+def test_bf32_a_run_that_starts_and_completes_during_the_comparison(
+        permissive, monkeypatch):
+    """#308. R (`b` under `region`) starts; while it compares against
+    earlier runs, a whole run X (`b` under `tenant`) starts, writes every
+    `b` value and completes. Under the old order (refuse if running, compare,
+    then insert), X existed at neither read and no longer held the table at
+    the insert, so R would then write `b` under another tenant column with
+    nothing raised. R's run row now goes in first, so X's start is refused
+    by the unique constraint, naming R, and X writes nothing.
+
+    X runs on R's connection, inside R's open transaction, so it sees R's
+    row there. This pins the order (insert, then compare) and not the race
+    itself: another connection waiting on the unique index until R's
+    transaction ends is the database's behaviour and is not exercised here.
+    That the insert and the comparison are one transaction is pinned by
+    `test_bf32_a_refused_comparison_inserts_nothing`."""
+    seed_mixed(25, tenant=1, region=2)
+    real = state.converting_runs
+    interleaved: list = []
+    refused: list = []
+    started: list = []
+
+    def a_whole_run_during_the_comparison(connection_, table_uuid):
+        runs = real(connection_, table_uuid)
+        if not started:  # once: X's own start compares too
+            started.append(True)
+            try:
+                interleaved.append(go(TenantMixed, columns=["b"],
+                                      tenant="tenant"))
+            except state.RunHeld as e:
+                refused.append(e)
+        return runs
+
+    monkeypatch.setattr(state, "converting_runs",
+                        a_whole_run_during_the_comparison)
+
+    p, r = begin(TenantMixed, columns=["b"], tenant="region")
+
+    assert interleaved == []
+    [held] = refused
+    assert held.holder == r.run_id
+    assert run_rows() == 1  # R only: X's row was never inserted
+    assert state.load_run(connection, r.run_id).status == "running"
+    assert written_by_column(r.run_id) == {column_hex("b"): 0}
+    assert non_envelopes(TenantMixed, "b")["envelope"] == 0
+
+
+def test_bf32_a_refused_comparison_inserts_nothing(permissive):
+    """The insert now comes first, so a refused comparison must take the run
+    row and its column rows back (§4: "insert nothing")."""
+    seed_mixed(25, tenant=1, region=2)
+    outcome = go(TenantMixed, columns=["b"], tenant="tenant")
+    assert outcome.run.status == "complete"
+    before = run_rows()
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.COLUMNS}")
+        column_rows = cur.fetchone()[0]
+
+    with pytest.raises(BackfillError, match="columns\\[.*\\]\\.tenant"):
+        begin(TenantMixed, columns=["b"], tenant="region")
+
+    assert run_rows() == before
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {state.COLUMNS}")
+        assert cur.fetchone()[0] == column_rows
+    assert state.running_run(connection, outcome.run.table_uuid) is None
+
+
+@pytest.mark.skipif(connection.vendor != "postgresql",
+                    reason="PostgreSQL's isolation levels; SQLite holds the "
+                           "write lock from the start")
+def test_bf32_the_comparison_reads_committed_on_postgres(permissive,
+                                                         monkeypatch):
+    """#308: the comparison must see every run committed before each of its
+    statements. A connection defaulting to REPEATABLE READ would read every
+    run as of the insert's snapshot; the start's transaction sets READ
+    COMMITTED for itself."""
+    seed_mixed(5, tenant=1, region=2)
+    real = state.converting_runs
+    seen: list = []
+
+    def isolation(connection_, table_uuid):
+        with connection_.cursor() as cur:
+            cur.execute("SHOW transaction_isolation")
+            seen.append(cur.fetchone()[0])
+        return real(connection_, table_uuid)
+
+    monkeypatch.setattr(state, "converting_runs", isolation)
+    with connection.cursor() as cur:
+        cur.execute("SHOW default_transaction_isolation")
+        before = cur.fetchone()[0]
+        cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION "
+                    "ISOLATION LEVEL REPEATABLE READ")
+    try:
+        begin(TenantMixed, columns=["b"], tenant="region")
+        with connection.cursor() as cur:
+            cur.execute("SHOW transaction_isolation")
+            after = cur.fetchone()[0]
+    finally:
+        # The session's own setting, not a fixed level: the connection is
+        # shared with the tests that follow.
+        with connection.cursor() as cur:
+            cur.execute("SELECT set_config('default_transaction_isolation', "
+                        "%s, false)", [before])
+    assert seen == ["read committed"]
+    assert after == "repeatable read"  # the session's own setting is kept
 
 
 def test_a_column_named_twice_is_refused_at_plan():

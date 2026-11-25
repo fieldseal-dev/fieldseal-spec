@@ -42,6 +42,7 @@ obj/
 
 # AI
 .claude/settings.local.json
+.claude/worktrees/
 
 # Internal scratch docs (not persisted to repo)
 internal/

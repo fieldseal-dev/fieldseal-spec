@@ -148,11 +148,32 @@ jobs:
           java-version: ${{ github.event_name == 'schedule' && '21' || env.JAVA_VERSION }}
 
       # Validates the committed wrapper jar against Gradle's published
-      # checksums (validate-wrappers defaults to true). `basic` is the
-      # open-source cache: the default, `enhanced`, is a commercial service.
+      # checksums (validate-wrappers defaults to true). Its own cache is off,
+      # and the step below caches instead.
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-provider: basic
+          cache-disabled: true
+
+      # The Gradle cache, one per project and per job (#312). setup-gradle's
+      # `basic` provider restored one entry for every Java job, the Hibernate
+      # adapter's included. It wrote that entry only on main and never
+      # overwrote it. The entry, from 2026-09-30, held none of the adapter's
+      # dependencies, so its jobs fetched them from Maven Central on every
+      # run and failed on HTTP 429. This key changes with the project's own
+      # build files, a new key starts from the previous entry, and
+      # actions/cache saves from any branch, so a push to dev warms the
+      # pull requests that target it. The same step stands before every
+      # Gradle run below; the Hibernate key also hashes core/java, which that
+      # build includes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-java-${{ github.job }}-${{ hashFiles('core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml', 'core/java/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-java-${{ github.job }}-
+            gradle-${{ runner.os }}-java-
 
       # Compiles with -Xlint:all -Werror, then runs every test of both modules:
       # the module-descriptor pin, the dependency rules with one injected
@@ -200,7 +221,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-provider: basic
+          cache-disabled: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-java-${{ github.job }}-${{ hashFiles('core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml', 'core/java/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-java-${{ github.job }}-
+            gradle-${{ runner.os }}-java-
 
       - name: Probe
         run: ./gradlew memoryProbe --console=plain
@@ -528,7 +558,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-provider: basic
+          cache-disabled: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-hibernate-${{ github.job }}-${{ hashFiles('adapters/hibernate/**/*.gradle.kts', 'adapters/hibernate/gradle/libs.versions.toml', 'adapters/hibernate/gradle/wrapper/gradle-wrapper.properties', 'core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-hibernate-${{ github.job }}-
+            gradle-${{ runner.os }}-hibernate-
 
       # Compiles with -Xlint:all -Werror (the core is an included build, so it
       # is compiled from this checkout), then runs the suite: the Hibernate
@@ -975,7 +1014,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         if: matrix.impl == 'java'
         with:
-          cache-provider: basic
+          cache-disabled: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.impl == 'java'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-java-${{ github.job }}-${{ hashFiles('core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml', 'core/java/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-java-${{ github.job }}-
+            gradle-${{ runner.os }}-java-
       - name: Produce (java)
         if: matrix.impl == 'java'
         working-directory: core/java
@@ -1060,7 +1109,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         if: matrix.impl == 'hibernate'
         with:
-          cache-provider: basic
+          cache-disabled: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.impl == 'hibernate'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-hibernate-${{ github.job }}-${{ hashFiles('adapters/hibernate/**/*.gradle.kts', 'adapters/hibernate/gradle/libs.versions.toml', 'adapters/hibernate/gradle/wrapper/gradle-wrapper.properties', 'core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-hibernate-${{ github.job }}-
+            gradle-${{ runner.os }}-hibernate-
       - name: Produce (hibernate)
         if: matrix.impl == 'hibernate'
         working-directory: adapters/hibernate
@@ -1147,7 +1206,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         if: matrix.consumer == 'java'
         with:
-          cache-provider: basic
+          cache-disabled: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.consumer == 'java'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-java-${{ github.job }}-${{ hashFiles('core/java/**/*.gradle.kts', 'core/java/gradle/libs.versions.toml', 'core/java/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-java-${{ github.job }}-
+            gradle-${{ runner.os }}-java-
       - name: Consume every producer (java)
         if: matrix.consumer == 'java'
         working-directory: core/java

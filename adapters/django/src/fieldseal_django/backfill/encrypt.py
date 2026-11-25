@@ -402,9 +402,12 @@ def check_earlier_runs(p: Plan) -> list[str]:
     no `tenant`, `indexes` only; any other version cannot be compared, and
     the new run is refused.
 
-    Only terminal runs are compared: `new_run` refuses first when any run is
-    `running` on the table, since that run could still write a column this
-    comparison skipped (§4).
+    Only terminal runs are compared: `new_run` inserts its own run row
+    first, in the same transaction, so §3's unique constraint has refused
+    the start if any run was `running` on the table, which could still write
+    a column this comparison skipped, and no run can start until the
+    comparison has ended (§4, #308). The new run's own row wrote nothing, so
+    `converting_runs` does not return it.
 
     Returns the warnings to print: a version-3 run whose per-column counts do
     not add up to its own is compared per run and named (§4); and (§12) a
@@ -507,23 +510,14 @@ def table_has_rows(p: Plan) -> bool:
 
 
 def new_run(p: Plan, warn: Callable[[str], None] | None = None) -> state.Run:
-    """Insert the run row. Raises `state.RunHeld` if the table is taken.
+    """Insert the run row, then compare, in one transaction. Raises
+    `state.RunHeld` if the table is taken.
 
-    Refuses first, inserting nothing, if an earlier run converted values of
-    the table under other index declarations or another tenant column
-    (`check_earlier_runs`). Its warnings, about a version-1 run (§12), go to
-    `warn` before the run row is inserted.
+    Refuses, inserting nothing, if an earlier run converted values of the
+    table under other index declarations or another tenant column
+    (`check_earlier_runs`). Its warnings, about a version-1 run or damaged
+    per-column counts (§4, §12), go to `warn` once the run row is committed.
     """
-    # §4: before comparing anything. A `running` run can still write
-    # columns after a comparison passed over them, so only runs whose counts
-    # are frozen are compared. A start that slips in between this check and
-    # the insert is refused by the unique constraint.
-    holder = state.running_run(connections[p.alias], p.config["table_uuid"])
-    if holder is not None:
-        raise state.RunHeld(holder)
-    for line in check_earlier_runs(p):
-        if warn is not None:
-            warn(line)
     at = state.now()
     run = state.Run(
         run_id=str(uuid.uuid4()),
@@ -548,8 +542,33 @@ def new_run(p: Plan, warn: Callable[[str], None] | None = None) -> state.Run:
         completed_at=None,
         frontend=f"django/{__version__}",
     )
-    state.insert_run(connections[p.alias], run,
-                     [c["column_uuid"] for c in p.config["columns"]])
+    # §4: the run row first. Once it is in, §3's unique constraint holds
+    # the table until this transaction ends, so no other run is `running`
+    # and none can start: every run the comparison reads is terminal, with
+    # frozen counts, and none can start and complete between the comparison
+    # and the insert (#308). A refusal raises out of the transaction, which
+    # takes the run row and its column rows back, so nothing is inserted.
+    #
+    # Each statement of the comparison must also see every run committed
+    # before that statement began. Under a snapshot taken at the insert
+    # (PostgreSQL's REPEATABLE READ, which a deployment can configure), a run
+    # that completed while the insert waited on the unique constraint would
+    # be read as it was, `running` with counts that are not its last, and a
+    # column it wrote last could be skipped. So on PostgreSQL this one
+    # transaction is READ COMMITTED whatever the connection's default. On
+    # SQLite the transaction is IMMEDIATE (`check_connection`): it holds the
+    # write lock from its start, and nothing else commits during it.
+    connection = connections[p.alias]
+    with transaction.atomic(using=p.alias):
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cur:
+                cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        state.insert_run(connection, run,
+                         [c["column_uuid"] for c in p.config["columns"]])
+        lines = check_earlier_runs(p)
+    if warn is not None:
+        for line in lines:
+            warn(line)
     return run
 
 
@@ -560,6 +579,18 @@ def check_connection(connection: Any) -> None:
             "the backfill was started inside a transaction. A batch is one "
             "transaction of its own (PROCEDURE §5.2); run it outside "
             "`atomic()`.")
+    # With autocommit off, Django's `atomic()` outside a block is only a
+    # savepoint inside a transaction the connection opened implicitly, and
+    # it commits nothing on exit. So the start's insert and comparison
+    # (§4, #308) would not be one transaction of their own, a batch would
+    # not be committed when it ends (§5.2), and on PostgreSQL the start's
+    # SET TRANSACTION would run after earlier queries and fail.
+    if not connection.get_autocommit():
+        raise BackfillError(
+            "the backfill needs a connection in autocommit mode, so that each "
+            "transaction it opens is its own and commits when it ends "
+            "(PROCEDURE §4, §5.2). Remove DATABASES[...]['AUTOCOMMIT'] = "
+            "False for this process.")
     if connection.vendor == "sqlite":
         connection.ensure_connection()
         if getattr(connection, "transaction_mode", None) != "IMMEDIATE":

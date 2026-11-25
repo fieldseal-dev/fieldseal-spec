@@ -16,10 +16,13 @@ It also asserts the two facts no single act is the right place for:
 - **Both directions are covered.** Act 2 is Prisma reading Django's row and
   act 4 is Django reading Prisma's. A demo that lost one of them would still
   look like a cross-language proof.
-- **Every Prisma act recorded the development-only key-provider warning.**
-  The core emits it because `StaticKeyProvider` is a test facility (spec §8),
-  and this turns "the demo is not a production configuration" into a checked
-  fact rather than a sentence in a README that can be deleted.
+- **Every act that builds a client, on both stacks, recorded the
+  development-only key-provider warning.** Each core emits it because
+  `StaticKeyProvider` is a test facility (spec §8), and this turns "the demo
+  is not a production configuration" into a checked fact rather than a
+  sentence in a README that can be deleted. Until #306 only the Prisma acts
+  were checked: the Python core had no such warning before #223, and the
+  Django acts recorded none.
 """
 
 from __future__ import annotations
@@ -79,9 +82,22 @@ EXPECTED: dict[str, tuple[int, str, int, tuple[str, ...]]] = {
     ),
 }
 
-#: Spec §8: `StaticKeyProvider` is a development facility, and the core says
-#: so through `onWarning` on every client it builds.
-DEV_WARNING = "static-key-provider"
+#: Spec §8: `StaticKeyProvider` is a development facility, and each core says
+#: so on every client it builds: the TypeScript core through `onWarning`, the
+#: Python core as a `StaticKeyProviderWarning`, which the Django acts record
+#: from `warnings`. The kind is as each core spells it; spec §8 names no kind.
+DEV_WARNING = {
+    "prisma": "static-key-provider",
+    "django": "STATIC_KEY_PROVIDER",
+}
+
+#: The steps that build no client, so the core never runs and cannot warn.
+#: Both read the stored bytes through a cursor and nothing else: act 5's
+#: comparison is about what two writers stored, and act 7 is the DBA's view,
+#: whose point is that no key is reachable from that connection. Building a
+#: client there to produce the warning would contradict the act. Every
+#: Prisma step builds its client, so none is listed.
+NO_CLIENT = frozenset({"08-django-compare-writers", "11-django-raw-sql"})
 
 
 def main(argv: list[str]) -> int:
@@ -160,11 +176,11 @@ def main(argv: list[str]) -> int:
                     f"{stem}: no assertion covering {needle!r}. That is the "
                     f"claim this act exists to make."
                 )
-        if stack == "prisma" and not any(
-            w["kind"] == DEV_WARNING for w in rec["warnings"]
+        if stem not in NO_CLIENT and not any(
+            w["kind"] == DEV_WARNING[stack] for w in rec["warnings"]
         ):
             problems.append(
-                f"{stem}: the core's `{DEV_WARNING}` warning was not "
+                f"{stem}: the core's `{DEV_WARNING[stack]}` warning was not "
                 f"recorded. Either the demo stopped using StaticKeyProvider "
                 f"-- which would mean it is carrying a real key -- or the "
                 f"warning stopped being emitted."
