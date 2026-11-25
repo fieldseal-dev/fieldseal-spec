@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,12 +69,15 @@ function runGenerate(dir: string): string {
 }
 
 /** Run `prisma generate`; never throws, returns stdout, stderr and success. */
-function runGenerateFull(dir: string): { stdout: string; stderr: string; ok: boolean } {
+function runGenerateFull(
+  dir: string,
+  schema = "schema.prisma",
+): { stdout: string; stderr: string; ok: boolean } {
   const config = join(dir, "prisma.config.ts");
   writeFileSync(
     config,
     `import { defineConfig } from "prisma/config";\n` +
-      `export default defineConfig({ schema: "schema.prisma" });\n`,
+      `export default defineConfig({ schema: ${JSON.stringify(schema)} });\n`,
     "utf8",
   );
   const r = spawnSync(
@@ -271,6 +274,29 @@ describe("prisma generate", () => {
       );
       expect(runGenerateFull(t.dir).ok).toBe(true);
       expect(readFileSync(t.lock, "utf8")).toBe(before);
+    });
+
+    it("puts the lock inside a multi-file schema folder, which Prisma passes as the schema path", () => {
+      const t = setup();
+      const folder = join(t.dir, "schema");
+      mkdirSync(folder);
+      writeFileSync(join(folder, "main.prisma"), SCHEMA(writeShim(t.dir)).replace('"./out"', '"../out"'), "utf8");
+      expect(runGenerateFull(t.dir, "schema").ok).toBe(true);
+      const lock = JSON.parse(readFileSync(join(folder, "fieldseal.lock.json"), "utf8"));
+      expect(lock.schema).toBe(".");
+      expect(existsSync(t.lock)).toBe(false);
+    });
+
+    it("refuses a lock that belongs to another schema in the same folder", () => {
+      const t = setup();
+      t.schema();
+      expect(runGenerateFull(t.dir).ok).toBe(true);
+      const lockBefore = readFileSync(t.lock, "utf8");
+      writeFileSync(join(t.dir, "other.prisma"), readFileSync(join(t.dir, "schema.prisma"), "utf8"), "utf8");
+      const r = runGenerateFull(t.dir, "other.prisma");
+      expect(r.ok).toBe(false);
+      expect(r.stdout + r.stderr).toContain("belongs to the schema schema.prisma");
+      expect(readFileSync(t.lock, "utf8")).toBe(lockBefore);
     });
   });
 });

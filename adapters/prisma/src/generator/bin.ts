@@ -19,8 +19,8 @@
  * supported form.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 import helper from "@prisma/generator-helper";
 
@@ -71,23 +71,31 @@ helper.generatorHandler({
       typeof options.generator.config["lockfile"] === "string"
         ? options.generator.config["lockfile"]
         : DEFAULT_LOCKFILE;
-    const lockPath = resolve(dirname(options.schemaPath), lockName);
+    // A multi-file schema arrives as its folder: the lock goes inside it.
+    const schemaDir = statSync(options.schemaPath).isDirectory()
+      ? options.schemaPath
+      : dirname(options.schemaPath);
+    const lockPath = resolve(schemaDir, lockName);
     let existing: string | null = null;
     try {
       existing = readFileSync(lockPath, "utf8");
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
-    const { lock, origins } = buildLock(datamodel, map);
+    // Which schema the lock belongs to, so two schemas cannot share one.
+    const schema = relative(dirname(lockPath), options.schemaPath).split(sep).join("/") || ".";
+    const { lock, origins } = buildLock(datamodel, map, schema);
     const reconciled = reconcileLock(existing, lock, origins, lockPath);
 
-    const file = join(out, "fieldseal-map.ts");
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, renderModule(map, importPath), "utf8");
+    // The lock first: if it cannot be written (a read-only schema folder),
+    // the field map is left as it was too.
     if (reconciled.text !== null) {
       mkdirSync(dirname(lockPath), { recursive: true });
       writeFileSync(lockPath, reconciled.text, "utf8");
     }
+    const file = join(out, "fieldseal-map.ts");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, renderModule(map, importPath), "utf8");
 
     const columns = map.models.reduce((n, m) => n + m.encrypted.length, 0);
     const indexes = map.models.reduce((n, m) => n + m.indexes.length, 0);
@@ -104,7 +112,7 @@ helper.generatorHandler({
       );
     } else if (reconciled.outcome === "updated") {
       process.stderr.write(
-        `fieldseal: ${lockPath} was updated (columns added or removed). Commit it: ` +
+        `fieldseal: ${lockPath} was updated (entries: ${reconciled.summary ?? "changed"}). Commit it: ` +
           `a column is guarded only once its entry is committed.\n`,
       );
     }

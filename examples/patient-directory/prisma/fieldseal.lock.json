@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "schema": "schema.prisma",
   "tables": {
     "Patient": {
       "tableUuid": "018f5a10-0000-7000-8000-000000000001",
@@ -14,11 +15,17 @@
         "emailBidx": {
           "kind": "index",
           "source": "email",
+          "sourceColumnUuid": "018f5a10-0000-7000-8000-000000000002",
+          "sourceTenantBound": false,
           "indexId": "exact",
           "suiteId": 65281,
           "idf": "argon2id",
           "normalize": "nfc-casefold-v1",
-          "truncateBits": 15
+          "truncateBits": 15,
+          "argon2": {
+            "timeCost": 3,
+            "memoryKib": 32768
+          }
         },
         "note": {
           "kind": "encrypted",
