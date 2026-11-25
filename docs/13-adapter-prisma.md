@@ -57,6 +57,37 @@ where Prisma's parser attaches model documentation.
 - The index sibling is a plain (non-unique) `@@index` column: `truncate_bits` must sit inside the §7.4 band (9–15 bits for P = 100,000), which **mandates collisions** — a `@unique` sibling would reject legitimate distinct emails, which spec §7.10 now forbids outright (G12 resolved 2026-08-09), and the index is a filter, never an answer (spec §7.5).
 - Annotation parsing happens once at **`prisma generate`**, producing a frozen per-model **field map**: `{ model → { encrypted, indexes, relations, uniqueKeys, tableUuid } }`, emitted as a committed module the extension imports. **Every model in the schema is emitted, declared or not** — an undeclared model still carries the relation edges the visitor walks (a write can reach an encrypted column *through* it), and a model absent from the map is refused at runtime as staleness rather than passed through, because an unmapped model is a bypass around the pipeline for every declared model it relates to. A malformed annotation fails the generate, never a runtime skip — strictly better than the construction-time error this originally specified, because a schema that cannot be declared correctly never produces a client. The parsed declarations feed core-client construction (§2), where the §7.6 cardinality gate applies: a declared index whose `projected_population` is below 2¹⁰ fails construction unless the extension options carry the explicit, logged `cardinalityOverride` declaration spec §7.6 requires — the override lives in code reviewed by humans, never in a schema comment.
 
+- **A changed declaration is refused at `prisma generate`, against a committed lockfile ([#317](https://github.com/fieldseal-dev/fieldseal-spec/issues/317)).** Changing a `///` annotation produces no migration, and the generator would otherwise rewrite the field map under the new declaration without a word. A changed `column_uuid`, `table_uuid`, value type, `tenant_bound` or `storage` leaves every stored value undecryptable (spec §6.1); a changed blind-index declaration makes equality lookups silently return no rows, which spec §7.8 forbids ("MUST NOT change once written") and spec §10.2 forbids an adapter to do quietly. The Django adapter refuses both at `migrate` (#288, #303). The previously generated field map cannot be the baseline, because it lands in Prisma's `output` folder, which most projects gitignore. So the generator keeps its own baseline: `fieldseal.lock.json`, in the schema file's directory (the generator block's `lockfile = "<path relative to the schema>"` moves it), **committed**.
+
+  ```json
+  {
+    "version": 1,
+    "tables": {
+      "patients": {
+        "tableUuid": "018f3c2e-…",
+        "columns": {
+          "email_bidx": { "kind": "index", "source": "email_enc", "indexId": "exact", "suiteId": 65281,
+                          "idf": "hmac-sha512", "normalize": "nfc-casefold-v1", "truncateBits": 15 },
+          "email_enc":  { "kind": "encrypted", "columnUuid": "6f1d8a52-…", "valueType": "string",
+                          "storage": "binary", "tenantBound": false }
+        }
+      }
+    }
+  }
+  ```
+
+  The file holds only the attributes that are compared, with stable key order and a trailing newline, so an unchanged schema regenerates it byte-identical and editing `projected_population`, `on_unindexable`, `skewed` or `noun` never touches it. It carries no generator version, to avoid churn.
+
+  *Keyed by physical names.* Tables are keyed by the model's `@@map` name (else the model name), columns by the field's `@map` name (else the field name), and an index's `source` is the source column's physical name. So renaming a model or field in Prisma while keeping its `@map` is not a change, and the entry follows it. Keying by `column_uuid` would be wrong for the case that matters: changing a `column_uuid` would read as one column removed and another added, and pass.
+
+  *Compared* (an entry present in both the lock and the schema): a model's `table_uuid` (from one value to a different one); an encrypted column's `column_uuid`, `as`, `storage` and `tenant_bound`; an index's source, `index_id`, `suite_id`, `idf`, `normalize`, `truncate_bits` and, when both sides declare `argon2id`, `argon2_time_cost` and `argon2_memory_kib` (as declared, so unstated to a value is refused); and a column that changes kind between encrypted and index. *Let through:* a column, index or model added or removed (removed entries leave the lock, added ones enter it), `table_uuid` going between absent and a value, and every attribute not listed.
+
+  *On a refusal* `prisma generate` fails and writes neither the field map nor the lock. Every refused change is reported at once, each naming the model, field and `table.column`, the attribute with its old and new value, and why. The supported route for a changed index is a rebuild of its values, which does not exist yet ([#315](https://github.com/fieldseal-dev/fieldseal-spec/issues/315)); for an identity change the values must be re-encrypted by other means, or the data moved to a new column. The escape hatch is to delete that column's entry (the message names the path, e.g. `tables["patients"].columns["email_bidx"]`) from the lockfile and run `prisma generate` again. That is the operator's reviewable statement, in a diff, that the stored values were rebuilt or re-encrypted by other means; the new declaration is then recorded.
+
+  *First adoption.* With no lockfile, the generator creates one; commit it. It also says so on stderr, but Prisma 7.10.0 relays a generator's stderr only inside a failure or under `DEBUG` (measured), so on a successful generate the new file shows up in `git status`, not in the output. The same holds for the note that the lock was updated. A lockfile that is unparseable, has an unknown `version`, or has the wrong shape fails the generate with an error and is never treated as missing.
+
+  *What this does not cover.* A `fieldMap` supplied by hand to the extension bypasses the guard entirely. The guard runs only at `prisma generate`: a field map that is edited, or generated by an older build, is not checked. A column added without committing the updated lock is unprotected until the lock is committed. Deleting the whole lockfile resets the baseline, and shows in review as a deleted file.
+
 ## 2. Extension architecture
 
 One Prisma Client Extension with a single **top-level** `query.$allOperations` component (the only component that can touch writes and filters — `docs/04` §3).

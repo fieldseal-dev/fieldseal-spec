@@ -63,10 +63,14 @@ export function renderModule(map: FieldMap, importPath: string): string {
 // It contains declarations only: no key material, nothing derived, nothing
 // secret. Commit it.
 //
-// Changing a \`column_uuid\` or \`table_uuid\` here does not re-key anything; it
-// makes existing rows undecryptable (spec §6.1). Changing an index's \`suite_id\`,
-// \`idf\`, \`normalize\` or \`truncate_bits\` after any row is written is a NEW index
-// under spec §7.8 and requires a full backfill, not an edit.
+// Changing a \`column_uuid\` or \`table_uuid\` does not re-key anything; it makes
+// existing rows undecryptable (spec §6.1), and changing an index's \`suite_id\`,
+// \`idf\`, \`normalize\` or \`truncate_bits\` is a NEW index under spec §7.8. So
+// \`prisma generate\` records each column's identity in \`fieldseal.lock.json\` (or
+// the generator block's \`lockfile\`), next to the schema, and refuses to
+// regenerate this file when a recorded attribute has changed. Commit the lock.
+// Delete a column's entry from it only once its stored values have been rebuilt
+// or re-encrypted by other means.
 
 import type { FieldMap } from ${JSON.stringify(importPath)};
 

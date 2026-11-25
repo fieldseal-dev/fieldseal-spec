@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tables": {
+    "Patient": {
+      "tableUuid": "018f5a10-0000-7000-8000-000000000001",
+      "columns": {
+        "email": {
+          "kind": "encrypted",
+          "columnUuid": "018f5a10-0000-7000-8000-000000000002",
+          "valueType": "string",
+          "storage": "binary",
+          "tenantBound": false
+        },
+        "emailBidx": {
+          "kind": "index",
+          "source": "email",
+          "indexId": "exact",
+          "suiteId": 65281,
+          "idf": "argon2id",
+          "normalize": "nfc-casefold-v1",
+          "truncateBits": 15
+        },
+        "note": {
+          "kind": "encrypted",
+          "columnUuid": "018f5a10-0000-7000-8000-000000000003",
+          "valueType": "string",
+          "storage": "binary",
+          "tenantBound": false
+        }
+      }
+    }
+  }
+}
