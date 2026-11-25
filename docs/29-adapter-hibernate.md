@@ -218,6 +218,8 @@ The type and the listener call the core synchronously, inside the flush, while a
 
 No L3-row binding (§4); no transparent rewrite; no `OR`, negation or pagination in the finder; no second-level caching of encrypted entities, and no query cache on a session factory that has them; no encrypted attributes in embeddables, element collections or inheritance hierarchies; no Hibernate Reactive; no Envers; no `@DynamicUpdate` on an indexed entity; Hibernate 7.4 only. **The backfill frontend** is not built: it implements `tools/backfill/PROCEDURE.md`, which WS-R has not written, and `docs/26` §5 item 4 makes it part of WS-N's definition of done. Until it exists, a migration writes through the listener with ordinary `merge`/flush in batches, which encrypts; an HQL bulk `update` is refused (§3.3), which is the `docs/04` §11 rule that a backfill must go through the encrypting path, enforced.
 
+**Not yet built: a guard against a changed declaration.** Changing an `@Encrypted` or `@BlindIndex` declaration produces no migration, so nothing refuses a change that leaves stored values undecryptable or an index silently empty (spec §6.1, §7.8). The Prisma adapter closes this with a committed lockfile compared at generation ([#317](https://github.com/fieldseal-dev/fieldseal-spec/issues/317), `docs/13` §1), and the Django adapter at `migrate` (#288, #303). This adapter should adopt the same lockfile design, keyed by physical table and column name, when it reaches declarations that can change.
+
 ## 10. Unindexable values (`docs/09` §7.2 — normative for this adapter)
 
 As `docs/12` §10, with Hibernate's shapes:

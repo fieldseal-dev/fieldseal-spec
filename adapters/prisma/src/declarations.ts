@@ -45,11 +45,17 @@ export interface FieldInput {
   readonly isUnique?: boolean | undefined;
   readonly isId?: boolean | undefined;
   readonly relationName?: string | undefined;
+  /** `@map("...")`: the physical column name. Absent or null when unmapped. */
+  readonly dbName?: string | null | undefined;
   readonly documentation?: string | null | undefined;
 }
 
 export interface ModelInput {
   readonly name: string;
+  /** `@@map("...")`: the physical table name. Null when unmapped. */
+  readonly dbName?: string | null | undefined;
+  /** `@@schema("...")` under multiSchema: the database schema. Null otherwise. */
+  readonly schema?: string | null | undefined;
   readonly documentation?: string | null | undefined;
   readonly fields: readonly FieldInput[];
   /** `@@unique([...])` groups, as the DMMF reports them. */

@@ -44,6 +44,14 @@ better than the original design:
 The emitted file contains declarations only — no key material, nothing derived,
 nothing secret. Commit it.
 
+**The lockfile ([#317](https://github.com/fieldseal-dev/fieldseal-spec/issues/317)).**
+Changing a `///` annotation produces no migration, so the generator keeps a
+committed baseline, `fieldseal.lock.json` beside the schema (or the generator
+block's `lockfile`), and fails `prisma generate`, writing neither file, when a
+column's identity or a blind index's declaration differs from it. Keyed by
+physical table and column name (`@@map`, `@map`). A hand-supplied `fieldMap`
+bypasses it. Full description: `docs/13` §1.
+
 ## Why the index sibling is optional and never unique
 
 **The index sibling must be optional (`Bytes?`).** Prisma's generated `create`

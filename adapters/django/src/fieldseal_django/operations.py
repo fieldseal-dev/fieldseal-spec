@@ -1,5 +1,6 @@
 """Changing a column into an `Encrypted(..., storage="binary")` one (#252), and
-refusing a change of an `Encrypted` column's identity (#288).
+refusing a change of an `Encrypted` column's identity (#288) or of a blind
+index's declaration (#303).
 
 **What goes wrong without this module.** A migration's plain `AlterField` from
 `CharField(...)` to `Encrypted(CharField(...))` changes the column type to
@@ -42,7 +43,12 @@ way to supply its own `USING` expression.
   - on PostgreSQL, a plain `AlterField` that would cast a column between
     `bytea` and another type with an `Encrypted` field on either side (#252).
     `makemigrations` writes the plain `AlterField`, so without the receiver
-    the default path is the corrupting one.
+    the default path is the corrupting one;
+  - on every backend, an `AlterField` that changes a blind index's
+    declaration (#303): between two `Encrypted` declarations that both carry
+    a `BlindIndex`, its `index_id`, `idf`, `normalize` or `truncate_bits`,
+    its `time_cost` or `memory_kib` under Argon2id, or its `suite_id` when
+    both sides state one; between two `EncryptedIndex` fields, `source`.
 
 **What #288 adds.** Four attributes are the stored value's identity, and an
 `AlterField` that changes one leaves every envelope written under an identity
@@ -57,19 +63,41 @@ context (§6; docs/12 §4), a changed `storage` a different §3.3 form. The
 receiver refuses them under `migrate --fake` as well, since `pre_migrate` does
 not say the run is fake, and when a migration is unapplied, which is the same
 change reversed. What passes: a change that keeps the logical type
-(`max_length`, `EmailField` to `CharField`) and a change to `index`,
+(`max_length`, `EmailField` to `CharField`) and a change to
 `unindexable_noun` or any other attribute the stored bytes and the decrypt
-context do not depend on; and a `SeparateDatabaseAndState` whose
-`state_operations` carry the `AlterField`, the operator's statement that the
-values were re-encrypted some other way (only its database operations are
-checked). `EncryptedIndex` and `BlindIndex` changes are not refused here
-(#303). `tenant_bound` is compared as declared, so a change between unstated
-and a value is refused: the model's `FieldsealMeta` decides an unstated one,
-and a migration state does not carry it.
+context do not depend on (a change to `index` is #303's, below); and a
+`SeparateDatabaseAndState` whose `state_operations` carry the `AlterField`,
+the operator's statement that the values were re-encrypted some other way
+(only its database operations are checked). `tenant_bound` is compared as
+declared, so a change between unstated and a value is refused: the model's
+`FieldsealMeta` decides an unstated one, and a migration state does not carry
+it.
+
+**What #303 adds.** The index half. A change to a blind index's declaration
+runs no SQL either (`index` and `source` are in `non_db_attrs`), and the
+stored index values stay those of the old declaration. Spec §7.8 says the
+IDF, the normalize function, the truncation length and the key-derivation
+context, `index_id` and the declared `suite_id` (§7.2) included, MUST NOT
+change once written; an equality lookup then derives the new value, matches
+none of the stored ones and returns no rows, the silent empty result spec
+§10.2 says the adapter must refuse. Refused, by the same walk and with the
+same escape hatch: both sides `Encrypted` with a `BlindIndex` and any of
+`index_id`, `idf`, `normalize`, `truncate_bits` differing; `time_cost` and
+`memory_kib`, as declared, when both sides use `argon2id` (a change between
+unstated and a value is refused, which may over-refuse); `suite_id`, only when
+both sides state one; and two `EncryptedIndex` fields whose `source` differs.
+Not refused: adding a `BlindIndex` where there was none, removing one, a
+change to `projected_population`, `cardinality_override`, `skewed`,
+`on_unindexable` or `unindexable_override`, and a `suite_id` going from
+unstated to a value or back. The last is what #213 made every project with an
+index generate, an `AlterField` that records the suite the index was always
+derived under, and unapplying it must work too. No supported rebuild of an
+index exists yet (#315), so the escape hatch is a statement that it was
+rebuilt by other means.
 
 The walk starts only for a plan with a `ConvertToEncrypted` in it, or an
-`AlterField` on PostgreSQL, or elsewhere an `AlterField` to an `Encrypted`
-field, since the identity check needs one on the new side.
+`AlterField` on PostgreSQL, or elsewhere an `AlterField` to an `Encrypted` or
+`EncryptedIndex` field, since both checks need one on the new side.
 
 **Scope.** The refusal guards `migrate` only. A deployment that ships a new
 declaration without running `migrate`, or a declaration change with no
@@ -104,6 +132,8 @@ from .errors import FieldsealNotSupported
 
 _ISSUE = "https://github.com/fieldseal-dev/fieldseal-spec/issues/252"
 _ISSUE_288 = "https://github.com/fieldseal-dev/fieldseal-spec/issues/288"
+_ISSUE_303 = "https://github.com/fieldseal-dev/fieldseal-spec/issues/303"
+_ISSUE_315 = "https://github.com/fieldseal-dev/fieldseal-spec/issues/315"
 
 #: The PostgreSQL column types `convert_to` reads as characters: what
 #: Django's `CharField` family (`varchar(n)`, or `varchar` with no length)
@@ -121,6 +151,12 @@ def _is_encrypted(field: Any) -> bool:
     from .fields import Encrypted
 
     return isinstance(field, Encrypted)
+
+
+def _is_encrypted_index(field: Any) -> bool:
+    from .fields import EncryptedIndex
+
+    return isinstance(field, EncryptedIndex)
 
 
 def casts_into_or_out_of_bytea(old: Any, new: Any, connection: Any) -> bool:
@@ -362,6 +398,11 @@ def refuse_unsafe_alter_fields(sender: Any, *, using: str = "default",
       `column_uuid`, its inner field's spec §3.6 logical type, its
       `tenant_bound` or its `storage`, between two `Encrypted` declarations,
       in either direction (#288);
+    - on any backend, an `AlterField` in it changes a blind index's
+      declaration: `index_id`, `idf`, `normalize`, `truncate_bits`,
+      `time_cost` or `memory_kib` (Argon2id only) or `suite_id` (when both
+      sides state one) between two `Encrypted` declarations that both carry
+      a `BlindIndex`, or `source` between two `EncryptedIndex` fields (#303);
     - on PostgreSQL, a plain `AlterField` in it would cast an `Encrypted`
       column into or out of `bytea` (#252);
     - on any backend, a `ConvertToEncrypted` in it would refuse when it ran
@@ -385,9 +426,10 @@ def _worth_a_walk(connection: Any) -> Callable[[Any], bool]:
     The one place the backend decides what is walked. A `ConvertToEncrypted`
     always is, since `_check_conversion` raises its own refusals before the
     plan starts (#252). On PostgreSQL every `AlterField` can be a bytea cast,
-    so every one is. Elsewhere only the identity check applies to a plain
-    `AlterField` (#288), and it needs an `Encrypted` declaration on the new
-    side, so an `AlterField` to a plain field does not start a walk. The walk
+    so every one is. Elsewhere only the identity and index checks apply to a
+    plain `AlterField` (#288, #303), and they need an `Encrypted` or
+    `EncryptedIndex` declaration on the new side, so an `AlterField` to a
+    plain field does not start a walk. The walk
     itself is cheap (it renders a state only in `_allowed`, for an operation
     it is about to refuse); this keeps it off plans that cannot need it.
     """
@@ -396,7 +438,8 @@ def _worth_a_walk(connection: Any) -> Callable[[Any], bool]:
     def worth(op: Any) -> bool:
         return isinstance(op, ConvertToEncrypted) or (
             isinstance(op, AlterField)
-            and (postgresql or _is_encrypted(op.field)))
+            and (postgresql or _is_encrypted(op.field)
+                 or _is_encrypted_index(op.field)))
 
     return worth
 
@@ -443,19 +486,20 @@ def _unsafe_alter_fields(plan: list[Any],
                 break
             if migration in to_run:
                 before = state
-                state = migration.mutate_state(state, preserve=True)
+                state = state.clone()
+                _advance(migration.app_label, migration.operations, state)
                 to_run.remove(migration)
                 yield from _scan(migration, migration.operations, before,
                                  connection, backwards)
             elif migration in applied:
-                migration.mutate_state(state, preserve=False)
+                _advance(migration.app_label, migration.operations, state)
         return
     # As `_create_project_state(with_applied_migrations=True)` and then
     # `_migrate_all_forwards`: every applied migration, then the plan's in
     # `full_plan` order, each advancing the state the next one starts from.
     for migration, _ in full_plan:
         if migration in applied:
-            migration.mutate_state(state, preserve=False)
+            _advance(migration.app_label, migration.operations, state)
     for migration, _ in full_plan:
         if not to_run:
             break
@@ -465,9 +509,46 @@ def _unsafe_alter_fields(plan: list[Any],
                              connection, backwards)
 
 
+def _advance(app_label: str, operations: list[Any], state: Any) -> None:
+    """Apply `operations` to `state` as `Migration.mutate_state` does, and
+    after each `RenameField` point the model's `EncryptedIndex` fields whose
+    `source` named the old field at the new name.
+
+    `RenameField.state_forwards` does not follow a custom attribute such as
+    `source`, and makemigrations writes the `RenameField` and then an
+    `AlterField` of the index with the new name. The stored index does not
+    depend on the source's name (`EncryptedIndex.derive`), so with `source`
+    kept current in the walk's state a rename compares as no change, and a
+    name used again later for another field is not confused with the one
+    renamed away from it (#303, the PR #316 reviews). The walk's state is
+    its own, and the moved field is a clone: no migration's field changes.
+    """
+    from .fields import EncryptedIndex
+
+    for op in operations:
+        if isinstance(op, SeparateDatabaseAndState):
+            # Its `state_forwards` applies its state operations only.
+            _advance(app_label, op.state_operations, state)
+            continue
+        op.state_forwards(app_label, state)
+        if not isinstance(op, RenameField):
+            continue
+        model_state = state.models.get((app_label, op.model_name_lower))
+        if model_state is None:
+            continue
+        for name, field in list(model_state.fields.items()):
+            if (isinstance(field, EncryptedIndex)
+                    and field.source == op.old_name):
+                moved = field.clone()
+                moved.source = op.new_name
+                AlterField(op.model_name, name, moved).state_forwards(
+                    app_label, state)
+
+
 def _scan(migration: Any, operations: list[Any], state: Any,
           connection: Any, backwards: bool) -> Iterator[str]:
-    """Check each operation against `state`, advancing it as Django does."""
+    """Check each operation against `state`, advancing it as `_advance`
+    does."""
     app_label = migration.app_label
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
@@ -475,8 +556,7 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             # only the state operations move the real one.
             yield from _scan(migration, op.database_operations,
                              state.clone(), connection, backwards)
-            for state_op in op.state_operations:
-                state_op.state_forwards(app_label, state)
+            _advance(app_label, op.state_operations, state)
             continue
         problem = None
         if isinstance(op, ConvertToEncrypted):
@@ -485,7 +565,7 @@ def _scan(migration: Any, operations: list[Any], state: Any,
             problem = _check(migration, op, state, connection, backwards)
         if problem:
             yield problem
-        op.state_forwards(app_label, state)
+        _advance(app_label, [op], state)
 
 
 def _allowed(op: AlterField, app_label: str, state: Any,
@@ -531,9 +611,10 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
 
 def _check(migration: Any, op: AlterField, state: Any, connection: Any,
            backwards: bool) -> str | None:
-    """Both refusals for a plain `AlterField`: the identity change, on every
-    backend (#288), and the bytea cast, on PostgreSQL only (#252). When both
-    apply the message carries both."""
+    """The refusals for a plain `AlterField`: the identity change (#288) and
+    the index declaration change (#303), on every backend, and the bytea
+    cast, on PostgreSQL only (#252). When more than one applies the message
+    carries each."""
     app_label = migration.app_label
     model_state = state.models.get((app_label, op.model_name_lower))
     if model_state is None:
@@ -543,15 +624,22 @@ def _check(migration: Any, op: AlterField, state: Any, connection: Any,
     if old is None:
         return None
     changes = _identity_changes(old, new)
+    index_changes = _index_changes(old, new)
     casts = (connection.vendor == "postgresql"
              and casts_into_or_out_of_bytea(old, new, connection))
-    if not changes and not casts:
+    if not changes and not index_changes and not casts:
         return None
     if not _allowed(op, app_label, state, connection):
         return None
     problems = []
     if changes:
-        problems.append(_identity_message(migration, op, changes, backwards))
+        problems.append(_identity_message(
+            migration, op, changes, backwards,
+            indexed=bool(getattr(old, "index", None)
+                         or getattr(new, "index", None))))
+    if index_changes:
+        problems.append(_index_message(migration, op, index_changes,
+                                       backwards))
     if casts:
         problems.append(_cast_message(migration, op, old, connection,
                                       backwards))
@@ -629,7 +717,7 @@ def _tenant_text(declared: bool | None) -> str:
 
 def _identity_message(migration: Any, op: AlterField,
                       changes: list[tuple[str, str, str, str]],
-                      backwards: bool) -> str:
+                      backwards: bool, *, indexed: bool = False) -> str:
     where = (f"{migration.app_label}.{migration.name}: "
              f"{'unapplying ' if backwards else ''}AlterField {op.name} on "
              f"{op.model_name}")
@@ -640,6 +728,15 @@ def _identity_message(migration: Any, op: AlterField,
         if backwards:
             before, after = after, before
         parts.append(f"{attribute} from {before} to {after}: {why}")
+    # The column_uuid and the tenant are in the blind index's key-derivation
+    # context too (`for_index`, spec §7.2), so re-encrypting the values is
+    # not all the escape hatch states.
+    index_note = (
+        " The column's blind index is derived under the same column_uuid "
+        "and tenant, so its stored values must be rebuilt as well, for which "
+        f"no supported route exists yet ({_ISSUE_315})."
+        if indexed and any(c[0] in ("column_uuid", "tenant_bound")
+                           for c in changes) else "")
     return (
         f"{where} changes an Encrypted column's identity: "
         f"{'; and '.join(parts)}. Nothing converts the stored values into "
@@ -650,8 +747,104 @@ def _identity_message(migration: Any, op: AlterField,
         "re-encrypted by other means, record the change in a "
         "SeparateDatabaseAndState whose state_operations carry this "
         "AlterField, which is your statement that they were; otherwise use "
-        "the two-column shape (docs/12 §7). Nothing has run: migrate refused "
-        f"the plan before any DDL ({_ISSUE_288}).")
+        f"the two-column shape (docs/12 §7).{index_note} Nothing has run: "
+        f"migrate refused the plan before any DDL ({_ISSUE_288}).")
+
+
+def _index_changes(old: Any, new: Any) -> list[tuple[str, str, str]]:
+    """What an `AlterField` from `old` to `new` changes of a blind index's
+    declaration, as (attribute, old, new): the parts of it spec §7.8 says
+    MUST NOT change once an index is written (#303).
+
+    Between two `Encrypted` declarations that both carry a `BlindIndex`: a
+    declaration added or removed is not a change here (adding one leaves the
+    column to be filled by a backfill; the rebuild of a changed one is #315).
+    Between two `EncryptedIndex` fields: `source`. The walk's state keeps the
+    old side's `source` following renames of the field it names (`_advance`),
+    so a rename passes and a repoint is refused. A swap of two names by three
+    renames makes no `AlterField` and is not seen: a known limit.
+
+    - `index_id`, `idf`, `normalize` and `truncate_bits` are named by §7.8
+      or are part of the key-derivation context (§7.2).
+    - `time_cost` and `memory_kib` are the Argon2id cost (§7.3) and are
+      compared only when both sides use `argon2id`: under another IDF
+      the core refuses a declaration carrying them at startup anyway, and a
+      changed `idf` is reported on its own. They are compared as declared,
+      so a change between unstated and a value is refused although the
+      effective cost may be the same: the default is the adapter's to
+      change, and a refusal has the escape hatch where a silent pass has
+      none.
+    - `suite_id` only when both sides state one. `None` means "not stated"
+      (#213): every project with an index generated an `AlterField` that
+      records the suite the index was always derived under, and unapplying
+      it goes from a value to `None`, so neither direction is a change.
+    """
+    from .fields import EncryptedIndex
+
+    if isinstance(old, EncryptedIndex) and isinstance(new, EncryptedIndex):
+        if old.source != new.source:
+            return [("source", old.source, new.source)]
+        return []
+    if not (_is_encrypted(old) and _is_encrypted(new)):
+        return []
+    before, after = old.index, new.index
+    if before is None or after is None:
+        return []
+    changes = []
+    for attribute in ("index_id", "idf", "normalize", "truncate_bits"):
+        a, b = getattr(before, attribute), getattr(after, attribute)
+        if a != b:
+            changes.append((attribute, str(a), str(b)))
+    if before.idf == after.idf == "argon2id":
+        for attribute in ("time_cost", "memory_kib"):
+            a, b = getattr(before, attribute), getattr(after, attribute)
+            if a != b:
+                changes.append((attribute, _declared_text(a),
+                                _declared_text(b)))
+    if (before.suite_id is not None and after.suite_id is not None
+            and before.suite_id != after.suite_id):
+        changes.append(("suite_id", _suite_text(before.suite_id),
+                        _suite_text(after.suite_id)))
+    return changes
+
+
+def _suite_text(value: object) -> str:
+    """A suite as hex; `BlindIndex` leaves validating it to the core at
+    startup, so a hand-written migration may hold another type."""
+    return f"{value:#06x}" if isinstance(value, int) else repr(value)
+
+
+def _declared_text(value: int | None) -> str:
+    return "not declared" if value is None else str(value)
+
+
+def _index_message(migration: Any, op: AlterField,
+                   changes: list[tuple[str, str, str]],
+                   backwards: bool) -> str:
+    where = (f"{migration.app_label}.{migration.name}: "
+             f"{'unapplying ' if backwards else ''}AlterField {op.name} on "
+             f"{op.model_name}")
+    parts = []
+    for attribute, before, after in changes:
+        if backwards:
+            before, after = after, before
+        parts.append(f"{attribute} from {before} to {after}")
+    return (
+        f"{where} changes a blind index's declaration: {'; and '.join(parts)}"
+        ". By spec §7.8 the IDF, the normalize function, the truncation "
+        "length and the key-derivation context (the index_id and the "
+        "declared suite_id, §7.2) MUST NOT change once an index is written. "
+        "This AlterField runs no SQL, so the stored index values stay those "
+        "of the old declaration; an equality lookup derives its value under "
+        "the new one, matches none of them and returns no rows, the silent "
+        "empty result spec §10.2 says the adapter MUST refuse, and migrate "
+        "--fake would record the change without running anything. If the "
+        "index column was rebuilt under the new declaration by other means, "
+        "record the change in a SeparateDatabaseAndState whose "
+        "state_operations carry this AlterField, which is your statement "
+        f"that it was. No supported rebuild exists yet ({_ISSUE_315}). "
+        "Nothing has run: migrate refused the plan before any DDL "
+        f"({_ISSUE_303}).")
 
 
 def _cast_message(migration: Any, op: AlterField, before: Any,
