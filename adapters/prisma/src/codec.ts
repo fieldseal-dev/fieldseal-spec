@@ -72,7 +72,7 @@ export function toBytes(value: unknown, decl: EncryptedFieldDecl, label: string)
       const text = decimalText(value);
       if (text === null) break;
       const canon = canonicalDecimal(text);
-      if (canon === null) throw refuseWrite(label, "decimal", "the text is not a finite decimal");
+      if (canon === null) throw refuseWrite(label, "decimal", "the value is not a finite decimal");
       return enc(canon);
     }
     case "float":

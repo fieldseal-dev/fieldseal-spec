@@ -192,15 +192,36 @@ def test_index_operand_keeps_text_as_text_for_a_string_column() -> None:
     # Non-finite values: nothing sensitive, but no value at all is the rule.
     (models.DecimalField(max_digits=10, decimal_places=2), Decimal("NaN"), ["NaN"]),
     (models.FloatField(), float("inf"), ["inf"]),
+    # The encode error's `.object` is the whole string.
+    (models.CharField(), "SECRET-name\ud800", ["SECRET"]),
 ], ids=["int-coercion", "decimal-coercion", "date-coercion", "decimal-nan",
-        "float-inf"])
+        "float-inf", "string-surrogate"])
 def test_a_refused_write_never_carries_the_value(
         field: models.Field[Any, Any], value: Any, leaks: list[str]) -> None:
     """Spec §9: an error message never includes plaintext. Not the refusal's
-    own text, and not a chained cause, which every traceback prints."""
+    own text, and no original error attached to it either: a chained cause
+    prints in every traceback, and a hidden `__context__` is still there for
+    any tool that walks it."""
     with pytest.raises(FieldsealNotSupported) as e:
         codec.to_bytes(field, value)
     for leak in leaks:
         assert leak not in str(e.value)
-    assert e.value.__cause__ is None or not any(
-        leak in str(e.value.__cause__) for leak in leaks)
+    assert e.value.__cause__ is None
+    assert e.value.__context__ is None
+
+
+@pytest.mark.parametrize(("field", "raw"), [
+    (models.TextField(), b"SECRET-\xff"),
+    (models.IntegerField(), b"SECRET-42"),
+    (models.DateField(), b"2026-02-30"),
+], ids=["string-not-utf8", "int-not-canonical", "date-not-a-day"])
+@pytest.mark.parametrize("decrypted", [True, False], ids=["decrypted", "passed"])
+def test_a_refused_read_never_carries_the_value(
+        field: models.Field[Any, Any], raw: bytes, decrypted: bool) -> None:
+    """The read side of the same rule (#299): the decode error behind a
+    refusal holds the whole value in its `.object`."""
+    with pytest.raises(FieldsealNotSupported) as e:
+        codec.from_bytes(field, raw, label="Thing.v", decrypted=decrypted)
+    assert "SECRET" not in str(e.value) and "02-30" not in str(e.value)
+    assert e.value.__cause__ is None
+    assert e.value.__context__ is None

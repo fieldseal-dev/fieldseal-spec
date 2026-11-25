@@ -686,11 +686,17 @@ class Encrypted(models.Field):
         refusal = FieldsealNotSupported(
             f"a {stored} value in binary column {self.name!r} is not an "
             f"envelope, and {type(self.inner).__name__} could not read it")
+        # A converter's error may quote the legacy value, so it is neither
+        # chained nor kept as `__context__`: the refusal is raised after the
+        # `except` block (spec §9: an error message never includes plaintext).
+        converted = True
         try:
             for converter in converters:
                 value = converter(value, expression, connection)
-        except Exception as e:  # noqa: BLE001 - the backend's own coercion
-            raise refusal from e
+        except Exception:  # noqa: BLE001 - the backend's own coercion
+            converted = False
+        if not converted:
+            raise refusal
         if value is None:
             # SQLite's date parser returns None for text that is not a date.
             raise refusal

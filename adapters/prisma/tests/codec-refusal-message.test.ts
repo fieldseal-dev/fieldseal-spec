@@ -126,7 +126,9 @@ describe("a decrypted envelope the codec refuses (#299)", () => {
 describe("a write the codec refuses never carries the value (spec §9)", () => {
   const decl = (valueType: string) => ({ field: "v", valueType }) as unknown as EncryptedFieldDecl;
   it.each<[string, unknown, string[]]>([
-    ["int beyond 2^53", 9007199254740993, ["9007199254740993", "900719925474"]],
+    // 2^53 + 2 is exactly representable, so it is what a message quoting the
+    // value would print.
+    ["int beyond 2^53", 2 ** 53 + 2, ["9007199254740994", "900719925474"]],
     ["decimal not finite", "NaN-SECRET", ["SECRET"]],
     ["date not at UTC midnight", new Date("1985-03-17T10:30:00.000Z"), ["1985", "03-17", "10:30"]],
     ["date out of range", new Date("+010000-01-01T00:00:00.000Z"), ["10000", "+01"]],

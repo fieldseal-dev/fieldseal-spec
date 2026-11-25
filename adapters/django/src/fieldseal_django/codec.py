@@ -78,20 +78,24 @@ def to_bytes(field: Field[Any, Any], value: Any) -> bytes:
             "claim the row has a value it does not"
         )
     kind = _require_type(field)
+    # Django's own coercion error quotes the input ("'abc' value must be an
+    # integer"), so neither its text nor the exception itself travels with
+    # the refusal. The refusal is raised after the `except` block, not in
+    # it: `from None` would only hide the original, which would still ride
+    # on `__context__` for any tool that walks it. Spec §9: an error message
+    # never includes plaintext. Every refusal in this module follows the
+    # same rule.
+    failed: str
     try:
         return _RENDER[kind](field, value)
     except FieldsealNotSupported:
         raise
     except Exception as e:  # noqa: BLE001 - Django's coercion failed: typed refusal
-        # Django's own coercion error quotes the input ("'abc' value must be
-        # an integer"), so neither its text nor the exception itself travels
-        # with this one: chained, it would print in every traceback. Spec §9:
-        # an error message never includes plaintext.
-        raise FieldsealNotSupported(
-            f"{type(field).__name__} (§3.6 `{kind}`) could not take the "
-            f"{type(value).__name__} it was given ({type(e).__name__}; its "
-            "message is not repeated, since it can quote the value)"
-        ) from None
+        failed = type(e).__name__
+    raise FieldsealNotSupported(
+        f"{type(field).__name__} (§3.6 `{kind}`) could not take the "
+        f"{type(value).__name__} it was given ({failed}; its message is not "
+        "repeated, since it can quote the value)")
 
 
 def from_bytes(field: Field[Any, Any], raw: bytes, *,
@@ -111,7 +115,10 @@ def from_bytes(field: Field[Any, Any], raw: bytes, *,
     try:
         value = _PARSE[kind](raw)
     except _NotCanonical:
-        raise _refuse(kind, label, decrypted) from None
+        value = _REFUSED
+    if value is _REFUSED:
+        # Outside the `except`, so nothing is chained (see `to_bytes`).
+        raise _refuse(kind, label, decrypted)
     if kind in ("bytes", "string"):
         return value
     # A custom inner field may post-process its own type; the built-in ones
@@ -129,10 +136,11 @@ def _render_string(field: Field[Any, Any], value: Any) -> bytes:
             f"{type(prepared).__name__}, not str")
     try:
         return prepared.encode("utf-8")
-    except UnicodeEncodeError as e:
-        raise FieldsealNotSupported(
-            "the string contains an unpaired surrogate, which is not a Unicode "
-            "scalar value and has no UTF-8 encoding (spec §3.6)") from e
+    except UnicodeEncodeError:
+        pass  # its `.object` is the whole string: not chained (see `to_bytes`)
+    raise FieldsealNotSupported(
+        "the string contains an unpaired surrogate, which is not a Unicode "
+        "scalar value and has no UTF-8 encoding (spec §3.6)")
 
 
 def _render_bytes(field: Field[Any, Any], value: Any) -> bytes:
@@ -202,8 +210,10 @@ def _render_datetime(field: Field[Any, Any], value: Any) -> bytes:
             "assuming a time zone. Pass an aware datetime")
     try:
         u = prepared.astimezone(dt.UTC)
-    except OverflowError as e:
-        raise FieldsealNotSupported("outside years 0001-9999 in UTC") from e
+    except OverflowError:
+        u = None
+    if u is None:
+        raise FieldsealNotSupported("outside years 0001-9999 in UTC")
     return (f"{u.year:04d}-{u.month:02d}-{u.day:02d}T{u.hour:02d}:"
             f"{u.minute:02d}:{u.second:02d}.{u.microsecond:06d}Z").encode("ascii")
 
@@ -276,6 +286,11 @@ class _NotCanonical(Exception):
     the refusal, because only it knows whether the bytes were decrypted."""
 
 
+#: What `from_bytes` holds when the parse refused, so it can raise outside
+#: the `except` block.
+_REFUSED: Any = object()
+
+
 def _refuse(kind: str, label: str | None,
             decrypted: bool) -> FieldsealNotSupported:
     where = f"{label}: " if label else ""
@@ -306,8 +321,8 @@ def _ascii(raw: bytes) -> str:
 def _parse_string(raw: bytes) -> str:
     try:
         return raw.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise _NotCanonical() from e
+    except UnicodeDecodeError:
+        raise _NotCanonical() from None
 
 
 def _parse_int(raw: bytes) -> int:
@@ -348,8 +363,8 @@ def _parse_date(raw: bytes) -> dt.date:
         raise _NotCanonical()
     try:
         return dt.date.fromisoformat(s)
-    except ValueError as e:
-        raise _NotCanonical() from e
+    except ValueError:
+        raise _NotCanonical() from None
 
 
 def _parse_datetime(raw: bytes) -> dt.datetime:
@@ -360,8 +375,8 @@ def _parse_datetime(raw: bytes) -> dt.datetime:
         return dt.datetime(int(s[0:4]), int(s[5:7]), int(s[8:10]),
                            int(s[11:13]), int(s[14:16]), int(s[17:19]),
                            int(s[20:26]), tzinfo=dt.UTC)
-    except ValueError as e:  # year 0000, hour 24, second 60, February 30
-        raise _NotCanonical() from e
+    except ValueError:  # year 0000, hour 24, second 60, February 30
+        raise _NotCanonical() from None
 
 
 _RENDER = {
