@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.core.checks import Error, Warning, register
+from fieldseal.errors import ConfigurationError, FieldsealWarning
 
 from .errors import FieldsealAdapterError
 
@@ -55,6 +56,62 @@ def _refused_field(registry: Any) -> str:
             return (f"{model.__name__}.{field.name} "
                     f"(BlindIndex {decl.index_id!r}): ")
     return ""
+
+
+_E003_HINT = (
+    "This is one of the core's own gates (the §7.2 declared suite, the §7.4 "
+    "band, the §7.6 cardinality gate, one declaration per index), running "
+    "where it always runs -- at client construction. The adapter does not "
+    "duplicate the rule; fix the declaration named above.")
+
+
+def _index_refusal(registry: Any, *,
+                   duplicates: bool = True) -> tuple[str, str | None] | None:
+    """`(message, hint)` for the index declaration the client was refused
+    over, or `None` when every model declaration passes.
+
+    Asked after `build_client` has failed. Three refusals are E003's: one the
+    adapter makes while assembling the declarations (its message names the
+    field already), one the core's `validate_index_declaration` makes, and two
+    declarations of one index, which the core refuses when it registers them
+    and which a model inheriting an indexed column through multi-table
+    inheritance produces (`docs/12` §6). The verdict is the core's in the
+    second case; the third compares the keys the core's validation returned.
+
+    `duplicates=False` leaves the third out, for a `FIELDSEAL["CLIENT"]`: that
+    client registers what it chooses, and E006 compares the model side by key,
+    so two model declarations of one index are no fault on that path.
+
+    Any exception out of `validate_index_declaration` is a refusal, not only
+    its `ConfigurationError`. A declaration value of the wrong type (an
+    unhashable `normalize`) raises `TypeError` there, and this runs inside the
+    check's handler, so letting it escape would crash `manage.py check`.
+    """
+    from fieldseal import validate_index_declaration
+
+    from .apps import index_declarations
+
+    try:
+        triples = index_declarations(registry)
+    except FieldsealAdapterError as e:
+        return str(e), None
+    seen: dict[Any, str] = {}
+    for model, field, decl in triples:
+        name = f"{model.__name__}.{field.name} (BlindIndex {decl.index_id!r})"
+        try:
+            v = validate_index_declaration(decl)
+        except Exception as e:  # noqa: BLE001 - see the docstring
+            return (f"the core refused an index declaration: {name}: {e}",
+                    _E003_HINT)
+        if not duplicates:
+            continue
+        if v.key in seen:
+            return (f"the core refused an index declaration: {name} "
+                    f"declares the same index as {seen[v.key]} "
+                    f"(duplicate index declaration {v.key})", _E003_HINT)
+        seen[v.key] = name
+    return None
+
 
 @register("fieldseal")
 def check_fieldseal(app_configs: Any = None, apps: Any = None,
@@ -288,23 +345,68 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                      "default would mean shipping a key.",
                 obj=None, id="fieldseal.E007"))
             return issues
+        cfg = get_settings()
         try:
             build_client(apps)
-        except FieldsealAdapterError as e:
-            issues.append(Error(str(e), obj=None, id="fieldseal.E003"))
-        except Exception as e:  # noqa: BLE001 - the core's ConfigurationError
+        except (FieldsealAdapterError, ConfigurationError) as e:
+            # E003 or E007 -- a refused index declaration, or a refused
+            # client configuration. Both arrive as the same exception types,
+            # so the declarations are asked about directly, and only once the
+            # build has failed, so a passing startup validates once. Until
+            # #306 every one of these was E003, and a refused WRITE_SUITE,
+            # READ_MODE or METRICS read "the core refused an index
+            # declaration". With a CLIENT, a model declaration the core
+            # refuses is still E003: E006 would report it so had the client
+            # built, and a CLIENT callable that passes the models'
+            # declarations fails over it.
+            refusal = _index_refusal(apps, duplicates="CLIENT" not in cfg)
+            if refusal is not None:
+                msg, hint = refusal
+                issues.append(Error(msg, hint=hint, obj=None,
+                                    id="fieldseal.E003"))
+            elif "CLIENT" in cfg:
+                issues.append(Error(
+                    f"FIELDSEAL['CLIENT'] could not be built: {e}",
+                    hint="The adapter does not build this client: the "
+                         "error is from the CLIENT setting or the callable "
+                         "it names.",
+                    obj=None, id="fieldseal.E007"))
+            else:
+                issues.append(Error(
+                    "the core refused the client configuration in "
+                    f"FIELDSEAL: {e}",
+                    hint="Every model's index declaration passed the core's "
+                         "validation, so this is the client configuration: "
+                         "KEY_PROVIDER, ALLOWED_SUITES, WRITE_SUITE, "
+                         "READ_MODE, ON_WARNING or METRICS.",
+                    obj=None, id="fieldseal.E007"))
+        except FieldsealWarning as e:
+            # E010 -- the core warned, and the deployment escalated the
+            # warning to an error (`-W error`, a `warnings` filter, or an
+            # `on_warning` that raises; docs/09 §8.2). Until #306 this was
+            # reported as E003, which sends an operator to look at index
+            # declarations that are fine.
             issues.append(Error(
-                "the core refused an index declaration: "
-                f"{_refused_field(apps)}{e}",
-                hint="This is one of the core's own gates (the §7.2 declared "
-                     "suite, the §7.4 band, the §7.6 cardinality gate), "
-                     "running where it always runs -- at client "
-                     "construction. The adapter does not duplicate the rule; "
-                     "fix the declaration named above.",
-                obj=None, id="fieldseal.E003"))
+                "building the client raised the core's "
+                f"{type(e).__name__}, escalated from a warning to an "
+                f"error: {e}",
+                hint="This is not an index refusal. The core warns here "
+                     "(spec §8, §10.3) and this process turns the warning "
+                     "into an exception: check `-W` / PYTHONWARNINGS, the "
+                     "`warnings` filters and FIELDSEAL['ON_WARNING'] (or the "
+                     "on_warning= of a client given as FIELDSEAL['CLIENT']).",
+                obj=None, id="fieldseal.E010"))
+        except Exception as e:  # noqa: BLE001 - e.g. a KEY_PROVIDER that raises
+            issues.append(Error(
+                f"building the client failed: {type(e).__name__}: {e}",
+                hint="This is not an index refusal (E003) or a refused "
+                     "configuration (E007): something else raised while the "
+                     "client was built, such as the KEY_PROVIDER or CLIENT "
+                     "callable, or an ON_WARNING (or on_warning=) handler "
+                     "that escalates a warning by raising another exception.",
+                obj=None, id="fieldseal.E010"))
 
         # E006 -- a hand-built client must match the model declarations.
-        cfg = get_settings()
         if "CLIENT" in cfg:
             issues.extend(_check_client_registry(apps))
 
@@ -339,7 +441,7 @@ def _check_client_registry(registry: Any = None) -> list[Any]:
 
     try:
         client = build_client(registry)
-    except Exception:  # noqa: BLE001 - reported as E003/E007 above
+    except Exception:  # noqa: BLE001 - reported as E003/E007/E010 above
         # A malformed CLIENT is already reported under its own id; this check
         # must not report the same fault twice.
         return []
