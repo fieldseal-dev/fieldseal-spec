@@ -90,3 +90,13 @@ warn_return_any = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 DJANGO_SETTINGS_MODULE = "tests.settings"
+# The suite builds its clients with StaticKeyProvider, which the core warns
+# about outside test configuration (spec §8, #223): 46 identical warnings that
+# hid any real one (#306). Filtered by class only, so ReadModeWarning and
+# MetricsHookWarning still show. Not FIELDSEAL_TEST_MODE=1: that also arms
+# fieldseal.testing's seed and nonce injection (docs/08 §6), and some tests
+# assert the unarmed state. tests/test_escalated_warning.py pins that the
+# adapter still lets the warning through.
+filterwarnings = [
+    "ignore::fieldseal.errors.StaticKeyProviderWarning",
+]

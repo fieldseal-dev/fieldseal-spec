@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.core.checks import Error, Warning, register
+from fieldseal.errors import ConfigurationError, FieldsealWarning
 
 from .errors import FieldsealAdapterError
 
@@ -292,7 +293,7 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
             build_client(apps)
         except FieldsealAdapterError as e:
             issues.append(Error(str(e), obj=None, id="fieldseal.E003"))
-        except Exception as e:  # noqa: BLE001 - the core's ConfigurationError
+        except ConfigurationError as e:
             issues.append(Error(
                 "the core refused an index declaration: "
                 f"{_refused_field(apps)}{e}",
@@ -302,6 +303,30 @@ def check_fieldseal(app_configs: Any = None, apps: Any = None,
                      "construction. The adapter does not duplicate the rule; "
                      "fix the declaration named above.",
                 obj=None, id="fieldseal.E003"))
+        except FieldsealWarning as e:
+            # E010 -- the core warned, and the deployment escalated the
+            # warning to an error (`-W error`, a `warnings` filter, or an
+            # `on_warning` that raises; docs/09 §8.2). Until #306 this was
+            # reported as E003, which sends an operator to look at index
+            # declarations that are fine.
+            issues.append(Error(
+                "building the client raised the core's "
+                f"{type(e).__name__}, escalated from a warning to an "
+                f"error: {e}",
+                hint="This is not an index refusal. The core warns here "
+                     "(spec §8, §10.3) and this process turns the warning "
+                     "into an exception: check `-W` / PYTHONWARNINGS, the "
+                     "`warnings` filters and any `on_warning` the client "
+                     "is built with.",
+                obj=None, id="fieldseal.E010"))
+        except Exception as e:  # noqa: BLE001 - e.g. a KEY_PROVIDER that raises
+            issues.append(Error(
+                f"building the client failed: {type(e).__name__}: {e}",
+                hint="This is not an index refusal: the core refuses an "
+                     "index declaration with a ConfigurationError (E003). "
+                     "Something else raised while the client was built, "
+                     "such as the KEY_PROVIDER or CLIENT callable.",
+                obj=None, id="fieldseal.E010"))
 
         # E006 -- a hand-built client must match the model declarations.
         cfg = get_settings()
@@ -339,7 +364,7 @@ def _check_client_registry(registry: Any = None) -> list[Any]:
 
     try:
         client = build_client(registry)
-    except Exception:  # noqa: BLE001 - reported as E003/E007 above
+    except Exception:  # noqa: BLE001 - reported as E003/E007/E010 above
         # A malformed CLIENT is already reported under its own id; this check
         # must not report the same fault twice.
         return []
