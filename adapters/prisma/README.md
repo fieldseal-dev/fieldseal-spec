@@ -111,9 +111,20 @@ the blind index for `email`: optional, indexed, never `@unique`.
 **2. Generate and create the tables:**
 
 ```sh
-npx prisma generate      # also writes src/generated/fieldseal-map.ts; commit it
+npx prisma generate      # also writes src/generated/fieldseal-map.ts and fieldseal.lock.json; commit both
 npx prisma db push
 ```
+
+`fieldseal.lock.json`, written next to `schema.prisma` (the generator block's
+`lockfile = "<path relative to the schema>"` moves it), records what your stored
+values were written under: each column's `column_uuid`, value type, storage and
+`tenant_bound`, each blind index's declaration, each table's `table_uuid`. A
+later `prisma generate` that would change one of them fails, naming it, because
+editing a `///` annotation produces no migration and would otherwise make stored
+values undecryptable or an index silently empty. **Commit the lock.** The error
+explains the escape hatch (delete the column's entry from the lock, then
+generate again, once its values have been rebuilt or re-encrypted by other
+means). A hand-supplied `fieldMap` bypasses this guard. See `docs/13` §1.
 
 **3. Extend the client.** Register the extension **last**, so every other
 extension sees plaintext:
