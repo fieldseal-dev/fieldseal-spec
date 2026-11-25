@@ -116,13 +116,14 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid as _uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 from django.db import connections
 from django.db.migrations.operations import (
     AlterField,
     RenameField,
+    RenameModel,
     SeparateDatabaseAndState,
 )
 from django.db.models import NOT_PROVIDED
@@ -477,6 +478,7 @@ def _unsafe_alter_fields(plan: list[Any],
                if key in loader.graph.nodes}
     to_run = {m for m, _ in plan}
     state = ProjectState(real_apps=loader.unmigrated_apps)
+    renames: _Renames = {}
     if backwards:
         # As `_migrate_all_backwards`: each migration is unapplied against
         # the state before it in `full_plan` order, built from every applied
@@ -489,9 +491,11 @@ def _unsafe_alter_fields(plan: list[Any],
                 state = migration.mutate_state(state, preserve=True)
                 to_run.remove(migration)
                 yield from _scan(migration, migration.operations, before,
-                                 connection, backwards)
+                                 connection, backwards, renames)
             elif migration in applied:
                 migration.mutate_state(state, preserve=False)
+                _record_renames(migration.app_label, migration.operations,
+                                renames)
         return
     # As `_create_project_state(with_applied_migrations=True)` and then
     # `_migrate_all_forwards`: every applied migration, then the plan's in
@@ -499,36 +503,77 @@ def _unsafe_alter_fields(plan: list[Any],
     for migration, _ in full_plan:
         if migration in applied:
             migration.mutate_state(state, preserve=False)
+            _record_renames(migration.app_label, migration.operations,
+                            renames)
     for migration, _ in full_plan:
         if not to_run:
             break
         if migration in to_run:
             to_run.remove(migration)
             yield from _scan(migration, migration.operations, state,
-                             connection, backwards)
+                             connection, backwards, renames)
+
+
+#: The fields renamed so far in the walk, per model: {(app_label, lowercased
+#: model name): {name before: name now}}, chains already resolved (#303).
+_Renames = dict[tuple[str, str], dict[str, str]]
+
+
+def _record_renames(app_label: str, operations: list[Any],
+                    renames: _Renames) -> None:
+    """Record the renames `operations` make to the state, in order.
+
+    `RenameField` state is not enough for `EncryptedIndex.source`, a custom
+    attribute `RenameField.state_forwards` does not follow, so the index check
+    resolves the old `source` through these (#303, the PR #316 review). A
+    `SeparateDatabaseAndState` moves the state with its `state_operations`
+    only. A chain (v to tmp to x) is stored as v to x, and a `RenameModel`
+    moves its model's renames to the new name.
+    """
+    for op in operations:
+        if isinstance(op, SeparateDatabaseAndState):
+            _record_renames(app_label, op.state_operations, renames)
+        elif isinstance(op, RenameField):
+            names = renames.setdefault((app_label, op.model_name_lower), {})
+            for before, now in names.items():
+                if now == op.old_name:
+                    names[before] = op.new_name
+            names[op.old_name] = op.new_name
+        elif isinstance(op, RenameModel):
+            moved = renames.pop((app_label, op.old_name_lower), None)
+            if moved is not None:
+                renames[(app_label, op.new_name_lower)] = moved
 
 
 def _scan(migration: Any, operations: list[Any], state: Any,
-          connection: Any, backwards: bool) -> Iterator[str]:
-    """Check each operation against `state`, advancing it as Django does."""
+          connection: Any, backwards: bool,
+          renames: _Renames) -> Iterator[str]:
+    """Check each operation against `state`, advancing it as Django does, and
+    record the renames it makes (also those of an operation in a
+    `SeparateDatabaseAndState`'s `state_operations`)."""
     app_label = migration.app_label
     for op in operations:
         if isinstance(op, SeparateDatabaseAndState):
             # The database operations run against a copy of the state, and
             # only the state operations move the real one.
+            # Its renames are not the real state's, so it gets a copy.
             yield from _scan(migration, op.database_operations,
-                             state.clone(), connection, backwards)
+                             state.clone(), connection, backwards,
+                             {k: dict(v) for k, v in renames.items()})
             for state_op in op.state_operations:
                 state_op.state_forwards(app_label, state)
+            _record_renames(app_label, op.state_operations, renames)
             continue
         problem = None
         if isinstance(op, ConvertToEncrypted):
             problem = _check_conversion(migration, op, state, connection)
         elif isinstance(op, AlterField):
-            problem = _check(migration, op, state, connection, backwards)
+            problem = _check(migration, op, state, connection, backwards,
+                             renames)
         if problem:
             yield problem
         op.state_forwards(app_label, state)
+        _record_renames(app_label, [op], renames)
 
 
 def _allowed(op: AlterField, app_label: str, state: Any,
@@ -573,7 +618,7 @@ def _check_conversion(migration: Any, op: ConvertToEncrypted, state: Any,
 
 
 def _check(migration: Any, op: AlterField, state: Any, connection: Any,
-           backwards: bool) -> str | None:
+           backwards: bool, renames: _Renames) -> str | None:
     """The refusals for a plain `AlterField`: the identity change (#288) and
     the index declaration change (#303), on every backend, and the bytea
     cast, on PostgreSQL only (#252). When more than one applies the message
@@ -587,7 +632,8 @@ def _check(migration: Any, op: AlterField, state: Any, connection: Any,
     if old is None:
         return None
     changes = _identity_changes(old, new)
-    index_changes = _index_changes(old, new)
+    index_changes = _index_changes(
+        old, new, renames.get((app_label, op.model_name_lower), {}))
     casts = (connection.vendor == "postgresql"
              and casts_into_or_out_of_bytea(old, new, connection))
     if not changes and not index_changes and not casts:
@@ -702,7 +748,9 @@ def _identity_message(migration: Any, op: AlterField,
         f"the plan before any DDL ({_ISSUE_288}).")
 
 
-def _index_changes(old: Any, new: Any) -> list[tuple[str, str, str]]:
+def _index_changes(old: Any, new: Any,
+                   renamed: Mapping[str, str] | None = None,
+                   ) -> list[tuple[str, str, str]]:
     """What an `AlterField` from `old` to `new` changes of a blind index's
     declaration, as (attribute, old, new): the parts of it spec §7.8 says
     MUST NOT change once an index is written (#303).
@@ -710,17 +758,24 @@ def _index_changes(old: Any, new: Any) -> list[tuple[str, str, str]]:
     Between two `Encrypted` declarations that both carry a `BlindIndex`: a
     declaration added or removed is not a change here (adding one leaves the
     column to be filled by a backfill; the rebuild of a changed one is #315).
-    Between two `EncryptedIndex` fields: `source`.
+    Between two `EncryptedIndex` fields: `source`, compared after the renames
+    of the model's fields in the walk (`renamed`: name before to name now) are
+    resolved on the old side. `RenameField` does not follow a custom `source`,
+    and makemigrations writes the `RenameField` and then an `AlterField` with
+    the new name; the stored index does not depend on the source's name
+    (`EncryptedIndex.derive`), so a rename passes. A swap of two names by
+    three renames makes no `AlterField` and is not seen: a known limit.
 
     - `index_id`, `idf`, `normalize` and `truncate_bits` are named by §7.8
       or are part of the key-derivation context (§7.2).
     - `time_cost` and `memory_kib` are the Argon2id cost (§7.3) and are
-      compared only when both sides use `argon2id`; under another IDF they
-      are ignored by the derivation, and if `idf` itself differs that is
-      reported alone. They are compared as declared, so a change between
-      unstated and a value is refused although the effective cost may be the
-      same: the default is the adapter's to change, and a refusal has the
-      escape hatch where a silent pass has none.
+      compared only when both sides use `argon2id`: under another IDF
+      the core refuses a declaration carrying them at startup anyway, and a
+      changed `idf` is reported on its own. They are compared as declared,
+      so a change between unstated and a value is refused although the
+      effective cost may be the same: the default is the adapter's to
+      change, and a refusal has the escape hatch where a silent pass has
+      none.
     - `suite_id` only when both sides state one. `None` means "not stated"
       (#213): every project with an index generated an `AlterField` that
       records the suite the index was always derived under, and unapplying
@@ -729,8 +784,9 @@ def _index_changes(old: Any, new: Any) -> list[tuple[str, str, str]]:
     from .fields import EncryptedIndex
 
     if isinstance(old, EncryptedIndex) and isinstance(new, EncryptedIndex):
-        if old.source != new.source:
-            return [("source", old.source, new.source)]
+        source = (renamed or {}).get(old.source, old.source)
+        if source != new.source:
+            return [("source", source, new.source)]
         return []
     if not (_is_encrypted(old) and _is_encrypted(new)):
         return []

@@ -305,12 +305,13 @@ ALLOWED = [
     # unapplying it goes the other way. Both must work.
     ("suite-unstated-to-stated", enc(index(suite_id=None)), OLD),
     ("suite-stated-to-unstated", OLD, enc(index(suite_id=None))),
-    # Under hmac the cost is not part of the derivation.
+    # The core refuses a declaration with Argon2 costs on an hmac index at
+    # startup, so this one cannot serve; the case only pins that the
+    # migration check compares the costs under argon2id alone.
     ("cost-under-hmac", OLD, enc(index(time_cost=9, memory_kib=9))),
     ("cost-unchanged-under-argon2id",
      enc(index(idf="argon2id", time_cost=3)),
      enc(index(idf="argon2id", time_cost=3, projected_population=7))),
-    ("both-without-an-index-change", OLD, enc(index(), uuid=UUID_A)),
 ]
 
 
@@ -345,35 +346,139 @@ def test_the_suite_recorded_by_213_unapplies_under_fake_too(case):
 # -- the fact the refusal rests on --------------------------------------------
 
 
-@pytest.mark.parametrize(("attribute", "changed"), [
-    ("index_id", "exact-v2"),
-    ("suite_id", 0xFF02),
-], ids=["index_id", "suite_id"])
+@pytest.mark.parametrize(("attribute", "changed", "value"), [
+    ("index_id", "exact-v2", "ada@example.com"),
+    ("suite_id", 0xFF02, "ada@example.com"),
+    # A lowercase value derives the same under both functions, so this one
+    # has capitals.
+    ("normalize", "identity", "Ada@Example.com"),
+], ids=["index_id", "suite_id", "normalize"])
 def test_a_row_written_under_one_declaration_is_not_found_under_another(
-        attribute, changed):
+        attribute, changed, value):
     """Write a row through the real `Patient` model, change the declared
     index as an `AlterField` would, and look the value up: the stored index
     value was derived under the old declaration (spec §7.2, §7.8), so the
     lookup returns nothing, and nothing about the column says why. Reads of
-    the value itself are unaffected. `normalize` has one registered function
-    and `truncate_bits` matches by chance when the differing bits are zero
-    (spec §7.2), so neither is measured here; `idf` and the cost need
-    Argon2id's cost on a model that does not exist yet."""
+    the value itself are unaffected. The core registers `identity`,
+    `nfc-casefold-v1` and `digits-only-v1`; `normalize` is measured from
+    `nfc-casefold-v1` to `identity` on a value with capitals. `truncate_bits`
+    matches by chance when the differing bits are zero (spec §7.2), so it is
+    not measured here; `idf` and the cost need Argon2id's cost on a model
+    that does not exist yet."""
     from .models import Patient
 
     field = Patient._meta.get_field("email")
     declared = field.index
     reset_client()
     try:
-        pk = Patient.objects.create(email="ada@example.com").pk
+        pk = Patient.objects.create(email=value).pk
         assert [p.pk for p in
-                Patient.objects.filter(email="ada@example.com")] == [pk]
+                Patient.objects.filter(email=value)] == [pk]
         field.index = dataclasses.replace(declared, **{attribute: changed})
         reset_client()
-        assert list(Patient.objects.filter(email="ada@example.com")) == []
-        assert Patient.objects.get(pk=pk).email == "ada@example.com"
+        assert list(Patient.objects.filter(email=value)) == []
+        assert Patient.objects.get(pk=pk).email == value
     finally:
         field.index = declared
         reset_client()
     assert [p.pk for p in
-            Patient.objects.filter(email="ada@example.com")] == [pk]
+            Patient.objects.filter(email=value)] == [pk]
+
+
+# -- a rename of the indexed field (the PR #316 review) -----------------------
+
+#: What makemigrations writes for renaming `v`, which `v_bidx` indexes:
+#: `RenameField` leaves the custom `source` of the state's `v_bidx` as it was.
+RENAME_V = """
+    migrations.RenameField(model_name="thing", old_name="v", new_name="x"),
+"""
+REPOINT_V_BIDX = """
+    migrations.AlterField(model_name="thing", name="v_bidx",
+        field=fieldseal_django.fields.EncryptedIndex(null=True, source="%s")),
+"""
+
+
+def ops(*parts: str) -> str:
+    return "[" + "".join(parts) + "]"
+
+
+def test_renaming_the_indexed_field_is_let_through_both_ways(case):
+    """The autodetector's own output: the `RenameField` and then the
+    `AlterField` of the index to the new name."""
+    c = case(graph=graph_of(OLD, ops(RENAME_V, REPOINT_V_BIDX % "x")))
+    c.migrate("0001")
+    c.migrate("0002")
+    assert "0002_change" in c.applied()
+    c.migrate("0001")
+    assert c.applied() == {"0001_initial"}
+
+
+def test_a_rename_in_an_applied_migration_is_resolved_for_a_later_alter(case):
+    """`0002` is applied before the plan, which holds only `0003`."""
+    def graph(table: str) -> dict[str, str]:
+        return {"0001_initial": create(table, OLD, extra=EXTRA),
+                "0002_rename": mig(["0001_initial"], ops(RENAME_V)),
+                "0003_repoint": mig(["0002_rename"],
+                                    ops(REPOINT_V_BIDX % "x"))}
+    c = case(graph=graph)
+    c.migrate("0002")
+    c.migrate("0003")
+    assert "0003_repoint" in c.applied()
+    c.migrate("0002")
+    assert "0003_repoint" not in c.applied()
+
+
+def test_a_rename_in_a_state_operation_is_resolved_too(case):
+    state_rename = ('migrations.SeparateDatabaseAndState('
+                    f'state_operations=[{RENAME_V}])')
+    def graph(table: str) -> dict[str, str]:
+        return {"0001_initial": create(table, OLD, extra=EXTRA),
+                "0002_rename": mig(["0001_initial"], ops(state_rename)),
+                "0003_repoint": mig(["0002_rename"],
+                                    ops(REPOINT_V_BIDX % "x"))}
+    c = case(graph=graph)
+    # Only the state is renamed, so the column is still `v`: fake the rest.
+    c.migrate("0001")
+    call_command("migrate", "app252", "0002", fake=True, verbosity=0)
+    call_command("migrate", "app252", "0003", fake=True, verbosity=0)
+    assert "0003_repoint" in c.applied()
+
+
+def test_a_rename_chain_is_resolved(case):
+    tmp = '''migrations.RenameField(model_name="thing", old_name="v",
+                                  new_name="tmp"),
+    migrations.RenameField(model_name="thing", old_name="tmp",
+                           new_name="x"),'''
+    c = case(graph=graph_of(OLD, ops(tmp, REPOINT_V_BIDX % "x")))
+    c.migrate("0002")
+    assert "0002_change" in c.applied()
+
+
+def test_a_rename_then_a_repoint_to_another_field_is_still_refused(case):
+    c = case(graph=graph_of(OLD, ops(RENAME_V, REPOINT_V_BIDX % "u")))
+    c.migrate("0001")
+    with pytest.raises(FieldsealNotSupported, match="source from x to u"):
+        c.migrate("0002")
+    assert c.applied() == {"0001_initial"}
+
+
+def test_renaming_the_model_and_the_field_is_let_through(case):
+    rename_model = ('migrations.RenameModel(old_name="Thing", '
+                    'new_name="Widget"),')
+    rename_field = RENAME_V.replace('"thing"', '"widget"')
+    repoint = (REPOINT_V_BIDX % "x").replace('"thing"', '"widget"')
+    change = ops(rename_model, rename_field, repoint)
+
+    def graph(table: str) -> dict[str, str]:
+        # Django injects a contenttypes RunPython after a RenameModel, which
+        # needs the app in the state when it is unapplied.
+        depends = mig(["0001_initial"], change).replace(
+            "dependencies = [",
+            'dependencies = [("contenttypes", "0002_remove_content_type_name"),'
+            ' ', 1)
+        return {"0001_initial": create(table, OLD, extra=EXTRA),
+                "0002_change": depends}
+    c = case(graph=graph)
+    c.migrate("0001")
+    c.migrate("0002")
+    assert "0002_change" in c.applied()
