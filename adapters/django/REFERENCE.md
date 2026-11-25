@@ -365,6 +365,19 @@ snapshot since the client was built, and a field with no plaintext read is
 absent from it. The counts belong to the client, as its
 `plaintext_reads` does: a rebuilt client starts both at zero.
 
+`FIELDSEAL["METRICS"]` hands the core a metrics object (#306). Its
+`plaintext_read()` is called for the same reads as the signal, at the same
+point, without the model and field: while the adapter is the client's only
+reader, its calls, `get_client().plaintext_reads` and the sum of
+`plaintext_read_counts()` agree. Wire one of the two into a metrics backend,
+not both, or every read counts twice: the signal when the column matters, the
+hook when only the total does. Its `decrypt_error(code)` has no signal
+equivalent: it is called with the spec §9 code (`NOT_CIPHERTEXT`,
+`TAG_INVALID`, `KEY_UNAVAILABLE`, …) for each error `decrypt` raises. A hook
+that raises does not fail the read; the core reports it as a
+`MetricsHookWarning` through `warnings` (once per process under the default
+filters), never through `ON_WARNING`.
+
 Both count reads, not rows: a legacy value read twice counts twice. A value
 that is counted and then refused (`FieldsealNotSupported`, because the inner
 field cannot read it) still counts, as it does in the core, because it is a
